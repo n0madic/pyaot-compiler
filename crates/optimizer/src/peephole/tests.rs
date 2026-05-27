@@ -14,6 +14,7 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     }
 }

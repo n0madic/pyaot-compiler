@@ -316,6 +316,7 @@ impl<'a> Lowering<'a> {
                 name: None,
                 ty: var_type.clone(),
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             });
 
@@ -361,6 +362,7 @@ impl<'a> Lowering<'a> {
                 name: None,
                 ty: var_type.clone(),
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             });
 

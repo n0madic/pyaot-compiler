@@ -21,6 +21,7 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     }
 }
@@ -117,6 +118,7 @@ fn test_devirtualize_known_class() {
         name: None,
         ty: class_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -171,6 +173,7 @@ fn test_skip_unknown_type() {
         name: None,
         ty: Type::Any,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -215,6 +218,7 @@ fn test_skip_missing_vtable_slot() {
         name: None,
         ty: class_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -260,6 +264,7 @@ fn test_devirtualize_obj_in_params() {
         name: None,
         ty: class_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -333,6 +338,7 @@ fn test_devirtualize_generic_user_class_receiver() {
         name: None,
         ty: receiver_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -397,6 +403,7 @@ fn test_devirtualize_generic_builtin_no_vtable() {
         name: None,
         ty: receiver_type,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);

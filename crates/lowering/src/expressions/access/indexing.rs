@@ -52,6 +52,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Str,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -76,6 +77,7 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Bool,
                             abi_immutable: false,
+                            is_var_local: false,
                             mir_ty: None,
                         });
                         let kind_tag = mir::Operand::Constant(mir::Constant::Int(
@@ -97,6 +99,7 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Str, // Placeholder for *mut Obj
                             abi_immutable: false,
+                            is_var_local: false,
                             mir_ty: None,
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -112,6 +115,7 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Float,
                             abi_immutable: false,
+                            is_var_local: false,
                             mir_ty: None,
                         });
                         self.emit_instruction(mir::InstructionKind::UnboxValue {
@@ -127,6 +131,7 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Int,
                             abi_immutable: false,
+                            is_var_local: false,
                             mir_ty: None,
                         });
                         let kind_tag = mir::Operand::Constant(mir::Constant::Int(
@@ -160,6 +165,7 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: result_ty.clone(),
                             abi_immutable: false,
+                            is_var_local: false,
                             mir_ty: result_mir_ty,
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -250,6 +256,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: result_ty.clone(),
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: result_mir_ty,
                 });
                 // Box key if needed (int/bool keys need boxing)
@@ -293,6 +300,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: (**value_ty).clone(),
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 });
                 let index_type = self.seed_expr_type(index, hir_module);
@@ -354,6 +362,7 @@ impl<'a> Lowering<'a> {
                         name: None,
                         ty: return_ty.clone(),
                         abi_immutable: false,
+                        is_var_local: false,
                         mir_ty: None,
                     });
                     // Phase 4: box index arg if __getitem__ param[1] is annotated primitive.
@@ -377,6 +386,7 @@ impl<'a> Lowering<'a> {
                         name: None,
                         ty: Type::Any,
                         abi_immutable: false,
+                        is_var_local: false,
                         mir_ty: None,
                     });
                     return Ok(mir::Operand::Constant(mir::Constant::None));
@@ -391,6 +401,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Any,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {

@@ -96,12 +96,16 @@ Granular overrides via `--verify-mir-stage=STAGE=MODE`. Legacy
 **Migration plan**: Strong-Typed MIR Rewrite v2, staged A-G. Full plan
 at `.claude/plans/strong-typed-mir-v2-coordinated.md` (supersedes
 `velvety-waddling-map.md`). `Local.ty: Type` (logical) and
-`Local.mir_ty: Option<MirType>` (physical) are the **designed
-dual-field final state** — see "Dual-Field Type System" in INSIGHTS.md.
-`Option` cannot be removed from `mir_ty` without multi-session
-prerequisite work (see `memory/feedback_mir_ty_option_removal_blocked.md`).
-Stage F.2 deletes `Local.ty` only (blocked on C.2). Acceptance script
-`scripts/assert_no_regression.sh` gates stage boundaries.
+`Local.mir_ty: Option<MirType>` (physical) currently coexist; deletion
+of `Local.ty` (Stage F.2) is **DEFERRED** as multi-session work — see
+"Dual-Field Type System" in INSIGHTS.md and
+`memory/project_f2_partial_progress_2026-05-27.md` for the blocker
+analysis (4+ optimizer-side sentinel readers depend on
+`mir_ty: None`, plus a missing "WPA-synthetic vs lowering-emitted"
+param discriminator). `Option` cannot be removed from `mir_ty` for
+similar reasons (see `memory/feedback_mir_ty_option_removal_blocked.md`).
+Acceptance script `scripts/assert_no_regression.sh` gates stage
+boundaries.
 
 **Status** — 38/38 examples verifier-clean at `final-pre-codegen` in
 both debug and release builds (HardError). Stage progression:
@@ -155,12 +159,23 @@ both debug and release builds (HardError). Stage progression:
   - F.1 LANDED (commit 21b05aa): `Type::HeapAny` enum variant deleted.
     All ~344 occurrences replaced with `Type::Any` + `mir_ty`.
     38/38 examples pass.
-  - F.2 PARTIAL — 5 `local.ty.is_heap()` → `computed_is_gc_root()`
-    migrations done; narrowing/propagation sites blocked on C.2.
-    `Local.mir_ty: Option<MirType>` — Option removal BLOCKED (37/40
-    runtime failures); requires C.2 codegen migration AND is_var_local
-    flag OR MirType::Unknown sentinel first (see
-    `memory/feedback_mir_ty_option_removal_blocked.md`).
+  - F.2 PARTIAL / DEFERRED — original safe migrations (5
+    `local.ty.is_heap()` → `computed_is_gc_root()`) plus 2026-05-27
+    session: A.0 (added `Local.is_var_local: bool` to replace one
+    `mir_ty: None` sentinel) + A.2 (MirType query helpers
+    `contains_var`, `list_elem`, `dict_kv`, `tuple_elems`,
+    `tuple_var_elem`, `set_elem`, `class_id`, `resolved_contains_var`).
+    A.1 backfill attempt rolled back (37/40 regressions). Remaining
+    blockers: 4+ optimizer sentinel readers
+    (`sync_call_direct_dest_mir_ty` None-skip,
+    `refine_function_params` / body-local `old_was_widenable`,
+    `raw_demotion` is_some-gate, `inline/transform` clone preservation)
+    PLUS a missing discriminator for "WPA-synthetic vs lowering-emitted"
+    params (all params now have `is_var_local: true` after A.0, so the
+    flag can't separate them). See
+    `memory/project_f2_partial_progress_2026-05-27.md` for the full
+    blocker analysis and `memory/feedback_mir_ty_option_removal_blocked.md`
+    for the related Option-removal blocker (still applies).
 - **Stages G** — G.1 + G.2 + G.3 DONE
   - G.1 LANDED: verifier `HardError` at `final-pre-codegen` now
     unconditional in both debug and release builds. 0 regressions.

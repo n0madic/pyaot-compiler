@@ -30,12 +30,18 @@ The new `MirType` makes representation EXPLICIT and enforced by a
 verifier pass (`crates/mir/src/verify.rs`, run via `--verify-mir`).
 Verifier runs in HardError mode at `final-pre-codegen` in all builds.
 
-**Dual-field design (FINAL STATE)**: `Local.ty: Type` (logical) +
-`Local.mir_ty: Option<MirType>` (physical). These are not an
-intermediate migration artifact — see "Dual-Field Type System" entry
-below. `Type::HeapAny` was deleted in Stage F.1 (commit `21b05aa`).
-Stage F.2 deletes `Local.ty`; `mir_ty` Option removal is blocked
-(see `memory/feedback_mir_ty_option_removal_blocked.md`).
+**Dual-field design (CURRENT STATE, F.2 DEFERRED)**: `Local.ty: Type`
+(logical) + `Local.mir_ty: Option<MirType>` (physical) + (2026-05-27)
+`Local.is_var_local: bool` discriminator. `Type::HeapAny` was deleted
+in Stage F.1 (commit `21b05aa`). Stage F.2 (delete `Local.ty`) is
+**DEFERRED** as multi-session work — see "Dual-Field Type System"
+entry below and `memory/project_f2_partial_progress_2026-05-27.md`.
+`mir_ty` Option removal independently blocked (see
+`memory/feedback_mir_ty_option_removal_blocked.md`). The 2026-05-27
+partial-progress landed `is_var_local` (replaces one of 5 None-sentinel
+readers — `operand_is_guaranteed_tagged`) plus MirType query helpers
+(`contains_var`, `list_elem`, `dict_kv`, `tuple_elems`, `tuple_var_elem`,
+`set_elem`, `class_id`, `resolved_contains_var`).
 
 Active plan: `.claude/plans/strong-typed-mir-v2-coordinated.md`.
 Translation helpers:
@@ -96,22 +102,39 @@ guards are rewritten against `mir_ty` directly.
 
 ---
 
-## Dual-Field Type System — Final Design (2026-05-18)
+## Dual-Field Type System — Current State (F.2 DEFERRED 2026-05-27)
 
-`Local` holds two parallel type fields:
+`Local` holds three type-related fields:
 
 ```rust
 pub ty: pyaot_types::Type,            // logical/structural (HIR contract)
+pub is_var_local: bool,               // program-variable vs compiler-temp discriminator (added 2026-05-27)
 pub mir_ty: Option<pyaot_mir::MirType>, // physical representation (MIR contract)
 ```
 
-**These are the designed final state, not an intermediate migration
-artifact.** The fields serve different purposes:
+**Stage F.2 (delete `Local.ty`) is DEFERRED to multi-session work.**
+The earlier "final state" claim was downgraded after the 2026-05-27
+attempt revealed 4+ additional optimizer-side `mir_ty: None` sentinel
+readers beyond the single one (`operand_is_guaranteed_tagged`) that
+`is_var_local` migrated. See
+`memory/project_f2_partial_progress_2026-05-27.md` for the blocker
+inventory.
+
+The fields serve different purposes:
 
 - `ty` — carries the HIR-level type contract (Int, Float, Bool, Any,
   List[T], Class, ...). Used by type inference, WPA narrowing, name
   resolution, and all optimizer passes that reason about logical type
-  structure. Deleted in Stage F.2 (blocked on C.2).
+  structure. Slated for deletion in Stage F.2 (currently deferred).
+
+- `is_var_local` — `true` for Locals that back HIR-level program
+  variables (allocated by `Lowering::get_or_create_local` or as
+  function parameters). `false` for compiler-synthesized temporaries
+  (`alloc_and_add_local` family, SSA construction, monomorphize/
+  abi_repair/inline temps). Replaces one of the `mir_ty: None`
+  sentinels (the temp-vs-var distinction in
+  `operand_is_guaranteed_tagged`). Remaining `mir_ty: None` sentinels
+  are still live and load-bearing.
 
 - `mir_ty` — carries the physical representation decision (Raw(I64),
   Tagged, Heap(List), ...). Set explicitly by lowering at construction

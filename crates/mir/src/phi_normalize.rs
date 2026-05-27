@@ -135,6 +135,7 @@ pub fn normalize_phi_sources(func: &mut Function) -> usize {
                     name: None,
                     ty: Type::Any,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: Some(MirType::Tagged),
                 },
             );
@@ -320,6 +321,7 @@ mod tests {
             name: None,
             ty,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty,
         }
     }

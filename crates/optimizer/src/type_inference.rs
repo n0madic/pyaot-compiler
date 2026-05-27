@@ -1964,6 +1964,7 @@ mod tests {
             name: None,
             ty,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         }
     }
@@ -2540,6 +2541,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let mut f = Function::new(
@@ -2652,6 +2654,7 @@ mod tests {
                     name: None,
                     ty: Type::Int,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 },
             );
@@ -2719,6 +2722,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let self_ret = LocalId::from(1u32);
@@ -3167,6 +3171,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let mut leaf = Function::new(
@@ -3187,6 +3192,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let mid_ret = LocalId::from(1u32);

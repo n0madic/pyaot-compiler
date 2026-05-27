@@ -18,6 +18,7 @@ fn create_add_function(func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let param_b = Local {
@@ -25,6 +26,7 @@ fn create_add_function(func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -32,6 +34,7 @@ fn create_add_function(func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -68,6 +71,7 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let y = Local {
@@ -75,6 +79,7 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -82,6 +87,7 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -188,6 +194,7 @@ fn test_recursive_detection() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -205,6 +212,7 @@ fn test_recursive_detection() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     func.locals.insert(result.id, result.clone());
@@ -280,6 +288,7 @@ fn test_no_inline_recursive() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -287,6 +296,7 @@ fn test_no_inline_recursive() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -316,6 +326,7 @@ fn test_no_inline_recursive() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let res = Local {
@@ -323,6 +334,7 @@ fn test_no_inline_recursive() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -384,6 +396,7 @@ fn test_generator_not_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -391,6 +404,7 @@ fn test_generator_not_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -419,6 +433,7 @@ fn test_generator_not_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let res = Local {
@@ -426,6 +441,7 @@ fn test_generator_not_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -499,6 +515,7 @@ fn test_multi_block_callee_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -506,6 +523,7 @@ fn test_multi_block_callee_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -561,6 +579,7 @@ fn test_multi_block_callee_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let res = Local {
@@ -568,6 +587,7 @@ fn test_multi_block_callee_inlined() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -634,6 +654,7 @@ fn test_multiple_call_sites_in_same_function() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let y = Local {
@@ -641,6 +662,7 @@ fn test_multiple_call_sites_in_same_function() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let r1 = Local {
@@ -648,6 +670,7 @@ fn test_multiple_call_sites_in_same_function() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let r2 = Local {
@@ -655,6 +678,7 @@ fn test_multiple_call_sites_in_same_function() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -737,6 +761,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let a_result = Local {
@@ -744,6 +769,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_a = Function::new(
@@ -772,6 +798,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let b_result = Local {
@@ -779,6 +806,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_b = Function::new(
@@ -806,6 +834,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let c_result = Local {
@@ -813,6 +842,7 @@ fn test_transitive_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int, None);
@@ -878,6 +908,7 @@ fn test_consider_decision_medium_function() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -898,6 +929,7 @@ fn test_consider_decision_medium_function() {
             name: None,
             ty: Type::Int,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         func.locals.insert(local.id, local.clone());
@@ -938,6 +970,7 @@ fn test_gc_roots_excluded_from_always_inline() {
         name: None,
         ty: Type::Str,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let result = Local {
@@ -945,6 +978,7 @@ fn test_gc_roots_excluded_from_always_inline() {
         name: None,
         ty: Type::Str,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
 
@@ -997,6 +1031,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let a_result = Local {
@@ -1004,6 +1039,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_a = Function::new(
@@ -1030,6 +1066,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let b_result = Local {
@@ -1037,6 +1074,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_b = Function::new(
@@ -1064,6 +1102,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let c_result = Local {
@@ -1071,6 +1110,7 @@ fn test_max_iterations_limits_inlining() {
         name: None,
         ty: Type::Int,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int, None);

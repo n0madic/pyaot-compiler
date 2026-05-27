@@ -703,6 +703,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -817,6 +818,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -827,6 +829,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -881,6 +884,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -891,6 +895,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -944,6 +949,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -996,6 +1002,7 @@ mod tests {
                     name: None,
                     ty: Type::Int,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 },
             );

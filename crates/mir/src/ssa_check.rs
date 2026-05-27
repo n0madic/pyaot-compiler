@@ -336,6 +336,7 @@ mod tests {
             name: None,
             ty,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         }
     }

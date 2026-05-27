@@ -879,6 +879,7 @@ mod tests {
             name: None,
             ty: union_ty.clone(),
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);
@@ -939,6 +940,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);
@@ -995,6 +997,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);

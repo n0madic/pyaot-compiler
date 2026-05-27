@@ -289,6 +289,20 @@ pub struct Local {
     /// Body-local Locals (allocated by `add_local`) always default to
     /// `false`; only params ever set this flag to `true`.
     pub abi_immutable: bool,
+    /// Stage F.2 pre-flight: true for Locals that back a HIR-level
+    /// program variable (allocated via `Lowering::get_or_create_local`
+    /// or equivalent). False for compiler-synthesized temporaries
+    /// (allocated via `Lowering::alloc_and_add_local` or downstream
+    /// pass-temps in `abi_repair`, monomorphize, SSA construction etc.).
+    ///
+    /// Replaces the legacy `mir_ty: None` sentinel that previously
+    /// distinguished these two classes. Used by
+    /// `Lowering::operand_is_guaranteed_tagged` (and the BinOp/Compare
+    /// dispatchers that consult it) to decide whether an `Any`-typed
+    /// operand can safely route through `rt_obj_*` (compiler temps,
+    /// always tagged) or must use the raw BinOp path (program variables
+    /// that may carry raw primitive bits from legacy trampolines).
+    pub is_var_local: bool,
     /// Strong-Typed MIR Rewrite (Phase 2): authoritative physical
     /// representation type. When `Some`, this is the canonical type and
     /// the verifier checks against it. When `None`, the verifier falls
@@ -337,6 +351,13 @@ impl Local {
     /// field has been removed; the MirType is now the only signal.
     pub fn computed_is_gc_root(&self) -> bool {
         self.resolved_mir_type().needs_gc_root()
+    }
+
+    /// Stage F.2 helper — true iff `resolved_mir_type()` contains any
+    /// `Var(_)` leaf. Mirrors `Type::contains_var` for callers migrating
+    /// off `local.ty.contains_var()`.
+    pub fn resolved_contains_var(&self) -> bool {
+        self.resolved_mir_type().contains_var()
     }
 }
 

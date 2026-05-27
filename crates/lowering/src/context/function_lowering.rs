@@ -473,6 +473,7 @@ impl<'a> Lowering<'a> {
                 // unbox — narrowing back to a primitive would invalidate
                 // the prologue's tagged-bit interpretation.
                 abi_immutable: needs_prologue_unbox,
+                is_var_local: true,
                 // GC-rooting derived from mir_ty via computed_is_gc_root():
                 // cells (`Type::Cell(_)` → `Heap(Cell)`) and heap-typed
                 // params track; primitive (`Raw(K)`) and fn-ptr (Tagged

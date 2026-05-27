@@ -44,6 +44,7 @@ pub fn specialize_function(
                 abi_immutable: p.abi_immutable,
                 // Phase 3e: derive mir_ty from substituted type at register
                 // level so monomorphized params have precise MirType.
+                is_var_local: false,
                 mir_ty: Some(pyaot_mir::type_to_mir_type_register(&new_ty)),
             }
         })
@@ -64,6 +65,7 @@ pub fn specialize_function(
                 name: local.name,
                 ty: new_ty.clone(),
                 abi_immutable: local.abi_immutable,
+                is_var_local: false,
                 mir_ty: Some(new_mir_ty),
             },
         );
@@ -154,6 +156,7 @@ pub fn specialize_wrapper(
                     // FuncPtr MirType is computed by Phase 3e's verifier
                     // separately. Setting it explicitly here broke
                     // decorator_factory_optimized.
+                    is_var_local: false,
                     mir_ty: None,
                 }
             } else {
@@ -162,6 +165,7 @@ pub fn specialize_wrapper(
                     name: p.name,
                     ty: p.ty.clone(),
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 }
             }
@@ -195,6 +199,7 @@ pub fn specialize_wrapper(
                 abi_immutable: local.abi_immutable,
                 // Wrapper-specialization: keep mir_ty None to preserve
                 // decorator_factory_optimized behavior.
+                is_var_local: false,
                 mir_ty: None,
             },
         );

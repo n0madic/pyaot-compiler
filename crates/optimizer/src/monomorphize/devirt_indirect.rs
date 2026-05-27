@@ -394,6 +394,7 @@ fn rewrite_with_unpack(
                 // Phase 3e: derive mir_ty from `ty` at register level so
                 // newly-allocated temps have a well-defined MirType
                 // signature for downstream verifier / optimiser passes.
+                is_var_local: false,
                 mir_ty: Some(pyaot_mir::type_to_mir_type_register(&ty)),
             },
         );
@@ -544,6 +545,7 @@ mod tests {
                     ret: Box::new(Type::Int),
                 },
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
             Local {
@@ -551,6 +553,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         ];
@@ -559,6 +562,7 @@ mod tests {
             name: None,
             ty: Type::Int,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let args_tuple = Local {
@@ -566,6 +570,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
         let result = Local {
@@ -573,6 +578,7 @@ mod tests {
             name: None,
             ty: Type::Any,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: None,
         };
 
@@ -633,6 +639,7 @@ mod tests {
                     ret: Box::new(Type::Int),
                 },
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
             Local {
@@ -640,6 +647,7 @@ mod tests {
                 name: None,
                 ty: Type::tuple_var_of(Type::Any),
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         ];
@@ -657,6 +665,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -667,6 +676,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );

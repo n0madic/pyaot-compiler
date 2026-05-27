@@ -22,6 +22,7 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     }
 }
@@ -37,6 +38,7 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
         name: None,
         ty: self_type,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -90,6 +92,7 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
         name: None,
         ty: obj_type,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(11, Type::Int);
@@ -182,6 +185,7 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
         name: None,
         ty: class_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -263,6 +267,7 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
         name: None,
         ty: class_type.clone(),
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
@@ -347,6 +352,7 @@ fn test_skip_call_with_multiple_args() {
         name: None,
         ty: class_type,
         abi_immutable: false,
+        is_var_local: false,
         mir_ty: None,
     };
     let dest_local = make_local(11, Type::Int);

@@ -616,6 +616,154 @@ impl MirType {
     pub fn closure(shape: ClosureShape) -> Self {
         Self::Closure(Box::new(shape))
     }
+
+    // ===== Stage F.2 query helpers — mirror `pyaot_types::Type` methods
+    // that have no MirType equivalent, so call sites can migrate from
+    // `local.ty.X()` to `local.resolved_mir_type().X()`.
+
+    /// True iff any subterm is `Var(_)`. Mirrors `Type::contains_var`.
+    pub fn contains_var(&self) -> bool {
+        match self {
+            MirType::Var(_) => true,
+            MirType::Raw(_) | MirType::Tagged | MirType::Never => false,
+            MirType::Heap(shape) => shape.contains_var(),
+            MirType::FuncPtr(sig) => {
+                sig.params.iter().any(|p| p.contains_var()) || sig.return_type.contains_var()
+            }
+            MirType::Closure(shape) => {
+                shape.signature.params.iter().any(|p| p.contains_var())
+                    || shape.signature.return_type.contains_var()
+                    || shape.captures.iter().any(|c| c.contains_var())
+            }
+        }
+    }
+
+    /// Append every `Var(name)` leaf into `out` (deduplication left to caller).
+    pub fn collect_var_names(&self, out: &mut Vec<InternedString>) {
+        match self {
+            MirType::Var(name) => out.push(*name),
+            MirType::Raw(_) | MirType::Tagged | MirType::Never => {}
+            MirType::Heap(shape) => shape.collect_var_names(out),
+            MirType::FuncPtr(sig) => {
+                for p in &sig.params {
+                    p.collect_var_names(out);
+                }
+                sig.return_type.collect_var_names(out);
+            }
+            MirType::Closure(shape) => {
+                for p in &shape.signature.params {
+                    p.collect_var_names(out);
+                }
+                shape.signature.return_type.collect_var_names(out);
+                for c in &shape.captures {
+                    c.collect_var_names(out);
+                }
+            }
+        }
+    }
+
+    /// Element type of `Heap(List(_))`. None otherwise.
+    pub fn list_elem(&self) -> Option<&MirType> {
+        match self {
+            MirType::Heap(HeapShape::List(elem)) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// `(key, value)` of `Heap(Dict { … })`. None otherwise.
+    pub fn dict_kv(&self) -> Option<(&MirType, &MirType)> {
+        match self {
+            MirType::Heap(HeapShape::Dict { key, value }) => Some((key, value)),
+            _ => None,
+        }
+    }
+
+    /// Element types of `Heap(TupleFixed(_))`. None for `TupleVar` or non-tuple.
+    pub fn tuple_elems(&self) -> Option<&[MirType]> {
+        match self {
+            MirType::Heap(HeapShape::TupleFixed(elems)) => Some(elems),
+            _ => None,
+        }
+    }
+
+    /// Element type of `Heap(TupleVar(_))`. None otherwise.
+    pub fn tuple_var_elem(&self) -> Option<&MirType> {
+        match self {
+            MirType::Heap(HeapShape::TupleVar(elem)) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// Element type of `Heap(Set(_))`. None otherwise.
+    pub fn set_elem(&self) -> Option<&MirType> {
+        match self {
+            MirType::Heap(HeapShape::Set(elem)) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// `ClassId` of `Heap(Class { id, … })`. None for non-class shapes.
+    pub fn class_id(&self) -> Option<ClassId> {
+        match self {
+            MirType::Heap(HeapShape::Class { id, .. }) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
+impl HeapShape {
+    fn contains_var(&self) -> bool {
+        match self {
+            HeapShape::Str
+            | HeapShape::Bytes
+            | HeapShape::Generator
+            | HeapShape::FloatObj
+            | HeapShape::NoneObj
+            | HeapShape::RuntimeObj(_)
+            | HeapShape::Exception(_) => false,
+            HeapShape::List(elem)
+            | HeapShape::Set(elem)
+            | HeapShape::Iterator(elem)
+            | HeapShape::Cell(elem)
+            | HeapShape::TupleVar(elem) => elem.contains_var(),
+            HeapShape::TupleFixed(elems) => elems.iter().any(|e| e.contains_var()),
+            HeapShape::Dict { key, value } | HeapShape::DefaultDict { key, value } => {
+                key.contains_var() || value.contains_var()
+            }
+            HeapShape::Class { type_args, .. } => type_args.iter().any(|t| t.contains_var()),
+        }
+    }
+
+    fn collect_var_names(&self, out: &mut Vec<InternedString>) {
+        match self {
+            HeapShape::Str
+            | HeapShape::Bytes
+            | HeapShape::Generator
+            | HeapShape::FloatObj
+            | HeapShape::NoneObj
+            | HeapShape::RuntimeObj(_)
+            | HeapShape::Exception(_) => {}
+            HeapShape::List(elem)
+            | HeapShape::Set(elem)
+            | HeapShape::Iterator(elem)
+            | HeapShape::Cell(elem)
+            | HeapShape::TupleVar(elem) => elem.collect_var_names(out),
+            HeapShape::TupleFixed(elems) => {
+                for e in elems {
+                    e.collect_var_names(out);
+                }
+            }
+            HeapShape::Dict { key, value } | HeapShape::DefaultDict { key, value } => {
+                key.collect_var_names(out);
+                value.collect_var_names(out);
+            }
+            HeapShape::Class { type_args, .. } => {
+                for t in type_args {
+                    t.collect_var_names(out);
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================

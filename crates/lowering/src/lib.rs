@@ -170,6 +170,7 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                                     // Phase4-flipped callees return tagged Value bits.
                                     ty: Type::Any,
                                     abi_immutable: false,
+                                    is_var_local: false,
                                     mir_ty: Some(mir::MirType::Tagged),
                                 },
                             );
@@ -243,6 +244,7 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                                         // Phase4-flipped callees return tagged Value bits.
                                         ty: Type::Any,
                                         abi_immutable: false,
+                                        is_var_local: false,
                                         mir_ty: Some(mir::MirType::Tagged),
                                     },
                                 );
@@ -670,15 +672,18 @@ impl<'a> Lowering<'a> {
     }
 
     /// Returns true when an `Any`-typed operand is guaranteed to carry a
-    /// tagged Value at runtime — i.e., it was allocated via
-    /// `alloc_and_add_local` (which populates `mir_ty`) rather than via
-    /// `get_or_create_local` (which leaves `mir_ty: None`).
+    /// tagged Value at runtime — i.e., it was allocated as a compiler
+    /// temporary (via `alloc_and_add_local` family) rather than as a HIR
+    /// program-variable local (via `get_or_create_local` or as a function
+    /// parameter).
     ///
-    /// After Stage F.1 deletes `Type::HeapAny`, this predicate replaces the
-    /// old `Type::HeapAny` check in the comparison and binary-op dispatchers:
-    /// variable locals (prescan-created, `mir_ty: None`) may still carry raw
-    /// primitive bits from legacy trampolines and must fall through to raw
-    /// `BinOp` rather than `rt_obj_*`.
+    /// Stage F.2 pre-flight: the predicate previously relied on
+    /// `mir_ty: None` as a sentinel for program-variable locals. After
+    /// backfill (A.1), all locals carry `mir_ty: Some(...)`, so the
+    /// temp-vs-var distinction is encoded by the dedicated `is_var_local`
+    /// flag. Variable locals (program-variable slots, function params)
+    /// may still carry raw primitive bits from legacy trampolines and
+    /// must fall through to raw `BinOp` rather than `rt_obj_*`.
     pub(crate) fn operand_is_guaranteed_tagged(
         &self,
         operand: &mir::Operand,
@@ -689,12 +694,9 @@ impl<'a> Lowering<'a> {
             return false;
         }
         match operand {
-            mir::Operand::Local(id) => {
-                matches!(
-                    mir_func.locals.get(id).and_then(|l| l.mir_ty.as_ref()),
-                    Some(mir::MirType::Tagged)
-                )
-            }
+            mir::Operand::Local(id) => mir_func.locals.get(id).is_some_and(|l| {
+                !l.is_var_local && matches!(l.resolved_mir_type(), mir::MirType::Tagged)
+            }),
             mir::Operand::Constant(_) => false,
         }
     }
@@ -744,6 +746,7 @@ impl<'a> Lowering<'a> {
                 name: None,
                 ty: ty.clone(),
                 abi_immutable: false,
+                is_var_local: true,
                 mir_ty: None,
             });
             local_id

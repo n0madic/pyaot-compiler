@@ -174,6 +174,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Bool,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 });
                 let zero = mir::Operand::Constant(mir::Constant::Int(0));
@@ -192,6 +193,7 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Bool,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 });
                 let zero = mir::Operand::Constant(mir::Constant::Float(0.0));

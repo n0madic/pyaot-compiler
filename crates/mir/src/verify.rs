@@ -1432,6 +1432,7 @@ mod tests {
                 name: None,
                 ty: Type::Int, // Raw(I64) — acceptable code-pointer slot
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1478,6 +1479,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1530,6 +1532,7 @@ mod tests {
                 name: None,
                 ty: Type::Any, // Tagged
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1540,6 +1543,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1582,6 +1586,7 @@ mod tests {
                 name: None,
                 ty: Type::Int, // wrong: alloc is a Str pointer
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1624,6 +1629,7 @@ mod tests {
                 name: None,
                 ty: Type::Any, // → Tagged at register level
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1671,6 +1677,7 @@ mod tests {
                 name: None,
                 ty: Type::Str, // broken: dest is Str but BinOp produces Raw
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1707,6 +1714,7 @@ mod tests {
                 name: None,
                 ty,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             })
             .collect();
@@ -1733,6 +1741,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1777,6 +1786,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1832,6 +1842,7 @@ mod tests {
                     name: None,
                     ty: Type::Int,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: None,
                 },
             );
@@ -1887,6 +1898,7 @@ mod tests {
                 name: None,
                 ty: Type::Str,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1920,6 +1932,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -1958,6 +1971,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: None,
             },
         );
@@ -2009,6 +2023,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Tagged),
             },
         );
@@ -2059,6 +2074,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I64)),
             },
         );
@@ -2107,6 +2123,7 @@ mod tests {
                     name: None,
                     ty: Type::Any,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: Some(mt.clone()),
                 },
             );
@@ -2167,6 +2184,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I64)),
             },
         );
@@ -2215,6 +2233,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I64)),
             },
         );
@@ -2270,6 +2289,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Tagged),
             },
         );
@@ -2280,6 +2300,7 @@ mod tests {
                 name: None,
                 ty: Type::Float,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::F64)),
             },
         );
@@ -2329,6 +2350,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::func_ptr(sig)),
             },
         );
@@ -2339,6 +2361,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I64)),
             },
         );
@@ -2383,6 +2406,7 @@ mod tests {
                 name: None,
                 ty: Type::Str,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Heap(HeapShape::Str)),
             },
         );
@@ -2393,6 +2417,7 @@ mod tests {
                 name: None,
                 ty: Type::Float,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::F64)),
             },
         );
@@ -2437,6 +2462,7 @@ mod tests {
                 name: None,
                 ty: Type::Str,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Heap(HeapShape::Str)),
             },
         );
@@ -2447,6 +2473,7 @@ mod tests {
                 name: None,
                 ty: Type::None,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I8)),
             },
         );
@@ -2493,6 +2520,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Tagged),
             },
         );
@@ -2503,6 +2531,7 @@ mod tests {
                 name: None,
                 ty: Type::Bool,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I8)),
             },
         );
@@ -2570,6 +2599,7 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Heap(HeapShape::Class {
                     id: class_id,
                     type_args: vec![],
@@ -2583,6 +2613,7 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 abi_immutable: false,
+                is_var_local: false,
                 mir_ty: Some(MirType::Raw(RawKind::I64)),
             },
         );
@@ -2646,6 +2677,7 @@ mod tests {
                     name: None,
                     ty: Type::Any,
                     abi_immutable: false,
+                    is_var_local: false,
                     mir_ty: Some(mt.clone()),
                 },
             );

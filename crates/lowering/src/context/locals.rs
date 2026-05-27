@@ -51,6 +51,7 @@ impl<'a> Lowering<'a> {
             name: None,
             ty,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty,
         });
         local_id
@@ -72,6 +73,7 @@ impl<'a> Lowering<'a> {
             name: None,
             ty,
             abi_immutable: false,
+            is_var_local: false,
             mir_ty: Some(mir_ty),
         });
         local_id
