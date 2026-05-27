@@ -1335,8 +1335,8 @@ fn logical_operand_type(
             // Propagate the boxed primitive's logical type so downstream
             // consumers (`logical_operand_type`, `abi_repair`'s
             // boxed_value_hint, the producer-aware narrowing pass) can
-            // classify the operand. BoxValue Int/Bool and rt_box_float/
-            // rt_box_none all yield tagged Value slots; the logical type
+            // classify the operand. BoxValue{Int|Bool|Float}, rt_box_float,
+            // and rt_box_none all yield tagged Value slots; the logical type
             // returned here is the inner primitive class. The slot's
             // physical representation (tagged Value bits — for Int/Bool
             // packed in the i64, for Float/None a heap pointer) is
@@ -1344,23 +1344,7 @@ fn logical_operand_type(
             // `gc_roots_result`, so propagating Float/None here does NOT
             // mislead consumers that need raw f64 / i8 — they consult
             // mir_ty for the physical shape.
-            InstructionKind::BoxValue {
-                src_type: Type::Int,
-                ..
-            } => Type::Int,
-            InstructionKind::BoxValue {
-                src_type: Type::Bool,
-                ..
-            } => Type::Bool,
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => Type::Float,
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_NONE) => Type::None,
-            _ => site_ty,
+            def_kind => def_kind.boxed_primitive_type().unwrap_or(site_ty),
         }
     }
 

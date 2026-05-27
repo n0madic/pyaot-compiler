@@ -517,6 +517,43 @@ impl InstructionKind {
             }
         }
     }
+
+    /// Returns the primitive type being boxed if this instruction is a boxing
+    /// instruction that wraps a raw primitive into a tagged `Value` slot, or
+    /// `None` otherwise.
+    ///
+    /// Covers the three distinct boxing forms:
+    /// - `BoxValue { src_type: Int | Bool | Float | None, .. }` → the `src_type`
+    /// - `RuntimeCall(RT_BOX_FLOAT, ..)` → `Type::Float`
+    /// - `RuntimeCall(RT_BOX_NONE, ..)` → `Type::None`
+    ///
+    /// This is the inverse of `abi_repair::box_primitive_inst`: given the
+    /// instruction that boxed a value, recovers the logical type of the
+    /// unboxed primitive. Callers that only handle raw-unboxable primitives
+    /// (Int / Bool / Float — not None) should filter with
+    /// `filter(|t| !matches!(t, Type::None))`.
+    pub fn boxed_primitive_type(&self) -> Option<Type> {
+        match self {
+            InstructionKind::BoxValue { src_type, .. }
+                if matches!(src_type, Type::Int | Type::Bool | Type::Float | Type::None) =>
+            {
+                Some(src_type.clone())
+            }
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if std::ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => {
+                Some(Type::Float)
+            }
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if std::ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_NONE) => {
+                Some(Type::None)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

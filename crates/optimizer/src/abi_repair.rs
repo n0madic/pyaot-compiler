@@ -223,20 +223,7 @@ fn boxed_value_hint(
             InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
                 Some(Type::Float)
             }
-            InstructionKind::BoxValue { src_type, .. } => Some(src_type.clone()),
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => {
-                Some(Type::Float)
-            }
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_BOX_NONE) => {
-                Some(Type::None)
-            }
-            _ => None,
+            kind => kind.boxed_primitive_type(),
         }
     }
 

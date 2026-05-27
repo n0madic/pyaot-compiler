@@ -63,7 +63,7 @@
 //!   reaped by `dce`.
 
 use indexmap::IndexMap;
-use pyaot_core_defs::runtime_func_def::{RT_BOX_FLOAT, RT_UNBOX_FLOAT};
+use pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT;
 use pyaot_mir::{Function, InstructionKind, Module, Operand, RuntimeFunc};
 use pyaot_types::Type;
 use pyaot_utils::{FuncId, LocalId, StringInterner};
@@ -135,11 +135,9 @@ fn collect_producers(
                 } if matches!(src_type, Type::Int | Type::Bool | Type::Float) => {
                     box_producers.insert(*dest, (src.clone(), src_type.clone()));
                 }
-                InstructionKind::RuntimeCall {
-                    dest,
-                    func: rt_func,
-                    args,
-                } if is_rt_box_float(rt_func) && args.len() == 1 => {
+                InstructionKind::RuntimeCall { dest, args, .. }
+                    if inst.kind.boxed_primitive_type() == Some(Type::Float) && args.len() == 1 =>
+                {
                     box_producers.insert(*dest, (args[0].clone(), Type::Float));
                 }
                 InstructionKind::UnboxValue {
@@ -259,11 +257,9 @@ fn rewrite_consumers(
                         )
                     }),
                 // Reverse: rt_box_float(unbox_local) → Copy(unbox.src)
-                InstructionKind::RuntimeCall {
-                    dest,
-                    func: rt_func,
-                    args,
-                } if is_rt_box_float(rt_func) && args.len() == 1 => {
+                InstructionKind::RuntimeCall { dest, args, .. }
+                    if inst.kind.boxed_primitive_type() == Some(Type::Float) && args.len() == 1 =>
+                {
                     if let Operand::Local(src_local) = &args[0] {
                         unbox_producers
                             .get(src_local)
@@ -361,10 +357,6 @@ fn propagate_copy_types(
             }
         }
     }
-}
-
-fn is_rt_box_float(func: &RuntimeFunc) -> bool {
-    matches!(func, RuntimeFunc::Call(def) if std::ptr::eq(*def, &RT_BOX_FLOAT))
 }
 
 fn is_rt_unbox_float(func: &RuntimeFunc) -> bool {
