@@ -59,7 +59,7 @@ impl<'a> Lowering<'a> {
 
         // Set stderr if needed
         if use_stderr {
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDERR),
                 vec![],
                 mir_func,
@@ -80,7 +80,7 @@ impl<'a> Lowering<'a> {
                     Type::Str,
                     mir_func,
                 );
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                     vec![mir::Operand::Local(str_local)],
                     mir_func,
@@ -128,14 +128,14 @@ impl<'a> Lowering<'a> {
                         args: vec![arg_operand],
                     });
                 }
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                     vec![mir::Operand::Local(str_local)],
                     mir_func,
                 );
             } else if matches!(&arg_type, Type::None) {
                 // PrintValue(None) stays as special variant (no argument)
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::PrintValue(PrintKind::None),
                     vec![],
                     mir_func,
@@ -143,7 +143,7 @@ impl<'a> Lowering<'a> {
             } else {
                 // Select descriptor based on type
                 let print_def = crate::type_dispatch::select_print_func(&arg_type);
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(print_def),
                     vec![arg_operand],
                     mir_func,
@@ -154,14 +154,14 @@ impl<'a> Lowering<'a> {
             if i < args.len() - 1 {
                 if let Some(ref sep) = sep_operand {
                     // Custom separator - use StrObj for heap strings
-                    self.emit_runtime_call_void(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                         vec![sep.clone()],
                         mir_func,
                     );
                 } else {
                     // Default separator (space)
-                    self.emit_runtime_call_void(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SEP),
                         vec![],
                         mir_func,
@@ -173,14 +173,14 @@ impl<'a> Lowering<'a> {
         // Print end string
         if let Some(ref end) = end_operand {
             // Custom end - use StrObj for heap strings
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                 vec![end.clone()],
                 mir_func,
             );
         } else {
             // Default end (newline)
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_NEWLINE),
                 vec![],
                 mir_func,
@@ -189,7 +189,7 @@ impl<'a> Lowering<'a> {
 
         // Restore stdout if stderr was used
         if use_stderr {
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDOUT),
                 vec![],
                 mir_func,
@@ -198,7 +198,7 @@ impl<'a> Lowering<'a> {
 
         // Flush if requested
         if need_flush {
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_FLUSH),
                 vec![],
                 mir_func,

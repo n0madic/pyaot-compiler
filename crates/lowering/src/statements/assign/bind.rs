@@ -394,7 +394,7 @@ impl<'a> Lowering<'a> {
         if self.is_global(&var_id) {
             let runtime_func = self.get_global_set_func(&local_ty);
             let effective_var_id = self.get_effective_var_id(var_id);
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 runtime_func,
                 vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
@@ -655,7 +655,7 @@ impl<'a> Lowering<'a> {
             _ if obj_type.is_dict_like() && !matches!(obj_type, Type::DefaultDict(_, _)) => {
                 let boxed_key = self.emit_value_slot(index_operand, index_type, mir_func);
                 let boxed_value = self.emit_value_slot(value_operand, value_type, mir_func);
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     vec![obj_operand, boxed_key, boxed_value],
                     mir_func,
@@ -669,7 +669,7 @@ impl<'a> Lowering<'a> {
                     value_type
                 };
                 let boxed_value = self.emit_value_slot(value_operand, box_type, mir_func);
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     vec![obj_operand, boxed_key, boxed_value],
                     mir_func,
@@ -684,7 +684,7 @@ impl<'a> Lowering<'a> {
                     elem_ty
                 };
                 let store_operand = self.emit_value_slot(value_operand, box_type, mir_func);
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     vec![obj_operand, index_operand, store_operand],
                     mir_func,

@@ -82,7 +82,7 @@ impl<'a> Lowering<'a> {
 
             // Push each iterator to the list
             for (i, iter_op) in iter_locals.iter().enumerate() {
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     vec![
                         mir::Operand::Local(iter_list_local),

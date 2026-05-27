@@ -1432,7 +1432,7 @@ impl<'a> Lowering<'a> {
                 255
             };
 
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS),
                 vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
@@ -1453,7 +1453,7 @@ impl<'a> Lowering<'a> {
                 .get_class_info(class_id)
                 .map(|ci| ci.total_field_count as i64)
                 .unwrap_or(0);
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELD_COUNT,
                 ),
@@ -1504,7 +1504,7 @@ impl<'a> Lowering<'a> {
                     dest: func_addr_local,
                     func: func_id,
                 });
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     reg_func,
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
@@ -1530,7 +1530,7 @@ impl<'a> Lowering<'a> {
                 })
                 .unwrap_or_default();
             for (name_hash, slot) in method_slots {
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_REGISTER_METHOD_NAME,
                     ),
@@ -1556,7 +1556,7 @@ impl<'a> Lowering<'a> {
                 })
                 .unwrap_or_default();
             for name_hash in dunder_hashes {
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_REGISTER_METHOD_NAME,
                     ),
@@ -1590,7 +1590,7 @@ impl<'a> Lowering<'a> {
                     dest: func_addr_local,
                     func: func_id,
                 });
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_REGISTER_DUNDER_FUNC,
                     ),
@@ -1606,7 +1606,7 @@ impl<'a> Lowering<'a> {
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::ExcRegisterClassName,
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
@@ -1652,7 +1652,7 @@ impl<'a> Lowering<'a> {
                 let set_func = self.get_class_attr_set_func(&class_attr.ty);
 
                 // Emit runtime call: rt_class_attr_set_*(class_id, attr_idx, value)
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     set_func,
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),

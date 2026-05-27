@@ -211,7 +211,7 @@ impl<'a> Lowering<'a> {
 
         let _ = elem_type;
 
-        self.emit_runtime_call_void(
+        self.emit_void_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
             vec![
                 mir::Operand::Local(result_local),

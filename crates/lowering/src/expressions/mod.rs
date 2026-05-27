@@ -541,7 +541,7 @@ impl<'a> Lowering<'a> {
                     let op_type = self.operand_type(&capture_op, mir_func);
                     self.emit_value_slot(capture_op, &op_type, mir_func)
                 };
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                     vec![
                         mir::Operand::Local(captures_tuple),
@@ -562,7 +562,7 @@ impl<'a> Lowering<'a> {
             });
 
             // Set func_ptr at index 0 — tagged via Value::from_int (§F.5).
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 vec![
                     mir::Operand::Local(result_local),
@@ -573,7 +573,7 @@ impl<'a> Lowering<'a> {
             );
 
             // Set captures_tuple at index 1
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 vec![
                     mir::Operand::Local(result_local),

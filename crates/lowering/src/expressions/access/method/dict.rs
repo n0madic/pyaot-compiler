@@ -109,15 +109,14 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "clear" => {
-                // .clear() - removes all items
-                let result_local = self.emit_runtime_call(
+                // .clear() - removes all items; returns None
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CLEAR),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "copy" => {
                 // .copy() - shallow copy
@@ -166,17 +165,16 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "update" => {
-                // .update(other) - merges another dict
+                // .update(other) - merges another dict; returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
 
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "setdefault" => {
                 // .setdefault(key, default=None) - returns value if key exists, else sets default

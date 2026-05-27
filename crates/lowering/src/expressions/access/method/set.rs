@@ -19,61 +19,57 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         match method_name {
             "add" => {
-                // .add(elem) - adds element to set
+                // .add(elem) - adds element to set; returns None in Python
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 // Use actual argument type for boxing decision
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
                     vec![obj_operand, boxed_elem],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "remove" => {
-                // .remove(elem) - removes element, raises KeyError if missing
+                // .remove(elem) - removes element, raises KeyError if missing; returns None
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_REMOVE),
                     vec![obj_operand, boxed_elem],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "discard" => {
-                // .discard(elem) - removes element if present, no error if missing
+                // .discard(elem) - removes element if present, no error if missing; returns None
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_DISCARD),
                     vec![obj_operand, boxed_elem],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "clear" => {
-                // .clear() - removes all elements
-                let result_local = self.emit_runtime_call(
+                // .clear() - removes all elements; returns None
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_CLEAR),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "copy" => {
                 // .copy() - shallow copy, preserving the source set's element type
@@ -227,54 +223,50 @@ impl<'a> Lowering<'a> {
                 }
             }
             "update" => {
-                // .update(other) - adds all elements from other
+                // .update(other) - adds all elements from other; returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_UPDATE),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "intersection_update" => {
-                // .intersection_update(other) - keeps only elements also in other
+                // .intersection_update(other) - keeps only elements also in other; returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_SET_INTERSECTION_UPDATE,
                     ),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "difference_update" => {
-                // .difference_update(other) - removes elements also in other
+                // .difference_update(other) - removes elements also in other; returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_SET_DIFFERENCE_UPDATE,
                     ),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "symmetric_difference_update" => {
-                // .symmetric_difference_update(other) - keeps elements in exactly one set
+                // .symmetric_difference_update(other) - keeps elements in exactly one set; returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_SET_SYMMETRIC_DIFFERENCE_UPDATE,
                     ),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             _ => {
                 // Unknown set method

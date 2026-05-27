@@ -47,12 +47,11 @@ impl<'a> Lowering<'a> {
                         let right_expr = &hir_module.exprs[*right];
                         let right_operand = self.lower_expr(right_expr, hir_module, mir_func)?;
 
-                        let _dummy = self.emit_runtime_call(
+                        self.emit_void_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE,
                             ),
                             vec![dict_operand, right_operand],
-                            Type::None,
                             mir_func,
                         );
                         self.remove_block_narrowed_local(&target);
@@ -220,7 +219,7 @@ impl<'a> Lowering<'a> {
                             let op_type = self.operand_type(capture_op, mir_func);
                             self.emit_value_slot(capture_op.clone(), &op_type, mir_func)
                         };
-                        self.emit_runtime_call_void(
+                        self.emit_void_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
                             ),
@@ -244,7 +243,7 @@ impl<'a> Lowering<'a> {
 
                     // Store func_ptr at index 0 — tagged as `Value::from_int`
                     // so the slot is_ptr() == false (see §F.5 above).
-                    self.emit_runtime_call_void(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                         vec![
                             mir::Operand::Local(dest_local),
@@ -255,7 +254,7 @@ impl<'a> Lowering<'a> {
                     );
 
                     // Store captures_tuple at index 1
-                    self.emit_runtime_call_void(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                         vec![
                             mir::Operand::Local(dest_local),
@@ -453,7 +452,7 @@ impl<'a> Lowering<'a> {
 
             // Emit type-specific GlobalSet runtime call with offset-adjusted VarId
             let effective_var_id = self.get_effective_var_id(target);
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 runtime_func,
                 vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
@@ -471,7 +470,7 @@ impl<'a> Lowering<'a> {
             let set_func = self.get_cell_set_func(&var_type);
 
             // Emit cell set operation
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 set_func,
                 vec![mir::Operand::Local(cell_local), final_operand],
                 mir_func,

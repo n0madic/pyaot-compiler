@@ -99,7 +99,7 @@ impl<'a> Lowering<'a> {
         if self.is_global(&var_id) {
             let runtime_func = self.get_global_set_func(ty);
             let effective_var_id = self.get_effective_var_id(var_id);
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 runtime_func,
                 vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_var_id)),

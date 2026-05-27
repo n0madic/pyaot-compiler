@@ -96,7 +96,7 @@ impl<'a> Lowering<'a> {
             };
             let push_operand = self.emit_value_slot(elem_operand, &box_type, mir_func);
 
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
                 vec![mir::Operand::Local(result_local), push_operand],
                 mir_func,
@@ -157,7 +157,7 @@ impl<'a> Lowering<'a> {
             let actual_elem_type = self.seed_expr_type(*elem_id, hir_module);
             let final_operand = self.emit_value_slot(elem_operand, &actual_elem_type, mir_func);
 
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 vec![
                     mir::Operand::Local(result_local),
@@ -291,7 +291,7 @@ impl<'a> Lowering<'a> {
                 self.emit_value_slot(value_operand, &actual_value_type, mir_func)
             };
 
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                 vec![mir::Operand::Local(result_local), boxed_key, boxed_value],
                 mir_func,
@@ -379,7 +379,7 @@ impl<'a> Lowering<'a> {
                 self.emit_value_slot(elem_operand, &elem_type, mir_func)
             };
 
-            self.emit_runtime_call_void(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
                 vec![mir::Operand::Local(result_local), boxed_elem],
                 mir_func,

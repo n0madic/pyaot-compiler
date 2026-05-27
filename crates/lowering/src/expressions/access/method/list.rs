@@ -33,14 +33,14 @@ impl<'a> Lowering<'a> {
                 };
                 let push_operand = self.emit_value_slot(value_operand, &box_type, mir_func);
 
-                let result_local = self.emit_runtime_call(
+                // .append returns None in Python.
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_APPEND),
                     vec![obj_operand, push_operand],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "pop" => {
                 // .pop(index=-1) - removes and returns element at index
@@ -155,14 +155,14 @@ impl<'a> Lowering<'a> {
                     _ => value_operand,
                 };
 
-                let result_local = self.emit_runtime_call(
+                // .insert returns None in Python.
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INSERT),
                     vec![obj_operand, index_operand, boxed_value],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "remove" => {
                 // .remove(value): box search value (slots are tagged Values post-§F.7c).
@@ -175,25 +175,25 @@ impl<'a> Lowering<'a> {
                 };
                 let boxed_value = self.emit_value_slot(value_operand, &box_type, mir_func);
 
-                let result_local = self.emit_runtime_call(
+                // .remove returns None in Python; the runtime helper returns
+                // a status byte (i8) that the lowering discards.
+                self.emit_call_discard_result(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REMOVE),
                     vec![obj_operand, boxed_value],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "clear" => {
                 // .clear() - mutates list, returns None
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_CLEAR),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "index" => {
                 // .index(value): box the search value because slots are tagged Values.
@@ -244,25 +244,23 @@ impl<'a> Lowering<'a> {
             }
             "reverse" => {
                 // .reverse() - mutates list in place, returns None
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REVERSE),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "extend" => {
                 // .extend(iterable) - mutates list, returns None
                 let other_arg = crate::first_arg_or_none(arg_operands);
-                let result_local = self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_EXTEND),
                     vec![obj_operand, other_arg],
-                    Type::None,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(result_local))
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "sort" => {
                 // CPython signature: list.sort(*, key=None, reverse=False)
@@ -294,14 +292,14 @@ impl<'a> Lowering<'a> {
                 let sort_kwargs = self.extract_sort_kwargs(kwargs, hir_module, mir_func)?;
 
                 // If key function is provided, use ListSortWithKey
-                let result_local = if let Some(resolved) = self.emit_key_func_with_captures(
+                if let Some(resolved) = self.emit_key_func_with_captures(
                     sort_kwargs.key_func.as_ref(),
                     hir_module,
                     mir_func,
                 )? {
                     // After §F.7c: list slots are tagged Values; runtime no
                     // longer needs an elem_tag hint.
-                    self.emit_runtime_call(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_LIST_SORT_WITH_KEY,
                         ),
@@ -313,20 +311,19 @@ impl<'a> Lowering<'a> {
                             resolved.capture_count,
                             resolved.key_return_tag,
                         ],
-                        Type::None,
                         mir_func,
-                    )
+                    );
                 } else {
                     // No key function - use standard ListSort
-                    self.emit_runtime_call(
+                    self.emit_void_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SORT),
                         vec![obj_operand, sort_kwargs.reverse],
-                        Type::None,
                         mir_func,
-                    )
-                };
+                    );
+                }
 
-                Ok(mir::Operand::Local(result_local))
+                // list.sort returns None in Python.
+                Ok(mir::Operand::Constant(mir::Constant::None))
             }
             _ => {
                 // Unknown list method

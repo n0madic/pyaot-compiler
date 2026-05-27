@@ -29,7 +29,7 @@ impl<'a> Lowering<'a> {
             _ if obj_type.is_dict_like() => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
                 let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
-                self.emit_runtime_call_void(
+                self.emit_call_discard_result(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     vec![obj_operand, boxed_key],
                     mir_func,
@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
             }
             _ if obj_type.is_list_like() => {
                 // del list[index] → rt_list_pop(list, index) and discard result
-                self.emit_runtime_call_void(
+                self.emit_call_discard_result(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
                     vec![obj_operand, index_operand],
                     mir_func,

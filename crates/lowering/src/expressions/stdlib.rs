@@ -311,10 +311,9 @@ impl<'a> Lowering<'a> {
             // (float → BoxFloat, bool → BoxBool, None → BoxNone)
             let pushed_operand = self.emit_value_slot(arg_operand, &arg_type, mir_func);
 
-            self.emit_runtime_call(
+            self.emit_void_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
                 vec![mir::Operand::Local(list_local), pushed_operand],
-                Type::None,
                 mir_func,
             );
         }

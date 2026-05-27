@@ -918,13 +918,12 @@ impl<'a> Lowering<'a> {
                 )?;
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
-                self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GLOBAL_SET_PTR),
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(slot as i64)),
                         default_operand,
                     ],
-                    Type::None,
                     mir_func,
                 );
             }

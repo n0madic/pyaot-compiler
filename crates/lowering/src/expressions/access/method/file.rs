@@ -81,10 +81,9 @@ impl<'a> Lowering<'a> {
             }
             "close" => {
                 // .close() - close the file
-                self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_CLOSE),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 
@@ -92,10 +91,9 @@ impl<'a> Lowering<'a> {
             }
             "flush" => {
                 // .flush() - flush the file buffer
-                self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_FLUSH),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 

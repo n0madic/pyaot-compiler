@@ -292,7 +292,7 @@ impl<'a> Lowering<'a> {
             let msg = format!("missing required keyword argument '{}'", param_name_str);
             let msg_str = self.intern(&msg);
             let msg_operand = mir::Operand::Constant(mir::Constant::Str(msg_str));
-            self.emit_runtime_call_void(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
+            self.emit_void_call(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
             self.current_block_mut().terminator = mir::Terminator::Unreachable;
         }
 

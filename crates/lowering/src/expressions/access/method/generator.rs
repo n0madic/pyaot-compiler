@@ -76,10 +76,9 @@ impl<'a> Lowering<'a> {
             }
             "close" => {
                 // g.close() -> None
-                self.emit_runtime_call(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_CLOSE),
                     vec![obj_operand],
-                    Type::None,
                     mir_func,
                 );
 

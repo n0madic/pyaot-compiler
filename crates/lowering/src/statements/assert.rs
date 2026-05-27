@@ -52,16 +52,12 @@ impl<'a> Lowering<'a> {
             // Check if message is a string literal - pass it directly as constant
             if let hir::ExprKind::Str(s) = &msg_expr.kind {
                 let msg_operand = mir::Operand::Constant(mir::Constant::Str(*s));
-                self.emit_runtime_call_void(
-                    mir::RuntimeFunc::AssertFail,
-                    vec![msg_operand],
-                    mir_func,
-                );
+                self.emit_void_call(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
             } else {
                 // For non-literal strings (f-strings, variables), lower the expression
                 // and pass the string object to AssertFailObj
                 let msg_operand = self.lower_expr(msg_expr, hir_module, mir_func)?;
-                self.emit_runtime_call_void(
+                self.emit_void_call(
                     mir::RuntimeFunc::Call(&runtime_func_def::RT_ASSERT_FAIL_OBJ),
                     vec![msg_operand],
                     mir_func,
@@ -70,7 +66,7 @@ impl<'a> Lowering<'a> {
         } else {
             // No message - pass null pointer
             let msg_operand = mir::Operand::Constant(mir::Constant::Int(0));
-            self.emit_runtime_call_void(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
+            self.emit_void_call(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
         }
 
         // rt_assert_fail doesn't return, so mark as unreachable

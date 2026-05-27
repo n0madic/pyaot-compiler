@@ -116,15 +116,12 @@ impl<'a> Lowering<'a> {
     ///   let dest = self.alloc_and_add_local(result_type, mir_func);
     ///   self.emit_instruction(RuntimeCall { dest, func, args });
     ///
-    /// **Misuse note**: many existing call sites pass a void runtime helper
-    /// (e.g. `rt_list_append`, `rt_dict_set`) through this entry point with
-    /// `result_type = Type::None` and return the unwritten dest as the
-    /// expression's value. The dest is never written by codegen — DCE
-    /// later evicts it from `func.locals`. Reading the returned `Operand`
-    /// would observe Cranelift's default zero, NOT a tagged `Value::None`.
-    /// This is silently safe today only because callers discard the result
-    /// (statement-form `xs.append(x)`). Future work: migrate those sites to
-    /// [`Self::emit_runtime_call_void`] + an explicit `Const(None)` operand.
+    /// For genuinely void runtime helpers (where `runtime_call_is_void`
+    /// returns true) prefer [`Self::emit_void_call`]; for non-void helpers
+    /// whose result is intentionally discarded use
+    /// [`Self::emit_call_discard_result`]. Both alternatives avoid the
+    /// misuse pattern of treating an unwritten placeholder dest as a real
+    /// SSA value.
     pub(crate) fn emit_runtime_call(
         &mut self,
         func: mir::RuntimeFunc,
@@ -137,33 +134,55 @@ impl<'a> Lowering<'a> {
         dest
     }
 
-    /// Emit a runtime call whose result is discarded.
+    /// Emit a runtime call to a genuinely void helper — one where
+    /// `pyaot_mir::runtime_call_is_void` returns true (e.g. `rt_list_append`,
+    /// `rt_dict_set`, all `rt_global_set_*`, all `rt_print_*`, etc.).
     ///
-    /// The name is historical — this helper covers BOTH genuinely void
-    /// runtime helpers (`runtime_call_is_void(func) == true`, e.g.
-    /// `rt_list_append`, `rt_print_newline`) AND non-void helpers whose
-    /// caller doesn't need the result (e.g. `del xs[i]` lowers as
-    /// `rt_list_pop(...)` with result thrown away). The allocated dest is
-    /// always a `Type::None` placeholder.
-    ///
-    /// **Void-dest invariant** — for genuinely void helpers,
-    /// `InstructionKind::def()` reports `None` (since Phase 2 / commit
-    /// 561ddec), so DCE's `eliminate_dead_locals` may evict this local from
-    /// `func.locals`. Codegen is safe because `compile_runtime_func_def`
-    /// only reads `var_map[&dest]` when `def.returns.is_some()` (see
-    /// `codegen-cranelift/src/runtime_calls/mod.rs`). Any new pass added
-    /// downstream MUST preserve that invariant — do not look up
-    /// `var_map[&dest]` for a `RuntimeCall` whose runtime def is void.
-    ///
-    /// For the non-void / discarded-result case the local stays alive
-    /// (`.def()` returns `Some(dest)`); the discarded result is simply
-    /// never read.
-    pub(crate) fn emit_runtime_call_void(
+    /// The allocated dest is a `Type::None` placeholder that codegen never
+    /// writes through. The runtime descriptor's `returns: None` is what
+    /// drives codegen to skip the result-extraction path
+    /// (`codegen-cranelift/src/runtime_calls/mod.rs` only consults
+    /// `var_map[&dest]` when `def.returns.is_some()`); since
+    /// `InstructionKind::def()` also reports `None` for these calls, DCE is
+    /// free to evict the placeholder from `func.locals`. Any downstream
+    /// pass that reads `var_map[&dest]` for a void RuntimeCall would
+    /// violate this contract.
+    pub(crate) fn emit_void_call(
         &mut self,
         func: mir::RuntimeFunc,
         args: Vec<mir::Operand>,
         mir_func: &mut mir::Function,
     ) {
+        debug_assert!(
+            mir::runtime_call_is_void(&func),
+            "emit_void_call called with non-void function {:?}",
+            func
+        );
+        let dest = self.alloc_and_add_local(Type::None, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
+    }
+
+    /// Emit a runtime call whose result is intentionally discarded.
+    ///
+    /// Unlike [`Self::emit_void_call`], this is for non-void runtime
+    /// helpers (`runtime_call_is_void` returns false) where the caller
+    /// doesn't need the return value. Example: `del xs[i]` lowers as
+    /// `rt_list_pop(xs, i)` (returns the popped element) but the popped
+    /// element is thrown away. The allocated dest is a `Type::None`
+    /// placeholder that codegen still writes through; `InstructionKind::def()`
+    /// reports `Some(dest)` so the local stays live but is simply never read.
+    pub(crate) fn emit_call_discard_result(
+        &mut self,
+        func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        mir_func: &mut mir::Function,
+    ) {
+        debug_assert!(
+            !mir::runtime_call_is_void(&func),
+            "emit_call_discard_result called with void function {:?} \
+             (use emit_void_call instead)",
+            func
+        );
         let dest = self.alloc_and_add_local(Type::None, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
     }
