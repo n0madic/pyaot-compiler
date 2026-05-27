@@ -244,24 +244,13 @@ impl<'a> Lowering<'a> {
         var_to_func: &HashMap<VarId, Vec<FuncId>>,
     ) {
         match &expr.kind {
+            // Phase 4+ Extension E2d: map/filter/reduce callbacks are no
+            // longer marked phase4_unsafe (tagged-delivery variants exist).
+            // sorted/min/max key= still need the marker — the key callback
+            // returns raw scalars; no tagged-value variant exists yet.
             hir::ExprKind::BuiltinCall {
-                builtin,
-                args,
-                kwargs,
-                ..
+                builtin, kwargs, ..
             } => {
-                // Phase 4+ Extension E2d: map/filter/reduce callbacks are
-                // no longer marked phase4_unsafe — lowering routes those
-                // call sites to the tagged-delivery runtime variants
-                // (`rt_map_new_tagged`, `rt_filter_new_tagged`,
-                // `rt_reduce_tagged`) when `is_phase4_safe(callee)`.
-                // `rt_filter_new_tagged` was fixed in Stage E.2 issue-1 to
-                // call the predicate as `-> i64` (tagged Value) and apply
-                // `rt_is_truthy` for correct tagged-bool truthiness.
-                //
-                // sorted/min/max key= still need the marker — the key
-                // callback signature returns raw scalars that are compared
-                // directly; no tagged-value variant exists yet.
                 if matches!(
                     builtin,
                     hir::Builtin::Sorted | hir::Builtin::Min | hir::Builtin::Max
@@ -276,29 +265,16 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                for arg_id in args {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*arg_id],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-                for kw in kwargs {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[kw.value],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
+                // Fall through: for_each_subexpr_id recurses args + kwargs.
             }
+            // list.sort(key=…) — record the key callback as HOF-targeted.
+            // Args and kwargs are address-taken positions (mirrors Call below).
             hir::ExprKind::MethodCall {
-                obj,
                 method,
                 args,
                 kwargs,
+                ..
             } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*obj], hir_module, var_to_func);
-                // list.sort(key=...) — record the key callback as HOF-targeted.
                 if self.interner.resolve(*method) == "sort" {
                     for kw in kwargs {
                         if self.interner.resolve(kw.name) == "key" {
@@ -312,242 +288,61 @@ impl<'a> Lowering<'a> {
                 }
                 for arg_id in args {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*arg_id],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
                 for kw in kwargs {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[kw.value],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
+                // Fall through: for_each_subexpr_id recurses obj + args + kwargs.
             }
+            // Call.func: direct-call position, not address-taken — carve-out.
+            // Call.args / kwargs / kwargs_unpack: FuncRef here is address-taken
+            // (decorator factory, callback, etc.).
             hir::ExprKind::Call {
-                func,
                 args,
                 kwargs,
                 kwargs_unpack,
+                ..
             } => {
-                // Call.func position: a `FuncRef` here is a direct call,
-                // not an address-taken reference, so don't mark it. Recurse
-                // through the func subexpr in case it's a more complex
-                // expression (chained call, attribute access, etc.).
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*func], hir_module, var_to_func);
-                // Call.args / kwargs: any FuncRef here means the function
-                // is being passed as a value (decorator factory, callback,
-                // etc.). Mark such FuncRefs as phase4_unsafe — the address
-                // is taken and may flow into a runtime-erased indirect
-                // call site that abi_repair cannot coerce.
                 for arg in args {
                     let arg_id = match arg {
                         hir::CallArg::Regular(id) | hir::CallArg::Starred(id) => id,
                     };
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*arg_id],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
                 for kw in kwargs {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[kw.value],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
-                // `**kwargs` unpack expression — a FuncRef inside the
-                // unpacked dict is address-taken just like a regular kwarg.
                 if let Some(unpack_id) = kwargs_unpack {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*unpack_id], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*unpack_id],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
+                // Fall through: for_each_subexpr_id recurses func + args + kwargs +
+                // kwargs_unpack via scan_expr_for_phase4_unsafe.
             }
-            hir::ExprKind::Closure { captures, .. } => {
-                for cap_id in captures {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*cap_id],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-            }
-            hir::ExprKind::List(items)
-            | hir::ExprKind::Tuple(items)
-            | hir::ExprKind::Set(items) => {
-                for item in items {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*item],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-            }
-            hir::ExprKind::Dict(pairs) => {
-                for (k, v) in pairs {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*k],
-                        hir_module,
-                        var_to_func,
-                    );
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*v],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-            }
-            hir::ExprKind::BinOp { left, right, .. }
-            | hir::ExprKind::Compare { left, right, .. }
-            | hir::ExprKind::LogicalOp { left, right, .. } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*left], hir_module, var_to_func);
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*right],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            hir::ExprKind::UnOp { operand, .. } => {
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*operand],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            hir::ExprKind::Attribute { obj, .. } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*obj], hir_module, var_to_func);
-            }
-            hir::ExprKind::Index { obj, index } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*obj], hir_module, var_to_func);
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*index],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            hir::ExprKind::IfExpr {
-                cond,
-                then_val,
-                else_val,
-            } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*cond], hir_module, var_to_func);
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*then_val],
-                    hir_module,
-                    var_to_func,
-                );
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*else_val],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            // `super().method(...)` — args are a call-arg position; a
-            // FuncRef passed here is address-taken (mirrors MethodCall).
+            // `super().method(args)` — args are address-taken positions.
             hir::ExprKind::SuperCall { args, .. } => {
                 for arg_id in args {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*arg_id],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
+                // Fall through: for_each_subexpr_id recurses args.
             }
-            // Stdlib function call — args are a call-arg position.
+            // Stdlib call — same as SuperCall.
             hir::ExprKind::StdlibCall { args, .. } => {
                 for arg_id in args {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*arg_id],
-                        hir_module,
-                        var_to_func,
-                    );
                 }
+                // Fall through: for_each_subexpr_id recurses args.
             }
-            // f-string format spec — recurse so an inline HOF call inside
-            // `f"{sorted(xs, key=lambda ...)}"` gets scanned.
-            hir::ExprKind::FormatSpec { value, .. } => {
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*value],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            hir::ExprKind::Slice {
-                obj,
-                start,
-                end,
-                step,
-            } => {
-                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*obj], hir_module, var_to_func);
-                for sub in [start, end, step].into_iter().flatten() {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*sub],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-            }
-            hir::ExprKind::Yield(value) => {
-                if let Some(value_id) = value {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*value_id],
-                        hir_module,
-                        var_to_func,
-                    );
-                }
-            }
-            hir::ExprKind::IterHasNext(iter_id) => {
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*iter_id],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            hir::ExprKind::MatchPattern { subject, .. } => {
-                self.scan_expr_for_phase4_unsafe(
-                    &hir_module.exprs[*subject],
-                    hir_module,
-                    var_to_func,
-                );
-            }
-            // GeneratorIntrinsic is a post-desugar artifact; this scan runs
-            // pre-desugar so it never appears, and it carries no HOF
-            // callbacks. Listed explicitly to keep the match exhaustive.
-            hir::ExprKind::GeneratorIntrinsic(_) => {}
-            // Leaf expressions — no subexpressions to recurse into. The
-            // match is exhaustive (no `_`) so a new `ExprKind` variant
-            // becomes a compile error rather than a silently-missed
-            // construct that would be wrongly treated as phase4_safe.
-            hir::ExprKind::Int(_)
-            | hir::ExprKind::Float(_)
-            | hir::ExprKind::Bool(_)
-            | hir::ExprKind::Str(_)
-            | hir::ExprKind::Bytes(_)
-            | hir::ExprKind::None
-            | hir::ExprKind::NotImplemented
-            | hir::ExprKind::Var(_)
-            | hir::ExprKind::FuncRef(_)
-            | hir::ExprKind::ClassRef(_)
-            | hir::ExprKind::ClassAttrRef { .. }
-            | hir::ExprKind::TypeRef(_)
-            | hir::ExprKind::ImportedRef { .. }
-            | hir::ExprKind::ModuleAttr { .. }
-            | hir::ExprKind::BuiltinRef(_)
-            | hir::ExprKind::StdlibAttr(_)
-            | hir::ExprKind::StdlibConst(_)
-            | hir::ExprKind::ExcCurrentValue => {}
+            _ => {}
+        }
+        // Default structural recursion via exhaustive helper. Routing through
+        // `for_each_subexpr_id` means a new `ExprKind` variant is a compile
+        // error there — every scanner that uses this helper inherits the fix.
+        //
+        // Borrow-checker: collect sub-expression ids first, then recurse.
+        let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+        hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+        for id in sub_ids {
+            self.scan_expr_for_phase4_unsafe(&hir_module.exprs[id], hir_module, var_to_func);
         }
     }
 
@@ -565,154 +360,25 @@ impl<'a> Lowering<'a> {
     /// here treats FuncRef as address-taken.
     fn mark_address_taken_funcrefs(&mut self, expr: &hir::Expr, hir_module: &hir::Module) {
         match &expr.kind {
+            // Direct FuncRef — the function's address is being taken.
             hir::ExprKind::FuncRef(func_id) => {
                 self.lowering_seed_info.phase4_unsafe_funcs.insert(*func_id);
+                // Leaf — for_each_subexpr_id visits nothing.
             }
-            hir::ExprKind::Closure { func, captures } => {
+            // Closure — inner func is also address-taken; captures recurse below.
+            hir::ExprKind::Closure { func, .. } => {
                 self.lowering_seed_info.phase4_unsafe_funcs.insert(*func);
-                for cap_id in captures {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*cap_id], hir_module);
-                }
+                // Fall through: for_each_subexpr_id recurses into captures.
             }
-            hir::ExprKind::Call {
-                func,
-                args,
-                kwargs,
-                kwargs_unpack,
-            } => {
-                // Within an address-taken context, the Call's result may
-                // itself be a callable (decorator factory pattern); recurse
-                // into func, args, kwargs and the `**kwargs` unpack expr.
-                // Bare Call.func is direct here too — only address-taken via
-                // the surrounding context.
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*func], hir_module);
-                for arg in args {
-                    let arg_id = match arg {
-                        hir::CallArg::Regular(id) | hir::CallArg::Starred(id) => id,
-                    };
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                }
-                for kw in kwargs {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
-                }
-                if let Some(unpack_id) = kwargs_unpack {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*unpack_id], hir_module);
-                }
-            }
-            hir::ExprKind::MethodCall {
-                obj, args, kwargs, ..
-            } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
-                for arg_id in args {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                }
-                for kw in kwargs {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
-                }
-            }
-            hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
-                for arg_id in args {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                }
-                for kw in kwargs {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
-                }
-            }
-            hir::ExprKind::SuperCall { args, .. } => {
-                for arg_id in args {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                }
-            }
-            hir::ExprKind::StdlibCall { args, .. } => {
-                for arg_id in args {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
-                }
-            }
-            hir::ExprKind::IfExpr {
-                cond,
-                then_val,
-                else_val,
-            } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*cond], hir_module);
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*then_val], hir_module);
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*else_val], hir_module);
-            }
-            hir::ExprKind::List(items)
-            | hir::ExprKind::Tuple(items)
-            | hir::ExprKind::Set(items) => {
-                for item in items {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*item], hir_module);
-                }
-            }
-            hir::ExprKind::Dict(pairs) => {
-                for (k, v) in pairs {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*k], hir_module);
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*v], hir_module);
-                }
-            }
-            hir::ExprKind::BinOp { left, right, .. }
-            | hir::ExprKind::Compare { left, right, .. }
-            | hir::ExprKind::LogicalOp { left, right, .. } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*left], hir_module);
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*right], hir_module);
-            }
-            hir::ExprKind::UnOp { operand, .. } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*operand], hir_module);
-            }
-            hir::ExprKind::Attribute { obj, .. } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
-            }
-            hir::ExprKind::Index { obj, index } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*index], hir_module);
-            }
-            hir::ExprKind::Slice {
-                obj,
-                start,
-                end,
-                step,
-            } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
-                for sub in [start, end, step].into_iter().flatten() {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*sub], hir_module);
-                }
-            }
-            hir::ExprKind::FormatSpec { value, .. } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*value], hir_module);
-            }
-            hir::ExprKind::Yield(value) => {
-                if let Some(value_id) = value {
-                    self.mark_address_taken_funcrefs(&hir_module.exprs[*value_id], hir_module);
-                }
-            }
-            hir::ExprKind::IterHasNext(iter_id) => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*iter_id], hir_module);
-            }
-            hir::ExprKind::MatchPattern { subject, .. } => {
-                self.mark_address_taken_funcrefs(&hir_module.exprs[*subject], hir_module);
-            }
-            // GeneratorIntrinsic — post-desugar artifact, never seen here.
-            hir::ExprKind::GeneratorIntrinsic(_) => {}
-            // Leaf expressions — no FuncRef can hide inside. Exhaustive
-            // match (no `_`): a new `ExprKind` becomes a compile error
-            // rather than a silently-missed address-taken FuncRef.
-            hir::ExprKind::Int(_)
-            | hir::ExprKind::Float(_)
-            | hir::ExprKind::Bool(_)
-            | hir::ExprKind::Str(_)
-            | hir::ExprKind::Bytes(_)
-            | hir::ExprKind::None
-            | hir::ExprKind::NotImplemented
-            | hir::ExprKind::Var(_)
-            | hir::ExprKind::ClassRef(_)
-            | hir::ExprKind::ClassAttrRef { .. }
-            | hir::ExprKind::TypeRef(_)
-            | hir::ExprKind::ImportedRef { .. }
-            | hir::ExprKind::ModuleAttr { .. }
-            | hir::ExprKind::BuiltinRef(_)
-            | hir::ExprKind::StdlibAttr(_)
-            | hir::ExprKind::StdlibConst(_)
-            | hir::ExprKind::ExcCurrentValue => {}
+            _ => {}
+        }
+        // Default structural recursion via exhaustive helper.
+        //
+        // Borrow-checker: collect sub-expression ids first, then recurse.
+        let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+        hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+        for id in sub_ids {
+            self.mark_address_taken_funcrefs(&hir_module.exprs[id], hir_module);
         }
     }
 
