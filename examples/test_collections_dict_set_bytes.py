@@ -840,4 +840,15 @@ assert _se_dyn == {8, 7}, "Any == set (structural)"
 
 print("Structural dict/set equality tests passed")
 
+# ===== SECTION: Bytes ordering comparisons (lexicographic via rt_obj_cmp) =====
+# Ordering ops on `bytes` route through `rt_obj_cmp` (op_tag third arg) and
+# its lexicographic Bytes arm. Regression-guards both.
+_bord_a: bytes = b"abc"
+_bord_b: bytes = b"abd"
+assert (_bord_a < _bord_b) is True, "bytes <"
+assert (_bord_a > _bord_b) is False, "bytes >"
+assert (_bord_a <= _bord_a) is True, "bytes <="
+assert (_bord_b >= _bord_a) is True, "bytes >="
+print("Bytes ordering comparison tests passed")
+
 print("All dict, set, and bytes tests passed!")

@@ -323,7 +323,7 @@ impl RuntimeFuncDef {
     /// integer, not tagged Values.
     pub fn any_param_tagged(&self) -> bool {
         self.mir_param_semantics
-            .map_or(false, |sems| sems.iter().any(|&s| s == MirSemantic::Tagged))
+            .is_some_and(|sems| sems.contains(&MirSemantic::Tagged))
     }
 
     /// Stage B.2 helper: resolved return semantic with fallback.

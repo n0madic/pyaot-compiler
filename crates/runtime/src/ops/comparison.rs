@@ -301,6 +301,16 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
                 let data_b = std::slice::from_raw_parts((*str_b).data.as_ptr(), len_b);
                 data_a.cmp(data_b)
             }
+            TypeTagKind::Bytes => {
+                // Lexicographic byte comparison — mirrors CPython `b"a" < b"b"`.
+                let bytes_a = a as *mut BytesObj;
+                let bytes_b = b as *mut BytesObj;
+                let len_a = (*bytes_a).len;
+                let len_b = (*bytes_b).len;
+                let data_a = std::slice::from_raw_parts((*bytes_a).data.as_ptr(), len_a);
+                let data_b = std::slice::from_raw_parts((*bytes_b).data.as_ptr(), len_b);
+                data_a.cmp(data_b)
+            }
             _ => {
                 crate::raise_exc!(
                     ExceptionType::TypeError,

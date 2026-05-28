@@ -1557,10 +1557,17 @@ fn materialize_inferred_types(module: &mut Module, table: &TypeTable) {
 ///   3. Skip when callee `phase4_return_abi_flipped == true` — the callee
 ///      boxes before `Return`, so its true return ABI is Tagged regardless
 ///      of `return_type`.
-///   4. Only narrow `Tagged → Raw(I64|I8)` — those have identical Cranelift
-///      I64 register shape, so downstream uses survive. `Raw(F64)` lives in
-///      XMM registers, so narrowing a Tagged slot to F64 would require
-///      explicit bitcast we don't emit; leave those as Tagged.
+///   4. Narrow `Tagged → Raw(I64|I8|F64)` to the callee's return ABI. The
+///      dest was allocated `Raw(K)` at lowering time (`alloc_and_add_local`
+///      uses the register interpretation), then widened to `Tagged` by
+///      `materialize_function_types` (a `CallDirect` dest is not a
+///      `raw_producer`). Narrowing back here restores the lowering-time
+///      contract: downstream uses were lowered against the raw shape (Float
+///      values are `Raw(F64)` and boxed via `BoxValue` at any tagged use
+///      site). A non-flipped callee (Guard #3) that returns `float` truly
+///      returns `Raw(F64)` in an XMM register, so the dest must be `Raw(F64)`
+///      to match — leaving it `Tagged` is the actual mismatch the verifier
+///      rejects (`CallDirect: return Raw(F64) not assignable to dest Tagged`).
 fn sync_call_direct_dest_mir_ty(module: &mut Module) {
     // Snapshot callee data needed for the sync — return type + flip flag.
     // We borrow `&mut module.functions` afterwards, so collect first.
@@ -1592,14 +1599,17 @@ fn sync_call_direct_dest_mir_ty(module: &mut Module) {
                     continue;
                 }
                 let new_mir_ty = pyaot_mir::type_to_mir_type_register(ret_ty);
-                // Guard #4: only narrow Tagged -> Raw(I64|I8) — those share
-                // the I64 register shape, so downstream uses survive. Raw(F64)
-                // lives in XMM registers; narrowing a Tagged slot to F64 would
-                // require a bitcast we do not emit here, so leave those Tagged.
+                // Guard #4: narrow Tagged -> Raw(I64|I8|F64) to the callee's
+                // return ABI. A non-flipped callee returning `float` returns
+                // `Raw(F64)`; the dest must match (leaving it Tagged is the
+                // mismatch the verifier rejects). The dest was Raw(F64) at
+                // lowering time and any tagged use was boxed there, so
+                // restoring Raw(F64) is consistent.
                 if !matches!(
                     new_mir_ty,
                     pyaot_mir::MirType::Raw(pyaot_mir::RawKind::I64)
                         | pyaot_mir::MirType::Raw(pyaot_mir::RawKind::I8)
+                        | pyaot_mir::MirType::Raw(pyaot_mir::RawKind::F64)
                 ) {
                     continue;
                 }

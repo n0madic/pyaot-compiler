@@ -1091,4 +1091,22 @@ assert _chain_parts[0] == "a", "method return: split() first element"
 
 print("Chained method type inference tests passed!")
 
+# ===== Section: String ordering comparisons (lexicographic via rt_obj_cmp) =====
+# Ordering ops `< > <= >=` on `str` operands route through `rt_obj_cmp`
+# (which takes an op_tag third arg); regression-guards the comparison
+# lowering's op_tag and the runtime's lexicographic Str arm.
+_ord_a: str = "abc"
+_ord_b: str = "abd"
+assert (_ord_a < _ord_b) is True, "str <"
+assert (_ord_a > _ord_b) is False, "str >"
+assert (_ord_a <= _ord_a) is True, "str <="
+assert (_ord_b >= _ord_a) is True, "str >="
+_ord_words = ["banana", "apple", "cherry"]
+_ord_min = _ord_words[0]
+for _w in _ord_words:
+    if _w < _ord_min:
+        _ord_min = _w
+assert _ord_min == "apple", f"str ordering manual min: {_ord_min}"
+print("String ordering comparison tests passed!")
+
 print("All string tests passed!")

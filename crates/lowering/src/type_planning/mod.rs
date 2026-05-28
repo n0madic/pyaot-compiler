@@ -6,8 +6,7 @@
 //! - `check`: top-down type validation + error reporting
 
 mod check;
-mod closure_scan;
-mod container_refine;
+mod constraint_solver;
 pub(crate) mod helpers;
 pub(crate) mod infer;
 mod lambda_inference;
@@ -16,218 +15,52 @@ pub(crate) mod ni_analysis;
 mod phase4_safe_scan;
 mod validate;
 
-use indexmap::IndexMap;
 use pyaot_hir as hir;
-use pyaot_types::{Type, TypeLattice};
+use pyaot_types::Type;
 use pyaot_utils::VarId;
 
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Run type planning: pre-scan + return type inference for all functions.
+    ///
+    /// # Architecture (S5 constraint-solver rewrite)
+    ///
+    /// Replaces the legacy 22-pass + 10-iteration fixpoint planner with a
+    /// constraint-based solver. The solver collects type constraints from
+    /// the HIR in one walk, drives them to a monotone-JOIN fixpoint over
+    /// the `TypeLattice`, then materializes results into the existing
+    /// `LoweringSeedInfo` / `func_return_types` / `closures.*` contracts.
+    ///
+    /// Structural pre-passes that compute non-type information still run
+    /// before the solver:
+    ///   1. `precompute_phase4_unsafe_funcs` — HOF callback discovery.
+    ///   2. `process_module_decorated_functions` — decorator wrap tracking.
+    ///
+    /// Post-pass adapters that read solver output:
+    ///   3. `validate_type_annotations` — diagnostic-only checks.
+    ///   4. `fold_refined_field_types_into_storage` — projects
+    ///      `refined_class_field_types` into `LoweredClassInfo.field_types`.
+    ///   5. `populate_generator_return_types_on_funcdef` — mirrors
+    ///      generator return types onto HIR `func_defs[fid].return_type`
+    ///      so `desugar_generators` is a pure structural rewrite.
     pub(crate) fn build_lowering_seed_info(&mut self, hir_module: &mut hir::Module) {
-        self.precompute_closure_capture_types(hir_module);
-        // Phase 4 (Storage-Uniform): record every callee that flows into a
-        // HOF runtime callback slot — those callees deliver user args
-        // raw and so cannot be flipped to the tagged user-arg ABI. Runs
-        // once per module, before lambda lowering reads `is_phase4_safe`.
         self.precompute_phase4_unsafe_funcs(hir_module);
         self.process_module_decorated_functions(hir_module);
-        // First-pass refinement — handles `x = [1, 2, 3]` /
-        // `x = {k: v, …}` literal cases that need no var-type
-        // context. Runs before prescan so prescan sees the refined
-        // type when walking `x.append(…)`.
-        self.refine_empty_container_types(hir_module);
-        self.infer_nested_function_param_types(hir_module);
-        self.infer_all_return_types(hir_module);
-        self.precompute_all_local_var_types(hir_module);
-        self.propagate_globals_from_prescan();
-        // Area E §E.6 — re-infer return types for unannotated functions
-        // after prescan has widened any numeric locals (e.g.
-        // `x = 0; x += 0.5; return x` → `Float`, not `Int`).
-        self.reinfer_return_types_with_prescan(hir_module);
-        // Second-pass refinement — re-runs after prescan so
-        // `topo = []; topo.append(root)` where `root`'s type comes
-        // from prescan (not the declared HIR annotation) can still
-        // refine `topo` to `List[Value]`. The underlying scan uses
-        // `seed_infer_expr_type` with a prescan-sourced overlay so
-        // any intermediate local gets resolved.
-        self.refine_empty_container_types(hir_module);
+
+        // Solver-based type planning (replaces 22 legacy passes).
+        constraint_solver::run_constraint_solver(self, hir_module);
+
+        // Diagnostic-only annotation validation. Runs after the solver
+        // because it consults solver-materialized types for warnings.
         self.validate_type_annotations(hir_module);
-        // §1.4u-b step 3 — populate the stable per-module Var→Type
-        // base map. Never mutated during lowering.
-        self.populate_base_var_types(hir_module);
-        // Refine class field seeds from constructor calls now that expression
-        // and local seed metadata exist. This keeps later lowering decisions
-        // (attribute access, iterable element typing) from getting stuck at
-        // constructor-default placeholders like `Tuple([])`.
-        self.refine_class_fields_from_constructor_calls(hir_module);
-        // Pair the constructor-call harvester with a cross-instance write
-        // harvester. The constructor pass only looks at `__init__` arg flow;
-        // it cannot see the autograd-style `child.grad += rhs` pattern where
-        // `child` is a sibling instance and the RHS only types precisely
-        // after prescan. Without this, an unannotated numeric field stays
-        // `Int` from `self.grad = 0` and the later `Float` write through
-        // `child.grad += …` corrupts the slot bits.
-        self.refine_class_fields_from_cross_instance_writes(hir_module);
-        // Constructor-call field refinement can make a later prescan pass
-        // strictly more precise for loop-carried locals like:
-        //   for v in reversed(topo):
-        //       for child, grad in zip(v._children, v._local_grads): ...
-        // The first prescan ran before those field seeds existed, so rerun it
-        // now and rebuild the stable Var→Type base map before eager expr caching.
-        self.lowering_seed_info
-            .per_function_local_seed_types
-            .clear();
-        self.precompute_all_local_var_types(hir_module);
-        self.propagate_globals_from_prescan();
-        self.reinfer_return_types_with_prescan(hir_module);
-        // Bounded fixpoint: harvester → prescan → reinfer → refine.
-        //
-        // Re-run the call-site arg-type harvester with a prescan-enriched
-        // overlay so unannotated params get refined when the call site
-        // references prescan-typed locals (e.g. `softmax(logits)` where
-        // `logits = gpt(...)`). Each round can also trigger return-type
-        // refinement (e.g. `def f(x: list[T]): result = []; for v in x:
-        // result.append(v); return result` — the 2nd-pass refinement turns
-        // `result` into `list[T]`, which only becomes the return type after
-        // a fresh prescan + return-type pass; callers like `out = f(x)`
-        // then need ANOTHER prescan to see the refined return type as
-        // `out`'s declared local).
-        //
-        // `refine_empty_container_types` participates in the loop because
-        // prescan reads `refined_container_types` for unannotated `x = []`
-        // binds (see `local_prescan.rs` rhs_ty fallback). Without in-loop
-        // refine, a chain like
-        //   probs = softmax(logits)             # softmax return refined later
-        //   losses = []
-        //   for i in range(n): losses.append(-probs[i].log())
-        //   total = sum(losses)
-        // freezes `losses` at `list[Any]` from the line-48 refine pass —
-        // by the time `softmax` resolves to `list[Value]`, no one
-        // re-derives `losses`'s element type. `sum(losses)` then collapses
-        // to `Int` and `total.data` raises "unknown attribute" at compile
-        // time. Re-running refine inside the loop using the freshly-rebuilt
-        // prescan overlay closes that gap.
-        //
-        // Loop continues while harvester hints, `func_return_types`, OR
-        // `refined_container_types` changed — all three feed into each
-        // other. Cap raised 3 → 4: in-loop refine extends the effective
-        // dependency chain by one hop (refine writes → next-round prescan
-        // reads), so deeper call chains may need one more round. Change
-        // detection short-circuits on already-converged inputs, so the
-        // extra cap is free when not needed.
-        // Cap = 10. Each "hop" in a chain like
-        //   inner_genexp → outer_listcomp → callee_return → caller_prescan
-        //     → caller_arg_at_call_site → next_callee_param_hint
-        // takes one fixpoint iter to propagate, with an additional 1-iter lag
-        // because harvester reads PREVIOUS iter's prescan (its own clear+rebuild
-        // happens after harvester runs). Real-world chains observed in micro-
-        // grad-style code (`softmax(linear(x))`, `sum([sum(genexp) for ...])`)
-        // need ~6-8 hops; 10 leaves headroom and the change-detection short-
-        // circuits the loop the moment everything converges, so the cap costs
-        // nothing on shallow programs.
-        //
-        // `prescan_changed` is essential: a change to a callee's return type
-        // in iter N first reaches the caller's prescan in iter N+1, then the
-        // harvester's hint for the caller-of-caller in iter N+2. Without
-        // tracking prescan changes the loop breaks at iter N+1 even though
-        // iter N+2 still has work to do.
-        for _ in 0..10 {
-            let prev_returns = self.func_return_types.inner.clone();
-            let prev_refined = self.lowering_seed_info.refined_container_types.clone();
-            let prev_class_fields = self.lowering_seed_info.refined_class_field_types.clone();
-            let prev_heap_writes = self
-                .lowering_seed_info
-                .class_fields_with_heap_writes
-                .clone();
-            let prev_prescan = self
-                .lowering_seed_info
-                .per_function_local_seed_types
-                .clone();
-            let harvester_changed = self.rerun_nested_function_param_types(hir_module);
-            self.lowering_seed_info
-                .per_function_local_seed_types
-                .clear();
-            self.precompute_all_local_var_types(hir_module);
-            self.propagate_globals_from_prescan();
-            self.reinfer_return_types_with_prescan(hir_module);
-            // Re-run empty-container refinement with the just-rebuilt
-            // prescan overlay so containers populated from values whose
-            // types only resolved this round (refined call returns,
-            // refined nested-fn params) get their element type updated.
-            self.refine_empty_container_types(hir_module);
-            // Re-run the constructor-call harvester. The first invocation
-            // (line 58, before the loop) sees only the seed types; later
-            // iterations may sharpen field types (e.g. `data: Any → Float`
-            // once `Value(2.0)` is harvested), and the constructor calls
-            // that pass `(other.data, self.data)` as a tuple-shaped argument
-            // need that refined `data` type to harvest `_local_grads` as
-            // `tuple[Float, Float]` instead of `tuple[Any, Any]`. Without
-            // the re-run, the autograd `local_grad * v.grad` BinOp inside
-            // `Value.backward()` reads `local_grad: Any`, the cross-instance
-            // harvester then can't precise-type the field write, and the
-            // `child.grad += …` slot corrupts at runtime (the
-            // microgpt SEGV).
-            self.refine_class_fields_from_constructor_calls(hir_module);
-            // Re-run cross-instance class field write harvester — RHS
-            // expression types can sharpen each iteration (e.g. as a
-            // generator's yield type converges, an `obj.x = next(gen)` write
-            // becomes typed instead of `Any`). The pass is monotone: it only
-            // joins into existing entries, so re-running is safe and cheap.
-            self.refine_class_fields_from_cross_instance_writes(hir_module);
-            // Propagate capture types using lattice-join so Closure creator
-            // params see the freshest resolved types. Runs after refine so
-            // the hint overlay reflects the just-sharpened container types.
-            let captures_changed = self.propagate_closure_capture_param_types(hir_module);
-            let returns_changed = self.func_return_types.inner != prev_returns;
-            let refined_changed = self.lowering_seed_info.refined_container_types != prev_refined;
-            // Track class-field refinement changes so the loop iterates
-            // again whenever a numeric write up-tiers a field type. Without
-            // this, a single-pass widening (e.g. `grad: Int → Float` from
-            // an aug-assign harvested in iter N) leaves prescan local types
-            // stale at `Int`, the codegen then sees a F64 value flowing
-            // into an Any-declared local and panics with a type mismatch.
-            let class_fields_changed =
-                self.lowering_seed_info.refined_class_field_types != prev_class_fields;
-            // Track heap-writes side-set growth: a new (class, field)
-            // observation flips downstream attribute reads to `Any` via
-            // `resolve_class_attr_type`'s in-loop guard, which can shift
-            // dependent inference (binop result types, container
-            // narrowing). Without this signal the loop may exit before
-            // the heap-write propagates through the next round of
-            // narrowing.
-            let heap_writes_changed =
-                self.lowering_seed_info.class_fields_with_heap_writes != prev_heap_writes;
-            let prescan_changed =
-                self.lowering_seed_info.per_function_local_seed_types != prev_prescan;
-            if !harvester_changed
-                && !returns_changed
-                && !refined_changed
-                && !class_fields_changed
-                && !heap_writes_changed
-                && !captures_changed
-                && !prescan_changed
-            {
-                break;
-            }
-        }
-        self.lowering_seed_info.base_var_types.clear();
-        self.populate_base_var_types(hir_module);
-        // Phase 2: fold refined class-field types into LoweredClassInfo.field_types
-        // so subsequent lowering reads field_types as the single source of truth.
-        // Storage is uniform tagged Value, so widened types from cross-instance
-        // writes (Any) flow naturally into bind/read paths via coerce_for_storage.
+
+        // Project refined class-field types into LoweredClassInfo.
         self.fold_refined_field_types_into_storage();
-        // Mirror the converged Iterator(yield) onto each generator FuncDef so
-        // callers reading `module.func_defs[fid].return_type` (e.g.
-        // `closure_result_type`) see the correct type BEFORE desugar runs.
-        // Required for desugar to be a pure structural rewrite.
+
+        // Mirror generator yield types onto HIR func_defs so
+        // `desugar_generators` is a pure structural rewrite.
         self.populate_generator_return_types_on_funcdef(hir_module);
-        // §1.4u-b step 5 — populate `lowering_seed_info.expr_types` eagerly for
-        // every non-Var ExprId. Lowering-side queries become cache hits
-        // for stable (non-narrowing-sensitive) expressions.
-        self.eagerly_populate_expr_types(hir_module);
     }
 
     /// Write the converged `Iterator(yield_type)` from `func_return_types` onto
@@ -261,39 +94,6 @@ impl<'a> Lowering<'a> {
         let ids: Vec<hir::ExprId> = hir_module.exprs.iter().map(|(id, _)| id).collect();
         for expr_id in ids {
             let _ = self.seed_expr_type_by_id(expr_id, hir_module);
-        }
-    }
-
-    /// Propagate prescan-inferred types for module-level globals into
-    /// `symbols.global_var_types`. `scan_global_var_types` (run before
-    /// `build_lowering_seed_info`) only seeds globals whose RHS is a
-    /// literal shape (`x = [1, 2]`); when a global is initialised by a
-    /// function call (`wte = make_matrix(...)`), its type only becomes
-    /// available once `infer_all_return_types` + prescan have run.
-    /// Cross-function references like `gpt()` reading `wte` go through
-    /// `get_var_type`, which checks `global_var_types` — without this
-    /// propagation, those references see `Any` even after prescan has
-    /// figured out the real type. This must be called after every
-    /// `precompute_all_local_var_types` so the next iteration's prescans
-    /// (and the harvester / refinement passes that consume them) see
-    /// the freshly-resolved global types. Only writes non-`Any` types
-    /// so a transient `Any` from an early iteration never clobbers a
-    /// concrete type set by `scan_global_var_types` or a previous round.
-    pub(crate) fn propagate_globals_from_prescan(&mut self) {
-        let globals: Vec<VarId> = self.symbols.globals.iter().copied().collect();
-        for var_id in globals {
-            for prescan in self
-                .lowering_seed_info
-                .per_function_local_seed_types
-                .values()
-            {
-                if let Some(ty) = prescan.get(&var_id) {
-                    if !matches!(ty, Type::Any) {
-                        self.symbols.global_var_types.insert(var_id, ty.clone());
-                        break;
-                    }
-                }
-            }
         }
     }
 
@@ -397,254 +197,6 @@ impl<'a> Lowering<'a> {
         }
         result
     }
-}
-
-// =============================================================================
-// Return Type Inference Pass
-// =============================================================================
-
-impl<'a> Lowering<'a> {
-    /// Infer return types for ALL functions without explicit annotations.
-    /// Runs before codegen so that `compute_expr_type` for Call expressions
-    /// can look up return types in `func_return_types`.
-    fn infer_all_return_types(&mut self, hir_module: &hir::Module) {
-        // Collect func_ids to avoid borrow issues
-        let func_ids = hir_module.functions.to_vec();
-
-        // Pass 1: Collect explicitly annotated return types so they are available
-        // for cross-function inference (fixes forward-reference ordering).
-        // This includes `-> None` annotations — the HIR distinguishes
-        // `Option::None` (no annotation) from `Some(Type::None)` (explicit `-> None`).
-        for func_id in &func_ids {
-            if let Some(func) = hir_module.func_defs.get(func_id) {
-                if let Some(ref return_type) = func.return_type {
-                    self.func_return_types
-                        .inner
-                        .insert(*func_id, return_type.clone());
-                }
-            }
-        }
-
-        // Pass 2: Infer return types for unannotated functions
-        for func_id in &func_ids {
-            // Skip functions already resolved in pass 1
-            if self.func_return_types.inner.contains_key(func_id) {
-                continue;
-            }
-
-            if let Some(func) = hir_module.func_defs.get(func_id) {
-                // Skip empty functions
-                if func.has_no_blocks() {
-                    continue;
-                }
-
-                // Build param type map for this function
-                let mut param_types: IndexMap<VarId, Type> = IndexMap::new();
-                // Use lambda_param_type_hints if available (from map/filter/reduce pre-scan)
-                let hints = self.closures.lambda_param_type_hints.get(func_id).cloned();
-                for (i, param) in func.params.iter().enumerate() {
-                    let ty = param.ty.clone().unwrap_or_else(|| {
-                        hints
-                            .as_ref()
-                            .and_then(|h| h.get(i).cloned())
-                            .unwrap_or(Type::Any)
-                    });
-                    param_types.insert(param.var, ty);
-                }
-                // Area E §E.6 — layer in pre-scanned local types so `return x`
-                // sees the unified type for a local that was widened across
-                // multiple writes.
-                if let Some(prescanned) = self
-                    .lowering_seed_info
-                    .per_function_local_seed_types
-                    .get(func_id)
-                {
-                    for (var_id, ty) in prescanned {
-                        // Don't clobber param types (param annotations win).
-                        param_types.entry(*var_id).or_insert_with(|| ty.clone());
-                    }
-                }
-
-                // Scan body for return statements (§1.17b-d — CFG-based)
-                let return_type = self.infer_return_type_from_func(func, hir_module, &param_types);
-
-                // Check for closure-returning functions (decorators)
-                let return_type = if return_type == Type::None {
-                    if self.find_returned_closure(func, hir_module).is_some() {
-                        Type::Any
-                    } else {
-                        Type::None
-                    }
-                } else {
-                    return_type
-                };
-
-                self.func_return_types.inner.insert(*func_id, return_type);
-            }
-        }
-    }
-
-    /// Re-infer return types for functions whose local types widened
-    /// through the Area E §E.6 prescan (e.g. `x = 0; x += 0.5; return x`
-    /// returns `Float`, not `Int`). Only touches functions that have a
-    /// prescan entry and are NOT explicitly annotated — annotated
-    /// signatures are authoritative.
-    pub(crate) fn reinfer_return_types_with_prescan(&mut self, hir_module: &hir::Module) {
-        let func_ids = hir_module.functions.to_vec();
-        for func_id in &func_ids {
-            let Some(func) = hir_module.func_defs.get(func_id) else {
-                continue;
-            };
-            // Skip explicitly annotated functions.
-            if let Some(ref rt) = func.return_type {
-                if *rt != Type::None {
-                    continue;
-                }
-            }
-            if func.has_no_blocks() {
-                continue;
-            }
-            let Some(prescanned) = self
-                .lowering_seed_info
-                .per_function_local_seed_types
-                .get(func_id)
-                .cloned()
-            else {
-                continue;
-            };
-            // Build param_types merging param annotations + prescan.
-            let hints = self.closures.lambda_param_type_hints.get(func_id).cloned();
-            let mut param_types: IndexMap<VarId, Type> = IndexMap::new();
-            for (i, param) in func.params.iter().enumerate() {
-                let ty = param.ty.clone().unwrap_or_else(|| {
-                    hints
-                        .as_ref()
-                        .and_then(|h| h.get(i).cloned())
-                        .unwrap_or(Type::Any)
-                });
-                param_types.insert(param.var, ty);
-            }
-            for (var_id, ty) in prescanned {
-                param_types.entry(var_id).or_insert(ty);
-            }
-            let new_rt = self.infer_return_type_from_func(func, hir_module, &param_types);
-            let final_rt = if new_rt == Type::None {
-                if self.find_returned_closure(func, hir_module).is_some() {
-                    Type::Any
-                } else {
-                    Type::None
-                }
-            } else {
-                new_rt
-            };
-            self.func_return_types.inner.insert(*func_id, final_rt);
-        }
-    }
-
-    /// Scan a function's CFG for return terminators/statements and infer
-    /// the joined return type. §1.17b-d — prefers `func.blocks` over the
-    /// legacy tree walker.
-    fn infer_return_type_from_func(
-        &self,
-        func: &hir::Function,
-        module: &hir::Module,
-        param_types: &IndexMap<VarId, Type>,
-    ) -> Type {
-        // Generator functions don't have meaningful `Return(expr)` (Python
-        // forbids `return value` inside `def`-generators); their effective
-        // return type is `Iterator(yield_type)` derived from the body's
-        // `Yield` expressions. Compute it here so the type planner sees
-        // the right type at call sites BEFORE `desugar_generators` runs.
-        // After desugar, the original generator function becomes a creator
-        // stub that returns the generator object — this synthetic type
-        // matches what desugar later writes into `func_return_types`.
-        // Generator functions don't have meaningful `Return(expr)` (Python
-        // forbids `return value` inside `def`-generators); their effective
-        // return type is `Iterator(yield_type)` derived from the body's
-        // `Yield` expressions. Compute it here so the type planner sees the
-        // right type at call sites BEFORE `desugar_generators` runs. After
-        // desugar, the original generator function becomes a creator stub
-        // and `func_return_types[gen]` is OVERWRITTEN to the same value
-        // (line ~829 of `generators/desugaring.rs`).
-        if func.is_generator {
-            let yield_ty = self.infer_generator_yield_type_for_desugar(func, module);
-            return Type::Iterator(Box::new(yield_ty));
-        }
-        let mut return_types = Vec::new();
-        for block in func.blocks.values() {
-            // `Return(expr)` can appear as a block terminator (normal path)
-            // or as a straight-line stmt (defensive — the bridge always
-            // lifts `Return` to the terminator).
-            match &block.terminator {
-                hir::HirTerminator::Return(Some(expr_id)) => {
-                    let expr = &module.exprs[*expr_id];
-                    return_types.push(self.seed_infer_expr_type(expr, module, param_types));
-                }
-                hir::HirTerminator::Return(None) => {
-                    return_types.push(Type::None);
-                }
-                _ => {}
-            }
-            for &stmt_id in &block.stmts {
-                let stmt = &module.stmts[stmt_id];
-                match &stmt.kind {
-                    hir::StmtKind::Return(Some(expr_id)) => {
-                        let expr = &module.exprs[*expr_id];
-                        return_types.push(self.seed_infer_expr_type(expr, module, param_types));
-                    }
-                    hir::StmtKind::Return(None) => {
-                        return_types.push(Type::None);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Self::join_return_types(return_types)
-    }
-
-    /// Shared return-type joiner. See `infer_return_type_from_body` for
-    /// rationale on keeping `NotImplemented` / `Any` handling.
-    fn join_return_types(return_types: Vec<Type>) -> Type {
-        if return_types.is_empty() {
-            Type::None
-        } else if return_types.len() == 1 {
-            return_types
-                .into_iter()
-                .next()
-                .expect("checked: return_types.len() == 1")
-        } else {
-            let concrete: Vec<Type> = return_types
-                .into_iter()
-                .filter(|t| *t != Type::Any)
-                .collect();
-            if concrete.is_empty() {
-                Type::Any
-            } else {
-                // Apply the binding-site numeric tower (`int ⊂ float`,
-                // `bool ⊂ int`) when merging branch return types of an
-                // unannotated function. Without this, `def f(b): return
-                // 1.5 if b else 0` infers as `Union[Int, Float]`,
-                // prescan stores `var_type = Union[Int, Float]` for
-                // `x = f(...)`, the assignment routes through Ptr
-                // storage, and the raw F64 bits returned by the call
-                // get mis-stored as a tagged pointer — SEGV at the
-                // next reader. Promotion to `Float` gives the
-                // assignment a uniform F64 ABI end-to-end.
-                //
-                // Heterogeneous pairs (e.g. `{Int, Str}`) fall through
-                // `join` (which uses the numeric tower then canonical union),
-                // preserving the existing `Union[…]` shape for the
-                // only-actually-union cases.
-                concrete
-                    .into_iter()
-                    .reduce(|a, b| a.join(&b))
-                    .expect("non-empty after `concrete.is_empty()` guard")
-            }
-        }
-    }
-
-    // `seed_infer_expr_type` is now defined in `infer.rs` as part of the
-    // unified `infer_expr_type_inner` engine.
 }
 
 /// §1.4u-b helper: collect `(handler.name, handler.ty)` pairs where both

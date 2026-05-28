@@ -1217,6 +1217,26 @@ impl<'a> Lowering<'a> {
                                         );
                                         // Mark this function as a wrapper
                                         self.insert_wrapper_func_id(wrapper_func_id);
+                                        // Record the decorator's first-param name as the
+                                        // wrapper's fn-ptr param name, and the
+                                        // decorated→wrapper edge. `wrapper_fn_ptr_capture_index`
+                                        // consults `wrapper_func_param_name` to locate the
+                                        // captured function-pointer slot; without it the lookup
+                                        // falls back to matching only "func", so a decorator that
+                                        // names its parameter `f`/`g` (and forwards via
+                                        // `wrapper(*args): return f(*args)`) leaves the fn-ptr
+                                        // capture undetected and lowers the indirect callee as a
+                                        // `Raw(I64)` value. Previously set only by the legacy
+                                        // `scan_stmt_for_closures`, which the constraint-solver
+                                        // pipeline no longer runs.
+                                        self.closures
+                                            .decorated_to_wrapper
+                                            .insert(innermost_func_id, wrapper_func_id);
+                                        if let Some(func_param) = decorator_def.params.first() {
+                                            self.closures
+                                                .wrapper_func_param_name
+                                                .insert(wrapper_func_id, func_param.name);
+                                        }
                                         continue;
                                     }
                                 }

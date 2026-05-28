@@ -378,7 +378,9 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     // For string ordering comparisons (< > <= >=), use Obj compare
-                    // which dispatches via type tag for lexicographic comparison
+                    // which dispatches via type tag for lexicographic comparison.
+                    // `rt_obj_cmp` takes (a, b, op_tag) — the operator tag is a
+                    // required third argument.
                     let cmp_op = match op {
                         hir::CmpOp::Lt => mir::ComparisonOp::Lt,
                         hir::CmpOp::LtE => mir::ComparisonOp::Lte,
@@ -386,12 +388,13 @@ impl<'a> Lowering<'a> {
                         hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                         _ => unreachable!(),
                     };
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp_op.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(cmp_op),
                         ),
-                        args: vec![left_op, right_op],
+                        args: vec![left_op, right_op, op_tag],
                     });
                 }
             }
@@ -425,7 +428,9 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     // For bytes ordering comparisons (< > <= >=), use Obj compare
-                    // which dispatches via type tag for lexicographic comparison
+                    // which dispatches via type tag for lexicographic comparison.
+                    // `rt_obj_cmp` takes (a, b, op_tag) — the operator tag is a
+                    // required third argument.
                     let cmp_op = match op {
                         hir::CmpOp::Lt => mir::ComparisonOp::Lt,
                         hir::CmpOp::LtE => mir::ComparisonOp::Lte,
@@ -433,12 +438,13 @@ impl<'a> Lowering<'a> {
                         hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                         _ => unreachable!(),
                     };
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp_op.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(cmp_op),
                         ),
-                        args: vec![left_op, right_op],
+                        args: vec![left_op, right_op, op_tag],
                     });
                 }
             }
@@ -874,12 +880,21 @@ impl<'a> Lowering<'a> {
                     hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                     _ => unreachable!(),
                 };
+                // `rt_obj_eq` (Eq) takes (a, b); the ordering comparator
+                // `rt_obj_cmp` (Lt/Lte/Gt/Gte) takes (a, b, op_tag). Append
+                // the operator tag for the ordering case.
+                let mut args = vec![boxed_left, boxed_right];
+                if !matches!(compare_op, mir::ComparisonOp::Eq) {
+                    args.push(mir::Operand::Constant(mir::Constant::Int(
+                        compare_op.to_tag() as i64,
+                    )));
+                }
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::Call(
                         mir::CompareKind::Obj.runtime_func_def(compare_op),
                     ),
-                    args: vec![boxed_left, boxed_right],
+                    args,
                 });
             }
         } else {

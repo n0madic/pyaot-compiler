@@ -86,7 +86,7 @@ use crate::context::Lowering;
 impl<'a> Lowering<'a> {
     /// Resolve method call type on an already-resolved object type.
     /// Returns `None` if no resolution found (caller applies fallback).
-    fn resolve_method_on_type(
+    pub(crate) fn resolve_method_on_type(
         &self,
         obj_ty: &Type,
         method: InternedString,
@@ -265,7 +265,7 @@ impl<'a> Lowering<'a> {
 
     /// Resolve call target type from the function expression.
     /// Returns `None` if no resolution found (caller applies fallback).
-    fn resolve_call_target_type(
+    pub(crate) fn resolve_call_target_type(
         &self,
         func_expr: &hir::Expr,
         module: &hir::Module,
@@ -393,7 +393,7 @@ impl<'a> Lowering<'a> {
     /// Resolve builtin call with class __iter__/__next__ overrides and Map handling.
     /// Returns `None` if the standard `resolve_builtin_call_type` should be used
     /// without class overrides (i.e., no special handling needed).
-    fn resolve_builtin_with_overrides(
+    pub(crate) fn resolve_builtin_with_overrides(
         &self,
         builtin: &hir::Builtin,
         args: &[hir::ExprId],
@@ -465,7 +465,11 @@ impl<'a> Lowering<'a> {
 
     /// Resolve attribute type on an already-resolved object type.
     /// Returns `None` if no resolution found (caller applies fallback).
-    fn resolve_attribute_on_type(&self, obj_ty: &Type, attr: InternedString) -> Option<Type> {
+    pub(crate) fn resolve_attribute_on_type(
+        &self,
+        obj_ty: &Type,
+        attr: InternedString,
+    ) -> Option<Type> {
         if let Type::RuntimeObject(type_tag) = obj_ty {
             let attr_name = self.resolve(attr);
             if let Some(field_def) = lookup_object_field(*type_tag, attr_name) {
@@ -616,7 +620,11 @@ impl<'a> Lowering<'a> {
     }
 
     /// Resolve index type with __getitem__ fallback for classes.
-    fn resolve_index_with_getitem(&self, obj_ty: &Type, index_expr: &hir::Expr) -> Option<Type> {
+    pub(crate) fn resolve_index_with_getitem(
+        &self,
+        obj_ty: &Type,
+        index_expr: &hir::Expr,
+    ) -> Option<Type> {
         let base = helpers::resolve_index_type(obj_ty, index_expr);
         if base != Type::Any {
             return Some(base);

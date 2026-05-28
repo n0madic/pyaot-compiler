@@ -649,6 +649,20 @@ pub(crate) fn resolve_builtin_call_type(
                 .or_else(|| arg_types[0].iter_elem())
                 .cloned()
                 .unwrap_or(Type::Int);
+            // Never-defer: an element type of `Never` means the iterable's
+            // element hasn't been resolved yet (e.g. a generator expression
+            // mid-solve whose yield type is still bottom). Returning `Int`
+            // here — the default-start type — would, under the solver's
+            // MONOTONE join, permanently pollute the result with `Int`: once
+            // the element later resolves to a class `V`, the accumulated type
+            // becomes `Int | V` instead of `V` (`0 + v0 + …` actually
+            // reduces to `V` via `__radd__`). Defer instead so only the
+            // resolved element type is recorded. (The legacy planner avoided
+            // this via REPLACE-style updates; the constraint solver needs the
+            // explicit defer.)
+            if matches!(element_type, Type::Never) {
+                return None;
+            }
             // User class elements: sum returns an instance of the class
             // (matches CPython when `__add__`/`__radd__` are defined).
             if matches!(element_type, Type::Class { .. }) {
@@ -717,26 +731,32 @@ pub(crate) fn resolve_builtin_call_type(
 
         // === Zip ===
         Builtin::Zip => {
-            if args.is_empty() {
+            // Drive the per-position element types off `arg_types`, NOT the
+            // `args` ExprId slice: the constraint solver resolves builtins
+            // with an EMPTY ExprId slice (it has no ExprIds at the reducer
+            // layer), so iterating `args` produced a zero-length
+            // `tuple_of([])` — `zip(a, b)` typed `Iterator[tuple[]]`, and the
+            // loop targets `a, b in zip(...)` then projected `Never`. The
+            // ExprId slice is consulted only for the `range()` special-case
+            // when it happens to be available (legacy path).
+            if arg_types.is_empty() {
                 return Some(Type::Iterator(Box::new(Type::tuple_of(vec![]))));
             }
             let mut elem_types = Vec::new();
-            for (i, arg_id) in args.iter().enumerate() {
-                // Special case: range() returns Int elements
-                let arg_expr = &module.exprs[*arg_id];
-                if let hir::ExprKind::BuiltinCall {
-                    builtin: hir::Builtin::Range,
-                    ..
-                } = &arg_expr.kind
-                {
-                    elem_types.push(Type::Int);
-                    continue;
+            for (i, ty) in arg_types.iter().enumerate() {
+                // Special case: range() yields Int elements (only checkable
+                // when the ExprId is present).
+                if let Some(arg_id) = args.get(i) {
+                    if let hir::ExprKind::BuiltinCall {
+                        builtin: hir::Builtin::Range,
+                        ..
+                    } = &module.exprs[*arg_id].kind
+                    {
+                        elem_types.push(Type::Int);
+                        continue;
+                    }
                 }
-                if let Some(ty) = arg_types.get(i) {
-                    elem_types.push(extract_iterable_element_type(ty));
-                } else {
-                    elem_types.push(Type::Any);
-                }
+                elem_types.push(extract_iterable_element_type(ty));
             }
             Some(Type::Iterator(Box::new(Type::tuple_of(elem_types))))
         }

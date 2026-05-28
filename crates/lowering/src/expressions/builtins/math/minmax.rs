@@ -562,12 +562,22 @@ impl<'a> Lowering<'a> {
             let arg_type = self.seed_expr_type(arg_id, hir_module);
 
             let final_operand = if is_float && arg_type != Type::Float {
-                let temp = self.alloc_and_add_local(Type::Float, mir_func);
-                self.emit_instruction(mir::InstructionKind::IntToFloat {
-                    dest: temp,
-                    src: arg_operand,
-                });
-                mir::Operand::Local(temp)
+                // Coerce to float. A raw `Int`/`Bool` becomes `Raw(F64)` via
+                // `IntToFloat`. A tagged operand (`Union`/`Any` — e.g. a
+                // `Union[Float, …]` field read whose static type wasn't
+                // narrowed) must be UNBOXED via the tag-dispatching path:
+                // raw `IntToFloat` on tagged bits reinterprets the pointer
+                // as an integer (verifier-rejected, and a runtime SIGSEGV).
+                if matches!(arg_type, Type::Int | Type::Bool) {
+                    let temp = self.alloc_and_add_local(Type::Float, mir_func);
+                    self.emit_instruction(mir::InstructionKind::IntToFloat {
+                        dest: temp,
+                        src: arg_operand,
+                    });
+                    mir::Operand::Local(temp)
+                } else {
+                    self.unbox_if_needed(arg_operand, &Type::Float, mir_func)
+                }
             } else {
                 arg_operand
             };

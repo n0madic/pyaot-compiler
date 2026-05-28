@@ -245,7 +245,7 @@ For typed runtime calls (`rt_str_concat → Str`, `rt_list_get → elem_ty` via 
 * `2` — user function returning raw `Bool`; slot unwrapped, result wrapped via `Value::from_bool`.
 * `3` — first-class builtin (`rt_builtin_*`); accepts and returns tagged `Value` bits, so both unwrap and wrap are pass-through. Lowering's `key_return_tag_for_builtin` returns `3` unconditionally.
 
-Callers that pass a lambda without an explicit return-type annotation get the inferred return type from `func_return_types` (populated by the type-planning pass and topped up for `list.sort(key=...)` method calls in `closure_scan`).
+Callers that pass a lambda without an explicit return-type annotation get the inferred return type from `func_return_types` (materialized by the constraint solver; `list.sort(key=...)` / `sorted(key=...)` element-type hints are routed to the key lambda's param via `constraint_solver/collect.rs::propagate_method_key_hint`).
 
 **`gc::mark_object` takes `Value`.** Entry point is `fn mark_object(v: Value)`: early-return on `!v.is_ptr()`, residual alignment / low-page guard (`obj < 0x1000` or misaligned), `TypeTagKind::from_tag` validation, then per-tag dispatch. The Instance arm walks `(*instance).fields` uniformly with `Value::is_ptr()` (no per-class mask). The Generator arm walks `(*gen).locals` uniformly (no `type_tags` side-array). The Deque arm walks `(*deque).data` uniformly (no `elem_tag == 0` guard). The address-heuristic and `TypeTagKind::from_tag` filters are retained because gc_stress reproducibly trips on them — there are residual pointer-shaped non-objects in code paths that are not yet airtight; flagged for follow-up cleanup.
 
@@ -1063,7 +1063,7 @@ Attr/Index/ClassAttr — they don't bind a new name). Used everywhere
 downstream needs the set of variables a CFG statement binds:
 
 - `lowering/src/context/cfg_walker.rs`
-- `lowering/src/type_planning/closure_scan.rs`
+- `lowering/src/type_planning/constraint_solver/wire_in.rs`
 - `lowering/src/generators/{desugaring, vars}.rs`
 
 New code should use the walker rather than pattern-matching each binding shape separately.
@@ -1333,8 +1333,11 @@ work (Phase 3):
    `Type::Never` (lattice bottom) before the fixed-point ascent. Without
    this, a recursive self-call on the first pass joins the pre-WPA seed
    (`Any`) with the observed type and locks in `Union[Any, T]` forever.
-2. **Class-field refinement** (`lowering/src/class_metadata.rs::refine_class_fields_from_constructor_calls`).
-   When `storage_ty` is `Any` / `HeapAny`, uses `observed_ty` directly
+2. **Class-field refinement** (now the constraint solver's `FieldWrite` →
+   `ClassField(class, attr)` constraints in
+   `constraint_solver/{collect,solve}.rs`; formerly
+   `class_metadata.rs::refine_class_fields_from_constructor_calls`).
+   When `storage_ty` is `Any`, uses `observed_ty` directly
    rather than `unify_field_type(storage_ty, observed_ty)`. Without this,
    a field refined from an unannotated `__init__(self, v)` param takes
    `Union[Any, Int]`, which downstream lowering interprets as a union
@@ -1441,8 +1444,9 @@ Mirror the lambda capture pattern in
   `context/function_lowering.rs` routes gen-expr creators
   (`name.starts_with("__genexp_")`) through
   `infer_lambda_param_types`, which in turn reads
-  `closure_capture_types` recorded by `precompute_closure_capture_types`
-  during type planning. Without this, capture params default to `Any`,
+  `closure_capture_types` materialized by the constraint solver
+  (`Capture` constraints in `constraint_solver/collect.rs`, written back
+  in `constraint_solver/{materialize,wire_in}.rs`). Without this, capture params default to `Any`,
   which mis-tags raw-int lists as `ELEM_HEAP_OBJ` on iteration and
   cascades into pointer-valued tuple elements.
 - **Call-target type inference.**
@@ -1457,12 +1461,13 @@ Mirror the lambda capture pattern in
 The naive §G.3 implementation left two cascading gaps for nested
 gen-exprs like `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`:
 
-1. `precompute_closure_capture_types` used to recurse through loop bodies
+1. The legacy capture-type pass used to recurse through loop bodies
    without first inserting the `IterAdvance` target's element type into
    its `var_types` map. Nested closures capturing loop targets (`wo`)
-   therefore saw `Any`. Fixed in `closure_scan.rs::scan_stmt_for_closures`
-   by destructuring the target against
-   `extract_iterable_element_type(iter)` before recursing.
+   therefore saw `Any`. The constraint solver subsumes this: loop-target
+   element types flow via `IterElem` → binding-target `Var` constraints,
+   and `Capture` constraints carry the resolved type into the nested
+   closure's capture slot regardless of nesting depth.
 2. Generator desugaring runs **before** type planning, so the inner
    gen-expr's resume body uses `VarTypeMap` to infer the for-loop
    iter type. `VarTypeMap` only reads `param.ty` from HIR, and

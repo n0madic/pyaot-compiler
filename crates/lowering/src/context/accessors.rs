@@ -745,11 +745,6 @@ impl<'a> Lowering<'a> {
     pub(crate) fn get_lambda_param_type_hints(&self, func_id: &FuncId) -> Option<&Vec<Type>> {
         self.closures.lambda_param_type_hints.get(func_id)
     }
-
-    /// Set parameter type hints for a lambda.
-    pub(crate) fn insert_lambda_param_type_hints(&mut self, func_id: FuncId, types: Vec<Type>) {
-        self.closures.lambda_param_type_hints.insert(func_id, types);
-    }
 }
 
 // =============================================================================

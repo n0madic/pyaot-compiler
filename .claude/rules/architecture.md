@@ -16,7 +16,7 @@
 | `runtime` | Runtime library (staticlib) | `gc.rs`, `object.rs`, collections, stdlib |
 | `utils` | IDs, string interning, line mapping | `ids.rs`, `interner.rs`, `line_map.rs` |
 | `semantics` | Name resolution, control flow | `lib.rs` |
-| `lowering` (type_planning) | Bidirectional type inference during HIR→MIR lowering | `type_planning/infer.rs`, `type_planning/check.rs`, `type_planning/closure_scan.rs` |
+| `lowering` (type_planning) | Constraint-based type inference during HIR→MIR lowering | `type_planning/constraint_solver/{collect,solve,materialize,wire_in}.rs`, `type_planning/infer.rs` (reducers), `type_planning/check.rs` |
 | `diagnostics` | Error reporting | `lib.rs` |
 
 ## Runtime Module Structure

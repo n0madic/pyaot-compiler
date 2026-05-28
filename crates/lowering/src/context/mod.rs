@@ -181,11 +181,6 @@ pub struct ClosureState {
     pub varargs_params: IndexSet<VarId>,
     /// Caller-provided parameter type hints for lambdas
     pub lambda_param_type_hints: IndexMap<FuncId, Vec<Type>>,
-    /// FuncIds whose `lambda_param_type_hints` entry was written by
-    /// `infer_nested_function_param_types` (NOT by HOF callback registration
-    /// in `register_lambda_hints_from_iterable`). Only these entries may be
-    /// replaced by the harvester rerun; HOF-owned entries remain authoritative.
-    pub harvester_owned_hints: IndexSet<FuncId>,
     /// Maps original (decorated) function ID to its wrapper function ID.
     /// Populated during pre-scan; used to look up the original function for a wrapper.
     pub decorated_to_wrapper: IndexMap<FuncId, FuncId>,

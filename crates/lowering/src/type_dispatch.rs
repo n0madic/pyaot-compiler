@@ -84,6 +84,13 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
             Some(&pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen)
         }
         Type::Any => Some(&runtime_func_def::RT_OBJ_LEN),
+        // A `Union` value is a tagged `Value` at runtime; `rt_obj_len`
+        // dispatches on its tag. Without this a `Union`-typed operand (e.g.
+        // a field written with tuples of different lengths →
+        // `Union[tuple[..], tuple[.]]`) falls through to the `len()`
+        // `Const(0)` fallback and reports length 0 regardless of the actual
+        // runtime container.
+        Type::Union(_) => Some(&runtime_func_def::RT_OBJ_LEN),
         _ => None,
     }
 }
