@@ -216,7 +216,13 @@ fn mark_roots(s: &mut GcState) {
     }
 }
 
-/// Mark a `Value`; if it's a heap pointer recurse into its children.
+/// Mark a `Value` and the transitive closure of its heap children.
+///
+/// The traversal uses an explicit worklist (`Vec<*mut Obj>`) rather than native
+/// recursion: deeply-nested structures (e.g. a 50k-deep list-of-lists) would
+/// otherwise overflow the native stack. Children are *marked on enqueue*, so
+/// the worklist never holds duplicates and popped objects are already marked.
+///
 /// `Value::is_ptr()` filters tagged primitives. After S3.3b.2 closed the
 /// decorator-wrapper return-type leak (§P.2.3), the only pointer-shaped
 /// non-object path is via wrapper return locals that fall back to runtime
@@ -226,115 +232,143 @@ fn mark_roots(s: &mut GcState) {
 /// not raw fn-pointers — so the alignment / TypeTag sanity guards are
 /// redundant. Keeping only the null check; everything else is on the
 /// caller to type correctly.
-fn mark_object(v: Value) {
+fn mark_object(root: Value) {
     unsafe {
-        if !v.is_ptr() {
-            return;
+        let mut worklist: Vec<*mut Obj> = Vec::new();
+
+        // Enqueue a tagged `Value` child if it is a non-null, not-yet-marked
+        // heap pointer (marking it eagerly to dedup the worklist).
+        macro_rules! enqueue_val {
+            ($v:expr) => {{
+                let vv: Value = $v;
+                if vv.is_ptr() {
+                    let p = vv.unwrap_ptr::<Obj>();
+                    if !p.is_null() && !(*p).is_marked() {
+                        (*p).set_marked(true);
+                        worklist.push(p);
+                    }
+                }
+            }};
         }
-        let obj = v.unwrap_ptr::<Obj>();
-        if obj.is_null() {
-            return;
+        // Enqueue a raw `*mut Obj` child (struct field; already a real pointer).
+        macro_rules! enqueue_ptr {
+            ($p:expr) => {{
+                let p: *mut Obj = $p;
+                if !p.is_null() && !(*p).is_marked() {
+                    (*p).set_marked(true);
+                    worklist.push(p);
+                }
+            }};
         }
-        if (*obj).is_marked() {
-            return;
+        macro_rules! fields {
+            ($o:expr, $t:ty, $($f:ident),+ $(,)?) => {{
+                let p = $o as *mut $t;
+                $(enqueue_ptr!((*p).$f);)+
+            }};
         }
-        (*obj).set_marked(true);
-        let mp = |p: *mut Obj| mark_object(Value::from_ptr(p));
-        macro_rules! fields { ($t:ty, $($f:ident),+ $(,)?) => {{ let p = obj as *mut $t; $(mp((*p).$f);)+ }} }
-        match (*obj).type_tag() {
-            TypeTagKind::List => {
-                let p = obj as *mut ListObj;
-                for i in 0..(*p).len {
-                    mark_object(*(*p).data.add(i));
-                }
-            }
-            TypeTagKind::Tuple => {
-                let p = obj as *mut TupleObj;
-                for i in 0..(*p).len {
-                    mark_object(*(*p).data.as_ptr().add(i));
-                }
-            }
-            TypeTagKind::Instance => {
-                let p = obj as *mut InstanceObj;
-                // Storage is uniform tagged Value (Phase 2). `Value::is_ptr()`
-                // inside `mark_object` filters out non-pointer tags exhaustively;
-                // no per-class raw mask consultation needed.
-                for k in 0..(*p).field_count {
-                    mark_object(*(*p).fields.as_ptr().add(k));
-                }
-            }
-            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
-                let d = obj as *mut DictObj;
-                for i in 0..(*d).entries_len {
-                    let e = (*d).entries.add(i);
-                    if (*e).key.0 != 0 {
-                        mark_object((*e).key);
-                        mark_object((*e).value);
+
+        enqueue_val!(root);
+        while let Some(obj) = worklist.pop() {
+            // `obj` is a non-null heap pointer already marked at enqueue time.
+            match (*obj).type_tag() {
+                TypeTagKind::List => {
+                    let p = obj as *mut ListObj;
+                    for i in 0..(*p).len {
+                        enqueue_val!(*(*p).data.add(i));
                     }
                 }
-            }
-            TypeTagKind::Set => {
-                let st = obj as *mut SetObj;
-                for i in 0..(*st).capacity {
-                    let e = (*st).entries.add(i);
-                    if (*e).elem.0 != 0 && (*e).elem != TOMBSTONE {
-                        mark_object((*e).elem);
+                TypeTagKind::Tuple => {
+                    let p = obj as *mut TupleObj;
+                    for i in 0..(*p).len {
+                        enqueue_val!(*(*p).data.as_ptr().add(i));
                     }
                 }
-            }
-            TypeTagKind::Generator => {
-                let g = obj as *mut GeneratorObj;
-                for k in 0..(*g).num_locals as usize {
-                    mark_object(*(*g).locals.as_ptr().add(k));
-                }
-                mark_object((*g).sent_value);
-            }
-            TypeTagKind::Iterator => {
-                match IteratorKind::try_from((*(obj as *mut IteratorObj)).kind) {
-                    Ok(IteratorKind::Map) | Ok(IteratorKind::MapTagged) => {
-                        fields!(MapIterObj, inner_iter, captures)
-                    }
-                    Ok(IteratorKind::Filter) | Ok(IteratorKind::FilterTagged) => {
-                        fields!(FilterIterObj, inner_iter, captures)
-                    }
-                    Ok(IteratorKind::Zip) => fields!(ZipIterObj, iter1, iter2),
-                    Ok(IteratorKind::Zip3) => fields!(Zip3IterObj, iter1, iter2, iter3),
-                    Ok(IteratorKind::Chain) => fields!(ChainIterObj, iters),
-                    Ok(IteratorKind::ISlice) => fields!(ISliceIterObj, inner_iter),
-                    Ok(IteratorKind::ZipN) => fields!(ZipNIterObj, iters),
-                    _ => mp((*(obj as *mut IteratorObj)).source),
-                }
-            }
-            TypeTagKind::Cell => {
-                if let Some(p) = cell_get_ptr_for_gc(obj as *mut CellObj) {
-                    mp(p);
-                }
-            }
-            TypeTagKind::File => fields!(FileObj, name),
-            TypeTagKind::Match => fields!(MatchObj, groups, original),
-            TypeTagKind::CompletedProcess => fields!(CompletedProcessObj, args, stdout, stderr),
-            TypeTagKind::ParseResult => fields!(
-                ParseResultObj,
-                scheme,
-                netloc,
-                path,
-                params,
-                query,
-                fragment
-            ),
-            TypeTagKind::HttpResponse => fields!(HttpResponseObj, url, headers, body),
-            TypeTagKind::Request => fields!(RequestObj, url, data, headers, method),
-            TypeTagKind::Deque => {
-                let d = obj as *mut DequeObj;
-                let (data, head, len, cap) = ((*d).data, (*d).head, (*d).len, (*d).capacity);
-                if !data.is_null() {
-                    for i in 0..len {
-                        mark_object(*data.add((head + i) % cap));
+                TypeTagKind::Instance => {
+                    let p = obj as *mut InstanceObj;
+                    // Storage is uniform tagged Value (Phase 2). `Value::is_ptr()`
+                    // filters out non-pointer tags exhaustively; no per-class raw
+                    // mask consultation needed.
+                    for k in 0..(*p).field_count {
+                        enqueue_val!(*(*p).fields.as_ptr().add(k));
                     }
                 }
+                TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                    let d = obj as *mut DictObj;
+                    for i in 0..(*d).entries_len {
+                        let e = (*d).entries.add(i);
+                        if (*e).key.0 != 0 {
+                            enqueue_val!((*e).key);
+                            enqueue_val!((*e).value);
+                        }
+                    }
+                }
+                TypeTagKind::Set => {
+                    let st = obj as *mut SetObj;
+                    for i in 0..(*st).capacity {
+                        let e = (*st).entries.add(i);
+                        if (*e).elem.0 != 0 && (*e).elem != TOMBSTONE {
+                            enqueue_val!((*e).elem);
+                        }
+                    }
+                }
+                TypeTagKind::Generator => {
+                    let g = obj as *mut GeneratorObj;
+                    for k in 0..(*g).num_locals as usize {
+                        enqueue_val!(*(*g).locals.as_ptr().add(k));
+                    }
+                    enqueue_val!((*g).sent_value);
+                }
+                TypeTagKind::Iterator => {
+                    match IteratorKind::try_from((*(obj as *mut IteratorObj)).kind) {
+                        Ok(IteratorKind::Map) | Ok(IteratorKind::MapTagged) => {
+                            fields!(obj, MapIterObj, inner_iter, captures)
+                        }
+                        Ok(IteratorKind::Filter) | Ok(IteratorKind::FilterTagged) => {
+                            fields!(obj, FilterIterObj, inner_iter, captures)
+                        }
+                        Ok(IteratorKind::Zip) => fields!(obj, ZipIterObj, iter1, iter2),
+                        Ok(IteratorKind::Zip3) => fields!(obj, Zip3IterObj, iter1, iter2, iter3),
+                        Ok(IteratorKind::Chain) => fields!(obj, ChainIterObj, iters),
+                        Ok(IteratorKind::ISlice) => fields!(obj, ISliceIterObj, inner_iter),
+                        Ok(IteratorKind::ZipN) => fields!(obj, ZipNIterObj, iters),
+                        _ => enqueue_ptr!((*(obj as *mut IteratorObj)).source),
+                    }
+                }
+                TypeTagKind::Cell => {
+                    if let Some(p) = cell_get_ptr_for_gc(obj as *mut CellObj) {
+                        enqueue_ptr!(p);
+                    }
+                }
+                TypeTagKind::File => fields!(obj, FileObj, name),
+                TypeTagKind::Match => fields!(obj, MatchObj, groups, original),
+                TypeTagKind::CompletedProcess => {
+                    fields!(obj, CompletedProcessObj, args, stdout, stderr)
+                }
+                TypeTagKind::ParseResult => fields!(
+                    obj,
+                    ParseResultObj,
+                    scheme,
+                    netloc,
+                    path,
+                    params,
+                    query,
+                    fragment
+                ),
+                TypeTagKind::HttpResponse => fields!(obj, HttpResponseObj, url, headers, body),
+                TypeTagKind::Request => fields!(obj, RequestObj, url, data, headers, method),
+                TypeTagKind::Deque => {
+                    let d = obj as *mut DequeObj;
+                    let (data, head, len, cap) = ((*d).data, (*d).head, (*d).len, (*d).capacity);
+                    if !data.is_null() {
+                        for i in 0..len {
+                            enqueue_val!(*data.add((head + i) % cap));
+                        }
+                    }
+                }
+                // Atoms (Str/Float/Bytes/None/Int/Bool/Range/Hash/StringIO/BytesIO/...):
+                // no heap children.
+                _ => {}
             }
-            // Atoms (Str/Float/Bytes/None/Int/Bool/Range/Hash/StringIO/BytesIO/...): no heap children.
-            _ => {}
         }
     }
 }

@@ -107,6 +107,7 @@ runtime_cases!(
     (runtime_collections, "test_collections.py"),
     // Whole-project code-review regression repros
     (runtime_review_wave0a, "test_review_wave0a.py"),
+    (runtime_review_wave0b, "test_review_wave0b.py"),
     // Builtins
     (runtime_builtins, "test_builtins.py"),
     // Print output (with expected output verification)
