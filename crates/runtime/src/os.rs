@@ -35,11 +35,15 @@ fn normalize_path(path: &Path) -> PathBuf {
                 }
             }
             Component::ParentDir => {
-                // Pop a Normal component if possible, otherwise keep '..'
+                // Pop a Normal component if possible, otherwise keep '..'.
                 match components.last() {
                     Some(Component::Normal(_)) => {
                         components.pop();
                     }
+                    // After the filesystem root, `..` has nowhere to go — drop
+                    // it (CPython: normpath("/../x") == "/x", normpath("/..")
+                    // == "/"). Without this it produced "/..".
+                    Some(Component::RootDir) => {}
                     _ => {
                         components.push(component);
                     }

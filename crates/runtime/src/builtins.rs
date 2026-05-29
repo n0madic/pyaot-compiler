@@ -87,7 +87,25 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
     } else {
         unsafe {
             match (*obj).type_tag() {
-                TypeTagKind::Float => (*(obj as *mut FloatObj)).value as i64,
+                TypeTagKind::Float => {
+                    // CPython raises rather than silently saturating: `int(nan)`
+                    // -> ValueError, `int(inf)` -> OverflowError. The plain
+                    // `as i64` cast would yield 0 / i64::MAX otherwise.
+                    let f = (*(obj as *mut FloatObj)).value;
+                    if f.is_nan() {
+                        raise_exc!(
+                            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                            "cannot convert float NaN to integer"
+                        );
+                    }
+                    if f.is_infinite() {
+                        raise_exc!(
+                            pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+                            "cannot convert float infinity to integer"
+                        );
+                    }
+                    f as i64
+                }
                 TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
                 _ => raise_type_error(
                     "int() argument must be a string, a bytes-like object or a real number",

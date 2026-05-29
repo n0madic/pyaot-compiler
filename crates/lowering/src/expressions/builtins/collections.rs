@@ -58,6 +58,17 @@ impl<'a> Lowering<'a> {
                             let unreachable_bb = self.new_block();
                             self.push_block(unreachable_bb);
                         }
+                    } else {
+                        // class_info unavailable (e.g. a cross-module class):
+                        // dispatch the length at runtime. Without this branch
+                        // `result_local` was left uninitialized → garbage.
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_OBJ_LEN,
+                            ),
+                            args: vec![arg_operand],
+                        });
                     }
                 }
                 _ => {
