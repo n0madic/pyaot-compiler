@@ -179,10 +179,23 @@ impl AstToHir {
                 for stmt in &while_stmt.body {
                     self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
                 }
+                for stmt in &while_stmt.orelse {
+                    self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
+                }
             }
             py::Stmt::For(for_stmt) => {
                 for stmt in &for_stmt.body {
                     self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
+                }
+                for stmt in &for_stmt.orelse {
+                    self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
+                }
+            }
+            py::Stmt::Match(match_stmt) => {
+                for case in &match_stmt.cases {
+                    for stmt in &case.body {
+                        self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
+                    }
                 }
             }
             py::Stmt::Try(try_stmt) => {
@@ -194,6 +207,9 @@ impl AstToHir {
                     for stmt in &h.body {
                         self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
                     }
+                }
+                for stmt in &try_stmt.orelse {
+                    self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);
                 }
                 for stmt in &try_stmt.finalbody {
                     self.collect_nonlocal_names_from_stmt(stmt, nonlocal_names);

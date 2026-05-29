@@ -300,6 +300,11 @@ impl AstToHir {
         let mut parts: Vec<ExprId> = Vec::new();
         let mut current_literal = String::new();
         let mut auto_arg_index = 0;
+        // CPython forbids mixing automatic (`{}`) and manual (`{0}`) field
+        // numbering. `None` = undecided, `Some(true)` = automatic seen,
+        // `Some(false)` = manual (explicit index) seen. Named fields (`{x}`)
+        // are neutral and don't set this.
+        let mut auto_numbering: Option<bool> = None;
         let mut chars = format_str.chars().peekable();
 
         while let Some(c) = chars.next() {
@@ -338,6 +343,14 @@ impl AstToHir {
 
                     let arg_expr = match &placeholder.kind {
                         PlaceholderKind::Auto => {
+                            if auto_numbering == Some(false) {
+                                return Err(CompilerError::parse_error(
+                                    "cannot switch from manual field specification to \
+                                     automatic field numbering",
+                                    format_span,
+                                ));
+                            }
+                            auto_numbering = Some(true);
                             if auto_arg_index < args.len() {
                                 let expr = args[auto_arg_index];
                                 auto_arg_index += 1;
@@ -350,6 +363,14 @@ impl AstToHir {
                             }
                         }
                         PlaceholderKind::Index(idx) => {
+                            if auto_numbering == Some(true) {
+                                return Err(CompilerError::parse_error(
+                                    "cannot switch from automatic field numbering to \
+                                     manual field specification",
+                                    format_span,
+                                ));
+                            }
+                            auto_numbering = Some(false);
                             if *idx < args.len() {
                                 args[*idx]
                             } else {

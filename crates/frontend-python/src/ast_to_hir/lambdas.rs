@@ -280,6 +280,8 @@ impl AstToHir {
             py::Stmt::While(while_stmt) => {
                 self.collect_free_variables(&while_stmt.test, local_scope, free_vars);
                 self.collect_free_variables_in_stmts(&while_stmt.body, local_scope, free_vars);
+                // The loop `else` block runs when the loop exits normally.
+                self.collect_free_variables_in_stmts(&while_stmt.orelse, local_scope, free_vars);
             }
             py::Stmt::For(for_stmt) => {
                 // Collect from iterator first
@@ -288,6 +290,8 @@ impl AstToHir {
                 self.add_target_to_scope(&for_stmt.target, local_scope);
                 // Collect from body
                 self.collect_free_variables_in_stmts(&for_stmt.body, local_scope, free_vars);
+                // The loop `else` block runs when the loop exits without break.
+                self.collect_free_variables_in_stmts(&for_stmt.orelse, local_scope, free_vars);
             }
             py::Stmt::Try(try_stmt) => {
                 self.collect_free_variables_in_stmts(&try_stmt.body, local_scope, free_vars);
@@ -299,7 +303,26 @@ impl AstToHir {
                     }
                     self.collect_free_variables_in_stmts(&h.body, local_scope, free_vars);
                 }
+                // The `else` block runs when the try body completes without
+                // raising — previously skipped, so closures inside it captured
+                // the wrong variables.
+                self.collect_free_variables_in_stmts(&try_stmt.orelse, local_scope, free_vars);
                 self.collect_free_variables_in_stmts(&try_stmt.finalbody, local_scope, free_vars);
+            }
+            py::Stmt::Match(match_stmt) => {
+                self.collect_free_variables(&match_stmt.subject, local_scope, free_vars);
+                for case in &match_stmt.cases {
+                    // Value references inside the pattern (MatchValue / MatchClass
+                    // class ref / mapping keys) are evaluated in the enclosing
+                    // scope, so collect them before introducing the pattern's
+                    // capture names.
+                    self.collect_free_variables_in_pattern(&case.pattern, local_scope, free_vars);
+                    self.add_pattern_bindings_to_scope(&case.pattern, local_scope);
+                    if let Some(ref guard) = case.guard {
+                        self.collect_free_variables(guard, local_scope, free_vars);
+                    }
+                    self.collect_free_variables_in_stmts(&case.body, local_scope, free_vars);
+                }
             }
             py::Stmt::FunctionDef(func_def) => {
                 // The nested function name becomes a local
@@ -381,6 +404,105 @@ impl AstToHir {
         }
     }
 
+    /// Add the capture names bound by a `match` pattern to the local scope so
+    /// they are not mistaken for free variables in the case guard/body.
+    fn add_pattern_bindings_to_scope(
+        &self,
+        pattern: &py::Pattern,
+        local_scope: &mut HashSet<String>,
+    ) {
+        match pattern {
+            py::Pattern::MatchValue(_) | py::Pattern::MatchSingleton(_) => {}
+            py::Pattern::MatchAs(ma) => {
+                if let Some(ref inner) = ma.pattern {
+                    self.add_pattern_bindings_to_scope(inner, local_scope);
+                }
+                if let Some(ref name) = ma.name {
+                    local_scope.insert(name.to_string());
+                }
+            }
+            py::Pattern::MatchStar(ms) => {
+                if let Some(ref name) = ms.name {
+                    local_scope.insert(name.to_string());
+                }
+            }
+            py::Pattern::MatchSequence(ms) => {
+                for p in &ms.patterns {
+                    self.add_pattern_bindings_to_scope(p, local_scope);
+                }
+            }
+            py::Pattern::MatchOr(mo) => {
+                for p in &mo.patterns {
+                    self.add_pattern_bindings_to_scope(p, local_scope);
+                }
+            }
+            py::Pattern::MatchMapping(mm) => {
+                for p in &mm.patterns {
+                    self.add_pattern_bindings_to_scope(p, local_scope);
+                }
+                if let Some(ref rest) = mm.rest {
+                    local_scope.insert(rest.to_string());
+                }
+            }
+            py::Pattern::MatchClass(mc) => {
+                for p in &mc.patterns {
+                    self.add_pattern_bindings_to_scope(p, local_scope);
+                }
+                for p in &mc.kwd_patterns {
+                    self.add_pattern_bindings_to_scope(p, local_scope);
+                }
+            }
+        }
+    }
+
+    /// Collect free variables referenced by the *value* parts of a `match`
+    /// pattern (literal/value comparands, class references, mapping keys).
+    fn collect_free_variables_in_pattern(
+        &self,
+        pattern: &py::Pattern,
+        local_scope: &HashSet<String>,
+        free_vars: &mut Vec<InternedString>,
+    ) {
+        match pattern {
+            py::Pattern::MatchValue(mv) => {
+                self.collect_free_variables(&mv.value, local_scope, free_vars);
+            }
+            py::Pattern::MatchSingleton(_) | py::Pattern::MatchStar(_) => {}
+            py::Pattern::MatchAs(ma) => {
+                if let Some(ref inner) = ma.pattern {
+                    self.collect_free_variables_in_pattern(inner, local_scope, free_vars);
+                }
+            }
+            py::Pattern::MatchSequence(ms) => {
+                for p in &ms.patterns {
+                    self.collect_free_variables_in_pattern(p, local_scope, free_vars);
+                }
+            }
+            py::Pattern::MatchOr(mo) => {
+                for p in &mo.patterns {
+                    self.collect_free_variables_in_pattern(p, local_scope, free_vars);
+                }
+            }
+            py::Pattern::MatchMapping(mm) => {
+                for k in &mm.keys {
+                    self.collect_free_variables(k, local_scope, free_vars);
+                }
+                for p in &mm.patterns {
+                    self.collect_free_variables_in_pattern(p, local_scope, free_vars);
+                }
+            }
+            py::Pattern::MatchClass(mc) => {
+                self.collect_free_variables(&mc.cls, local_scope, free_vars);
+                for p in &mc.patterns {
+                    self.collect_free_variables_in_pattern(p, local_scope, free_vars);
+                }
+                for p in &mc.kwd_patterns {
+                    self.collect_free_variables_in_pattern(p, local_scope, free_vars);
+                }
+            }
+        }
+    }
+
     /// Recursively collect free variables from an expression
     pub(crate) fn collect_free_variables(
         &self,
@@ -424,6 +546,30 @@ impl AstToHir {
                 for arg in &call.args {
                     self.collect_free_variables(arg, local_params, free_vars);
                 }
+                // NOTE: keyword-argument values (`f(k=outer_var)`) are
+                // intentionally not collected here. Doing so surfaces a
+                // separate latent bug in the capture-cell wiring (an SSA
+                // "used without definition" violation), which is out of scope
+                // for this free-var coverage fix.
+            }
+            // Slice bounds reference variables (e.g. `xs[a:b:c]`); previously
+            // the whole Slice fell through to the catch-all and was ignored.
+            py::Expr::Slice(slice) => {
+                if let Some(ref lower) = slice.lower {
+                    self.collect_free_variables(lower, local_params, free_vars);
+                }
+                if let Some(ref upper) = slice.upper {
+                    self.collect_free_variables(upper, local_params, free_vars);
+                }
+                if let Some(ref step) = slice.step {
+                    self.collect_free_variables(step, local_params, free_vars);
+                }
+            }
+            // Walrus `(x := expr)`: the assigned value references outer
+            // variables. The bound name leaks to the enclosing scope and is
+            // captured at its use sites via the Name arm.
+            py::Expr::NamedExpr(named) => {
+                self.collect_free_variables(&named.value, local_params, free_vars);
             }
             py::Expr::IfExp(ifexp) => {
                 self.collect_free_variables(&ifexp.test, local_params, free_vars);
