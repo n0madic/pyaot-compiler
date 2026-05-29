@@ -447,8 +447,58 @@ fn max_var_in_target(target: &hir::BindingTarget, max_id: &mut u32) {
 }
 
 fn max_var_in_expr(expr: &hir::Expr, max_id: &mut u32) {
-    if let hir::ExprKind::Var(var_id) = expr.kind {
-        *max_id = (*max_id).max(var_id.0);
+    match &expr.kind {
+        hir::ExprKind::Var(var_id) => *max_id = (*max_id).max(var_id.0),
+        // Match patterns bind capture VarIds (MatchAs/MatchStar/mapping rest)
+        // from the same id space; if one is the highest VarId and isn't also
+        // referenced as a `Var` expr or `Bind` target, omitting it here would
+        // undercount and let `alloc_split` mint a colliding fresh VarId.
+        hir::ExprKind::MatchPattern { pattern, .. } => max_var_in_pattern(pattern, max_id),
+        _ => {}
+    }
+}
+
+fn max_var_in_pattern(pattern: &hir::Pattern, max_id: &mut u32) {
+    match pattern {
+        hir::Pattern::MatchAs { pattern, name } => {
+            if let Some(v) = name {
+                *max_id = (*max_id).max(v.0);
+            }
+            if let Some(inner) = pattern {
+                max_var_in_pattern(inner, max_id);
+            }
+        }
+        hir::Pattern::MatchStar(name) => {
+            if let Some(v) = name {
+                *max_id = (*max_id).max(v.0);
+            }
+        }
+        hir::Pattern::MatchSequence { patterns } | hir::Pattern::MatchOr(patterns) => {
+            for p in patterns {
+                max_var_in_pattern(p, max_id);
+            }
+        }
+        hir::Pattern::MatchMapping { patterns, rest, .. } => {
+            for p in patterns {
+                max_var_in_pattern(p, max_id);
+            }
+            if let Some(v) = rest {
+                *max_id = (*max_id).max(v.0);
+            }
+        }
+        hir::Pattern::MatchClass {
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            for p in patterns {
+                max_var_in_pattern(p, max_id);
+            }
+            for p in kwd_patterns {
+                max_var_in_pattern(p, max_id);
+            }
+        }
+        hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => {}
     }
 }
 

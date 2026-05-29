@@ -74,9 +74,24 @@ fn cap_type_depth(ty: &Type, remaining: u32) -> Type {
                 ret: Box::new(cap_type_depth(ret, remaining - 1)),
             }
         }
-        Type::Union(members) => members.iter().fold(Type::Never, |acc, m| {
-            acc.join(&cap_type_depth(m, remaining))
-        }),
+        Type::Union(members) => {
+            // Rebuild the union directly rather than folding via `join`, which
+            // applies the numeric tower (Int ⊔ Float = Float) and would
+            // collapse a runtime-distinguishable union. A union's members sit
+            // at the same depth as the union, so `remaining` is not decremented.
+            let mut parts: Vec<Type> = Vec::new();
+            for m in members {
+                let capped = cap_type_depth(m, remaining);
+                if !parts.contains(&capped) {
+                    parts.push(capped);
+                }
+            }
+            match parts.len() {
+                0 => Type::Never,
+                1 => parts.into_iter().next().unwrap(),
+                _ => Type::Union(parts),
+            }
+        }
         // Leaves — no nesting to cap.
         _ => ty.clone(),
     }

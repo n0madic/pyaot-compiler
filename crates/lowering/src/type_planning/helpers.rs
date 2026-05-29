@@ -696,7 +696,13 @@ pub(crate) fn resolve_builtin_call_type(
             if arg_types.len() == 1 {
                 return Some(extract_iterable_element_type(&arg_types[0]));
             }
-            // Multi-arg form: min(a, b, c) — returns the common type
+            // Multi-arg form: min(a, b, c). NOTE: only the numeric common type
+            // is inferred here. Typing a non-numeric result (e.g. min("a","b")
+            // -> Str) is correct in principle but the min/max *lowering* still
+            // produces a Raw i64 result, so a Str-typed dest trips the verifier.
+            // Supporting non-numeric min/max end-to-end is a separate feature;
+            // until then keep the numeric heuristic (string min/max stays an
+            // unfixed gap rather than a compile error).
             let has_float = arg_types.contains(&Type::Float);
             Some(if has_float { Type::Float } else { Type::Int })
         }

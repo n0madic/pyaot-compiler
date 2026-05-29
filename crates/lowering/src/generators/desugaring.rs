@@ -189,12 +189,11 @@ fn iter_elem_type_with(
             return ty;
         }
     }
-    let fallback = if matches!(fg.target, hir::BindingTarget::Var(_)) {
-        Type::Int
-    } else {
-        Type::Any
-    };
-    arg_elem_type(m, vmap, fg.iter_expr, 0, interner).unwrap_or(fallback)
+    // When the element type can't be determined, fall back to `Any` rather
+    // than guessing `Int` for a single-`Var` target: a generator over an
+    // unknown iterable of str/float/objects would otherwise be typed `Int` and
+    // its elements mishandled as raw integers.
+    arg_elem_type(m, vmap, fg.iter_expr, 0, interner).unwrap_or(Type::Any)
 }
 
 /// Element type of an arbitrary iterable expression.
