@@ -2727,6 +2727,97 @@ mod tests {
         );
     }
 
+    /// Destructured store `node.grad, node.other = pair` through an UNHINTED
+    /// receiver must route each `Attr` leaf through `emit_field_write` and so
+    /// emit a `FieldWriteDynamic` per field — the tuple-unpack call site
+    /// (`flow_elem_into_target`) shares the same helper as the plain store.
+    #[test]
+    fn collect_unhinted_destructured_attr_store_emits_field_write_dynamic() {
+        let mut interner = StringInterner::new();
+        let f_name = interner.intern("backward");
+        let node_name = interner.intern("node");
+        let pair_name = interner.intern("pair");
+        let grad_attr = interner.intern("grad");
+        let other_attr = interner.intern("other");
+        let class_id = ClassId::new(0);
+        let class_name = interner.intern("Value");
+
+        let mut m = hir::Module::new(interner.intern("test"));
+        let mut cdef = make_class_def(class_id, class_name);
+        cdef.fields.push(hir::FieldDef {
+            name: grad_attr,
+            ty: Type::Int,
+            span: Span::dummy(),
+        });
+        cdef.fields.push(hir::FieldDef {
+            name: other_attr,
+            ty: Type::Int,
+            span: Span::dummy(),
+        });
+        m.class_defs.insert(class_id, cdef);
+
+        // `def backward(node, pair): node.grad, node.other = pair` — `node` is
+        // unannotated, so both Attr leaves route through `FieldWriteDynamic`.
+        let node_var = VarId::new(0);
+        let pair_var = VarId::new(1);
+        let e_node = m.exprs.alloc(expr(hir::ExprKind::Var(node_var)));
+        let e_pair = m.exprs.alloc(expr(hir::ExprKind::Var(pair_var)));
+        let s_write = m.stmts.alloc(stmt(hir::StmtKind::Bind {
+            target: hir::BindingTarget::Tuple {
+                elts: vec![
+                    hir::BindingTarget::Attr {
+                        obj: e_node,
+                        field: grad_attr,
+                        span: Span::dummy(),
+                    },
+                    hir::BindingTarget::Attr {
+                        obj: e_node,
+                        field: other_attr,
+                        span: Span::dummy(),
+                    },
+                ],
+                span: Span::dummy(),
+            },
+            value: e_pair,
+            type_hint: None,
+        }));
+
+        let entry = HirBlockId::new(0);
+        let block = make_block(entry, vec![s_write], HirTerminator::Return(None));
+        let fid = FuncId::new(0);
+        let func = make_function(
+            f_name,
+            fid,
+            vec![
+                make_param(node_name, node_var, None),
+                make_param(pair_name, pair_var, None),
+            ],
+            None,
+            entry,
+            block,
+        );
+        m.functions.push(fid);
+        m.func_defs.insert(fid, func);
+
+        let mut solver = Solver::new();
+        collect_with_empty_interner(&mut solver, &m);
+
+        let has_dynamic = |field: InternedString| {
+            solver.constraints().iter().any(|c| {
+                matches!(
+                    c,
+                    Constraint::FieldWriteDynamic { recv, name, .. }
+                        if *recv == TypeKey::Expr(e_node) && *name == field
+                )
+            })
+        };
+        assert!(
+            has_dynamic(grad_attr) && has_dynamic(other_attr),
+            "destructured store through an unhinted receiver must emit a \
+             FieldWriteDynamic for each Attr leaf"
+        );
+    }
+
     /// `def f(x): return x + 1` called as `f(5)`. Unannotated `x`
     /// receives `Int` via `LambdaParamHint` → `FlowsInto LambdaParam → Var`.
     #[test]

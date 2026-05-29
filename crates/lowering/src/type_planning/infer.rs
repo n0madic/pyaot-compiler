@@ -513,12 +513,7 @@ impl<'a> Lowering<'a> {
         // instance harvester (a `BinOp self.n + 1` resolves to `Any`,
         // gets misread as a compound RHS, and falsely marks the field
         // as heap-typed).
-        let class_id_opt = match obj_ty {
-            Type::Class { class_id, .. } => Some(*class_id),
-            Type::Generic { base, .. } => Some(*base),
-            _ => None,
-        };
-        if let Some(class_id) = class_id_opt {
+        if let Some(class_id) = obj_ty.class_id() {
             if let Some(class_info) = self.get_class_info(&class_id) {
                 // Handle __class__ on exception class instances
                 let attr_name = self.resolve(attr);

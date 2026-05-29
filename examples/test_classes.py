@@ -3443,4 +3443,43 @@ assert abs(_fwd_leaf1.grad - 0.5) < 1e-9, f"_fwd_leaf1.grad = {_fwd_leaf1.grad}"
 assert abs(_fwd_leaf2.grad - 0.5) < 1e-9, f"_fwd_leaf2.grad = {_fwd_leaf2.grad}"
 print("Cross-instance field write through unhinted receiver: PASS")
 
+# =============================================================================
+# Cross-instance write into an INHERITED field through an unhinted receiver
+# =============================================================================
+# Same `FieldWriteDynamic` path as above, but `grad` is declared on the BASE
+# class while the unhinted receiver (`child`) resolves to the SUBCLASS only at
+# solve-time. The field layout is inherited into the subclass, but the field
+# NAME lives only in the base's `class_defs`, so the solver's own-class-only
+# field gate used to drop the write — leaving `grad` typed `Int` and the boxed
+# Float store rejected by the MIR verifier (`BoxValue: src Raw(F64) doesn't
+# match Raw(I64)`). The `class_has_field_in_hierarchy` gate walks the base
+# chain so the inherited field is widened to `Float` like the non-inherited
+# case.
+class _InhBase:
+    __slots__ = ('grad',)
+
+    def __init__(self):
+        self.grad = 0
+
+
+class _InhDerived(_InhBase):
+    __slots__ = ('children',)
+
+    def __init__(self, children):
+        super().__init__()
+        self.children = children
+
+    def backward(self):
+        for child in self.children:
+            child.grad = child.grad + 0.5
+
+
+_inh_leaf1 = _InhDerived([])
+_inh_leaf2 = _InhDerived([])
+_inh_root = _InhDerived([_inh_leaf1, _inh_leaf2])
+_inh_root.backward()
+assert abs(_inh_leaf1.grad - 0.5) < 1e-9, f"_inh_leaf1.grad = {_inh_leaf1.grad}"
+assert abs(_inh_leaf2.grad - 0.5) < 1e-9, f"_inh_leaf2.grad = {_inh_leaf2.grad}"
+print("Cross-instance write into inherited field through unhinted receiver: PASS")
+
 print("All class tests passed!")

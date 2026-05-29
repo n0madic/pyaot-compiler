@@ -66,6 +66,21 @@ pub trait ReducerCtx {
         false
     }
 
+    /// Like [`Self::class_has_instance_field`], but also walks the
+    /// base-class chain — `true` if `class_id` OR any ancestor declares an
+    /// instance field named `attr`. Used by the `FieldWriteDynamic` reducer
+    /// so a store through a subclass receiver into a field declared on a base
+    /// class is not dropped: the field LAYOUT is inherited into the subclass,
+    /// but the field NAME lives only in the ancestor's `class_defs`, so the
+    /// own-class-only [`Self::class_has_instance_field`] gate would defer the
+    /// write forever (and the verifier then rejects the boxed wider store).
+    /// Default impl delegates to [`Self::class_has_instance_field`] — test
+    /// contexts carry no hierarchy to walk.
+    #[allow(unused_variables)]
+    fn class_has_field_in_hierarchy(&self, class_id: ClassId, attr: InternedString) -> bool {
+        self.class_has_instance_field(class_id, attr)
+    }
+
     /// Resolve `recv[index]` for user-defined `__getitem__`. Built-in
     /// containers (`list`/`dict`/`set`/`tuple`/`str`/`bytes`) are handled
     /// inline by [`eval_subscript`] without consulting this method.
@@ -570,8 +585,13 @@ fn eval_attribute<C: ReducerCtx>(env: &Env, recv: TypeKey, attr: InternedString,
         return Type::Never;
     }
     // Class field path: solver-internal lookup before delegating to ctx.
-    if let Type::Class { class_id, .. } = &recv_ty {
-        let field_ty = env.get(TypeKey::ClassField(*class_id, attr));
+    // Covers both `Type::Class` and user generic classes (`Type::Generic`,
+    // via `class_id()`); built-in container bases fall through the
+    // `class_has_instance_field` gate (false) to `ctx.attribute_return`
+    // exactly as before, so this stays symmetric with the write reducer
+    // [`eval_field_write_dynamic`], which already resolves both shapes.
+    if let Some(class_id) = recv_ty.class_id() {
+        let field_ty = env.get(TypeKey::ClassField(class_id, attr));
         if !matches!(field_ty, Type::Never) {
             return field_ty;
         }
@@ -585,7 +605,7 @@ fn eval_attribute<C: ReducerCtx>(env: &Env, recv: TypeKey, attr: InternedString,
         // cross-function field-read bug). Methods / properties / built-in
         // attributes are NOT instance fields, so they fall through to the
         // ctx as before.
-        if ctx.class_has_instance_field(*class_id, attr) {
+        if ctx.class_has_instance_field(class_id, attr) {
             return Type::Never;
         }
     }
@@ -598,9 +618,16 @@ fn eval_attribute<C: ReducerCtx>(env: &Env, recv: TypeKey, attr: InternedString,
 /// mirroring how [`eval_attribute`] resolves dynamic field READS.
 ///
 /// Defers (returns `None`, leaving the field unchanged) until `recv`
-/// resolves to a class type whose declared instance fields include `name`.
+/// resolves to a class type (`Type::Class` or a user `Type::Generic`, via
+/// [`Type::class_id`]) whose own-or-inherited instance fields include `name`.
 /// The collector's dependency edge (`recv → this constraint`) re-fires the
 /// reducer once a later constraint JOINs a `Class` into `recv`.
+///
+/// A `Union`/`Optional` receiver still defers (it has no single `class_id`).
+/// That loses no end-to-end correctness: the lowering layer (`bind_attr_op`)
+/// itself drops field stores through Union receivers, so widening the field
+/// type here would have no observable effect — Union-receiver attribute
+/// writes are an unimplemented LOWERING feature, not a solver gap.
 fn eval_field_write_dynamic<C: ReducerCtx>(
     env: &Env,
     recv: TypeKey,
@@ -609,15 +636,20 @@ fn eval_field_write_dynamic<C: ReducerCtx>(
     ctx: &C,
 ) -> Option<(TypeKey, Type)> {
     let recv_ty = env.get(recv);
-    let class_id = match &recv_ty {
-        Type::Class { class_id, .. } => *class_id,
-        Type::Generic { base, .. } => *base, // user generic class; builtins gated below
-        _ => return None,                    // unresolved / not a class → defer
-    };
-    // Gate: only write to a field the class actually declares. Avoids phantom
-    // fields on unrelated classes that share the name, and defers builtin
-    // containers (list/dict Generic base ∉ class_defs → false).
-    if !ctx.class_has_instance_field(class_id, name) {
+    // Unresolved / not a single class (Union, Optional, primitive, …) → defer.
+    let class_id = recv_ty.class_id()?;
+    // Gate: the receiver class, OR an ancestor, must declare `name` as an
+    // instance field. The hierarchy walk closes the inherited-field gap — a
+    // write through a subclass receiver into a base-declared field would
+    // otherwise be dropped (the field layout is inherited into the subclass,
+    // but the field name lives only in the ancestor's `class_defs`), leaving
+    // the field too narrow and the boxed wider store rejected by the
+    // verifier. Builtin container bases declare no instance fields → still
+    // gated out. The key stays the *resolved receiver* class (not the
+    // declaring ancestor): codegen reads `field_types[receiver_class]`, which
+    // `fold_refined_field_types_into_storage` populates from
+    // `ClassField(receiver, name)`.
+    if !ctx.class_has_field_in_hierarchy(class_id, name) {
         return None;
     }
     Some((TypeKey::ClassField(class_id, name), env.get(value)))
@@ -1974,6 +2006,91 @@ mod tests {
             )),
             Type::Never,
             "builtin Generic base must not receive a phantom field write"
+        );
+    }
+
+    /// Reducer ctx that models inheritance: `own` lists classes declaring the
+    /// field directly; `inherited` lists subclasses that have it only via an
+    /// ancestor. `class_has_instance_field` (own-only) returns `false` for an
+    /// `inherited` class, while `class_has_field_in_hierarchy` returns `true`
+    /// — exactly the wire-in split that the inheritance fix relies on.
+    struct HierFieldCtx {
+        own: Vec<ClassId>,
+        inherited: Vec<ClassId>,
+    }
+
+    impl ReducerCtx for HierFieldCtx {
+        fn class_has_dunder(&self, _: ClassId, _: &str) -> bool {
+            true
+        }
+        fn class_has_instance_field(&self, class_id: ClassId, _attr: InternedString) -> bool {
+            self.own.contains(&class_id)
+        }
+        fn class_has_field_in_hierarchy(&self, class_id: ClassId, _attr: InternedString) -> bool {
+            self.own.contains(&class_id) || self.inherited.contains(&class_id)
+        }
+    }
+
+    #[test]
+    fn run_field_write_dynamic_resolves_via_inherited_field() {
+        // recv resolves to a SUBCLASS that does not declare `name` itself but
+        // inherits it from a base. The own-only `class_has_instance_field`
+        // gate is false; the hierarchy gate is true, so the write must land —
+        // keyed to the RESOLVED subclass (codegen reads its `field_types`).
+        let mut s = Solver::new();
+        let derived = ClassId::new(11);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let cname = interner.intern("Derived");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Class {
+                class_id: derived,
+                name: cname,
+            },
+        ));
+        s.add(Constraint::Concrete(value, Type::Float));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&HierFieldCtx {
+            own: Vec::new(),
+            inherited: vec![derived],
+        });
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(derived, name)),
+            Type::Float,
+            "inherited-field dynamic write must land on the resolved subclass"
+        );
+    }
+
+    #[test]
+    fn run_field_write_dynamic_resolves_via_user_generic_class() {
+        // recv resolves to a USER generic class instance (`Type::Generic`
+        // whose base is a user class, not a builtin container). The write
+        // must resolve the base via `class_id()` and land on its ClassField.
+        let mut s = Solver::new();
+        let base = ClassId::new(13);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("item");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Generic {
+                base,
+                args: vec![Type::Int],
+            },
+        ));
+        s.add(Constraint::Concrete(value, Type::Float));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: vec![base],
+        });
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(base, name)),
+            Type::Float,
+            "user generic-class receiver must resolve its base for the write"
         );
     }
 }

@@ -5,7 +5,7 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_stdlib_defs::lookup_object_field;
 use pyaot_types::{typespec_to_type, Type};
-use pyaot_utils::{ClassId, InternedString};
+use pyaot_utils::InternedString;
 
 use crate::context::Lowering;
 
@@ -122,12 +122,7 @@ impl<'a> Lowering<'a> {
 
         // Determine the field type and offset from class info.
         // Both Type::Class and Type::Generic{base=user_class_id} share the same field layout.
-        let derived_class_id: Option<ClassId> = match obj_type {
-            Type::Class { class_id, .. } => Some(class_id),
-            Type::Generic { base, .. } => Some(base),
-            _ => None,
-        };
-        if let Some(class_id_val) = derived_class_id {
+        if let Some(class_id_val) = obj_type.class_id() {
             let class_id = &class_id_val;
             // Try local class_info first
             if let Some(class_info) = self.get_class_info(class_id).cloned() {

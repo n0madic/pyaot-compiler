@@ -388,6 +388,24 @@ impl Type {
         }
     }
 
+    /// `ClassId` underlying a class-shaped type: the `class_id` of
+    /// `Type::Class` or the `base` of `Type::Generic`. `None` for every
+    /// other shape.
+    ///
+    /// Note: a `Generic` base may be a built-in container id
+    /// (`BUILTIN_LIST_CLASS_ID`, …) as well as a user generic class — callers
+    /// that only want user classes must still gate the result (e.g. via a
+    /// `class_defs` / `class_info` lookup), exactly as before this helper
+    /// existed. Field/attribute layout is shared between `Class` and
+    /// `Generic { base = user_class_id }`, which is why both collapse here.
+    pub fn class_id(&self) -> Option<ClassId> {
+        match self {
+            Type::Class { class_id, .. } => Some(*class_id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Container constructors — emit `Type::Generic{base, args}` (S3.2c).
     // -------------------------------------------------------------------------

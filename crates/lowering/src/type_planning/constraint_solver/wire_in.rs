@@ -72,6 +72,23 @@ impl<'a, 'b> ReducerCtx for LoweringReducerCtx<'a, 'b> {
             .is_some_and(|cdef| cdef.fields.iter().any(|f| f.name == attr))
     }
 
+    /// Walk the `base_class` chain so an inherited field counts as present on
+    /// the subclass — the subclass's `LoweredClassInfo` inherits the field
+    /// layout, so the `FieldWriteDynamic` reducer must be allowed to widen it.
+    fn class_has_field_in_hierarchy(&self, class_id: ClassId, attr: InternedString) -> bool {
+        let mut current = Some(class_id);
+        while let Some(cid) = current {
+            let Some(cdef) = self.module.class_defs.get(&cid) else {
+                break;
+            };
+            if cdef.fields.iter().any(|f| f.name == attr) {
+                return true;
+            }
+            current = cdef.base_class;
+        }
+        false
+    }
+
     fn subscript_return(&self, recv: &Type, _index: &Type) -> Option<Type> {
         // The legacy resolver inspects the index expression to handle
         // literal-int tuple subscripts precisely. The solver doesn't
