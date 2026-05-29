@@ -609,8 +609,12 @@ pub unsafe fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
         }
     };
 
-    match handle.write(bytes) {
-        Ok(written) => written as i64,
+    // Use write_all: a single `write` may perform a short write and silently
+    // drop the tail of a large buffer. write_all loops until every byte is
+    // written (or errors). On success the full buffer was written, so return
+    // its length.
+    match handle.write_all(bytes) {
+        Ok(()) => bytes.len() as i64,
         Err(e) => {
             raise_exc!(
                 crate::exceptions::ExceptionType::IOError,

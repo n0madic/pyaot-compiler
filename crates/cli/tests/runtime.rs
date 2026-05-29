@@ -111,6 +111,7 @@ runtime_cases!(
     (runtime_review_wave1, "test_review_wave1.py"),
     (runtime_review_wave1_multimod, "test_review_wave1_multimod.py"),
     (runtime_review_wave2_lowering, "test_review_wave2_lowering.py"),
+    (runtime_review_wave2_runtime, "test_review_wave2_runtime.py"),
     // Builtins
     (runtime_builtins, "test_builtins.py"),
     // Print output (with expected output verification)

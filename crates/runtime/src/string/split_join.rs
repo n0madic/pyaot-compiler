@@ -37,37 +37,14 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
         };
         gc_push(&mut frame);
 
-        // Handle None separator (split on whitespace)
+        // Handle None separator (split on whitespace). Field ranges are
+        // computed up front (no allocation) by the shared helper, then each
+        // field is materialised — this is where the maxsplit remainder bug
+        // (dropping middle words) used to live.
         if sep.is_null() {
-            // Split on whitespace
-            let mut splits: i64 = 0;
-            let mut start = 0;
-            let mut in_word = false;
-
-            for i in 0..src_len {
-                let c = *src_data.add(i);
-                let is_ws = c == b' ' || c == b'\t' || c == b'\n' || c == b'\r';
-
-                if is_ws {
-                    if in_word {
-                        // End of word
-                        if splits < max {
-                            let word = rt_make_str(src_data.add(start), i - start);
-                            rt_list_push(list, word);
-                            splits += 1;
-                        }
-                        in_word = false;
-                    }
-                } else if !in_word {
-                    // Start of word
-                    start = i;
-                    in_word = true;
-                }
-            }
-
-            // Handle last word
-            if in_word {
-                let word = rt_make_str(src_data.add(start), src_len - start);
+            let data = std::slice::from_raw_parts(src_data, src_len);
+            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, false) {
+                let word = rt_make_str(src_data.add(start), end - start);
                 rt_list_push(list, word);
             }
         } else {
@@ -586,48 +563,14 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
         };
         gc_push(&mut frame);
 
-        // Handle None separator (split on whitespace from the right)
+        // Handle None separator (split on whitespace from the right). The
+        // shared helper returns fields already in left-to-right order, so no
+        // post-hoc list reversal is needed.
         if sep.is_null() {
-            // Split on whitespace from the right
-            let mut splits: i64 = 0;
-            let mut end = src_len;
-            let mut in_word = false;
-
-            // Scan from right to left
-            for i in (0..src_len).rev() {
-                let c = *src_data.add(i);
-                let is_ws = c == b' ' || c == b'\t' || c == b'\n' || c == b'\r';
-
-                if is_ws {
-                    if in_word {
-                        // End of word (scanning from right)
-                        if splits < max {
-                            let word = rt_make_str(src_data.add(i + 1), end - i - 1);
-                            rt_list_push(list, word);
-                            splits += 1;
-                        }
-                        in_word = false;
-                    }
-                } else if !in_word {
-                    // Start of word (scanning from right)
-                    end = i + 1;
-                    in_word = true;
-                }
-            }
-
-            // Handle first word (leftmost)
-            if in_word {
-                let word = rt_make_str(src_data, end);
+            let data = std::slice::from_raw_parts(src_data, src_len);
+            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, true) {
+                let word = rt_make_str(src_data.add(start), end - start);
                 rt_list_push(list, word);
-            }
-
-            // Reverse the list since we built it backwards
-            let list_obj = list as *mut ListObj;
-            let len = (*list_obj).len;
-            for i in 0..(len / 2) {
-                let temp = *(*list_obj).data.add(i);
-                *(*list_obj).data.add(i) = *(*list_obj).data.add(len - 1 - i);
-                *(*list_obj).data.add(len - 1 - i) = temp;
             }
         } else {
             let sep_str = sep as *mut StrObj;

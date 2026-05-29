@@ -89,27 +89,38 @@ pub fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut 
             }
         };
 
+        // Drain stdout/stderr on background threads while we poll for exit.
+        // A child that writes more than the OS pipe buffer (~64 KiB) blocks on
+        // write until someone reads the pipe; the previous code only read the
+        // pipes via `wait_with_output()` *after* the child exited, so such a
+        // child never exited and we deadlocked until the 300 s timeout. The
+        // reader threads keep the pipes drained so the child can make progress.
+        let stdout_reader = child.stdout.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+                buf
+            })
+        });
+        let stderr_reader = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+                buf
+            })
+        });
+
         // Poll for completion, enforcing DEFAULT_TIMEOUT to prevent hangs.
         let start = Instant::now();
-        let output = loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(_)) => {
-                    // Process finished; collect output.
-                    match child.wait_with_output() {
-                        Ok(out) => break out,
-                        Err(e) => {
-                            crate::raise_exc!(
-                                crate::exceptions::ExceptionType::RuntimeError,
-                                "subprocess.run: failed to collect output: {}",
-                                e
-                            );
-                        }
-                    }
-                }
+                Ok(Some(status)) => break status,
                 Ok(None) => {
                     // Process still running; check timeout.
                     if start.elapsed() >= DEFAULT_TIMEOUT {
-                        // Kill the child before raising so it doesn't become a zombie.
+                        // Kill the child before raising so it doesn't become a
+                        // zombie. Killing closes the pipes, so the reader threads
+                        // observe EOF and terminate on their own.
                         child.kill().ok();
                         // Reap the child to release OS resources.
                         child.wait().ok();
@@ -132,8 +143,16 @@ pub fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut 
             }
         };
 
+        // Collect the drained output (empty Vec when not captured).
+        let stdout_buf = stdout_reader
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
+        let stderr_buf = stderr_reader
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
+
         // Get exit code
-        let returncode = output.status.code().unwrap_or(-1) as i64;
+        let returncode = status.code().unwrap_or(-1) as i64;
 
         // Check if we should raise on non-zero exit
         if check != 0 && returncode != 0 {
@@ -164,7 +183,7 @@ pub fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut 
 
         // Create stdout string if captured
         roots[0] = if capture_output != 0 {
-            match String::from_utf8(output.stdout) {
+            match String::from_utf8(stdout_buf) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
                     gc::gc_pop();
@@ -181,7 +200,7 @@ pub fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut 
 
         // Create stderr string if captured — stdout_obj is now rooted at roots[0].
         roots[1] = if capture_output != 0 {
-            match String::from_utf8(output.stderr) {
+            match String::from_utf8(stderr_buf) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
                     gc::gc_pop();

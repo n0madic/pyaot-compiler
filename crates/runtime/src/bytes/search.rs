@@ -238,32 +238,11 @@ pub fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
         gc_push(&mut frame);
 
         if sep.is_null() {
-            // Split on whitespace
-            let mut splits = 0i64;
-            let mut start = 0;
-            let mut in_segment = false;
-
-            for i in 0..bytes_len {
-                let c = *bytes_data.add(i);
-                let is_ws = c == b' ' || c == b'\t' || c == b'\n' || c == b'\r';
-
-                if is_ws {
-                    if in_segment {
-                        if splits < max {
-                            let part = rt_make_bytes(bytes_data.add(start), i - start);
-                            rt_list_push(list, part);
-                            splits += 1;
-                        }
-                        in_segment = false;
-                    }
-                } else if !in_segment {
-                    start = i;
-                    in_segment = true;
-                }
-            }
-
-            if in_segment {
-                let part = rt_make_bytes(bytes_data.add(start), bytes_len - start);
+            // Split on whitespace — shared field-range helper (handles the
+            // maxsplit remainder correctly; see slice_utils).
+            let data = std::slice::from_raw_parts(bytes_data, bytes_len);
+            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, false) {
+                let part = rt_make_bytes(bytes_data.add(start), end - start);
                 rt_list_push(list, part);
             }
         } else {
@@ -347,42 +326,12 @@ pub fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
         gc_push(&mut frame);
 
         if sep.is_null() {
-            // Split on whitespace from the right
-            let mut splits = 0i64;
-            let mut end = bytes_len;
-            let mut in_segment = false;
-
-            for i in (0..bytes_len).rev() {
-                let c = *bytes_data.add(i);
-                let is_ws = c == b' ' || c == b'\t' || c == b'\n' || c == b'\r';
-
-                if is_ws {
-                    if in_segment {
-                        if splits < max {
-                            let part = rt_make_bytes(bytes_data.add(i + 1), end - i - 1);
-                            rt_list_push(list, part);
-                            splits += 1;
-                        }
-                        in_segment = false;
-                    }
-                } else if !in_segment {
-                    end = i + 1;
-                    in_segment = true;
-                }
-            }
-
-            if in_segment {
-                let part = rt_make_bytes(bytes_data, end);
+            // Split on whitespace from the right — shared field-range helper
+            // returns fields already in left-to-right order (no reversal).
+            let data = std::slice::from_raw_parts(bytes_data, bytes_len);
+            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, true) {
+                let part = rt_make_bytes(bytes_data.add(start), end - start);
                 rt_list_push(list, part);
-            }
-
-            // Reverse the list
-            let list_obj = list as *mut ListObj;
-            let len = (*list_obj).len;
-            for i in 0..(len / 2) {
-                let temp = *(*list_obj).data.add(i);
-                *(*list_obj).data.add(i) = *(*list_obj).data.add(len - 1 - i);
-                *(*list_obj).data.add(len - 1 - i) = temp;
             }
         } else {
             let sep_obj = sep as *mut BytesObj;

@@ -42,6 +42,82 @@ pub fn normalize_slice_positive(start: i64, end: i64, len: i64) -> (i64, i64) {
     (start, end)
 }
 
+/// ASCII whitespace used by `str`/`bytes` whitespace splitting.
+#[inline]
+fn is_split_whitespace(c: u8) -> bool {
+    c == b' ' || c == b'\t' || c == b'\n' || c == b'\r'
+}
+
+/// Compute the `(start, end)` byte ranges of the whitespace-delimited fields
+/// produced by `split(None, maxsplit)` (`reverse = false`) or
+/// `rsplit(None, maxsplit)` (`reverse = true`), in left-to-right order.
+///
+/// Shared by `str` and `bytes` (the only type-specific part is allocating the
+/// field objects from each range). CPython semantics, including the previously
+/// broken maxsplit case:
+/// - runs of consecutive ASCII whitespace are a single separator;
+/// - leading/trailing whitespace produces no empty fields;
+/// - once `maxsplit` splits have been made, the rest of the string is a single
+///   field with its *interior* whitespace preserved — for `split` the trailing
+///   whitespace is kept (`"a b c ".split(None, 1) == ["a", "b c "]`), for
+///   `rsplit` the leading whitespace is kept
+///   (`"  a b c".rsplit(None, 1) == ["  a b", "c"]`).
+///
+/// `maxsplit < 0` means unlimited.
+pub fn whitespace_field_ranges(data: &[u8], maxsplit: i64, reverse: bool) -> Vec<(usize, usize)> {
+    let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
+    let n = data.len();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    if !reverse {
+        let mut i = 0usize;
+        let mut splits = 0i64;
+        loop {
+            while i < n && is_split_whitespace(data[i]) {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            if splits >= max {
+                // Remainder field — interior + trailing whitespace preserved.
+                ranges.push((i, n));
+                break;
+            }
+            let start = i;
+            while i < n && !is_split_whitespace(data[i]) {
+                i += 1;
+            }
+            ranges.push((start, i));
+            splits += 1;
+        }
+    } else {
+        let mut j = n;
+        let mut splits = 0i64;
+        loop {
+            while j > 0 && is_split_whitespace(data[j - 1]) {
+                j -= 1;
+            }
+            if j == 0 {
+                break;
+            }
+            if splits >= max {
+                // Remainder field — interior + leading whitespace preserved.
+                ranges.push((0, j));
+                break;
+            }
+            let end = j;
+            while j > 0 && !is_split_whitespace(data[j - 1]) {
+                j -= 1;
+            }
+            ranges.push((j, end));
+            splits += 1;
+        }
+        ranges.reverse();
+    }
+    ranges
+}
+
 /// Normalize a slice index for negative step.
 ///
 /// # Arguments
