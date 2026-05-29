@@ -322,41 +322,88 @@ impl Solver {
         let update_cap: u64 = (self.constraints.len() as u64).saturating_mul(256) + 100_000;
         let mut updates: u64 = 0;
 
-        while let Some(cid) = queue.pop_front() {
+        'outer: while let Some(cid) = queue.pop_front() {
             on_queue.swap_remove(&cid);
 
             let constraint = &self.constraints[cid.0 as usize];
+
+            // Multi-output reducer: a dynamic field store fans out across
+            // every class a (possibly Union) receiver may resolve to, so each
+            // member `ClassField` gets its own JOIN + dependent reschedule.
+            // Copy the fields out so the `self.constraints` borrow is released
+            // before `apply_output` re-borrows `&mut self`.
+            if let Constraint::FieldWriteDynamic { recv, name, value } = constraint {
+                let outputs = eval_field_write_dynamic(&self.env, *recv, *name, *value, ctx);
+                for (dst, new_val) in outputs {
+                    if !self.apply_output(
+                        dst,
+                        new_val,
+                        &mut queue,
+                        &mut on_queue,
+                        &mut updates,
+                        update_cap,
+                    ) {
+                        break 'outer;
+                    }
+                }
+                continue;
+            }
+
             let Some((dst, new_val)) = evaluate(&self.env, constraint, ctx) else {
                 continue;
             };
-
-            if !self.env.join_into(dst, new_val) {
-                continue;
-            }
-
-            updates += 1;
-            if updates > update_cap {
-                debug_assert!(
-                    false,
-                    "constraint solver exceeded update cap ({update_cap}) — \
-                     likely an unbounded type-growth cycle not caught by the \
-                     depth cap"
-                );
+            if !self.apply_output(
+                dst,
+                new_val,
+                &mut queue,
+                &mut on_queue,
+                &mut updates,
+                update_cap,
+            ) {
                 break;
             }
+        }
+    }
 
-            // Destination changed → schedule every constraint that reads
-            // this key. Clone the set so we can drop the immutable borrow
-            // on `self.deps` before re-entering the queue loop (which
-            // requires `&mut self` via `env`).
-            if let Some(deps) = self.deps.get(&dst) {
-                for &dep_cid in deps {
-                    if on_queue.insert(dep_cid) {
-                        queue.push_back(dep_cid);
-                    }
+    /// JOIN `new_val` into `dst`; on a real lattice change, enqueue every
+    /// constraint that reads `dst`. Returns `false` iff the update cap was
+    /// exceeded (the caller must stop the worklist). Shared by the
+    /// single-output `evaluate` path and the multi-output `FieldWriteDynamic`
+    /// dispatch so both honour the cap and the dedup'd reschedule identically.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_output(
+        &mut self,
+        dst: TypeKey,
+        new_val: Type,
+        queue: &mut VecDeque<ConstraintId>,
+        on_queue: &mut IndexSet<ConstraintId>,
+        updates: &mut u64,
+        update_cap: u64,
+    ) -> bool {
+        if !self.env.join_into(dst, new_val) {
+            return true;
+        }
+
+        *updates += 1;
+        if *updates > update_cap {
+            debug_assert!(
+                false,
+                "constraint solver exceeded update cap ({update_cap}) — \
+                 likely an unbounded type-growth cycle not caught by the \
+                 depth cap"
+            );
+            return false;
+        }
+
+        // Destination changed → schedule every constraint that reads this key.
+        if let Some(deps) = self.deps.get(&dst) {
+            for &dep_cid in deps {
+                if on_queue.insert(dep_cid) {
+                    queue.push_back(dep_cid);
                 }
             }
         }
+        true
     }
 }
 
@@ -421,8 +468,12 @@ fn evaluate<C: ReducerCtx>(env: &Env, c: &Constraint, ctx: &C) -> Option<(TypeKe
         Constraint::FieldWrite { class, name, value } => {
             Some((TypeKey::ClassField(*class, *name), env.get(*value)))
         }
-        Constraint::FieldWriteDynamic { recv, name, value } => {
-            eval_field_write_dynamic(env, *recv, *name, *value, ctx)
+        // Multi-output: a dynamic field store fans out across every member of
+        // a Union receiver, so `run()` dispatches it directly (see
+        // `eval_field_write_dynamic`) and the single-output `evaluate` path
+        // never sees it.
+        Constraint::FieldWriteDynamic { .. } => {
+            unreachable!("FieldWriteDynamic is dispatched by run()'s multi-output path")
         }
         Constraint::Capture { func, slot, src } => {
             Some((TypeKey::Capture(*func, *slot), env.get(*src)))
@@ -613,46 +664,62 @@ fn eval_attribute<C: ReducerCtx>(env: &Env, recv: TypeKey, attr: InternedString,
 }
 
 /// Resolve a `FieldWriteDynamic` constraint — a store into a class field
-/// whose owning class wasn't known at collection time. The destination
-/// `ClassField` key is computed here from the receiver's resolved env type,
+/// whose owning class wasn't known at collection time. Computes one or more
+/// `(ClassField, value_type)` JOINs from the receiver's resolved env type,
 /// mirroring how [`eval_attribute`] resolves dynamic field READS.
 ///
-/// Defers (returns `None`, leaving the field unchanged) until `recv`
-/// resolves to a class type (`Type::Class` or a user `Type::Generic`, via
-/// [`Type::class_id`]) whose own-or-inherited instance fields include `name`.
-/// The collector's dependency edge (`recv → this constraint`) re-fires the
-/// reducer once a later constraint JOINs a `Class` into `recv`.
+/// - A single `Type::Class` / user `Type::Generic` receiver yields ONE
+///   output, keyed to the *resolved receiver* class (even for an inherited
+///   field, never the declaring ancestor): codegen reads
+///   `field_types[receiver]`, which `fold_refined_field_types_into_storage`
+///   populates from `ClassField(receiver, name)`.
+/// - A `Union` receiver FANS OUT: every member class that declares the field
+///   (own-or-inherited) gets the value JOINed into its `ClassField`, so a
+///   polymorphic store `node.attr = v` (node : Union[A, B]) widens the field
+///   on both A and B — matching the multi-class store the lowering layer
+///   emits for a uniform-layout union receiver. `Optional[T]`
+///   (= `Union[T, None]`) drops the `None` arm and behaves like single-`T`.
+/// - Non-class members / receivers (None, primitives, still-`Never`)
+///   contribute nothing, so the store defers (empty output) until `recv`
+///   resolves. The collector's `recv → this constraint` dependency edge
+///   re-fires the reducer as `recv` resolves / widens.
 ///
-/// A `Union`/`Optional` receiver still defers (it has no single `class_id`).
-/// That loses no end-to-end correctness: the lowering layer (`bind_attr_op`)
-/// itself drops field stores through Union receivers, so widening the field
-/// type here would have no observable effect — Union-receiver attribute
-/// writes are an unimplemented LOWERING feature, not a solver gap.
+/// The hierarchy gate closes the inherited-field gap — a write through a
+/// subclass receiver into a base-declared field would otherwise be dropped
+/// (the field layout is inherited into the subclass, but the field name lives
+/// only in the ancestor's `class_defs`), leaving the field too narrow and the
+/// boxed wider store rejected by the verifier. Builtin container bases
+/// declare no instance fields → still gated out.
 fn eval_field_write_dynamic<C: ReducerCtx>(
     env: &Env,
     recv: TypeKey,
     name: InternedString,
     value: TypeKey,
     ctx: &C,
-) -> Option<(TypeKey, Type)> {
+) -> Vec<(TypeKey, Type)> {
     let recv_ty = env.get(recv);
-    // Unresolved / not a single class (Union, Optional, primitive, …) → defer.
-    let class_id = recv_ty.class_id()?;
-    // Gate: the receiver class, OR an ancestor, must declare `name` as an
-    // instance field. The hierarchy walk closes the inherited-field gap — a
-    // write through a subclass receiver into a base-declared field would
-    // otherwise be dropped (the field layout is inherited into the subclass,
-    // but the field name lives only in the ancestor's `class_defs`), leaving
-    // the field too narrow and the boxed wider store rejected by the
-    // verifier. Builtin container bases declare no instance fields → still
-    // gated out. The key stays the *resolved receiver* class (not the
-    // declaring ancestor): codegen reads `field_types[receiver_class]`, which
-    // `fold_refined_field_types_into_storage` populates from
-    // `ClassField(receiver, name)`.
-    if !ctx.class_has_field_in_hierarchy(class_id, name) {
-        return None;
+    let value_ty = env.get(value);
+    let mut outputs = Vec::new();
+    for member in union_member_types(&recv_ty) {
+        let Some(class_id) = member.class_id() else {
+            continue; // None / primitive / not-yet-resolved union member.
+        };
+        if ctx.class_has_field_in_hierarchy(class_id, name) {
+            outputs.push((TypeKey::ClassField(class_id, name), value_ty.clone()));
+        }
     }
-    Some((TypeKey::ClassField(class_id, name), env.get(value)))
+    outputs
+}
+
+/// View a receiver type as its set of (potential) member types: the members
+/// of a `Union`, or the type itself for any other shape. Lets the dynamic
+/// field-write reducer fan out across a polymorphic receiver without
+/// allocating for the common single-type case.
+fn union_member_types(ty: &Type) -> &[Type] {
+    match ty {
+        Type::Union(members) => members,
+        other => std::slice::from_ref(other),
+    }
 }
 
 /// Resolve `recv[index]`. Handles built-in containers inline (no ctx
@@ -2091,6 +2158,80 @@ mod tests {
             s.env().get(TypeKey::ClassField(base, name)),
             Type::Float,
             "user generic-class receiver must resolve its base for the write"
+        );
+    }
+
+    #[test]
+    fn run_field_write_dynamic_fans_out_across_union_members() {
+        // recv resolves to Union[A, B], both declaring `grad`. A polymorphic
+        // store must widen the field on BOTH members, not silently defer.
+        let mut s = Solver::new();
+        let a = ClassId::new(21);
+        let b = ClassId::new(22);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let an = interner.intern("A");
+        let bn = interner.intern("B");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Union(vec![
+                Type::Class {
+                    class_id: a,
+                    name: an,
+                },
+                Type::Class {
+                    class_id: b,
+                    name: bn,
+                },
+            ]),
+        ));
+        s.add(Constraint::Concrete(value, Type::Float));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: vec![a, b],
+        });
+        assert_eq!(s.env().get(TypeKey::ClassField(a, name)), Type::Float);
+        assert_eq!(s.env().get(TypeKey::ClassField(b, name)), Type::Float);
+    }
+
+    #[test]
+    fn run_field_write_dynamic_union_skips_member_without_field() {
+        // recv resolves to Union[A, B] but only A declares `grad`: B must NOT
+        // receive a phantom field while A is still widened.
+        let mut s = Solver::new();
+        let a = ClassId::new(23);
+        let b = ClassId::new(24);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let an = interner.intern("A");
+        let bn = interner.intern("B");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Union(vec![
+                Type::Class {
+                    class_id: a,
+                    name: an,
+                },
+                Type::Class {
+                    class_id: b,
+                    name: bn,
+                },
+            ]),
+        ));
+        s.add(Constraint::Concrete(value, Type::Int));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: vec![a],
+        });
+        assert_eq!(s.env().get(TypeKey::ClassField(a, name)), Type::Int);
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(b, name)),
+            Type::Never,
+            "a union member that doesn't declare the field must not get a phantom write"
         );
     }
 }

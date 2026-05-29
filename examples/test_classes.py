@@ -3482,4 +3482,40 @@ assert abs(_inh_leaf1.grad - 0.5) < 1e-9, f"_inh_leaf1.grad = {_inh_leaf1.grad}"
 assert abs(_inh_leaf2.grad - 0.5) < 1e-9, f"_inh_leaf2.grad = {_inh_leaf2.grad}"
 print("Cross-instance write into inherited field through unhinted receiver: PASS")
 
+# =============================================================================
+# Field store through a polymorphic (Union) receiver
+# =============================================================================
+# `node` is inferred as `Union[_UnionA, _UnionB]` (it iterates a mixed list),
+# so the receiver class is only known at runtime. Both classes declare `grad`
+# at the same offset, so the store compiles to one static-offset write valid
+# for either runtime type, and the solver's FieldWriteDynamic fan-out widens
+# `grad` to `Float` on BOTH members. Pre-fix the store was silently dropped at
+# lowering (the receiver had no single `class_id`), so `grad` stayed `0`.
+class _UnionA:
+    __slots__ = ('grad',)
+
+    def __init__(self):
+        self.grad = 0
+
+
+class _UnionB:
+    __slots__ = ('grad',)
+
+    def __init__(self):
+        self.grad = 0
+
+
+def _union_bump(node):
+    node.grad = node.grad + 0.5
+
+
+_union_a = _UnionA()
+_union_b = _UnionB()
+for _union_node in [_union_a, _union_b]:
+    _union_bump(_union_node)
+
+assert abs(_union_a.grad - 0.5) < 1e-9, f"_union_a.grad = {_union_a.grad}"
+assert abs(_union_b.grad - 0.5) < 1e-9, f"_union_b.grad = {_union_b.grad}"
+print("Field store through a polymorphic (Union) receiver: PASS")
+
 print("All class tests passed!")

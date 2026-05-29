@@ -120,6 +120,16 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
+        // Optional[T] collapses to T so the class block below handles it
+        // (a None receiver would raise AttributeError at runtime, which we
+        // don't model — consistent with `unwrap_optional` use elsewhere). A
+        // genuine multi-class Union is read via the uniform-layout path below.
+        let obj_type = if matches!(obj_type, Type::Union(_)) {
+            crate::type_planning::helpers::unwrap_optional(&obj_type)
+        } else {
+            obj_type
+        };
+
         // Determine the field type and offset from class info.
         // Both Type::Class and Type::Generic{base=user_class_id} share the same field layout.
         if let Some(class_id_val) = obj_type.class_id() {
@@ -216,11 +226,63 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Multi-class Union receiver: read a plain instance field whose layout
+        // is uniform across every member (the polymorphic-read counterpart of
+        // `bind_attr_op_union`). Falls through to the error below when the
+        // field isn't uniformly laid out, so non-field / non-uniform accesses
+        // still report `unknown attribute`.
+        if let Type::Union(members) = &obj_type {
+            if let Some(op) = self.lower_attribute_union(members, obj_operand, attr, mir_func)? {
+                return Ok(op);
+            }
+        }
+
         let attr_name = self.resolve(attr);
         Err(pyaot_diagnostics::CompilerError::semantic_error(
             format!("unknown attribute '{}'", attr_name),
             obj_expr.span,
         ))
+    }
+
+    /// Read `attr` through a polymorphic (multi-class `Union`) receiver.
+    /// Returns `Some(operand)` only when `attr` is a plain instance field with
+    /// an identical layout (offset + type) across every class member — the
+    /// store-side invariant of [`Self::bind_attr_op_union`]. Any other shape
+    /// (property, class attribute, non-uniform layout, non-class member)
+    /// returns `None` so the caller reports `unknown attribute`.
+    fn lower_attribute_union(
+        &mut self,
+        members: &[Type],
+        obj_operand: mir::Operand,
+        attr: InternedString,
+        mir_func: &mut mir::Function,
+    ) -> Result<Option<mir::Operand>> {
+        let mut layout: Option<(usize, Type)> = None;
+        for member in members {
+            if matches!(member, Type::None) {
+                continue; // Optional arm — a None receiver has no fields.
+            }
+            let Some(cid) = member.class_id() else {
+                return Ok(None);
+            };
+            let Some(info) = self.get_class_info(&cid).cloned() else {
+                return Ok(None);
+            };
+            let Some(&offset) = info.field_offsets.get(&attr) else {
+                return Ok(None);
+            };
+            let field_ty = info.field_types.get(&attr).cloned().unwrap_or(Type::Any);
+            match &layout {
+                None => layout = Some((offset, field_ty)),
+                Some((off, ty)) if *off == offset && *ty == field_ty => {}
+                Some(_) => return Ok(None), // non-uniform layout → caller errors
+            }
+        }
+        let Some((offset, read_type)) = layout else {
+            return Ok(None); // no class members (e.g. only None)
+        };
+        let result_local = self.emit_instance_get_field(obj_operand, offset, read_type, mir_func);
+        Ok(Some(mir::Operand::Local(result_local)))
     }
 
     /// Lower a super() call: super().method(args)

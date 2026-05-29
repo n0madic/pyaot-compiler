@@ -11,11 +11,11 @@
 //! (`bind_var_op`, `bind_attr_op`, `bind_index_op`, `bind_class_attr_op`)
 //! that emit MIR for one binding given an already-lowered RHS operand.
 
-use pyaot_diagnostics::Result;
+use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::{Type, TypeLattice};
-use pyaot_utils::{ClassId, InternedString, LocalId, VarId};
+use pyaot_utils::{ClassId, InternedString, LocalId, Span, VarId};
 
 use crate::context::Lowering;
 
@@ -36,6 +36,7 @@ impl<'a> Lowering<'a> {
             }
             hir::BindingTarget::Attr { obj, field, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
+                let span = obj_expr.span;
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
                 let obj_type = self.seed_expr_type(*obj, hir_module);
                 self.bind_attr_op(
@@ -44,6 +45,7 @@ impl<'a> Lowering<'a> {
                     *field,
                     value_operand,
                     value_type,
+                    span,
                     hir_module,
                     mir_func,
                 )
@@ -421,86 +423,232 @@ impl<'a> Lowering<'a> {
         field: InternedString,
         value_operand: mir::Operand,
         value_type: &Type,
+        span: Span,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        // Accept both Type::Class and Type::Generic (user-defined generic class instance).
-        if let Some(class_id_val) = obj_type.class_id() {
-            let class_id = &class_id_val;
-            if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                // 1. @property setter
-                if let Some((_getter, Some(setter_id))) = class_info.properties.get(&field) {
-                    let setter_id = *setter_id;
-                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                    // Phase 4: box value arg if setter param[1] is annotated primitive.
-                    let val_ty = self.operand_type(&value_operand, mir_func);
-                    let coerced_value = self.box_dunder_arg_if_needed(
+        // Direct class / user-generic receiver — the common case.
+        if let Some(class_id) = obj_type.class_id() {
+            return self.bind_attr_op_class(
+                class_id,
+                obj_operand,
+                field,
+                value_operand,
+                value_type,
+                hir_module,
+                mir_func,
+            );
+        }
+        // Optional[T] / Union[...] receiver.
+        if matches!(obj_type, Type::Union(_)) {
+            let resolved = crate::type_planning::helpers::unwrap_optional(obj_type);
+            // Optional[T] collapsed to a single class — full single-class
+            // store (handles @property setters and class attributes too).
+            if let Some(class_id) = resolved.class_id() {
+                return self.bind_attr_op_class(
+                    class_id,
+                    obj_operand,
+                    field,
+                    value_operand,
+                    value_type,
+                    hir_module,
+                    mir_func,
+                );
+            }
+            // Genuine multi-class Union: store only when the field's layout is
+            // shared across every class member (uniform offset + type).
+            if let Type::Union(members) = &resolved {
+                return self.bind_attr_op_union(
+                    members,
+                    field,
+                    value_operand,
+                    value_type,
+                    obj_operand,
+                    span,
+                    mir_func,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `value_operand` into `obj.field` on a statically-known class
+    /// receiver: `@property` setter, then plain instance field, then class
+    /// attribute. Extracted from [`Self::bind_attr_op`] so the direct-class
+    /// path and the `Optional[T]`-collapsed path share one body.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_attr_op_class(
+        &mut self,
+        class_id_val: ClassId,
+        obj_operand: mir::Operand,
+        field: InternedString,
+        value_operand: mir::Operand,
+        value_type: &Type,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<()> {
+        let class_id = &class_id_val;
+        if let Some(class_info) = self.get_class_info(class_id).cloned() {
+            // 1. @property setter
+            if let Some((_getter, Some(setter_id))) = class_info.properties.get(&field) {
+                let setter_id = *setter_id;
+                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+                // Phase 4: box value arg if setter param[1] is annotated primitive.
+                let val_ty = self.operand_type(&value_operand, mir_func);
+                let coerced_value = self.box_dunder_arg_if_needed(
+                    value_operand,
+                    &val_ty,
+                    setter_id,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: dummy_local,
+                    func: setter_id,
+                    args: vec![obj_operand, coerced_value],
+                });
+                return Ok(());
+            }
+            // 2. Regular instance field
+            if let Some(&offset) = class_info.field_offsets.get(&field) {
+                // Storage is uniform tagged `Value`. The logical type
+                // (`field_types[field]`) drives boxing in
+                // `coerce_for_instance_field_store`; the F64 fast-path
+                // and the heap-writes side-table are gone (Phase 2).
+                let field_ty = class_info
+                    .field_types
+                    .get(&field)
+                    .cloned()
+                    .unwrap_or(Type::Any);
+                let coerced = self.coerce_for_instance_field_store(
+                    value_operand,
+                    value_type,
+                    &field_ty,
+                    mir_func,
+                );
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
+                    ),
+                    vec![
+                        obj_operand,
+                        mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                        coerced,
+                    ],
+                    Type::None,
+                    mir_func,
+                );
+                return Ok(());
+            }
+            // 3. Fallback to class attribute (instance.class_attr = ...)
+            if let (Some(&(owning_class_id, attr_offset)), Some(attr_type)) = (
+                class_info.class_attr_offsets.get(&field),
+                class_info.class_attr_types.get(&field).cloned(),
+            ) {
+                let set_func = self.get_class_attr_set_func(&attr_type);
+                let effective_class_id = self.get_effective_class_id(owning_class_id);
+                self.emit_runtime_call(
+                    set_func,
+                    vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                         value_operand,
-                        &val_ty,
-                        setter_id,
-                        1,
-                        hir_module,
-                        mir_func,
-                    );
-                    self.emit_instruction(mir::InstructionKind::CallDirect {
-                        dest: dummy_local,
-                        func: setter_id,
-                        args: vec![obj_operand, coerced_value],
-                    });
-                    return Ok(());
-                }
-                // 2. Regular instance field
-                if let Some(&offset) = class_info.field_offsets.get(&field) {
-                    // Storage is uniform tagged `Value`. The logical type
-                    // (`field_types[field]`) drives boxing in
-                    // `coerce_for_instance_field_store`; the F64 fast-path
-                    // and the heap-writes side-table are gone (Phase 2).
-                    let field_ty = class_info
-                        .field_types
-                        .get(&field)
-                        .cloned()
-                        .unwrap_or(Type::Any);
-                    let coerced = self.coerce_for_instance_field_store(
-                        value_operand,
-                        value_type,
-                        &field_ty,
-                        mir_func,
-                    );
-                    self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
+                    ],
+                    Type::None,
+                    mir_func,
+                );
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `value_operand` into `field` through a polymorphic (multi-class
+    /// `Union`) receiver. Only a plain instance field whose layout (offset +
+    /// type) is identical across every class member is storable, because the
+    /// store compiles to one static-offset `rt_instance_set_field` that must
+    /// be valid for whichever member the receiver holds at runtime. The
+    /// per-member field types are unified by the solver's `FieldWriteDynamic`
+    /// fan-out, so a uniform-layout union (the common autograd shape) widens
+    /// consistently. A layout mismatch — or a property / class-attribute
+    /// target — is a clear error rather than a silent drop.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_attr_op_union(
+        &mut self,
+        members: &[Type],
+        field: InternedString,
+        value_operand: mir::Operand,
+        value_type: &Type,
+        obj_operand: mir::Operand,
+        span: Span,
+        mir_func: &mut mir::Function,
+    ) -> Result<()> {
+        let mut layout: Option<(usize, Type)> = None;
+        for member in members {
+            if matches!(member, Type::None) {
+                continue; // Optional arm — a None receiver has no fields.
+            }
+            let Some(cid) = member.class_id() else {
+                return Err(CompilerError::semantic_error(
+                    format!(
+                        "cannot store attribute '{}' through a union receiver with a \
+                         non-class member",
+                        self.resolve(field)
+                    ),
+                    span,
+                ));
+            };
+            let Some(info) = self.get_class_info(&cid).cloned() else {
+                return Err(CompilerError::semantic_error(
+                    format!(
+                        "cannot store attribute '{}': unknown class in union receiver",
+                        self.resolve(field)
+                    ),
+                    span,
+                ));
+            };
+            let Some(&offset) = info.field_offsets.get(&field) else {
+                return Err(CompilerError::semantic_error(
+                    format!(
+                        "union member has no instance field '{}' (properties and class \
+                         attributes through a union receiver are unsupported)",
+                        self.resolve(field)
+                    ),
+                    span,
+                ));
+            };
+            let field_ty = info.field_types.get(&field).cloned().unwrap_or(Type::Any);
+            match &layout {
+                None => layout = Some((offset, field_ty)),
+                Some((off, ty)) if *off == offset && *ty == field_ty => {}
+                Some(_) => {
+                    return Err(CompilerError::semantic_error(
+                        format!(
+                            "union members disagree on the layout of field '{}'; a \
+                             polymorphic field store needs a uniform offset and type",
+                            self.resolve(field)
                         ),
-                        vec![
-                            obj_operand,
-                            mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                            coerced,
-                        ],
-                        Type::None,
-                        mir_func,
-                    );
-                    return Ok(());
-                }
-                // 3. Fallback to class attribute (instance.class_attr = ...)
-                if let (Some(&(owning_class_id, attr_offset)), Some(attr_type)) = (
-                    class_info.class_attr_offsets.get(&field),
-                    class_info.class_attr_types.get(&field).cloned(),
-                ) {
-                    let set_func = self.get_class_attr_set_func(&attr_type);
-                    let effective_class_id = self.get_effective_class_id(owning_class_id);
-                    self.emit_runtime_call(
-                        set_func,
-                        vec![
-                            mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                            mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
-                            value_operand,
-                        ],
-                        Type::None,
-                        mir_func,
-                    );
-                    return Ok(());
+                        span,
+                    ));
                 }
             }
         }
+        let Some((offset, field_ty)) = layout else {
+            return Ok(()); // No class members (e.g. only None) — nothing to store.
+        };
+        let coerced =
+            self.coerce_for_instance_field_store(value_operand, value_type, &field_ty, mir_func);
+        self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD),
+            vec![
+                obj_operand,
+                mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                coerced,
+            ],
+            Type::None,
+            mir_func,
+        );
         Ok(())
     }
 
