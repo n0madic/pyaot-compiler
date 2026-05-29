@@ -780,18 +780,33 @@ impl TypeLattice for Type {
         if other.is_subtype_of(self) {
             return other.clone();
         }
-        // distribute over unions
+        // Distribute over unions, building the result union directly instead
+        // of folding via `join`. `join` applies the numeric tower (Int ⊔ Float
+        // = Float, Bool ⊔ Int = Int), which would collapse a
+        // runtime-distinguishable union like `Union[Int, Float]` down to a
+        // single primitive — the same hazard `minus` avoids (a lone primitive
+        // is treated by narrowing passes as a hint to emit `rt_unbox_float`).
         match (self, other) {
-            (Type::Union(ts), _) => ts
-                .iter()
-                .map(|t| t.meet(other))
-                .filter(|t| *t != Type::Never)
-                .fold(Type::Never, |acc, t| acc.join(&t)),
-            (_, Type::Union(ts)) => ts
-                .iter()
-                .map(|t| self.meet(t))
-                .filter(|t| *t != Type::Never)
-                .fold(Type::Never, |acc, t| acc.join(&t)),
+            (Type::Union(ts), _) => {
+                let mut parts: Vec<Type> = Vec::new();
+                for t in ts {
+                    let m = t.meet(other);
+                    if m != Type::Never && !parts.contains(&m) {
+                        parts.push(m);
+                    }
+                }
+                Self::union_from_parts(parts)
+            }
+            (_, Type::Union(ts)) => {
+                let mut parts: Vec<Type> = Vec::new();
+                for t in ts {
+                    let m = self.meet(t);
+                    if m != Type::Never && !parts.contains(&m) {
+                        parts.push(m);
+                    }
+                }
+                Self::union_from_parts(parts)
+            }
             _ => Type::Never,
         }
     }
@@ -848,11 +863,7 @@ impl TypeLattice for Type {
                 .map(|t| t.minus(other))
                 .filter(|t| *t != Type::Never)
                 .collect();
-            return match remaining.len() {
-                0 => Type::Never,
-                1 => remaining.into_iter().next().unwrap(),
-                _ => Type::Union(remaining),
-            };
+            return Self::union_from_parts(remaining);
         }
         // Concrete type not subsumed by other: keep self.
         self.clone()
@@ -860,6 +871,18 @@ impl TypeLattice for Type {
 }
 
 impl Type {
+    /// Build a `Type` from raw union members without applying the numeric
+    /// tower: 0 → `Never`, 1 → the lone member, otherwise a `Union`. Used by
+    /// `meet`/`minus` to preserve runtime-distinguishable members (e.g. keep
+    /// `Union[Int, Float]` instead of collapsing to `Float` via `join`).
+    fn union_from_parts(parts: Vec<Type>) -> Type {
+        match parts.len() {
+            0 => Type::Never,
+            1 => parts.into_iter().next().unwrap(),
+            _ => Type::Union(parts),
+        }
+    }
+
     /// Inherent implementation of the subtype relation, shared by both the
     /// inherent `is_subtype_of` (legacy callers) and the `TypeLattice` trait
     /// impl.  Will be inlined into the trait method and removed as an
@@ -1091,7 +1114,9 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::Bytes => Type::Bytes,
         TypeSpec::List(elem) => Type::list_of(typespec_to_type(elem)),
         TypeSpec::Dict(k, v) => Type::dict_of(typespec_to_type(k), typespec_to_type(v)),
-        TypeSpec::Tuple(elem) => Type::tuple_of(vec![typespec_to_type(elem)]),
+        // TypeSpec::Tuple is a variadic homogeneous tuple (`tuple[T, ...]`),
+        // not a fixed 1-element tuple — map it to the variable-length variant.
+        TypeSpec::Tuple(elem) => Type::tuple_var_of(typespec_to_type(elem)),
         TypeSpec::Set(elem) => Type::set_of(typespec_to_type(elem)),
         TypeSpec::Optional(inner) => Type::optional(typespec_to_type(inner)),
         TypeSpec::Any => Type::Any,
