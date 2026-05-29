@@ -370,6 +370,19 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
         return 1;
     }
 
+    // None is encoded as a tagged Value (NONE_TAG = 0b101), not null, so it
+    // would otherwise be dereferenced as a heap pointer below. Order None
+    // before any non-None value (mirrors the null handling above).
+    if va.is_none() && vb.is_none() {
+        return 0;
+    }
+    if va.is_none() {
+        return -1;
+    }
+    if vb.is_none() {
+        return 1;
+    }
+
     let a_header = a as *mut ObjHeader;
     let a_type = (*a_header).type_tag;
 

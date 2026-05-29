@@ -139,6 +139,18 @@ pub unsafe fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
     });
     ensure_capacity(&mut (*sio_obj).buffer, &mut (*sio_obj).capacity, end_pos);
 
+    // If a prior seek moved position past the valid end, the gap
+    // [len..position] is uninitialized heap memory (alloc/realloc is not
+    // zeroed). CPython fills such gaps with NUL; zero it before the write so
+    // getvalue()/read() never expose uninitialized bytes (Rust UB).
+    if (*sio_obj).position > (*sio_obj).len {
+        std::ptr::write_bytes(
+            (*sio_obj).buffer.add((*sio_obj).len),
+            0,
+            (*sio_obj).position - (*sio_obj).len,
+        );
+    }
+
     // Write data at current position
     std::ptr::copy_nonoverlapping(
         (*str_obj).data.as_ptr(),
@@ -379,6 +391,18 @@ pub unsafe fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
             )
         });
     ensure_capacity(&mut (*bio_obj).buffer, &mut (*bio_obj).capacity, end_pos);
+
+    // If a prior seek moved position past the valid end, the gap
+    // [len..position] is uninitialized heap memory (alloc/realloc is not
+    // zeroed). CPython fills such gaps with NUL; zero it before the write so
+    // getvalue()/read() never expose uninitialized bytes (Rust UB).
+    if (*bio_obj).position > (*bio_obj).len {
+        std::ptr::write_bytes(
+            (*bio_obj).buffer.add((*bio_obj).len),
+            0,
+            (*bio_obj).position - (*bio_obj).len,
+        );
+    }
 
     // Write data at current position
     std::ptr::copy_nonoverlapping(

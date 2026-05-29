@@ -6,6 +6,27 @@ use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
+/// Allocate a new bytes object from a slice `[ptr, ptr+len)` of `src`'s buffer,
+/// keeping `src` rooted across the allocation. `rt_make_bytes` calls `gc_alloc`,
+/// which may collect; the GC is non-moving, so the borrowed slice pointer stays
+/// valid as long as `src` remains reachable on the shadow stack.
+///
+/// # Safety
+/// `ptr` must point into `src`'s live data buffer for `len` bytes.
+unsafe fn make_bytes_from_rooted(src: *mut Obj, ptr: *const u8, len: usize) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    let mut root: *mut Obj = src;
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: &mut root as *mut *mut Obj,
+    };
+    gc_push(&mut frame);
+    let result = rt_make_bytes(ptr, len);
+    gc_pop();
+    result
+}
+
 /// Replace occurrences of old with new in bytes
 /// Returns: pointer to new BytesObj
 pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
@@ -143,7 +164,7 @@ pub fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
             end -= 1;
         }
 
-        rt_make_bytes(data.add(start), end - start)
+        make_bytes_from_rooted(bytes, data.add(start), end - start)
     }
 }
 #[export_name = "rt_bytes_strip"]
@@ -175,7 +196,7 @@ pub fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
             start += 1;
         }
 
-        rt_make_bytes(data.add(start), len - start)
+        make_bytes_from_rooted(bytes, data.add(start), len - start)
     }
 }
 #[export_name = "rt_bytes_lstrip"]
@@ -207,7 +228,7 @@ pub fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
             end -= 1;
         }
 
-        rt_make_bytes(data, end)
+        make_bytes_from_rooted(bytes, data, end)
     }
 }
 #[export_name = "rt_bytes_rstrip"]

@@ -173,17 +173,35 @@ pub extern "C" fn rt_deque_popleft_abi(deque: Value) -> Value {
 
 /// deque.extend(iterable) — extend right side with elements from iterable
 pub fn rt_deque_extend(deque: *mut Obj, iterable: *mut Obj) {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if iterable.is_null() {
         return;
     }
+    // Root the deque, the (possibly freshly-allocated) iterator and the scratch
+    // element across every allocating `rt_iter_next_no_exc` call: next() may
+    // trigger a GC that would otherwise free the unrooted iterator/deque.
+    // Mirrors `rt_deque_from_iter`'s rooting recipe.
+    let mut roots: [*mut Obj; 3] = [deque, iterable, std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
     let iter = iterable_to_iterator(iterable);
+    roots[1] = iter;
     loop {
         let elem = crate::iterator::rt_iter_next_no_exc(iter);
         if elem.is_null() {
             break;
         }
+        roots[2] = elem;
         rt_deque_append(deque, elem);
     }
+
+    gc_pop();
 }
 #[export_name = "rt_deque_extend"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -193,17 +211,33 @@ pub extern "C" fn rt_deque_extend_abi(deque: Value, iterable: Value) {
 
 /// deque.extendleft(iterable) — extend left side
 pub fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if iterable.is_null() {
         return;
     }
+    // Root deque + iterator + scratch element across allocating next() calls
+    // (see `rt_deque_extend` for the rationale).
+    let mut roots: [*mut Obj; 3] = [deque, iterable, std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
     let iter = iterable_to_iterator(iterable);
+    roots[1] = iter;
     loop {
         let elem = crate::iterator::rt_iter_next_no_exc(iter);
         if elem.is_null() {
             break;
         }
+        roots[2] = elem;
         rt_deque_appendleft(deque, elem);
     }
+
+    gc_pop();
 }
 #[export_name = "rt_deque_extendleft"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

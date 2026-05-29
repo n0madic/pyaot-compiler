@@ -493,7 +493,17 @@ pub fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
             total_len += sep_len * ((len - 1) as usize);
         }
 
-        // Allocate result
+        // Allocate result. gc_alloc may collect; root `sep` and `iterable`
+        // (the list — which transitively keeps its item bytes marked) so the
+        // separator/source buffers we copy from below survive the collection.
+        let mut roots: [*mut Obj; 2] = [sep, iterable];
+        let mut frame = crate::gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        crate::gc::gc_push(&mut frame);
+
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
         let result = obj as *mut BytesObj;
@@ -526,6 +536,7 @@ pub fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
             }
         }
 
+        crate::gc::gc_pop();
         obj
     }
 }

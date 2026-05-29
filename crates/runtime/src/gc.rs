@@ -291,8 +291,12 @@ fn mark_object(v: Value) {
             }
             TypeTagKind::Iterator => {
                 match IteratorKind::try_from((*(obj as *mut IteratorObj)).kind) {
-                    Ok(IteratorKind::Map) => fields!(MapIterObj, inner_iter, captures),
-                    Ok(IteratorKind::Filter) => fields!(FilterIterObj, inner_iter, captures),
+                    Ok(IteratorKind::Map) | Ok(IteratorKind::MapTagged) => {
+                        fields!(MapIterObj, inner_iter, captures)
+                    }
+                    Ok(IteratorKind::Filter) | Ok(IteratorKind::FilterTagged) => {
+                        fields!(FilterIterObj, inner_iter, captures)
+                    }
                     Ok(IteratorKind::Zip) => fields!(ZipIterObj, iter1, iter2),
                     Ok(IteratorKind::Zip3) => fields!(Zip3IterObj, iter1, iter2, iter3),
                     Ok(IteratorKind::Chain) => fields!(ChainIterObj, iters),

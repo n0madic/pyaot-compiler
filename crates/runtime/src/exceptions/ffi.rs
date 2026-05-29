@@ -738,6 +738,12 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
 /// `instance` must be a valid pointer to a heap-allocated InstanceObj.
 #[no_mangle]
 pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj) -> ! {
+    // Defensive null-check at the public C-ABI boundary: a null instance would
+    // otherwise dereference below. Mirrors CPython's `raise None` behaviour.
+    if instance.is_null() {
+        let msg = b"exceptions must derive from BaseException";
+        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+    }
     let inst = instance as *const crate::object::InstanceObj;
     let class_id = (*inst).class_id;
 

@@ -411,7 +411,9 @@ pub fn rt_bytes_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 
         let a_len = (*a_obj).len;
         let b_len = (*b_obj).len;
-        let total_len = a_len + b_len;
+        let total_len = a_len.checked_add(b_len).unwrap_or_else(|| {
+            raise_exc!(ExceptionType::MemoryError, "bytes size overflow");
+        });
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
@@ -449,7 +451,9 @@ pub fn rt_bytes_repeat(bytes: *mut Obj, count: i64) -> *mut Obj {
         let len = (*bytes_obj).len;
         let data = (*bytes_obj).data.as_ptr();
 
-        let total_len = len * (count as usize);
+        let total_len = len.checked_mul(count as usize).unwrap_or_else(|| {
+            raise_exc!(ExceptionType::MemoryError, "bytes size overflow");
+        });
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
         let result = obj as *mut BytesObj;
