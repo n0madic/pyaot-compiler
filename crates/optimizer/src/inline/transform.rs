@@ -275,18 +275,29 @@ fn perform_inline(
 
     // Build the continuation block. If the callee has at least one
     // value-returning path, emit a Phi at the head merging the return
-    // values from each predecessor. Void-returning paths contribute a
-    // `Constant::Int(0)` placeholder (mixed returns are rare in
-    // well-typed code; the placeholder value is never semantically
-    // consumed because callers of genuine-void callees don't read dest).
+    // values from each predecessor. A void/bare `return` semantically yields
+    // None, so for a mixed value/void callee whose merge dest is a tagged slot
+    // (Optional/Union/Any) the void paths contribute `Constant::None` — the
+    // old `Constant::Int(0)` placeholder made the None-returning path produce
+    // 0, which a caller checking `is None` would observe. When dest is a
+    // concrete raw type (genuinely-void mix where the value is never read), a
+    // None operand would mismatch the verifier, so keep the Int(0) placeholder.
     let mut continuation_instructions: Vec<Instruction> = Vec::new();
     if !return_sources.is_empty() {
+        let dest_is_tagged = caller.locals.get(&dest).is_some_and(|l| {
+            matches!(
+                l.ty,
+                pyaot_types::Type::Any | pyaot_types::Type::None | pyaot_types::Type::Union(_)
+            )
+        });
+        let void_placeholder = if dest_is_tagged {
+            pyaot_mir::Operand::Constant(pyaot_mir::Constant::None)
+        } else {
+            pyaot_mir::Operand::Constant(pyaot_mir::Constant::Int(0))
+        };
         let mut phi_sources: Vec<(BlockId, pyaot_mir::Operand)> = return_sources.clone();
         for &vb in &void_return_blocks {
-            phi_sources.push((
-                vb,
-                pyaot_mir::Operand::Constant(pyaot_mir::Constant::Int(0)),
-            ));
+            phi_sources.push((vb, void_placeholder.clone()));
         }
         continuation_instructions.push(Instruction {
             kind: InstructionKind::Phi {

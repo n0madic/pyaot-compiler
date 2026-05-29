@@ -565,11 +565,21 @@ fn propagate_copy_types(module: &mut Module, caller_id: FuncId) {
             })
             .collect();
         for (dest, src) in copies {
-            let src_ty = func.locals.get(&src).map(|l| l.ty.clone());
-            if let (Some(src_ty), Some(dest_local)) = (src_ty, func.locals.get_mut(&dest)) {
+            let src_info = func
+                .locals
+                .get(&src)
+                .map(|l| (l.ty.clone(), l.mir_ty.clone()));
+            if let (Some((src_ty, src_mir_ty)), Some(dest_local)) =
+                (src_info, func.locals.get_mut(&dest))
+            {
                 if dest_local.ty != src_ty && (dest_local.ty.contains_var() || src_ty != Type::Any)
                 {
                     dest_local.ty = src_ty;
+                    // A Copy gives `dest` exactly `src`'s value, so its physical
+                    // representation matches src's. Keep `mir_ty` in sync with
+                    // the rewritten `ty`; a stale `mir_ty` would make
+                    // `resolved_mir_type()` report the old physical shape.
+                    dest_local.mir_ty = src_mir_ty;
                     changed = true;
                 }
             }

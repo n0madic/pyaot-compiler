@@ -783,6 +783,11 @@ fn coerce_operand(
                 }
             },
             _ if actual.is_heap() => Ok(operand),
+            // Any/Union carry a tagged Value that, at this ABI boundary, is a
+            // heap pointer (the HIR contract guarantees it — this mirrors the
+            // verifier's `Tagged -> Heap(_)` widening). Pass through instead of
+            // hard-erroring the whole compile.
+            Type::Any | Type::Union(_) => Ok(operand),
             _ => Err(CompilerError::codegen_error(
                 format!(
                     "cannot coerce {:?} to heap type {:?} at call site",

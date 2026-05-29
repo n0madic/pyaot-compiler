@@ -1454,10 +1454,22 @@ pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool 
                 );
                 let class_id = match obj_ty {
                     Type::Class { class_id, .. } => class_id,
-                    _ => match init_to_class.get(&func_id).copied() {
-                        Some(class_id) => class_id,
-                        None => continue,
-                    },
+                    _ => {
+                        // Falling back to the enclosing __init__'s class is only
+                        // valid when the write targets `self` (param 0). A
+                        // non-self write inside __init__ whose object type isn't
+                        // a concrete Class would otherwise be misattributed to
+                        // this class, and its offset resolved against the wrong
+                        // class's field layout.
+                        let is_self_write = func
+                            .params
+                            .first()
+                            .is_some_and(|p| matches!(&args[0], Operand::Local(id) if *id == p.id));
+                        match init_to_class.get(&func_id).copied() {
+                            Some(class_id) if is_self_write => class_id,
+                            _ => continue,
+                        }
+                    }
                 };
                 let Some(offset_to_name) = offset_maps.get(&class_id) else {
                     continue;
