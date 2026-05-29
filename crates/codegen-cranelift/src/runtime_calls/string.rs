@@ -86,24 +86,33 @@ fn compile_make_bytes(
     args: &[Operand],
     ctx: &mut CodegenContext,
 ) -> Result<()> {
-    if let Operand::Constant(mir::Constant::Bytes(data)) = &args[0] {
-        let mut sig = ctx.module.make_signature();
-        sig.call_conv = CallConv::SystemV;
-        sig.params.push(AbiParam::new(cltypes::I64)); // data pointer
-        sig.params.push(AbiParam::new(cltypes::I64)); // length
-        sig.returns.push(AbiParam::new(cltypes::I64)); // result pointer
+    // MakeBytes is only ever emitted for a compile-time bytes literal. If the
+    // operand is anything else we must not silently fall through: that would
+    // leave `dest` uninitialized (a no-op store) and any downstream read would
+    // see garbage. Treat it as an internal invariant violation instead.
+    let Operand::Constant(mir::Constant::Bytes(data)) = &args[0] else {
+        unreachable!(
+            "MakeBytes expects a compile-time Bytes constant operand, got {:?}",
+            args[0]
+        );
+    };
 
-        let func_id = declare_runtime_function(ctx.module, "rt_make_bytes", &sig)?;
-        let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64)); // data pointer
+    sig.params.push(AbiParam::new(cltypes::I64)); // length
+    sig.returns.push(AbiParam::new(cltypes::I64)); // result pointer
 
-        let data_id = crate::utils::create_raw_bytes_data(ctx.module, data);
-        let gv = ctx.module.declare_data_in_func(data_id, builder.func);
-        let data_ptr = builder.ins().global_value(cltypes::I64, gv);
-        let len_val = builder.ins().iconst(cltypes::I64, data.len() as i64);
+    let func_id = declare_runtime_function(ctx.module, "rt_make_bytes", &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
-        let call_inst = builder.ins().call(func_ref, &[data_ptr, len_val]);
-        let result_val = get_call_result(builder, call_inst);
-        ctx.store_result(builder, &dest, result_val);
-    }
+    let data_id = crate::utils::create_raw_bytes_data(ctx.module, data);
+    let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+    let data_ptr = builder.ins().global_value(cltypes::I64, gv);
+    let len_val = builder.ins().iconst(cltypes::I64, data.len() as i64);
+
+    let call_inst = builder.ins().call(func_ref, &[data_ptr, len_val]);
+    let result_val = get_call_result(builder, call_inst);
+    ctx.store_result(builder, &dest, result_val);
     Ok(())
 }

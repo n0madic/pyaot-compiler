@@ -437,9 +437,21 @@ pub(crate) fn coerce_arg_by_signature(
         return Ok(arg_val);
     }
 
-    // I8 -> I64: extend bool/None to int-sized
-    if arg_type == cltypes::I8 && expected_ty == cltypes::I64 {
+    // Integer widening: I8/I32 -> I64 (bool/None or slot-id to int-sized).
+    if (arg_type == cltypes::I8 || arg_type == cltypes::I32) && expected_ty == cltypes::I64 {
         return Ok(builder.ins().uextend(cltypes::I64, arg_val));
+    }
+
+    // Integer narrowing: I64 -> I8/I32 (e.g. an i64-typed bool value flowing
+    // into an i8 parameter, or a slot id into an i32 parameter). Without this
+    // the type mismatch would reach the Cranelift verifier as invalid IR.
+    if arg_type == cltypes::I64 && (expected_ty == cltypes::I8 || expected_ty == cltypes::I32) {
+        return Ok(builder.ins().ireduce(expected_ty, arg_val));
+    }
+
+    // I8 -> I32 / I32 narrowing between the two smaller int classes.
+    if arg_type == cltypes::I8 && expected_ty == cltypes::I32 {
+        return Ok(builder.ins().uextend(cltypes::I32, arg_val));
     }
 
     // F64 -> I64: box float for Any/Union parameters
