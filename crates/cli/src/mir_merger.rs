@@ -5,7 +5,7 @@ use miette::{NamedSource, Report, Result};
 use pyaot_hir as hir;
 use pyaot_lowering::CrossModuleClassInfo;
 use pyaot_types::{BuiltinExceptionKind, Type, TypeTagKind};
-use pyaot_utils::{ClassId, FuncId, InternedString, StringInterner, VarId};
+use pyaot_utils::{ClassId, FuncId, InternedString, StringInterner, VarId, RESUME_FUNC_ID_OFFSET};
 use std::collections::HashMap;
 
 /// Interner-free mirror of `Type`.
@@ -525,8 +525,25 @@ impl MirMerger {
             // defined later in the same module.
             let mut func_id_remap: HashMap<FuncId, FuncId> = HashMap::new();
             let mut module_functions: Vec<(FuncId, pyaot_mir::Function, String)> = Vec::new();
-            for (old_func_id, mut func) in module_mir.functions {
-                let safe_module_name = module_name.replace('.', "_");
+            let safe_module_name = module_name.replace('.', "_");
+
+            // Generator resume functions are identified solely by their id band
+            // (`old_id >= RESUME_FUNC_ID_OFFSET`); the originating generator
+            // function sits at `old_id - RESUME_FUNC_ID_OFFSET`. Codegen's
+            // dispatcher recovers the original via `resume_id - OFFSET`, so the
+            // band relationship must survive merging: a resume function's new id
+            // has to be `new_original_id + OFFSET`, not a flat sequential id.
+            // Number originals first (pass A), then resume functions (pass B).
+            let all_functions: Vec<(FuncId, pyaot_mir::Function)> =
+                module_mir.functions.into_iter().collect();
+            let mut deferred_resume: Vec<(FuncId, pyaot_mir::Function)> = Vec::new();
+
+            // Pass A: non-resume functions get fresh sequential ids.
+            for (old_func_id, mut func) in all_functions {
+                if old_func_id.0 >= RESUME_FUNC_ID_OFFSET {
+                    deferred_resume.push((old_func_id, func));
+                    continue;
+                }
                 let original_name = func.name.clone();
                 if !is_main && original_name != "__pyaot_module_init__" {
                     func.name = format!("__module_{}_{}", safe_module_name, original_name);
@@ -545,6 +562,27 @@ impl MirMerger {
                         .push((module_name.clone(), new_func_id));
                 }
 
+                module_functions.push((new_func_id, func, original_name));
+            }
+
+            // Pass B: resume functions inherit `new_original_id + OFFSET`. Their
+            // `$resume` suffix is preserved by the rename prefix so codegen's
+            // name-based detection still matches.
+            for (old_func_id, mut func) in deferred_resume {
+                let original_name = func.name.clone();
+                if !is_main {
+                    func.name = format!("__module_{}_{}", safe_module_name, original_name);
+                }
+                let original_old_id = FuncId(old_func_id.0 - RESUME_FUNC_ID_OFFSET);
+                let new_original_id = *func_id_remap.get(&original_old_id).unwrap_or_else(|| {
+                    panic!(
+                        "resume function {} has no original function {} in module {}",
+                        old_func_id.0, original_old_id.0, module_name
+                    )
+                });
+                let new_func_id = FuncId(new_original_id.0 + RESUME_FUNC_ID_OFFSET);
+                func.id = new_func_id;
+                func_id_remap.insert(old_func_id, new_func_id);
                 module_functions.push((new_func_id, func, original_name));
             }
 
@@ -674,18 +712,37 @@ impl MirMerger {
         Type::Any
     }
 
-    /// Remap `FuncId` references embedded in an instruction. Only
-    /// `CallDirect` carries a `FuncId` directly — other call kinds route
-    /// through a symbol name (`CallNamed`), an operand (`Call`), or a
-    /// vtable slot (`CallVirtual{,Named}`), none of which change when
-    /// module-local ids are merged into a global namespace.
+    /// Remap `FuncId` references embedded in an instruction. `CallDirect`
+    /// carries a `FuncId` directly; other call kinds route through a symbol
+    /// name (`CallNamed`), an operand (`Call`), or a vtable slot
+    /// (`CallVirtual{,Named}`), none of which change when module-local ids are
+    /// merged into a global namespace.
+    ///
+    /// `RT_MAKE_GENERATOR` is the one runtime call that bakes a `FuncId` into a
+    /// constant operand (the generator's original function id — see
+    /// `lower_generator_intrinsic`). The runtime stores that id and the resume
+    /// dispatcher matches it against `resume_id - RESUME_FUNC_ID_OFFSET`, so it
+    /// must be remapped to the generator's new merged id too.
     fn remap_instruction_func_ids<F>(kind: &mut pyaot_mir::InstructionKind, remap: &F)
     where
         F: Fn(FuncId) -> FuncId,
     {
-        use pyaot_mir::InstructionKind;
-        if let InstructionKind::CallDirect { func, .. } = kind {
-            *func = remap(*func);
+        use pyaot_mir::{Constant, InstructionKind, Operand, RuntimeFunc};
+        match kind {
+            InstructionKind::CallDirect { func, .. } => {
+                *func = remap(*func);
+            }
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                args,
+                ..
+            } if def.symbol == pyaot_core_defs::runtime_func_def::RT_MAKE_GENERATOR.symbol => {
+                if let Some(Operand::Constant(Constant::Int(func_id_val))) = args.first_mut() {
+                    let new_id = remap(FuncId(*func_id_val as u32));
+                    *func_id_val = new_id.0 as i64;
+                }
+            }
+            _ => {}
         }
     }
 

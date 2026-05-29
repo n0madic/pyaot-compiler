@@ -843,9 +843,17 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
 
         let elem = rt_iter_next_internal(current_iter, false);
         if elem != EXHAUSTED_SENTINEL {
-            // Also check exhausted flag since EXHAUSTED_SENTINEL can collide with -1
-            let inner_iter = current_iter as *mut crate::object::IteratorObj;
-            if !(*inner_iter).exhausted {
+            // Also check exhausted flag since EXHAUSTED_SENTINEL can collide with -1.
+            // The exhausted flag lives at different offsets in GeneratorObj
+            // (offset 24) vs IteratorObj (offset 17), so dispatch on type_tag —
+            // otherwise a chained generator's exhausted bit is read from the
+            // wrong field and the chain truncates (mirrors iter_next_map_tagged).
+            let inner_exhausted = if (*current_iter).header.type_tag == TypeTagKind::Generator {
+                (*(current_iter as *mut crate::object::GeneratorObj)).exhausted
+            } else {
+                (*(current_iter as *mut crate::object::IteratorObj)).exhausted
+            };
+            if !inner_exhausted {
                 return elem;
             }
         }

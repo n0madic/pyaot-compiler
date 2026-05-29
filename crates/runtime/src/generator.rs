@@ -297,10 +297,21 @@ pub unsafe fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj {
         raise_exc!(ExceptionType::StopIteration, "generator already exhausted");
     }
 
-    // CPython: can't send non-None value to a just-started generator
-    // State 0 means the generator hasn't started yet
-    // In our representation, value 0 is None
-    if (*gen_obj).state == 0 && value != 0 {
+    // CPython: can't send a non-None value to a just-started generator.
+    // State 0 means the generator hasn't started yet. `value` carries the
+    // tagged-Value wire bits (see the sent_value store below). None reaches
+    // this point either as the immediate NONE_TAG or — via `rt_box_none` at
+    // the lowering boundary — as a pointer to the heap None singleton, never
+    // as 0. Accept both encodings so the standard `gen.send(None)` priming
+    // idiom is not rejected (the old `value != 0` guard always raised because
+    // the boxed None is a non-zero heap pointer).
+    let sent = pyaot_core_defs::Value(value as u64);
+    let sent_is_none = sent.is_none()
+        || (sent.is_ptr() && {
+            let p = sent.unwrap_ptr::<Obj>();
+            !p.is_null() && (*p).header.type_tag == TypeTagKind::None
+        });
+    if (*gen_obj).state == 0 && !sent_is_none {
         raise_exc!(
             ExceptionType::TypeError,
             "can't send non-None value to a just-started generator"

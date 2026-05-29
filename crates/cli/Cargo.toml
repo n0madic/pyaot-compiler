@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pyaot-utils = { path = "../utils" }
+pyaot-core-defs = { path = "../core-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
 pyaot-frontend-python = { path = "../frontend-python" }
 pyaot-hir = { path = "../hir" }
