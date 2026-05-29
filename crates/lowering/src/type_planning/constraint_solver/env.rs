@@ -128,6 +128,8 @@ impl Env {
 
     /// Returns `Some(&Type)` only if the key has been explicitly bound.
     /// Distinct from [`Self::get`] which fills unseen keys with `Never`.
+    /// Test-only: the solver always uses [`Self::get`]'s bottom-filling form.
+    #[cfg(test)]
     pub fn lookup(&self, key: TypeKey) -> Option<&Type> {
         self.values.get(&key)
     }
@@ -167,14 +169,6 @@ impl Env {
     /// this to walk the env when writing back to `LoweringSeedInfo`.
     pub fn iter(&self) -> impl Iterator<Item = (&TypeKey, &Type)> {
         self.values.iter()
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
     }
 }
 

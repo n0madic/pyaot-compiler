@@ -99,7 +99,6 @@ impl<'a> Lowering<'a> {
                 base_var_types: IndexMap::with_capacity(estimated_vars),
                 refined_class_field_types: IndexMap::with_capacity(class_count),
                 phase4_unsafe_funcs: IndexSet::with_capacity(8),
-                class_fields_with_heap_writes: IndexMap::with_capacity(class_count),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),

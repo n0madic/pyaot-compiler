@@ -525,31 +525,13 @@ impl<'a> Lowering<'a> {
                 if attr_name == "__class__" && class_info.is_exception_class {
                     return Some(Type::Str);
                 }
-                // After Phase 2, refined types are folded into
-                // `class_info.field_types` post type-planning, so reading
-                // it here is the single source of truth. During the
-                // type-planning fixpoint loop itself we may still observe
-                // pre-fold storage labels — refinements applied in later
-                // iterations narrow those reads.
-                //
-                // Heap-writes side-set takes precedence over the refined
-                // table: a field that has EVER received an Any-typed RHS
-                // must read as `Any`, even when the refined table holds
-                // a precise narrowing computed before/after the
-                // observation. Without this in-loop check, the refined
-                // narrowing would shadow the heap-write signal until the
-                // post-loop fold catches up, and inference computations
-                // (binop result types, container element narrowing,
-                // etc.) that fire INSIDE the loop would use the stale
-                // precise type and produce inconsistent results.
-                if self
-                    .lowering_seed_info
-                    .class_fields_with_heap_writes
-                    .get(&class_id)
-                    .is_some_and(|fs| fs.contains(&attr))
-                {
-                    return Some(Type::Any);
-                }
+                // Refined types (the solver's converged `ClassField`
+                // values) are folded into `class_info.field_types` post
+                // type-planning, so reading `refined_class_field_types`
+                // first and `field_types` second is the single source of
+                // truth. An `Any`-typed (heap-carrying) write already
+                // widens the field via the solver's `FieldWrite` JOIN, so
+                // no separate heap-writes precedence check is needed.
                 if let Some(field_ty) = self
                     .lowering_seed_info
                     .refined_class_field_types

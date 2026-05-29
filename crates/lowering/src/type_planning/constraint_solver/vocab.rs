@@ -62,7 +62,12 @@ pub enum Constraint {
     /// monotone by construction (`Type::join` is monotone in both arguments).
     FlowsInto { src: TypeKey, dst: TypeKey },
 
-    /// Two-way `FlowsInto`. Expanded into two edges by the collector.
+    /// Two-way `FlowsInto`. The collector expands equality into two
+    /// `FlowsInto` edges directly, so this variant is never constructed in
+    /// production — but `evaluate`/`inputs_of` still handle it defensively
+    /// (and `Solver::add_equal` constructs it in unit tests), so it remains
+    /// part of the vocabulary.
+    #[allow(dead_code)] // reserved vocab; only constructed via test-only `add_equal`
     Equal(TypeKey, TypeKey),
 
     /// Binary operator. Re-reduced via `infer::binop_result_type` whenever

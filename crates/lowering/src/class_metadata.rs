@@ -216,35 +216,42 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Fold every refined class-field type into the corresponding
-    /// `LoweredClassInfo.field_types` entry, then apply the heap-writes
-    /// side-set as a final widening pass, then drain both. After this
-    /// pass, `class_info.field_types` is the single source of truth for
-    /// storage layout and read-time labelling — lowering reads only it,
-    /// no separate refined or side-set table.
+    /// Fold every refined class-field type (the solver's converged
+    /// `ClassField` values) into the corresponding
+    /// `LoweredClassInfo.field_types` entry. After this pass,
+    /// `class_info.field_types` is the single source of truth for storage
+    /// layout and read-time labelling — lowering reads only it.
     ///
-    /// Order matters: refined narrowing is applied first (whatever
-    /// converged across the fixpoint), then the monotonic heap-writes
-    /// signal forces `Type::Any` for any field that ever received an
-    /// Any-typed RHS — overriding the narrowed type. This separation
-    /// keeps the fixpoint convergence stable (refined narrowing isn't
-    /// perturbed by transient Any observations) while still encoding
-    /// the permanent widening into the single post-fold source.
+    /// The solver's `FieldWrite` constraint JOINs every observed write's
+    /// RHS into the field's `ClassField` key, so an `Any`-typed (heap-
+    /// carrying) write naturally widens the field to `Any` via the lattice
+    /// — this subsumes the legacy `class_fields_with_heap_writes` side-set
+    /// (deleted: it had no remaining writer once the constraint solver
+    /// replaced the harvester passes).
     pub(crate) fn fold_refined_field_types_into_storage(&mut self) {
         let refined = std::mem::take(&mut self.lowering_seed_info.refined_class_field_types);
-        let heap_writes =
-            std::mem::take(&mut self.lowering_seed_info.class_fields_with_heap_writes);
         for (class_id, fields) in refined {
             if let Some(info) = self.classes.class_info.get_mut(&class_id) {
                 for (field_name, refined_ty) in fields {
-                    info.field_types.insert(field_name, refined_ty);
-                }
-            }
-        }
-        for (class_id, fields) in heap_writes {
-            if let Some(info) = self.classes.class_info.get_mut(&class_id) {
-                for field in fields {
-                    info.field_types.insert(field, Type::Any);
+                    // Normalize the solver-produced field type before it
+                    // becomes the storage-layout source of truth:
+                    //  1. Collapse a `Union[tuple[A,B], tuple[A]]` of
+                    //     different-arity fixed tuples (the solver's
+                    //     `TypeLattice::join` produces this for a field
+                    //     written with mixed-arity tuples — e.g. autograd's
+                    //     `_local_grads` written `(g,)` by `__pow__` and
+                    //     `(a, b)` by `__add__`) into the uniform
+                    //     `tuple[T, ...]` shape. Without this, `type_to_iter_source`
+                    //     has no Union arm and mis-dispatches the field's
+                    //     iteration as a list → SIGSEGV.
+                    //  2. Demote any nested `Never` container parameter to
+                    //     `Any` so an unwitnessed-element field (`list[Never]`)
+                    //     never reaches codegen's register mapper as a bottom
+                    //     type. (Locals are demoted at alloc time, but field
+                    //     types fold straight into storage.)
+                    let normalized =
+                        collapse_tuple_union_to_var(refined_ty).demote_never_params_to_any();
+                    info.field_types.insert(field_name, normalized);
                 }
             }
         }
@@ -635,5 +642,89 @@ impl<'a> Lowering<'a> {
             }
         }
         None
+    }
+}
+
+/// Collapse a `Union` whose members are all tuples (fixed or variable,
+/// any arity) into the uniform `tuple[T, ...]` shape, where `T` is the
+/// JOIN of every member's element types.
+///
+/// The constraint solver's `TypeLattice::join` produces
+/// `Union[tuple[A, B], tuple[A]]` when a single class field is written
+/// with different-arity fixed tuples (e.g. autograd's `_local_grads`).
+/// Such a Union has no usable `IterSourceKind`, so downstream iteration
+/// mis-dispatches. Since the runtime stores all tuples as a uniform
+/// `[Value]` `TupleObj`, the variable-length tuple is the correct merged
+/// representation. Non-tuple members abort the collapse (the Union is
+/// kept as-is).
+fn collapse_tuple_union_to_var(ty: Type) -> Type {
+    use pyaot_types::TypeLattice;
+    let Type::Union(members) = &ty else {
+        return ty;
+    };
+    let mut element_join = Type::Never;
+    for m in members {
+        if let Some(elems) = m.tuple_elems() {
+            for e in elems {
+                element_join = element_join.join(e);
+            }
+        } else if let Some(e) = m.tuple_var_elem() {
+            element_join = element_join.join(e);
+        } else {
+            // A non-tuple member — give up and keep the Union.
+            return ty;
+        }
+    }
+    if matches!(element_join, Type::Never) {
+        // All-empty tuples — meaningless; preserve the original.
+        return ty;
+    }
+    Type::tuple_var_of(element_join)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_tuple_union_to_var;
+    use pyaot_types::Type;
+
+    #[test]
+    fn collapses_mixed_arity_fixed_tuple_union_to_var() {
+        // `Union[tuple[Float, Float], tuple[Float]]` (autograd `_local_grads`
+        // written with arity-2 and arity-1 tuples) → `tuple[Float, ...]`.
+        let u = Type::Union(vec![
+            Type::tuple_of(vec![Type::Float, Type::Float]),
+            Type::tuple_of(vec![Type::Float]),
+        ]);
+        assert_eq!(
+            collapse_tuple_union_to_var(u),
+            Type::tuple_var_of(Type::Float)
+        );
+    }
+
+    #[test]
+    fn collapses_with_numeric_tower_element_join() {
+        // Int and Float element kinds join up the numeric tower to Float.
+        let u = Type::Union(vec![
+            Type::tuple_of(vec![Type::Int, Type::Int]),
+            Type::tuple_of(vec![Type::Float]),
+        ]);
+        assert_eq!(
+            collapse_tuple_union_to_var(u),
+            Type::tuple_var_of(Type::Float)
+        );
+    }
+
+    #[test]
+    fn keeps_union_with_non_tuple_member() {
+        // A non-tuple member aborts the collapse — the Union is preserved.
+        let u = Type::Union(vec![Type::tuple_of(vec![Type::Float]), Type::Int]);
+        assert_eq!(collapse_tuple_union_to_var(u.clone()), u);
+    }
+
+    #[test]
+    fn passes_through_non_union() {
+        // A bare tuple (not a Union) is returned unchanged.
+        let t = Type::tuple_of(vec![Type::Float, Type::Float]);
+        assert_eq!(collapse_tuple_union_to_var(t.clone()), t);
     }
 }

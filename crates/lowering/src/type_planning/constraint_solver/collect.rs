@@ -73,11 +73,13 @@ pub struct Collector<'a> {
     /// while a direct `CallDirect` passes them as primitives → the result
     /// is a tagged `Value` the `int`-typed dest never unboxes.
     ///
-    /// Restricted to capture-free targets (the lifted-closure ABI offsets
-    /// call args by `capture_count`, which the `CalleeRef::Func` hint loop
-    /// does not apply) and to variables assigned exactly once (a `VarId`
-    /// re-bound to a different target is removed — `Some`→absent — so an
-    /// ambiguous holder never mis-hints).
+    /// Restricted to capture-free targets — a `Var` holding a *capturing*
+    /// closure value isn't reliably lowered to a `CallDirect`, so resolving
+    /// it here could mis-type the call. (The lifted-closure capture offset
+    /// itself is now handled uniformly by the `CalleeRef::Func` hint loop via
+    /// `callee_cap_count`.) Also restricted to variables assigned exactly
+    /// once (a `VarId` re-bound to a different target is removed —
+    /// `Some`→absent — so an ambiguous holder never mis-hints).
     var_to_lambda: HashMap<VarId, FuncId>,
     /// `FuncId → set of param indices` that are mutated in-place via a
     /// container mutator (`append`/`add`/`insert`/`extend`/`update`),
@@ -306,27 +308,34 @@ impl<'a> Collector<'a> {
     }
 
     /// Resolve a method call `obj.method(…)` to a concrete user-defined
-    /// `FuncId` when `obj` is a `Var` with a statically-known class
-    /// (`var_class_hints` — notably `self`). Walks the single-inheritance
-    /// chain and matches by the method's source name (the suffix after the
-    /// `ClassName$` mangling). Returns `None` for unknown receivers or
-    /// built-in / cross-module methods, which then fall back to the
-    /// `MethodCall` ctx path.
+    /// `FuncId` when `obj`'s class is statically known: a `Var` with a
+    /// `var_class_hints` entry (notably `self`) **or** a direct constructor
+    /// call `V(...).method(…)`. Walks the single-inheritance chain and matches
+    /// by the method's source name (the suffix after the `ClassName$`
+    /// mangling). Returns `None` for unknown receivers or built-in /
+    /// cross-module methods, which then fall back to the `MethodCall` ctx path.
     ///
     /// Routing the result through the resolved method's `FuncReturn` lets a
     /// `self.method()` call self-bootstrap through the solver env — exactly
     /// like a direct `Call(Func)` — instead of reading the stale Lowering
     /// return type via `ctx.method_return` (which misses solver-inferred
-    /// returns such as `NotImplemented`).
+    /// returns such as `NotImplemented`). It also drives the arg→param hint
+    /// flow (collect.rs `MethodCall` site): without resolving the receiver
+    /// class, an unannotated method param stays `Any` and lowering picks the
+    /// wrong runtime (`rt_deque_append` vs `rt_list_append`) → SIGSEGV.
     fn resolve_local_method(
         &self,
         obj: ExprId,
         method: pyaot_utils::InternedString,
     ) -> Option<FuncId> {
-        let ExprKind::Var(v) = &self.module.exprs[obj].kind else {
-            return None;
+        let mut class_id = match &self.module.exprs[obj].kind {
+            ExprKind::Var(v) => self.var_class_hints.get(v).copied()?,
+            // `V(...).method(…)` — method called on a fresh instance. The
+            // receiver is a Call expr, never a Var, so it never landed in
+            // var_class_hints even though its class is statically obvious.
+            ExprKind::Call { .. } => self.ctor_call_class(obj)?,
+            _ => return None,
         };
-        let mut class_id = self.var_class_hints.get(v).copied()?;
         let want = self.interner.get(method)?;
         loop {
             let cdef = self.module.class_defs.get(&class_id)?;
@@ -1374,6 +1383,20 @@ impl<'a> Collector<'a> {
                     }
                     _ => CalleeRef::Dynamic(TypeKey::Expr(*func)),
                 };
+                // Number of leading capture params on the resolved callee.
+                // A lifted closure delivers its captures as the LEADING
+                // positional params, so the call's positional args map to
+                // params `[cap_count..]`, NOT `[0..]`. An immediately-invoked
+                // capturing closure (`c = 1; (lambda x: x + c)(5)`) lowers to
+                // a `Func` whose params are `[c, x]`; without this offset arg
+                // `5` would hint the `c` capture slot and leave `x` untyped —
+                // the same mis-slotting `propagate_hof_iterable_hint` guards
+                // against with `cap_count + i`. `FuncRef` and the capture-free
+                // `var_to_lambda` arm contribute 0.
+                let callee_cap_count = match &self.module.exprs[*func].kind {
+                    ExprKind::Closure { captures, .. } => captures.len(),
+                    _ => 0,
+                };
                 // Walk positional args.
                 let mut arg_keys = Vec::with_capacity(args.len());
                 for arg in args {
@@ -1401,7 +1424,7 @@ impl<'a> Collector<'a> {
                     for (ix, &arg_key) in arg_keys.iter().enumerate() {
                         self.solver.add(Constraint::LambdaParamHint {
                             func: target_fid,
-                            param_ix: ix,
+                            param_ix: callee_cap_count + ix,
                             hint: arg_key,
                         });
                     }
@@ -1413,10 +1436,13 @@ impl<'a> Collector<'a> {
                     // argument so `ks = [[] for _ in range(n)]; fill(ks)`
                     // sees `ks : list[list[T]]` after the call. Gated on the
                     // param being mutated, so a reassigned-only param never
-                    // widens the caller's var.
+                    // widens the caller's var. Param indices in `mutated` are
+                    // lifted-ABI (capture-inclusive); the arg-relative `ix`
+                    // therefore maps to lifted param `callee_cap_count + ix`.
                     if let Some(mutated) = self.mutated_param_indices.get(&target_fid).cloned() {
                         for (ix, arg) in args.iter().enumerate() {
-                            if !mutated.contains(&ix) {
+                            let param_ix = callee_cap_count + ix;
+                            if !mutated.contains(&param_ix) {
                                 continue;
                             }
                             let (hir::CallArg::Regular(arg_eid) | hir::CallArg::Starred(arg_eid)) =
@@ -1428,7 +1454,7 @@ impl<'a> Collector<'a> {
                                 .module
                                 .func_defs
                                 .get(&target_fid)
-                                .and_then(|f| f.params.get(ix))
+                                .and_then(|f| f.params.get(param_ix))
                                 .map(|p| p.var)
                             else {
                                 continue;
@@ -2690,6 +2716,190 @@ mod tests {
         assert_eq!(solver.env().get(TypeKey::FuncReturn(fid_f)), Type::Int);
         // Caller's call expr = Int.
         assert_eq!(solver.env().get(TypeKey::Expr(e_call)), Type::Int);
+    }
+
+    /// Immediately-invoked capturing closure: `(lambda x: ...)(5)` where the
+    /// lambda captures one upvalue. The lifted closure's params are
+    /// `[capture, x]`, so the call's positional arg `5` must hint the USER
+    /// param at index `cap_count` (1), NOT index 0 (the capture slot).
+    /// Regression test for the missing capture offset in the direct-Call
+    /// `CalleeRef::Func` hint loop.
+    #[test]
+    fn collect_immediate_closure_call_hints_param_after_captures() {
+        let mut interner = StringInterner::new();
+        let g_name = interner.intern("g");
+        let caller_name = interner.intern("caller");
+        let cap_name = interner.intern("c");
+        let x_name = interner.intern("x");
+        let mut m = hir::Module::new(interner.intern("test"));
+
+        // Lifted closure body `def g(c, x): return x` — params [capture c, user x].
+        let cap_var = VarId::new(0);
+        let x_var = VarId::new(1);
+        let e_x = m.exprs.alloc(expr(hir::ExprKind::Var(x_var)));
+        let entry_g = HirBlockId::new(0);
+        let block_g = make_block(entry_g, vec![], HirTerminator::Return(Some(e_x)));
+        let fid_g = FuncId::new(60);
+        let func_g = make_function(
+            g_name,
+            fid_g,
+            vec![
+                hir::Param {
+                    name: cap_name,
+                    var: cap_var,
+                    ty: None,
+                    default: None,
+                    kind: hir::ParamKind::Regular,
+                    span: Span::dummy(),
+                },
+                hir::Param {
+                    name: x_name,
+                    var: x_var,
+                    ty: None, // UNANNOTATED — relies on LambdaParamHint.
+                    default: None,
+                    kind: hir::ParamKind::Regular,
+                    span: Span::dummy(),
+                },
+            ],
+            None,
+            entry_g,
+            block_g,
+        );
+        m.functions.push(fid_g);
+        m.func_defs.insert(fid_g, func_g);
+
+        // def caller(): return (lambda x: x)(5)  — closure captures one upvalue.
+        let e_cap = m.exprs.alloc(expr(hir::ExprKind::Int(99)));
+        let e_closure = m.exprs.alloc(expr(hir::ExprKind::Closure {
+            func: fid_g,
+            captures: vec![e_cap],
+        }));
+        let e_arg = m.exprs.alloc(expr(hir::ExprKind::Int(5)));
+        let e_call = m.exprs.alloc(expr(hir::ExprKind::Call {
+            func: e_closure,
+            args: vec![hir::CallArg::Regular(e_arg)],
+            kwargs: Vec::new(),
+            kwargs_unpack: None,
+        }));
+        let entry_c = HirBlockId::new(0);
+        let block_c = make_block(entry_c, vec![], HirTerminator::Return(Some(e_call)));
+        let fid_c = FuncId::new(61);
+        let func_c = make_function(caller_name, fid_c, vec![], None, entry_c, block_c);
+        m.functions.push(fid_c);
+        m.func_defs.insert(fid_c, func_c);
+
+        let mut solver = Solver::new();
+        collect_with_empty_interner(&mut solver, &m);
+        solver.run(&PermissiveCtx);
+
+        // The arg `5` must hint the USER param at index 1 (after the single
+        // capture), so the body `return x` resolves to Int.
+        assert_eq!(
+            solver.env().get(TypeKey::LambdaParam(fid_g, 1)),
+            Type::Int,
+            "call arg must hint the user param at index cap_count, not 0"
+        );
+        assert_eq!(solver.env().get(TypeKey::Var(x_var)), Type::Int);
+        assert_eq!(solver.env().get(TypeKey::FuncReturn(fid_g)), Type::Int);
+        assert_eq!(solver.env().get(TypeKey::Expr(e_call)), Type::Int);
+    }
+
+    /// Method call on a fresh instance: `Box().add(5)` where
+    /// `def add(self, store): return store` has an UNANNOTATED `store`.
+    /// The receiver is a constructor call (not a Var), so it never lands in
+    /// `var_class_hints`; `resolve_local_method` must still resolve the
+    /// method via `ctor_call_class` and hint `store` (param index 1) with
+    /// the arg type `Int`. Regression test for the method-arg→param hint
+    /// narrowing (the `rt_deque_append` vs `rt_list_append` hazard).
+    #[test]
+    fn collect_method_call_on_ctor_receiver_hints_param() {
+        let mut interner = StringInterner::new();
+        let box_name = interner.intern("Box");
+        let add_name = interner.intern("add");
+        let self_name = interner.intern("self");
+        let store_name = interner.intern("store");
+        let caller_name = interner.intern("caller");
+        let class_id = ClassId::new(0);
+        let mut m = hir::Module::new(interner.intern("test"));
+
+        // def add(self, store): return store   (store UNANNOTATED)
+        let self_var = VarId::new(0);
+        let store_var = VarId::new(1);
+        let e_store = m.exprs.alloc(expr(hir::ExprKind::Var(store_var)));
+        let entry_add = HirBlockId::new(0);
+        let block_add = make_block(entry_add, vec![], HirTerminator::Return(Some(e_store)));
+        let fid_add = FuncId::new(70);
+        let func_add = make_function(
+            add_name,
+            fid_add,
+            vec![
+                hir::Param {
+                    name: self_name,
+                    var: self_var,
+                    ty: Some(Type::Class {
+                        class_id,
+                        name: box_name,
+                    }),
+                    default: None,
+                    kind: hir::ParamKind::Regular,
+                    span: Span::dummy(),
+                },
+                hir::Param {
+                    name: store_name,
+                    var: store_var,
+                    ty: None, // UNANNOTATED — relies on the method arg hint.
+                    default: None,
+                    kind: hir::ParamKind::Regular,
+                    span: Span::dummy(),
+                },
+            ],
+            None,
+            entry_add,
+            block_add,
+        );
+        m.functions.push(fid_add);
+        m.func_defs.insert(fid_add, func_add);
+
+        let mut class_def = make_class_def(class_id, box_name);
+        class_def.methods.push(fid_add);
+        m.class_defs.insert(class_id, class_def);
+
+        // def caller(): return Box().add(5)
+        let e_classref = m.exprs.alloc(expr(hir::ExprKind::ClassRef(class_id)));
+        let e_ctor = m.exprs.alloc(expr(hir::ExprKind::Call {
+            func: e_classref,
+            args: Vec::new(),
+            kwargs: Vec::new(),
+            kwargs_unpack: None,
+        }));
+        let e_arg = m.exprs.alloc(expr(hir::ExprKind::Int(5)));
+        let e_call = m.exprs.alloc(expr(hir::ExprKind::MethodCall {
+            obj: e_ctor,
+            method: add_name,
+            args: vec![e_arg],
+            kwargs: Vec::new(),
+        }));
+        let entry_c = HirBlockId::new(0);
+        let block_c = make_block(entry_c, vec![], HirTerminator::Return(Some(e_call)));
+        let fid_c = FuncId::new(71);
+        let func_c = make_function(caller_name, fid_c, vec![], None, entry_c, block_c);
+        m.functions.push(fid_c);
+        m.func_defs.insert(fid_c, func_c);
+
+        let mut solver = Solver::new();
+        // Pass the real interner — `resolve_local_method` resolves the
+        // method name to a `&str` to match against the class's methods.
+        collect(&mut solver, &m, &interner);
+        solver.run(&PermissiveCtx);
+
+        // The arg `5` must hint `store` (param index 1, after `self`),
+        // resolving the method via the ctor-call receiver.
+        assert_eq!(
+            solver.env().get(TypeKey::LambdaParam(fid_add, 1)),
+            Type::Int,
+            "ctor-receiver method call must hint the unannotated param"
+        );
+        assert_eq!(solver.env().get(TypeKey::Var(store_var)), Type::Int);
     }
 
     /// Annotated parameter is insulated from call-site hints.

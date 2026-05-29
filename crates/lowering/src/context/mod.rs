@@ -455,26 +455,6 @@ pub struct LoweringSeedInfo {
     /// a lambda-like callee's user-visible primitive params take the
     /// tagged Value ABI (with prologue unbox) or stay raw.
     pub phase4_unsafe_funcs: indexmap::IndexSet<FuncId>,
-    /// Monotonic side-set: `(class_id, field) ∈ S` once ANY iteration of
-    /// the type-planning fixpoint observed an `Any`-typed (= heap-
-    /// carrying) RHS for that attribute write. Never removed across
-    /// iterations — safe-side widening: once we've seen heap, the field
-    /// must read as heap.
-    ///
-    /// Separation of concerns: `refined_class_field_types` is a
-    /// transient per-iteration inference snapshot that drives fixpoint
-    /// convergence. Writing `Type::Any` into it from a transient
-    /// observation (the previous behaviour) leaked that signal into the
-    /// permanent record and demoted precise fields that would have
-    /// resolved cleanly in a later iteration. This monotonic side-set
-    /// carries the *permanent* widening intent; the refined table
-    /// continues to narrow.
-    ///
-    /// Drained at end-of-planning by
-    /// `fold_refined_field_types_into_storage`, which forces
-    /// `info.field_types[field] = Type::Any` for every entry. Post-fold
-    /// readers consult only `info.field_types` (single source of truth).
-    pub class_fields_with_heap_writes: IndexMap<ClassId, indexmap::IndexSet<InternedString>>,
 }
 
 /// Narrowed block-local shadow plus the stable storage type it shadows.
@@ -495,7 +475,6 @@ impl LoweringSeedInfo {
             base_var_types: IndexMap::new(),
             refined_class_field_types: IndexMap::new(),
             phase4_unsafe_funcs: indexmap::IndexSet::new(),
-            class_fields_with_heap_writes: IndexMap::new(),
         }
     }
 

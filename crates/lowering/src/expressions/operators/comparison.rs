@@ -4,6 +4,7 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
+use pyaot_utils::LocalId;
 
 use crate::context::Lowering;
 
@@ -379,23 +380,8 @@ impl<'a> Lowering<'a> {
                 _ => {
                     // For string ordering comparisons (< > <= >=), use Obj compare
                     // which dispatches via type tag for lexicographic comparison.
-                    // `rt_obj_cmp` takes (a, b, op_tag) — the operator tag is a
-                    // required third argument.
-                    let cmp_op = match op {
-                        hir::CmpOp::Lt => mir::ComparisonOp::Lt,
-                        hir::CmpOp::LtE => mir::ComparisonOp::Lte,
-                        hir::CmpOp::Gt => mir::ComparisonOp::Gt,
-                        hir::CmpOp::GtE => mir::ComparisonOp::Gte,
-                        _ => unreachable!(),
-                    };
-                    let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp_op.to_tag() as i64));
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            mir::CompareKind::Obj.runtime_func_def(cmp_op),
-                        ),
-                        args: vec![left_op, right_op, op_tag],
-                    });
+                    let cmp_op = Self::ordering_cmp_op(op);
+                    self.emit_obj_ordering_compare(result_local, left_op, right_op, cmp_op);
                 }
             }
         } else if matches!(left_type, Type::Bytes) && matches!(right_type, Type::Bytes) {
@@ -429,23 +415,8 @@ impl<'a> Lowering<'a> {
                 _ => {
                     // For bytes ordering comparisons (< > <= >=), use Obj compare
                     // which dispatches via type tag for lexicographic comparison.
-                    // `rt_obj_cmp` takes (a, b, op_tag) — the operator tag is a
-                    // required third argument.
-                    let cmp_op = match op {
-                        hir::CmpOp::Lt => mir::ComparisonOp::Lt,
-                        hir::CmpOp::LtE => mir::ComparisonOp::Lte,
-                        hir::CmpOp::Gt => mir::ComparisonOp::Gt,
-                        hir::CmpOp::GtE => mir::ComparisonOp::Gte,
-                        _ => unreachable!(),
-                    };
-                    let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp_op.to_tag() as i64));
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            mir::CompareKind::Obj.runtime_func_def(cmp_op),
-                        ),
-                        args: vec![left_op, right_op, op_tag],
-                    });
+                    let cmp_op = Self::ordering_cmp_op(op);
+                    self.emit_obj_ordering_compare(result_local, left_op, right_op, cmp_op);
                 }
             }
         } else if matches!(op, hir::CmpOp::In | hir::CmpOp::NotIn) {
@@ -872,30 +843,20 @@ impl<'a> Lowering<'a> {
                     operand: mir::Operand::Local(eq_local),
                 });
             } else {
-                let compare_op = match op {
-                    hir::CmpOp::Eq => mir::ComparisonOp::Eq,
-                    hir::CmpOp::Lt => mir::ComparisonOp::Lt,
-                    hir::CmpOp::LtE => mir::ComparisonOp::Lte,
-                    hir::CmpOp::Gt => mir::ComparisonOp::Gt,
-                    hir::CmpOp::GtE => mir::ComparisonOp::Gte,
-                    _ => unreachable!(),
-                };
                 // `rt_obj_eq` (Eq) takes (a, b); the ordering comparator
-                // `rt_obj_cmp` (Lt/Lte/Gt/Gte) takes (a, b, op_tag). Append
-                // the operator tag for the ordering case.
-                let mut args = vec![boxed_left, boxed_right];
-                if !matches!(compare_op, mir::ComparisonOp::Eq) {
-                    args.push(mir::Operand::Constant(mir::Constant::Int(
-                        compare_op.to_tag() as i64,
-                    )));
+                // `rt_obj_cmp` (Lt/Lte/Gt/Gte) takes (a, b, op_tag).
+                if matches!(op, hir::CmpOp::Eq) {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
+                        args: vec![boxed_left, boxed_right],
+                    });
+                } else {
+                    let cmp_op = Self::ordering_cmp_op(op);
+                    self.emit_obj_ordering_compare(result_local, boxed_left, boxed_right, cmp_op);
                 }
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        mir::CompareKind::Obj.runtime_func_def(compare_op),
-                    ),
-                    args,
-                });
             }
         } else {
             // Primitives and raw Any comparison
@@ -1154,5 +1115,43 @@ impl<'a> Lowering<'a> {
                 right: right_op.clone(),
             });
         }
+    }
+
+    /// Map an *ordering* `hir::CmpOp` (`< <= > >=`) to its `mir::ComparisonOp`.
+    /// Panics on non-ordering ops — callers must route `Eq`/`NotEq` through
+    /// the 2-arg `rt_obj_eq` path, not the ordering comparator.
+    fn ordering_cmp_op(op: hir::CmpOp) -> mir::ComparisonOp {
+        match op {
+            hir::CmpOp::Lt => mir::ComparisonOp::Lt,
+            hir::CmpOp::LtE => mir::ComparisonOp::Lte,
+            hir::CmpOp::Gt => mir::ComparisonOp::Gt,
+            hir::CmpOp::GtE => mir::ComparisonOp::Gte,
+            _ => unreachable!("non-ordering CmpOp routed to ordering compare"),
+        }
+    }
+
+    /// Emit `result = rt_obj_cmp(a, b, op_tag)` for an ordering comparison.
+    ///
+    /// `rt_obj_cmp` requires the operator tag as a mandatory third argument
+    /// (the `Eq` path uses the 2-arg `rt_obj_eq` instead and must not call
+    /// this). Centralizes the str / bytes / generic-Obj ordering ABI so the
+    /// `(a, b, op_tag)` arg shape lives in exactly one place.
+    fn emit_obj_ordering_compare(
+        &mut self,
+        result_local: LocalId,
+        a: mir::Operand,
+        b: mir::Operand,
+        cmp_op: mir::ComparisonOp,
+    ) {
+        debug_assert!(
+            !matches!(cmp_op, mir::ComparisonOp::Eq),
+            "emit_obj_ordering_compare called with Eq — use rt_obj_eq (2-arg)"
+        );
+        let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp_op.to_tag() as i64));
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: mir::RuntimeFunc::Call(mir::CompareKind::Obj.runtime_func_def(cmp_op)),
+            args: vec![a, b, op_tag],
+        });
     }
 }

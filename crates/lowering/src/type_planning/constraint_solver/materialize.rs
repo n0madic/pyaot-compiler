@@ -116,7 +116,7 @@ pub fn materialize(env: &Env) -> MaterializeOutput {
                 out.func_yield_types.insert(fid, ty.clone());
             }
             // Internal solver scaffolding — never materialized.
-            TypeKey::Comp(_, _) | TypeKey::Meta(_) => {}
+            TypeKey::Meta(_) => {}
         }
     }
 

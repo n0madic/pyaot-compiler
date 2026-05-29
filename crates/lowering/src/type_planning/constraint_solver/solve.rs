@@ -167,8 +167,10 @@ pub(crate) fn element_is_bottom(ty: &Type) -> bool {
 
 /// Trivial reducer context that accepts every dunder lookup. Used by the
 /// solver's own unit tests where no class hierarchy is in scope.
+#[cfg(test)]
 pub struct PermissiveCtx;
 
+#[cfg(test)]
 impl ReducerCtx for PermissiveCtx {
     fn class_has_dunder(&self, _class_id: ClassId, _dunder: &str) -> bool {
         true
@@ -248,7 +250,9 @@ impl Solver {
     /// solver represents `Equal(a, b)` internally as `a → b` + `b → a`
     /// because the worklist algorithm only schedules dependents on a
     /// per-direction basis — keeping both directions as separate
-    /// constraints means each gets its own dependents entry.
+    /// constraints means each gets its own dependents entry. Test-only: the
+    /// collector emits the two `FlowsInto` edges directly.
+    #[cfg(test)]
     pub fn add_equal(&mut self, a: TypeKey, b: TypeKey) {
         self.add(Constraint::FlowsInto { src: a, dst: b });
         self.add(Constraint::FlowsInto { src: b, dst: a });
@@ -259,10 +263,8 @@ impl Solver {
         &self.env
     }
 
-    pub fn env_mut(&mut self) -> &mut Env {
-        &mut self.env
-    }
-
+    /// Test-only inspection of the registered constraint list.
+    #[cfg(test)]
     pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
@@ -1135,7 +1137,6 @@ mod tests {
 
     #[test]
     fn run_field_write_accumulates_across_writes() {
-        use pyaot_utils::InternedString;
         let mut s = Solver::new();
         let cls = ClassId::new(7);
         // Build a real InternedString through a StringInterner so the
@@ -1256,7 +1257,6 @@ mod tests {
     // -----------------------------------------------------------------
 
     use super::super::vocab::{BuiltinId, CalleeRef};
-    use pyaot_types::TypeLattice;
     use std::sync::Mutex;
 
     /// Programmable test context. Records every ctx call so tests can

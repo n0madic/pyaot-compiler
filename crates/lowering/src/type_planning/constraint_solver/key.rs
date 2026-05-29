@@ -10,28 +10,6 @@
 use pyaot_hir::ExprId;
 use pyaot_utils::{ClassId, FuncId, InternedString, VarId};
 
-/// Synthetic temporaries that appear inside a comprehension expression.
-///
-/// A comprehension expression like `[f(x) for x in iter]` desugars later, but
-/// the solver still needs to talk about the element type (`x` here) before
-/// desugaring runs. `CompTemp` discriminates between the synthetic locations
-/// that share the comprehension's `ExprId` namespace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CompTemp {
-    /// The element produced by iterating the source iterable (the `x` in
-    /// `for x in iter`). The type is the iterable's element type.
-    Elem,
-    /// The condition expression for an `if` clause inside a comprehension.
-    /// Has no payload — the type is always `Bool`. Kept as a key only for
-    /// uniform addressing of every comprehension sub-expression.
-    Cond,
-    /// The yielded value (the `f(x)` in `[f(x) for x in iter]`). For
-    /// dict-comprehensions this is the value half of the key:value pair.
-    Yield,
-    /// The yielded key for dict-comprehensions (`k` in `{k: v for ...}`).
-    YieldKey,
-}
-
 /// Identifier for every solvable type-bearing entity in the program.
 ///
 /// The solver materializes its `Env<TypeKey, Type>` map into the downstream
@@ -62,8 +40,6 @@ pub enum TypeKey {
     /// A lambda parameter — populated by call-site hints feeding back
     /// into the lambda body's parameter type.
     LambdaParam(FuncId, usize),
-    /// A synthetic comprehension temporary (see [`CompTemp`]).
-    Comp(ExprId, CompTemp),
     /// Anonymous internal metavariable. The solver allocates these for
     /// intermediate results that have no HIR address (e.g. the LHS of a
     /// chained reducer). Strictly distinct from user-level
@@ -74,7 +50,10 @@ pub enum TypeKey {
 
 impl TypeKey {
     /// True iff this key is solver-internal and must NOT be materialized
-    /// into any downstream contract output.
+    /// into any downstream contract output. Test-only: materialization
+    /// discriminates internal keys structurally via its `match` rather than
+    /// this predicate.
+    #[cfg(test)]
     pub fn is_internal(self) -> bool {
         matches!(self, TypeKey::Meta(_))
     }
