@@ -406,6 +406,9 @@ fn evaluate<C: ReducerCtx>(env: &Env, c: &Constraint, ctx: &C) -> Option<(TypeKe
         Constraint::FieldWrite { class, name, value } => {
             Some((TypeKey::ClassField(*class, *name), env.get(*value)))
         }
+        Constraint::FieldWriteDynamic { recv, name, value } => {
+            eval_field_write_dynamic(env, *recv, *name, *value, ctx)
+        }
         Constraint::Capture { func, slot, src } => {
             Some((TypeKey::Capture(*func, *slot), env.get(*src)))
         }
@@ -587,6 +590,37 @@ fn eval_attribute<C: ReducerCtx>(env: &Env, recv: TypeKey, attr: InternedString,
         }
     }
     ctx.attribute_return(&recv_ty, attr).unwrap_or(Type::Any)
+}
+
+/// Resolve a `FieldWriteDynamic` constraint — a store into a class field
+/// whose owning class wasn't known at collection time. The destination
+/// `ClassField` key is computed here from the receiver's resolved env type,
+/// mirroring how [`eval_attribute`] resolves dynamic field READS.
+///
+/// Defers (returns `None`, leaving the field unchanged) until `recv`
+/// resolves to a class type whose declared instance fields include `name`.
+/// The collector's dependency edge (`recv → this constraint`) re-fires the
+/// reducer once a later constraint JOINs a `Class` into `recv`.
+fn eval_field_write_dynamic<C: ReducerCtx>(
+    env: &Env,
+    recv: TypeKey,
+    name: InternedString,
+    value: TypeKey,
+    ctx: &C,
+) -> Option<(TypeKey, Type)> {
+    let recv_ty = env.get(recv);
+    let class_id = match &recv_ty {
+        Type::Class { class_id, .. } => *class_id,
+        Type::Generic { base, .. } => *base, // user generic class; builtins gated below
+        _ => return None,                    // unresolved / not a class → defer
+    };
+    // Gate: only write to a field the class actually declares. Avoids phantom
+    // fields on unrelated classes that share the name, and defers builtin
+    // containers (list/dict Generic base ∉ class_defs → false).
+    if !ctx.class_has_instance_field(class_id, name) {
+        return None;
+    }
+    Some((TypeKey::ClassField(class_id, name), env.get(value)))
 }
 
 /// Resolve `recv[index]`. Handles built-in containers inline (no ctx
@@ -772,6 +806,7 @@ pub(crate) fn inputs_of(c: &Constraint) -> Vec<TypeKey> {
         Constraint::WrapIterator { elem, .. } => vec![*elem],
         Constraint::TupleProject { tuple, .. } => vec![*tuple],
         Constraint::FieldWrite { value, .. } => vec![*value],
+        Constraint::FieldWriteDynamic { recv, value, .. } => vec![*recv, *value],
         Constraint::LambdaParamHint { hint, .. } => vec![*hint],
         Constraint::Capture { src, .. } => vec![*src],
         Constraint::Return { value, .. } => vec![*value],
@@ -1807,5 +1842,138 @@ mod tests {
         s.run(&ctx);
         // recv is now Float (after numeric-tower join); ctx returns Float.
         assert_eq!(s.env().get(result), Type::Float);
+    }
+
+    // -----------------------------------------------------------------
+    // FieldWriteDynamic: solve-time receiver-class resolution for stores
+    // through unhinted receivers.
+    // -----------------------------------------------------------------
+
+    /// Reducer ctx whose `class_has_instance_field` returns `true` only for
+    /// the listed class ids — `PermissiveCtx` defaults it to `false`, which
+    /// would defer every dynamic write.
+    struct FieldCtx {
+        with_field: Vec<ClassId>,
+    }
+
+    impl ReducerCtx for FieldCtx {
+        fn class_has_dunder(&self, _: ClassId, _: &str) -> bool {
+            true
+        }
+        fn class_has_instance_field(&self, class_id: ClassId, _attr: InternedString) -> bool {
+            self.with_field.contains(&class_id)
+        }
+    }
+
+    #[test]
+    fn run_field_write_dynamic_resolves_via_class() {
+        let mut s = Solver::new();
+        let cls = ClassId::new(3);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let cname = interner.intern("Node");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Class {
+                class_id: cls,
+                name: cname,
+            },
+        ));
+        s.add(Constraint::Concrete(value, Type::Int));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: vec![cls],
+        });
+        assert_eq!(s.env().get(TypeKey::ClassField(cls, name)), Type::Int);
+    }
+
+    #[test]
+    fn run_field_write_dynamic_refires_when_recv_resolves_late() {
+        // recv starts Never; a FlowsInto resolves it to Class{cls} only
+        // after the FieldWriteDynamic was registered. The dependency edge
+        // (recv → constraint) must reschedule the deferred write.
+        let mut s = Solver::new();
+        let cls = ClassId::new(5);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let cname = interner.intern("Node");
+        let recv = ek(0);
+        let value = ek(1);
+        let src = ek(2);
+        s.add(Constraint::Concrete(value, Type::Float));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.add(Constraint::Concrete(
+            src,
+            Type::Class {
+                class_id: cls,
+                name: cname,
+            },
+        ));
+        s.add(Constraint::FlowsInto { src, dst: recv });
+        s.run(&FieldCtx {
+            with_field: vec![cls],
+        });
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(cls, name)),
+            Type::Float,
+            "deferred dynamic write must fire once recv resolves to a class"
+        );
+    }
+
+    #[test]
+    fn run_field_write_dynamic_defers_when_gate_false() {
+        // recv resolves to a class, but the class doesn't declare `name`:
+        // the write must defer (no phantom field).
+        let mut s = Solver::new();
+        let cls = ClassId::new(7);
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let cname = interner.intern("Node");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(
+            recv,
+            Type::Class {
+                class_id: cls,
+                name: cname,
+            },
+        ));
+        s.add(Constraint::Concrete(value, Type::Int));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: Vec::new(),
+        });
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(cls, name)),
+            Type::Never,
+            "gate-false dynamic write must not create a phantom field"
+        );
+    }
+
+    #[test]
+    fn run_field_write_dynamic_defers_for_builtin_generic_base() {
+        // recv resolves to a builtin container (`list[Int]`). Its Generic
+        // base ∉ class_defs (FieldCtx gate false) → no phantom write.
+        let mut s = Solver::new();
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("grad");
+        let recv = ek(0);
+        let value = ek(1);
+        s.add(Constraint::Concrete(recv, Type::list_of(Type::Int)));
+        s.add(Constraint::Concrete(value, Type::Int));
+        s.add(Constraint::FieldWriteDynamic { recv, name, value });
+        s.run(&FieldCtx {
+            with_field: Vec::new(),
+        });
+        assert_eq!(
+            s.env().get(TypeKey::ClassField(
+                pyaot_types::BUILTIN_LIST_CLASS_ID,
+                name
+            )),
+            Type::Never,
+            "builtin Generic base must not receive a phantom field write"
+        );
     }
 }

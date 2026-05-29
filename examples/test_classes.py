@@ -3411,4 +3411,36 @@ _fpv_m[0] = 0.85 * _fpv_m[0] + 0.15 * _fpv_seed.val
 assert abs(_fpv_m[0] - 0.375) < 1e-9, f"Float-passthrough store: {_fpv_m[0]}"
 print("Float-passthrough at list[Float] store with HeapAny: PASS")
 
+# =============================================================================
+# Cross-instance field write through an unhinted receiver (FieldWriteDynamic)
+# =============================================================================
+# A class field whose owning class is NOT known at constraint-collection time
+# (the receiver is a for-loop variable, not `self` and not constructor-bound)
+# must still widen the target field. `_FwdNode.grad` is seeded `Int` by
+# `self.grad = 0`, then a cross-instance `child.grad = child.grad + 0.5`
+# stores a Float through `child` (resolved to `_FwdNode` only during solving).
+# Pre-fix the write was dropped, `grad` stayed `Int`, and the verifier
+# rejected the boxed Float store. The `FieldWriteDynamic` reducer resolves the
+# receiver class at solve-time and JOINs the Float in, widening `grad` to
+# `Float`.
+class _FwdNode:
+    __slots__ = ('grad', 'children')
+
+    def __init__(self, children):
+        self.grad = 0
+        self.children = children
+
+    def backward(self):
+        for child in self.children:
+            child.grad = child.grad + 0.5
+
+
+_fwd_leaf1 = _FwdNode([])
+_fwd_leaf2 = _FwdNode([])
+_fwd_root = _FwdNode([_fwd_leaf1, _fwd_leaf2])
+_fwd_root.backward()
+assert abs(_fwd_leaf1.grad - 0.5) < 1e-9, f"_fwd_leaf1.grad = {_fwd_leaf1.grad}"
+assert abs(_fwd_leaf2.grad - 0.5) < 1e-9, f"_fwd_leaf2.grad = {_fwd_leaf2.grad}"
+print("Cross-instance field write through unhinted receiver: PASS")
+
 print("All class tests passed!")

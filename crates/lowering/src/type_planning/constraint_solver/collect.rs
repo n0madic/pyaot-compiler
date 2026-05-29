@@ -208,6 +208,31 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Emit a field-store constraint for `obj.field = value`. When `obj`'s
+    /// class is statically known (annotation / ctor bind / `self`), a
+    /// `FieldWrite` pins the destination `ClassField` at collection time.
+    /// When the receiver is UNHINTED but `field` is a real class field
+    /// somewhere, a `FieldWriteDynamic` defers the destination to solve-time
+    /// — its receiver class is resolved from `env[obj]` once inference settles
+    /// (e.g. autograd's `child.grad += …` where `child` comes from
+    /// `zip(v._children, …)`). The two branches are mutually exclusive, so a
+    /// store emits at most one constraint.
+    fn emit_field_write(&mut self, obj: ExprId, field: InternedString, value: TypeKey) {
+        if let Some(class_id) = self.obj_class_hint(obj) {
+            self.solver.add(Constraint::FieldWrite {
+                class: class_id,
+                name: field,
+                value,
+            });
+        } else if self.field_to_classes.contains_key(&field) {
+            self.solver.add(Constraint::FieldWriteDynamic {
+                recv: TypeKey::Expr(obj),
+                name: field,
+                value,
+            });
+        }
+    }
+
     /// Solver-native `refined_container_types`: back-propagate the
     /// element type of a mutator call into the receiver Var.
     ///
@@ -930,15 +955,10 @@ impl<'a> Collector<'a> {
             BindingTarget::Attr { obj, field, .. } => {
                 // Destructured store into `obj.field` — route through a
                 // `FieldWrite` when `obj`'s class is known (e.g.
-                // `self.a, self.b = pair`).
+                // `self.a, self.b = pair`), else a `FieldWriteDynamic` when
+                // the receiver is unhinted but `field` is a real class field.
                 self.collect_expr(*obj);
-                if let Some(class_id) = self.obj_class_hint(*obj) {
-                    self.solver.add(Constraint::FieldWrite {
-                        class: class_id,
-                        name: *field,
-                        value: elem,
-                    });
-                }
+                self.emit_field_write(*obj, *field, elem);
             }
             BindingTarget::ClassAttr { class_id, attr, .. } => {
                 self.solver.add(Constraint::FieldWrite {
@@ -998,19 +1018,13 @@ impl<'a> Collector<'a> {
                 self.collect_expr(*obj);
                 // If `obj` is a `Var(v)` with a known class, route the
                 // store to `ClassField(class_id, field)` via the
-                // `FieldWrite` reducer. This is the primary path for
-                // `self.x = …` inside methods.
-                if let Some(class_id) = self.obj_class_hint(*obj) {
-                    self.solver.add(Constraint::FieldWrite {
-                        class: class_id,
-                        name: *field,
-                        value: TypeKey::Expr(value),
-                    });
-                }
-                // Dynamic-class case (obj is an expression / Var with
-                // inferred-only Class type): no static FieldWrite emit
-                // here — the production ctx in S5 wire-in will handle
-                // the long tail via cross-instance field harvesting.
+                // `FieldWrite` reducer (the primary path for `self.x = …`
+                // inside methods). Otherwise, if the receiver is unhinted
+                // but `field` is a real class field somewhere, emit a
+                // `FieldWriteDynamic` that resolves the owning class from
+                // `env[obj]` at solve-time — closing the cross-instance
+                // write gap for non-`self`, non-ctor receivers.
+                self.emit_field_write(*obj, *field, TypeKey::Expr(value));
             }
             BindingTarget::Index { obj, index, .. } => {
                 self.collect_expr(*obj);
@@ -2639,6 +2653,77 @@ mod tests {
             solver.env().get(TypeKey::ClassField(class_id, x_attr)),
             Type::Float,
             "ClassField widens via numeric tower across cross-instance writes"
+        );
+    }
+
+    /// A store through an UNHINTED receiver (`child.grad = …`, where `child`
+    /// is an unannotated param with no static class) must emit a
+    /// `FieldWriteDynamic` — the solve-time-resolved counterpart of
+    /// `FieldWrite`. Asserted via the constraint list rather than the env:
+    /// under `PermissiveCtx` the gate (`class_has_instance_field`) defaults
+    /// to `false`, so the dynamic write would defer and an env assertion
+    /// would be meaningless.
+    #[test]
+    fn collect_unhinted_attr_store_emits_field_write_dynamic() {
+        let mut interner = StringInterner::new();
+        let f_name = interner.intern("backward");
+        let child_name = interner.intern("child");
+        let grad_attr = interner.intern("grad");
+        let class_id = ClassId::new(0);
+        let class_name = interner.intern("Value");
+
+        let mut m = hir::Module::new(interner.intern("test"));
+        let mut cdef = make_class_def(class_id, class_name);
+        cdef.fields.push(hir::FieldDef {
+            name: grad_attr,
+            ty: Type::Int,
+            span: Span::dummy(),
+        });
+        m.class_defs.insert(class_id, cdef);
+
+        // `def backward(child): child.grad = 1.0` — `child` is unannotated
+        // and not constructor-bound, so `obj_class_hint` returns None and the
+        // store routes through `FieldWriteDynamic`.
+        let child_var = VarId::new(0);
+        let e_child = m.exprs.alloc(expr(hir::ExprKind::Var(child_var)));
+        let e_val = m.exprs.alloc(expr(hir::ExprKind::Float(1.0)));
+        let s_write = m.stmts.alloc(stmt(hir::StmtKind::Bind {
+            target: hir::BindingTarget::Attr {
+                obj: e_child,
+                field: grad_attr,
+                span: Span::dummy(),
+            },
+            value: e_val,
+            type_hint: None,
+        }));
+
+        let entry = HirBlockId::new(0);
+        let block = make_block(entry, vec![s_write], HirTerminator::Return(None));
+        let fid = FuncId::new(0);
+        let func = make_function(
+            f_name,
+            fid,
+            vec![make_param(child_name, child_var, None)],
+            None,
+            entry,
+            block,
+        );
+        m.functions.push(fid);
+        m.func_defs.insert(fid, func);
+
+        let mut solver = Solver::new();
+        collect_with_empty_interner(&mut solver, &m);
+
+        let found = solver.constraints().iter().any(|c| {
+            matches!(
+                c,
+                Constraint::FieldWriteDynamic { recv, name, .. }
+                    if *recv == TypeKey::Expr(e_child) && *name == grad_attr
+            )
+        });
+        assert!(
+            found,
+            "unhinted `child.grad = …` store must emit a FieldWriteDynamic"
         );
     }
 

@@ -156,6 +156,18 @@ pub enum Constraint {
         value: TypeKey,
     },
 
+    /// A store into a class field whose owning class is NOT known at
+    /// collection time (unhinted receiver, e.g. `child.grad = …` where
+    /// `child`'s class is only inferred during solving). Deferred reducer:
+    /// resolves the receiver class from `env[recv]` at eval-time, then JOINs
+    /// `env[value]` into `ClassField(resolved_class, name)`. Symmetric
+    /// counterpart of the dynamic field-READ fallback in `collect.rs`.
+    FieldWriteDynamic {
+        recv: TypeKey,
+        name: InternedString,
+        value: TypeKey,
+    },
+
     /// A call-site type hint for a lambda parameter — joins into
     /// `LambdaParam(func, ix)`. The hint key is the argument's type at the
     /// call site.
