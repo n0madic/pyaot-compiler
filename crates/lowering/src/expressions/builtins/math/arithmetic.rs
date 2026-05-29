@@ -151,30 +151,12 @@ impl<'a> Lowering<'a> {
         let base_operand = self.lower_expr(base_expr, hir_module, mir_func)?;
         let exp_operand = self.lower_expr(exp_expr, hir_module, mir_func)?;
 
-        let base_type = self.seed_expr_type(args[0], hir_module);
-        let exp_type = self.seed_expr_type(args[1], hir_module);
-
-        // Convert both operands to float if needed
-        let base_float = if base_type != Type::Float {
-            let temp = self.alloc_and_add_local(Type::Float, mir_func);
-            self.emit_instruction(mir::InstructionKind::IntToFloat {
-                dest: temp,
-                src: base_operand,
-            });
-            mir::Operand::Local(temp)
-        } else {
-            base_operand
-        };
-        let exp_float = if exp_type != Type::Float {
-            let temp = self.alloc_and_add_local(Type::Float, mir_func);
-            self.emit_instruction(mir::InstructionKind::IntToFloat {
-                dest: temp,
-                src: exp_operand,
-            });
-            mir::Operand::Local(temp)
-        } else {
-            exp_operand
-        };
+        // RT_POW_FLOAT takes two raw f64 operands. Coerce each operand based on
+        // its actual MIR representation rather than blindly emitting IntToFloat,
+        // which hard-errors the verifier on a Bool (Raw I8) and reinterprets a
+        // tagged-Value (Any/Union) pointer's bits as an integer.
+        let base_float = self.coerce_operand_to_f64(base_operand, mir_func);
+        let exp_float = self.coerce_operand_to_f64(exp_operand, mir_func);
 
         // Create result local and emit runtime call
         let result_local = self.emit_runtime_call(
@@ -185,6 +167,67 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Coerce an operand to a raw `f64` for a runtime call that takes f64
+    /// (e.g. `RT_POW_FLOAT`). Dispatches on the operand's *physical* MIR
+    /// representation so the result is verifier-clean:
+    /// - `Raw(F64)` → pass through (already an f64)
+    /// - `Raw(I64)` (Int) → `IntToFloat`
+    /// - `Raw(I8)` (Bool) → `BoolToInt` then `IntToFloat`
+    /// - `Tagged` / anything else (`Any`, `Union`, tagged-`Float`) →
+    ///   `UnboxValue { dest_type: Float }`, which routes through the
+    ///   tag-dispatching `rt_unbox_float` ABI shim (handles tagged INT / BOOL /
+    ///   FloatObj). The old code blindly emitted `IntToFloat`, which
+    ///   hard-errors the verifier on a Bool (Raw I8) and reinterprets tagged
+    ///   pointer bits as an integer.
+    fn coerce_operand_to_f64(
+        &mut self,
+        operand: mir::Operand,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        use pyaot_mir::{MirType, RawKind};
+        let raw_kind = match &operand {
+            mir::Operand::Constant(mir::Constant::Float(_)) => Some(RawKind::F64),
+            mir::Operand::Constant(mir::Constant::Int(_)) => Some(RawKind::I64),
+            mir::Operand::Constant(mir::Constant::Bool(_)) => Some(RawKind::I8),
+            mir::Operand::Constant(_) => None,
+            mir::Operand::Local(id) => match mir_func.locals.get(id).map(|l| l.resolved_mir_type())
+            {
+                Some(MirType::Raw(k)) => Some(k),
+                _ => None,
+            },
+        };
+        match raw_kind {
+            Some(RawKind::F64) => operand,
+            Some(RawKind::I64) => {
+                let dest = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            Some(RawKind::I8) => {
+                let temp_int = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::BoolToInt {
+                    dest: temp_int,
+                    src: operand,
+                });
+                let dest = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat {
+                    dest,
+                    src: mir::Operand::Local(temp_int),
+                });
+                mir::Operand::Local(dest)
+            }
+            _ => {
+                let dest = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
+                    dest,
+                    src: operand,
+                    dest_type: Type::Float,
+                });
+                mir::Operand::Local(dest)
+            }
+        }
     }
 
     /// Lower round(x) or round(x, ndigits)

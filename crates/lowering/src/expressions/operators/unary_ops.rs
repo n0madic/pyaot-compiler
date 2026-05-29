@@ -63,15 +63,18 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Union / Any / HeapAny operand: route Neg / Pos / Invert through the
+        // Union / Any / Class operand: route Neg / Pos / Invert through the
         // generic runtime helper. The helper dispatches to the class's dunder
         // when the runtime value is a class instance, and otherwise applies
-        // primitive negation. Without this, `MIR UnOp::Neg` with a non-Class
-        // operand bitcasts the tagged Value's `u64` bits as `f64` and `fneg`s
-        // them — corrupting heap pointers (a Class instance read via
-        // `self.data` where `data: Union[Float, V]` would crash with garbage).
+        // primitive negation (or raises TypeError for a class without the
+        // dunder). Without this, `MIR UnOp::Neg` with a non-primitive operand
+        // bitcasts the tagged Value's `u64` bits as `f64` and `fneg`s them —
+        // corrupting heap pointers. `Type::Class` reaches here only when the
+        // dunder was not statically resolved above (the static path returns
+        // early); falling through to raw `UnOp::Neg` would SIGSEGV on the
+        // instance pointer.
         if matches!(op, hir::UnOp::Neg | hir::UnOp::Pos | hir::UnOp::Invert)
-            && matches!(&operand_ty, Type::Union(_) | Type::Any)
+            && matches!(&operand_ty, Type::Union(_) | Type::Any | Type::Class { .. })
         {
             let runtime_func = match op {
                 hir::UnOp::Neg => &pyaot_core_defs::runtime_func_def::RT_OBJ_NEG,

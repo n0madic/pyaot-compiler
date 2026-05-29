@@ -486,9 +486,18 @@ impl<'a> Lowering<'a> {
                         args: vec![right_op, left_op], // (self=container, item)
                     });
                 } else {
-                    self.emit_instruction(mir::InstructionKind::Copy {
+                    // No statically-known __contains__: dispatch at runtime via
+                    // rt_obj_contains, which consults __contains__ and falls back
+                    // to __iter__ membership (raising TypeError if the class is
+                    // not a container) — matching CPython. The old unconditional
+                    // `False` silently mis-answered `x in obj`.
+                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
+                        ),
+                        args: vec![right_op, boxed_elem], // (container, elem)
                     });
                 }
             } else {

@@ -39,11 +39,22 @@ impl<'a> Lowering<'a> {
                     Type::Int,
                     mir::Constant::Int(0),
                 ),
+                Type::Float => (
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
+                    Some(mir::GetElementKind::Float),
+                    Type::Float,
+                    mir::Constant::Float(0.0),
+                ),
+                // Heap / non-primitive elements (str, list, objects, …): the
+                // element is a tagged Value, so truthiness must go through
+                // `rt_is_truthy` (see `emit_predicate_truthiness`). `elem_kind:
+                // None` signals that. The zero constant is unused for this path.
                 _ => (
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                     None,
-                    Type::Int,
+                    Type::Any,
                     mir::Constant::Int(0),
                 ),
             }
@@ -52,7 +63,7 @@ impl<'a> Lowering<'a> {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                 None,
-                Type::Int,
+                Type::Any,
                 mir::Constant::Int(0),
             )
         } else {
@@ -60,10 +71,43 @@ impl<'a> Lowering<'a> {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 None,
-                Type::Int,
+                Type::Any,
                 mir::Constant::Int(0),
             )
         }
+    }
+
+    /// Emit the truthiness test for one predicate element.
+    ///
+    /// Primitive elements (`elem_kind` is `Some`, i.e. Bool/Int/Float fetched
+    /// via `RT_LIST_GET_TYPED`) are truthy iff `item != zero`. Heap / tagged
+    /// elements (`elem_kind` is `None`) must use the runtime `rt_is_truthy`
+    /// dispatch — a non-null heap pointer always compares `!= 0`, so the
+    /// numeric comparison wrongly treated `""`, `[]`, `0.0`-as-object, etc. as
+    /// truthy (e.g. `all([""])` returned True; CPython: False).
+    fn emit_predicate_truthiness(
+        &mut self,
+        item_local: LocalId,
+        zero_const: mir::Constant,
+        elem_kind: Option<mir::GetElementKind>,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
+        if elem_kind.is_some() {
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: item_bool,
+                op: mir::BinOp::NotEq,
+                left: mir::Operand::Local(item_local),
+                right: mir::Operand::Constant(zero_const),
+            });
+        } else {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: item_bool,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY),
+                args: vec![mir::Operand::Local(item_local)],
+            });
+        }
+        item_bool
     }
 
     /// Build the args list for an element getter call, adding elem_kind tag for RT_LIST_GET_TYPED.
@@ -162,15 +206,8 @@ impl<'a> Lowering<'a> {
         let get_args = self.make_get_args(&iterable_operand, counter_local, elem_kind);
         let item_local = self.emit_runtime_call(get_func, get_args, item_type.clone(), mir_func);
 
-        // Convert to bool: compare item != zero_const (works for both i8 and i64)
-        let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: item_bool,
-            op: mir::BinOp::NotEq,
-            left: mir::Operand::Local(item_local),
-            right: mir::Operand::Constant(zero_const),
-        });
+        // Convert to bool using a primitive `!= 0` test or runtime truthiness.
+        let item_bool = self.emit_predicate_truthiness(item_local, zero_const, elem_kind, mir_func);
 
         // Check if item is False - if so, early exit
         let check_false = self.new_block();
@@ -299,15 +336,8 @@ impl<'a> Lowering<'a> {
         let get_args = self.make_get_args(&iterable_operand, counter_local, elem_kind);
         let item_local = self.emit_runtime_call(get_func, get_args, item_type.clone(), mir_func);
 
-        // Convert to bool: compare item != zero_const (works for both i8 and i64)
-        let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: item_bool,
-            op: mir::BinOp::NotEq,
-            left: mir::Operand::Local(item_local),
-            right: mir::Operand::Constant(zero_const),
-        });
+        // Convert to bool using a primitive `!= 0` test or runtime truthiness.
+        let item_bool = self.emit_predicate_truthiness(item_local, zero_const, elem_kind, mir_func);
 
         // Check if item is True - if so, early exit
         let check_true = self.new_block();
