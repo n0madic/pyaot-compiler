@@ -22,7 +22,11 @@ impl<'a> Lowering<'a> {
         // Determine result type based on operation and operand type
         let operand_ty = self.seed_expr_type(operand, hir_module);
         let result_type = match op {
-            hir::UnOp::Not => Type::Bool,         // not always returns bool
+            hir::UnOp::Not => Type::Bool, // not always returns bool
+            // `-bool`/`+bool` yield int in CPython (-True == -1, +True == 1),
+            // so a Bool operand widens to Int; otherwise the operand type is
+            // preserved.
+            hir::UnOp::Neg | hir::UnOp::Pos if matches!(operand_ty, Type::Bool) => Type::Int,
             hir::UnOp::Neg => operand_ty.clone(), // neg preserves operand type
             hir::UnOp::Invert => Type::Int,       // bitwise NOT always returns Int
             hir::UnOp::Pos => operand_ty.clone(), // unary plus preserves type
@@ -88,6 +92,31 @@ impl<'a> Lowering<'a> {
                 operand_ty.clone(),
                 mir_func,
             );
+            return Ok(mir::Operand::Local(result_local));
+        }
+
+        // `-bool` / `+bool` widen the operand to int first (result_type is Int
+        // above): `+True` is 1, `-True` is -1. Without the BoolToInt widening
+        // a raw `UnOp::Neg` would operate on the i8 bool and the Int-typed dest
+        // would trip the verifier / print as a bool.
+        if matches!(op, hir::UnOp::Neg | hir::UnOp::Pos) && matches!(operand_ty, Type::Bool) {
+            let int_operand = self.alloc_and_add_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoolToInt {
+                dest: int_operand,
+                src: operand_op,
+            });
+            if matches!(op, hir::UnOp::Pos) {
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: mir::Operand::Local(int_operand),
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::UnOp {
+                    dest: result_local,
+                    op: mir::UnOp::Neg,
+                    operand: mir::Operand::Local(int_operand),
+                });
+            }
             return Ok(mir::Operand::Local(result_local));
         }
 

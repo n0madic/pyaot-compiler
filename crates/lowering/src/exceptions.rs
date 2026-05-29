@@ -101,15 +101,26 @@ impl<'a> Lowering<'a> {
                             }
                             let id = class_id.0 as u8;
 
-                            // Extract message from first arg (for traceback display)
-                            // Only use the first arg if it's a string type
+                            // Extract message from first arg (for traceback
+                            // display). The first arg is also lowered below by
+                            // `lower_class_instantiation` (for __init__), so
+                            // re-lowering a side-effectful expression here would
+                            // evaluate it twice (e.g. `raise E(make_msg())`
+                            // would call make_msg() twice). Only build a
+                            // separate traceback message when the arg is a Str
+                            // and side-effect-free (string literal or plain
+                            // variable); otherwise leave it to the instance.
                             let msg = if let Some(arg) = args.first() {
                                 let arg_id = match arg {
                                     hir::CallArg::Regular(id) => id,
                                     hir::CallArg::Starred(id) => id,
                                 };
                                 let arg_type = self.seed_expr_type(*arg_id, hir_module);
-                                if arg_type == Type::Str {
+                                let side_effect_free = matches!(
+                                    hir_module.exprs[*arg_id].kind,
+                                    hir::ExprKind::Str(_) | hir::ExprKind::Var(_)
+                                );
+                                if arg_type == Type::Str && side_effect_free {
                                     let arg_expr = &hir_module.exprs[*arg_id];
                                     Some(self.lower_expr(arg_expr, hir_module, mir_func)?)
                                 } else {

@@ -39,10 +39,10 @@ use crate::utils::{get_iterable_info, IterableKind};
 /// Pre-detect step sign from a HIR step expression (before lowering to
 /// MIR operand). Handles:
 /// - `Int(v)` literal — sign from `v`.
-/// - `UnOp(Neg, Int(v))` negated literal — always Negative for positive
-///   `v`, Positive for negative `v` (double negation).
-/// - Everything else → Unknown (runtime check would be needed).
-fn detect_step_direction(expr: &hir::Expr) -> StepDirection {
+/// - `UnOp(Neg, inner)` — inverts the direction of `inner` (so `-1` is
+///   Negative and `-(-5)` is Positive), peeking through the arena.
+/// - Everything else → Unknown (runtime check needed).
+fn detect_step_direction(expr: &hir::Expr, hir_module: &hir::Module) -> StepDirection {
     match &expr.kind {
         hir::ExprKind::Int(v) => {
             if *v < 0 {
@@ -56,14 +56,15 @@ fn detect_step_direction(expr: &hir::Expr) -> StepDirection {
             operand,
             ..
         } => {
-            // Peek one level through the arena — we only have the
-            // ExprId, not the Module, so just handle the common case
-            // of a literal inside the Neg. Since we don't have arena
-            // access here, return Unknown for nested exprs; caller
-            // handles the simple Int-inside-Neg case via the Int arm
-            // when the frontend has already folded it.
-            let _ = operand;
-            StepDirection::Negative
+            // Negation flips the operand's direction. The common step `-1` is
+            // `UnOp(Neg, Int(1))` (the frontend does not fold it here), so we
+            // must recurse rather than assume a fixed sign: `-<positive>` ->
+            // Negative, `-<negative>` -> Positive (double negation).
+            match detect_step_direction(&hir_module.exprs[*operand], hir_module) {
+                StepDirection::Positive => StepDirection::Negative,
+                StepDirection::Negative => StepDirection::Positive,
+                StepDirection::Unknown => StepDirection::Unknown,
+            }
         }
         _ => StepDirection::Unknown,
     }
@@ -105,7 +106,7 @@ impl<'a> Lowering<'a> {
             // MIR level doesn't work because UnOp lowers to a Local.
             let step_is_negative = if args.len() == 3 {
                 let step_expr = &hir_module.exprs[args[2]];
-                detect_step_direction(step_expr)
+                detect_step_direction(step_expr, hir_module)
             } else {
                 // range(n) or range(start, stop) — step implicitly 1.
                 StepDirection::Positive

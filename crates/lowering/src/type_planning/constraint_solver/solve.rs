@@ -809,7 +809,15 @@ fn eval_unop(env: &Env, op: UnOp, operand: TypeKey) -> Type {
     let op_ty = env.get(operand);
     match op {
         UnOp::Not => Type::Bool,
-        UnOp::Neg | UnOp::Pos => op_ty,
+        // `-bool`/`+bool` yield int in CPython (-True == -1, +True == 1), so a
+        // Bool operand widens to Int; other types keep their own type.
+        UnOp::Neg | UnOp::Pos => {
+            if matches!(op_ty, Type::Bool) {
+                Type::Int
+            } else {
+                op_ty
+            }
+        }
         UnOp::Invert => Type::Int,
     }
 }

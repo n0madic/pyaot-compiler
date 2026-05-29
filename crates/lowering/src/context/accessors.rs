@@ -614,7 +614,13 @@ impl<'a> Lowering<'a> {
             return false;
         }
         let mut current = child;
+        // Guard against a cyclic base-class chain (malformed hierarchy): without
+        // it the walk would loop forever and hang the compiler.
+        let mut visited: std::collections::HashSet<ClassId> = std::collections::HashSet::new();
         while let Some(info) = self.get_class_info(&current) {
+            if !visited.insert(current) {
+                return false;
+            }
             match info.base_class {
                 Some(base) if base == parent => return true,
                 Some(base) => current = base,
