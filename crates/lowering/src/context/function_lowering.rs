@@ -447,14 +447,6 @@ impl<'a> Lowering<'a> {
                 let _ = user_param_phase4_unbox;
             }
 
-            // §P.2.2: fn-ptr params (set by name-matching heuristic on
-            // wrapper functions, or by the factory-decorator extension below)
-            // hold raw text-segment addresses, never heap objects. Force
-            // `is_gc_root=false` regardless of `param_ty.is_heap()` so the
-            // shadow-stack walker doesn't dereference a misaligned function
-            // pointer. Mirrors the FuncAddr-destination guard in
-            // `optimizer/type_inference.rs::materialize_function_types`.
-            let is_fn_ptr_param = self.is_func_ptr_param(&hir_param.var);
             // Phase 2 (Strong-Typed MIR Rewrite): when prologue emits
             // UnboxValue, the param slot holds a tagged `Value` (the
             // Phase 4 flipped ABI). Otherwise, the param holds a
@@ -480,8 +472,6 @@ impl<'a> Lowering<'a> {
                 // INT-wrapped, `Value::is_ptr() == false`) do not.
                 mir_ty,
             };
-            let _ = is_cell_param;
-            let _ = is_fn_ptr_param;
             params.push(mir_param);
         }
 

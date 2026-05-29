@@ -4,7 +4,8 @@
 //! It is organized into submodules by statement category:
 //! - `assign`: Assign, UnpackAssign, IndexAssign, FieldAssign
 //! - `control_flow`: Return, If, While, Break, Continue, Pass
-//! - `loops`: For (range and iterable iteration)
+//! - `iter_protocol`: For-loop iterator setup/advance (range and iterables)
+//! - `match_stmt`: match/case pattern dispatch
 //! - `assert`: Assert
 
 mod assert;
