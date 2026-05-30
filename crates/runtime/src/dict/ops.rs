@@ -118,7 +118,10 @@ pub fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj) {
 #[export_name = "rt_dict_set"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_set_abi(dict: Value, key: Value, value: Value) {
-    rt_dict_set(dict.unwrap_ptr(), key.unwrap_ptr(), value.unwrap_ptr())
+    // `key`/`value` are stored slots that may be tagged immediates; pass raw
+    // bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. `dict` is always a heap pointer.
+    rt_dict_set(dict.unwrap_ptr(), key.0 as *mut Obj, value.0 as *mut Obj)
 }
 
 /// Get a value from the dictionary by key
@@ -145,7 +148,10 @@ pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
 #[export_name = "rt_dict_get"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_get_abi(dict: Value, key: Value) -> Value {
-    Value::from_ptr(rt_dict_get(dict.unwrap_ptr(), key.unwrap_ptr()))
+    // `key` is the lookup key, possibly a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. The internal hash/compare handles tagged keys.
+    Value::from_ptr(rt_dict_get(dict.unwrap_ptr(), key.0 as *mut Obj))
 }
 
 /// Check if key exists in dictionary
@@ -170,7 +176,8 @@ pub fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
 #[export_name = "rt_dict_contains"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_contains_abi(dict: Value, key: Value) -> i8 {
-    rt_dict_contains(dict.unwrap_ptr(), key.unwrap_ptr())
+    // `key` may be a tagged immediate; pass raw bits (see `rt_dict_get_abi`).
+    rt_dict_contains(dict.unwrap_ptr(), key.0 as *mut Obj)
 }
 
 /// Get value with default if key not found
@@ -188,8 +195,10 @@ pub fn rt_dict_get_default(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> 
 pub extern "C" fn rt_dict_get_default_abi(dict: Value, key: Value, default: Value) -> Value {
     Value::from_ptr(rt_dict_get_default(
         dict.unwrap_ptr(),
-        key.unwrap_ptr(),
-        default.unwrap_ptr(),
+        // `key`/`default` may be tagged immediates; pass raw bits (see
+        // `rt_dict_get_abi`).
+        key.0 as *mut Obj,
+        default.0 as *mut Obj,
     ))
 }
 
@@ -247,7 +256,8 @@ pub fn rt_dict_pop(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
 #[export_name = "rt_dict_pop"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_pop_abi(dict: Value, key: Value) -> Value {
-    Value::from_ptr(rt_dict_pop(dict.unwrap_ptr(), key.unwrap_ptr()))
+    // `key` may be a tagged immediate; pass raw bits (see `rt_dict_get_abi`).
+    Value::from_ptr(rt_dict_pop(dict.unwrap_ptr(), key.0 as *mut Obj))
 }
 
 /// Clear all entries from dictionary
@@ -399,8 +409,10 @@ pub fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> *
 pub extern "C" fn rt_dict_setdefault_abi(dict: Value, key: Value, default: Value) -> Value {
     Value::from_ptr(rt_dict_setdefault(
         dict.unwrap_ptr(),
-        key.unwrap_ptr(),
-        default.unwrap_ptr(),
+        // `key`/`default` may be tagged immediates; pass raw bits (see
+        // `rt_dict_set_abi`). `dict` is always a heap pointer.
+        key.0 as *mut Obj,
+        default.0 as *mut Obj,
     ))
 }
 
@@ -552,7 +564,12 @@ pub fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut Obj {
 #[export_name = "rt_dict_fromkeys"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_fromkeys_abi(keys_list: Value, value: Value) -> Value {
-    Value::from_ptr(rt_dict_fromkeys(keys_list.unwrap_ptr(), value.unwrap_ptr()))
+    // `value` is the fill value, possibly a tagged immediate; pass raw bits
+    // (see `rt_dict_set_abi`). `keys_list` is always a heap pointer.
+    Value::from_ptr(rt_dict_fromkeys(
+        keys_list.unwrap_ptr(),
+        value.0 as *mut Obj,
+    ))
 }
 
 /// Merge two dicts into a new dict (preserves insertion order)

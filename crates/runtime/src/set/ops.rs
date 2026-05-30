@@ -62,7 +62,10 @@ pub fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
 #[export_name = "rt_set_add"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_set_add_abi(set: Value, elem: Value) {
-    rt_set_add(set.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` is a stored slot that may be a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion. `set` is always a heap pointer.
+    rt_set_add(set.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// Check if element exists in set
@@ -87,7 +90,10 @@ pub fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
 #[export_name = "rt_set_contains"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_set_contains_abi(set: Value, elem: Value) -> i8 {
-    rt_set_contains(set.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` is the search element, possibly a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. The internal hash/compare handles tagged elements.
+    rt_set_contains(set.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// Remove element from set (raises KeyError if missing)
@@ -123,7 +129,8 @@ pub fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
 #[export_name = "rt_set_remove"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_set_remove_abi(set: Value, elem: Value) {
-    rt_set_remove(set.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` may be a tagged immediate; pass raw bits (see `rt_set_contains_abi`).
+    rt_set_remove(set.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// Remove element from set if present (no error if missing)
@@ -150,7 +157,8 @@ pub fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
 #[export_name = "rt_set_discard"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_set_discard_abi(set: Value, elem: Value) {
-    rt_set_discard(set.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` may be a tagged immediate; pass raw bits (see `rt_set_contains_abi`).
+    rt_set_discard(set.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// Clear all elements from set

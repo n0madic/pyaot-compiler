@@ -92,7 +92,10 @@ pub fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
 #[export_name = "rt_make_cell_ptr"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_make_cell_ptr_abi(value: Value) -> Value {
-    Value::from_ptr(rt_make_cell_ptr(value.unwrap_ptr()))
+    // `value` is the cell's initial contents, possibly a tagged immediate
+    // (int/bool/None); pass raw bits so the tag survives instead of tripping
+    // `unwrap_ptr`'s debug `is_ptr` assertion.
+    Value::from_ptr(rt_make_cell_ptr(value.0 as *mut Obj))
 }
 
 // ==================== Cell Get Functions ====================
@@ -274,7 +277,10 @@ pub extern "C" fn rt_cell_set_ptr_abi(cell: Value, value: Value) {
     unsafe {
         rt_cell_set_ptr(
             crate::utils::expect_ptr_or_type_error(cell, "rt_cell_set_ptr"),
-            value.unwrap_ptr(),
+            // `value` is the stored contents, possibly a tagged immediate; pass
+            // raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+            // debug `is_ptr` assertion.
+            value.0 as *mut Obj,
         )
     }
 }

@@ -18,7 +18,10 @@ pub fn rt_list_append(list: *mut Obj, value: *mut Obj) {
 #[export_name = "rt_list_append"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_append_abi(list: Value, value: Value) {
-    rt_list_append(list.unwrap_ptr(), value.unwrap_ptr())
+    // `value` is an element that may be a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion. `list` is always a heap pointer.
+    rt_list_append(list.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Pop element from list at given index
@@ -136,7 +139,8 @@ pub fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
 #[export_name = "rt_list_insert"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_insert_abi(list: Value, index: i64, value: Value) {
-    rt_list_insert(list.unwrap_ptr(), index, value.unwrap_ptr())
+    // `value` may be a tagged immediate; pass raw bits (see `rt_list_append_abi`).
+    rt_list_insert(list.unwrap_ptr(), index, value.0 as *mut Obj)
 }
 
 /// Remove first occurrence of value from list (mutates list)
@@ -180,7 +184,10 @@ pub fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
 #[export_name = "rt_list_remove"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_remove_abi(list: Value, value: Value) -> i8 {
-    rt_list_remove(list.unwrap_ptr(), value.unwrap_ptr())
+    // `value` is the search element, possibly a tagged immediate; pass raw bits
+    // (see `rt_list_append_abi`). The internal element comparison already
+    // handles tagged values.
+    rt_list_remove(list.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Clear all elements from list (mutates list)

@@ -42,7 +42,10 @@ pub fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
 #[export_name = "rt_tuple_index"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_tuple_index_abi(tuple: Value, value: Value) -> i64 {
-    rt_tuple_index(tuple.unwrap_ptr(), value.unwrap_ptr())
+    // `value` is the search element, possibly a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. The internal element comparison handles tagged values.
+    rt_tuple_index(tuple.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Count occurrences of value in tuple
@@ -73,7 +76,8 @@ pub fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
 #[export_name = "rt_tuple_count"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_tuple_count_abi(tuple: Value, value: Value) -> i64 {
-    rt_tuple_count(tuple.unwrap_ptr(), value.unwrap_ptr())
+    // `value` may be a tagged immediate; pass raw bits (see `rt_tuple_index_abi`).
+    rt_tuple_count(tuple.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Generic tuple min/max for int, float and tagged-`Value` elements.

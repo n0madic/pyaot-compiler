@@ -100,7 +100,10 @@ pub fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
 #[export_name = "rt_deque_append"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_deque_append_abi(deque: Value, elem: Value) {
-    rt_deque_append(deque.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` is a stored slot that may be a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion. `deque` is always a heap pointer.
+    rt_deque_append(deque.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// deque.appendleft(elem) — add to the left end
@@ -131,7 +134,8 @@ pub fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
 #[export_name = "rt_deque_appendleft"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_deque_appendleft_abi(deque: Value, elem: Value) {
-    rt_deque_appendleft(deque.unwrap_ptr(), elem.unwrap_ptr())
+    // `elem` may be a tagged immediate; pass raw bits (see `rt_deque_append_abi`).
+    rt_deque_appendleft(deque.unwrap_ptr(), elem.0 as *mut Obj)
 }
 
 /// deque.pop() — remove and return from right end
@@ -335,7 +339,8 @@ pub fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
 #[export_name = "rt_deque_set"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_deque_set_abi(deque: Value, index: i64, value: Value) {
-    rt_deque_set(deque.unwrap_ptr(), index, value.unwrap_ptr())
+    // `value` may be a tagged immediate; pass raw bits (see `rt_deque_append_abi`).
+    rt_deque_set(deque.unwrap_ptr(), index, value.0 as *mut Obj)
 }
 
 /// deque.clear()
@@ -413,7 +418,10 @@ pub fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
 #[export_name = "rt_deque_count"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_deque_count_abi(deque: Value, value: Value) -> i64 {
-    rt_deque_count(deque.unwrap_ptr(), value.unwrap_ptr())
+    // `value` is the search element, possibly a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. `deque` is always a heap pointer.
+    rt_deque_count(deque.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Finalize a deque (free the ring buffer)

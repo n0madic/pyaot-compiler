@@ -36,7 +36,10 @@ pub fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
 #[export_name = "rt_list_index"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_index_abi(list: Value, value: Value) -> i64 {
-    rt_list_index(list.unwrap_ptr(), value.unwrap_ptr())
+    // `value` is the search element, possibly a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
+    // `is_ptr` assertion. The internal element comparison handles tagged values.
+    rt_list_index(list.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Count occurrences of value in list (post-§F.7c uniform Value semantics).
@@ -68,7 +71,8 @@ pub fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 #[export_name = "rt_list_count"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_count_abi(list: Value, value: Value) -> i64 {
-    rt_list_count(list.unwrap_ptr(), value.unwrap_ptr())
+    // `value` may be a tagged immediate; pass raw bits (see `rt_list_index_abi`).
+    rt_list_count(list.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Create a shallow copy of list

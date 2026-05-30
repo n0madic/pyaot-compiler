@@ -194,7 +194,10 @@ pub fn rt_global_set_ptr(var_id: u32, value: *mut Obj) {
 #[export_name = "rt_global_set_ptr"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_global_set_ptr_abi(var_id: u32, value: Value) {
-    rt_global_set_ptr(var_id, value.unwrap_ptr())
+    // `value` is a stored slot that may be a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion.
+    rt_global_set_ptr(var_id, value.0 as *mut Obj)
 }
 
 pub fn rt_global_get_ptr(var_id: u32) -> *mut Obj {

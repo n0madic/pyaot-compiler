@@ -79,7 +79,10 @@ pub fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
 #[export_name = "rt_tuple_set"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_tuple_set_abi(tuple: Value, index: i64, value: Value) {
-    rt_tuple_set(tuple.unwrap_ptr(), index, value.unwrap_ptr())
+    // `value` is a stored slot that may be a tagged immediate (int/bool/None);
+    // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion. `tuple` is always a heap pointer.
+    rt_tuple_set(tuple.unwrap_ptr(), index, value.0 as *mut Obj)
 }
 
 /// Get element from tuple at given index.

@@ -159,7 +159,10 @@ pub fn rt_class_attr_set_ptr(class_id: u8, attr_idx: u32, value: *mut Obj) {
 #[export_name = "rt_class_attr_set_ptr"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_class_attr_set_ptr_abi(class_id: u8, attr_idx: u32, value: Value) {
-    rt_class_attr_set_ptr(class_id, attr_idx, value.unwrap_ptr())
+    // `value` is a stored class-attribute slot that may be a tagged immediate
+    // (int/bool/None); pass raw bits so the tag survives instead of tripping
+    // `unwrap_ptr`'s debug `is_ptr` assertion.
+    rt_class_attr_set_ptr(class_id, attr_idx, value.0 as *mut Obj)
 }
 
 pub fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj {

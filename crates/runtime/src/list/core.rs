@@ -75,7 +75,10 @@ pub fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
 #[export_name = "rt_list_set"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_set_abi(list: Value, index: i64, value: Value) {
-    rt_list_set(list.unwrap_ptr(), index, value.unwrap_ptr())
+    // `value` is a stored slot that may be a tagged immediate (int/bool/None);
+    // pass its raw bits so the tag survives, instead of tripping `unwrap_ptr`'s
+    // debug `is_ptr` assertion. `list` is always a heap pointer.
+    rt_list_set(list.unwrap_ptr(), index, value.0 as *mut Obj)
 }
 
 /// Get element from list at given index
@@ -235,7 +238,8 @@ pub fn rt_list_push(list: *mut Obj, value: *mut Obj) {
 #[export_name = "rt_list_push"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_push_abi(list: Value, value: Value) {
-    rt_list_push(list.unwrap_ptr(), value.unwrap_ptr())
+    // `value` may be a tagged immediate; pass raw bits (see `rt_list_set_abi`).
+    rt_list_push(list.unwrap_ptr(), value.0 as *mut Obj)
 }
 
 /// Finalize a list by freeing its data array
