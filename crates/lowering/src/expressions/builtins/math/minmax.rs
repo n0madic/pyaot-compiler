@@ -552,7 +552,22 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let result_type = if is_float { Type::Float } else { Type::Int };
+        // All-string multi-arg min/max compares lexicographically and
+        // returns a str. The comparison below routes through the runtime
+        // string comparator (`rt_obj_cmp`, same ABI as `s1 < s2`) instead of
+        // a raw `BinOp` — a raw `BinOp Lt/Gt` on `Heap(Str)` operands (and a
+        // `Heap(Str)` → `Int` dest Copy) are both rejected by the verifier.
+        let all_str = args
+            .iter()
+            .all(|&arg_id| self.seed_expr_type(arg_id, hir_module) == Type::Str);
+
+        let result_type = if all_str {
+            Type::Str
+        } else if is_float {
+            Type::Float
+        } else {
+            Type::Int
+        };
 
         // Evaluate all arguments and promote to float if needed
         let mut operands = Vec::new();
@@ -604,12 +619,28 @@ impl<'a> Lowering<'a> {
             let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
             // cmp = (operand < result) for min, (operand > result) for max
-            self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: cmp_local,
-                op: cmp_op,
-                left: operand.clone(),
-                right: mir::Operand::Local(result_local),
-            });
+            if all_str {
+                // Lexicographic string ordering via the runtime obj comparator
+                // (`rt_obj_cmp` dispatches by type tag), mirroring `s1 < s2`.
+                let cmp = if is_min {
+                    mir::ComparisonOp::Lt
+                } else {
+                    mir::ComparisonOp::Gt
+                };
+                let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp.to_tag() as i64));
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: cmp_local,
+                    func: mir::RuntimeFunc::Call(mir::CompareKind::Obj.runtime_func_def(cmp)),
+                    args: vec![operand.clone(), mir::Operand::Local(result_local), op_tag],
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: cmp_local,
+                    op: cmp_op,
+                    left: operand.clone(),
+                    right: mir::Operand::Local(result_local),
+                });
+            }
 
             // if (cmp) result = operand
             let then_bb = self.new_block();

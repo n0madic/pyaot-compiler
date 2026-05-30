@@ -1533,8 +1533,19 @@ def _rv_int_nan_inf() -> None:
     print(int(-2.7))
 
 
+# min()/max() over strings (lexicographic, returns str)
+def _rv_minmax_str() -> None:
+    print(min("apple", "banana"))
+    print(max("apple", "banana"))
+    print(min("cherry", "apple", "banana"))
+    print(max("cherry", "apple", "banana"))
+    print(min("b", "a", "c"))
+    print(max("b", "a", "c"))
+
+
 _rv_pow()
 _rv_all_any()
 _rv_int_nan_inf()
+_rv_minmax_str()
 
 print("All builtins code-review regression tests passed!")
