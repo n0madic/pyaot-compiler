@@ -253,6 +253,60 @@ def test_multiple_echo():
 test_multiple_echo()
 
 # =============================================================================
+# Test 12b: send() into a while-loop generator preserves the sent value
+# across the loop back-edge (regression: the value used to "stick" after
+# the first resume because the while-loop resumer linearized through the
+# generic path, which models no back-edge).
+# =============================================================================
+
+def while_echo_gen():
+    r = yield 0          # pre-loop yield; r receives the first sent value
+    while True:
+        r = yield r      # echo: yield current r, then r = next sent value
+
+def test_while_loop_send_echo():
+    g = while_echo_gen()
+    v0: int = next(g)
+    assert v0 == 0, "initial yield is 0"
+    v1: int = g.send(10)
+    assert v1 == 10, "echo 10 across the loop back-edge"
+    v2: int = g.send(20)
+    assert v2 == 20, "echo 20 (back-edge re-entry)"
+    v3: int = g.send(30)
+    assert v3 == 30, "echo 30"
+    print("test_while_loop_send_echo passed")
+
+test_while_loop_send_echo()
+
+# =============================================================================
+# Test 12c: send() accumulator — the sent value is used in raw arithmetic
+# (`i += 1`) inside the loop. Exercises gen-local re-typing so the tagged
+# sent value unboxes to a raw Int before the BinOp.
+# =============================================================================
+
+def while_acc_gen():
+    i = yield 0          # i receives the sent value
+    while i < 100:
+        x = yield i      # yield current i; x receives the next sent value
+        i += 1           # raw arithmetic on the sent value
+
+def test_while_loop_send_accumulator():
+    g = while_acc_gen()
+    a0: int = next(g)
+    assert a0 == 0, "initial yield is 0"
+    a1: int = g.send(5)
+    assert a1 == 5, "i bound to sent 5, yields 5"
+    a2: int = g.send(0)
+    assert a2 == 6, "i += 1 after resume -> 6"
+    a3: int = g.send(0)
+    assert a3 == 7, "i += 1 again -> 7"
+    a4: int = g.send(0)
+    assert a4 == 8, "i += 1 again -> 8"
+    print("test_while_loop_send_accumulator passed")
+
+test_while_loop_send_accumulator()
+
+# =============================================================================
 # Test 13: Chained generator iteration
 # =============================================================================
 

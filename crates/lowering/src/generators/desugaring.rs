@@ -730,6 +730,46 @@ fn emit_save_vars_where(
     }
 }
 
+/// Emit the sent-value delivery for a `var = yield expr` resume point:
+/// `target = __gen_get_sent_value(gen_obj)` followed by a save-to-local so
+/// the value persists across the next suspension. No-op when `target` is
+/// `None` (a bare `yield expr` with no assignment). Mirrors the inline logic
+/// in `build_generic_resume`.
+fn emit_bind_sent_value(
+    m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
+    gen_obj_var: VarId,
+    target: Option<VarId>,
+    body: &mut Vec<GenStmt>,
+    span: Span,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    let g = mk_var(m, gen_obj_var, Type::Any, span);
+    let get_sent = mk_expr(
+        m,
+        hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetSentValue(g)),
+        Some(Type::Int),
+        span,
+    );
+    body.push(mk_leaf_stmt(
+        m,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(target),
+            value: get_sent,
+            type_hint: Some(Type::Int),
+        },
+        span,
+    ));
+    // Persist the sent value to the generator local so the next resume sees it.
+    if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
+        let tv = mk_var(m, target, Type::Int, span);
+        let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, tv, span);
+        body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
+    }
+}
+
 /// Collect every VarId bound by a statement list (recursive through
 /// control-flow bodies). Used to decide which gen_vars are safe to
 /// save in the init state.
@@ -801,6 +841,81 @@ fn collect_defined_vars(stmts: &[GenStmt], module: &hir::Module, out: &mut HashS
 // ============================================================================
 
 impl<'a> Lowering<'a> {
+    /// Re-type `GeneratorIntrinsic::GetLocal` reads in generator resume
+    /// functions to match the variable's prescan-inferred type.
+    ///
+    /// `collect_generator_vars` types each gen-local from the original
+    /// generator's `Bind` `type_hint`, which is `None` (→ `Any`) for a
+    /// yield-assigned variable like `i = yield 0`. The resume function's
+    /// prescan, however, ignores the `Any` `GetLocal` write (`merge_var`
+    /// skips `Any`) and infers the concrete type from in-loop usage
+    /// (`i += 1` → `Int`). That leaves the `GetLocal` load typed `Any`
+    /// (returns a tagged Value, no unbox) while the variable's MIR local is
+    /// `Int` — so a raw `BinOp` would read tagged bits, which the verifier
+    /// rejects. Align the `GetLocal` read (and its `Bind` `type_hint`) with
+    /// the prescan type so the load unboxes to the raw primitive and the
+    /// save/load round-trip stays representation-consistent.
+    ///
+    /// Must run after `precompute_all_local_var_types` has prescanned the
+    /// resume functions and before the base-var / expr-type caches are
+    /// rebuilt.
+    pub(crate) fn retype_generator_local_reads(&mut self, hir_module: &mut hir::Module) {
+        let resume_ids: Vec<FuncId> = hir_module
+            .functions
+            .iter()
+            .copied()
+            .filter(|id| id.0 >= RESUME_FUNC_ID_OFFSET)
+            .collect();
+        for func_id in resume_ids {
+            let Some(prescan) = self
+                .lowering_seed_info
+                .per_function_local_seed_types
+                .get(&func_id)
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(func) = hir_module.func_defs.get(&func_id) else {
+                continue;
+            };
+            // Collect `(stmt_id, getlocal_expr_id, concrete_type)` for every
+            // `Bind { Var(v) = GetLocal{..} }` whose target `v` has a
+            // concrete (non-`Any`) prescan type.
+            let stmt_ids: Vec<hir::StmtId> = func
+                .blocks
+                .values()
+                .flat_map(|b| b.stmts.iter().copied())
+                .collect();
+            let mut edits: Vec<(hir::StmtId, hir::ExprId, Type)> = Vec::new();
+            for sid in stmt_ids {
+                let hir::StmtKind::Bind { target, value, .. } = &hir_module.stmts[sid].kind else {
+                    continue;
+                };
+                let hir::BindingTarget::Var(v) = target else {
+                    continue;
+                };
+                if !matches!(
+                    hir_module.exprs[*value].kind,
+                    hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetLocal { .. })
+                ) {
+                    continue;
+                }
+                match prescan.get(v) {
+                    Some(ty) if !matches!(ty, Type::Any) => {
+                        edits.push((sid, *value, ty.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            for (sid, gid, ty) in edits {
+                hir_module.exprs[gid].ty = Some(ty.clone());
+                if let hir::StmtKind::Bind { type_hint, .. } = &mut hir_module.stmts[sid].kind {
+                    *type_hint = Some(ty);
+                }
+            }
+        }
+    }
+
     /// Desugar all generator functions in the module into regular functions.
     pub(crate) fn desugar_generators(&mut self, hir_module: &mut hir::Module) -> Result<()> {
         let gen_func_ids: Vec<FuncId> = hir_module
@@ -1119,32 +1234,8 @@ fn build_generic_resume(
         //    The sent value goes to the assignment target variable
         //    (e.g., `received = yield 1` → received gets the sent value).
         if i > 0 {
-            let prev = &yield_infos[i - 1];
-            if let Some(target) = prev.assignment_target {
-                // Get sent value and assign directly to the target VarId
-                let g = mk_var(m, gen_obj_var, Type::Any, span);
-                let get_sent = mk_expr(
-                    m,
-                    hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetSentValue(g)),
-                    Some(Type::Int),
-                    span,
-                );
-                body.push(mk_leaf_stmt(
-                    m,
-                    hir::StmtKind::Bind {
-                        target: hir::BindingTarget::Var(target),
-                        value: get_sent,
-                        type_hint: Some(Type::Int),
-                    },
-                    span,
-                ));
-                // Also save sent value to the generator local for persistence
-                if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
-                    let tv = mk_var(m, target, Type::Int, span);
-                    let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, tv, span);
-                    body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
-                }
-            }
+            let prev_target = yield_infos[i - 1].assignment_target;
+            emit_bind_sent_value(m, gen_vars, gen_obj_var, prev_target, &mut body, span);
         }
 
         // 3. Compute yield value (clone the original expression).
@@ -1193,6 +1284,22 @@ fn build_while_loop_resume(
     let num_yields = wg.yield_sections.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
 
+    // CASE 2: a pre-loop yield (`r = yield 0` before the `while`) needs an
+    // extra state machine — handled by a dedicated builder. Detection
+    // guarantees exactly one in-loop yield section with no pre-yield stmts.
+    if wg.init_yield.is_some() {
+        build_while_loop_resume_with_init_yield(
+            m,
+            gen_vars,
+            wg,
+            gen_obj_var,
+            state_var,
+            &mut stmts,
+            span,
+        );
+        return stmts;
+    }
+
     // State numbering:
     //   State 0 (init): load params, init stmts, cond → yield section[0], set state=1
     //   State 1..N-1 (yields for sections 1..N-1): load, stmts, yield, save, set state
@@ -1206,8 +1313,18 @@ fn build_while_loop_resume(
     };
     let mut else_block = mk_exhaust_block(m, gen_obj_var, span);
 
-    // Update state
-    let update_body = build_while_update(m, gen_vars, wg, gen_obj_var, num_yields, span);
+    // Update state: re-enters the loop top after the last in-loop yield, so
+    // it delivers the value sent into that yield (`send()` round-trip).
+    let update_sent_target = wg.yield_sections[num_yields - 1].assignment_target;
+    let update_body = build_while_update(
+        m,
+        gen_vars,
+        wg,
+        gen_obj_var,
+        num_yields,
+        update_sent_target,
+        span,
+    );
     let update_if = mk_state_check(m, state_var, update_state, update_body, else_block, span);
     else_block = vec![update_if];
 
@@ -1221,12 +1338,16 @@ fn build_while_loop_resume(
             } else {
                 update_state
             };
+            // We resumed from the previous section's yield — deliver its sent
+            // value (no-op for a bare `yield`).
+            let prev_sent_target = wg.yield_sections[yi - 1].assignment_target;
             let yield_body = build_while_yield_with_next_state(
                 m,
                 gen_vars,
                 &section,
                 gen_obj_var,
                 next_state,
+                prev_sent_target,
                 span,
             );
             let yield_if = mk_state_check(m, state_var, yi as i64, yield_body, else_block, span);
@@ -1240,6 +1361,182 @@ fn build_while_loop_resume(
     stmts.push(init_if);
 
     stmts
+}
+
+/// Build the resume state machine for a while-loop generator that has a
+/// pre-loop yield (`r = yield 0` before the `while`). Three states:
+///   - State 0 (init yield): run pre-loop init stmts, yield the pre-loop
+///     value unconditionally, go to state 1. The sent value binds on resume.
+///   - State 1 (first loop iteration): bind sent → pre-loop yield target,
+///     check the loop condition, yield the in-loop value, go to state 2.
+///   - State 2 (subsequent iterations): bind sent → in-loop yield target, run
+///     the post-yield update stmts, re-check the condition, yield, loop back
+///     to state 2 (the back-edge the generic resumer cannot model).
+fn build_while_loop_resume_with_init_yield(
+    m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
+    wg: &super::WhileLoopGenerator,
+    gen_obj_var: VarId,
+    state_var: VarId,
+    stmts: &mut Vec<GenStmt>,
+    span: Span,
+) {
+    let init_yield = wg
+        .init_yield
+        .clone()
+        .expect("build_while_loop_resume_with_init_yield requires init_yield");
+    let section = wg.yield_sections[0].clone();
+
+    // State 0: pre-loop init + unconditional init yield → state 1.
+    let init_body = build_init_yield_state(m, gen_vars, wg, &init_yield, gen_obj_var, span);
+
+    // State 1: first loop iteration (no update stmts), sent → init target.
+    let first_body = build_loop_yield_state(
+        m,
+        gen_vars,
+        wg,
+        &section,
+        gen_obj_var,
+        init_yield.assignment_target,
+        false,
+        2,
+        span,
+    );
+
+    // State 2: loop with post-yield update, sent → in-loop target, self-loop.
+    let loop_body = build_loop_yield_state(
+        m,
+        gen_vars,
+        wg,
+        &section,
+        gen_obj_var,
+        section.assignment_target,
+        true,
+        2,
+        span,
+    );
+
+    let mut else_block = mk_exhaust_block(m, gen_obj_var, span);
+    let loop_if = mk_state_check(m, state_var, 2, loop_body, else_block, span);
+    else_block = vec![loop_if];
+    let first_if = mk_state_check(m, state_var, 1, first_body, else_block, span);
+    else_block = vec![first_if];
+    let init_if = mk_state_check(m, state_var, 0, init_body, else_block, span);
+    stmts.push(init_if);
+}
+
+/// State 0 for a pre-loop-yield generator: load params, run the pre-loop init
+/// statements, then yield the pre-loop value and advance to state 1. No
+/// condition check — the pre-loop yield always executes once.
+fn build_init_yield_state(
+    m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
+    wg: &super::WhileLoopGenerator,
+    init_yield: &super::YieldSection,
+    gen_obj_var: VarId,
+    span: Span,
+) -> Vec<GenStmt> {
+    let mut body = Vec::new();
+
+    // Load parameters (same as build_while_init).
+    for gv in gen_vars {
+        if gv.is_param {
+            let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
+            body.push(mk_leaf_stmt(
+                m,
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(gv.var_id),
+                    value: get,
+                    type_hint: Some(gv.ty.clone()),
+                },
+                span,
+            ));
+        }
+    }
+
+    // Run pre-loop init statements.
+    body.extend(wrap_stmt_ids(&wg.init_stmts));
+
+    // Save only the variables defined so far (params + init binds). The
+    // pre-loop yield's target is bound on resume in state 1, so it is NOT
+    // saved here — same SSA UseNotDominated concern as build_while_init.
+    let mut defined_in_init: HashSet<VarId> = HashSet::new();
+    for gv in gen_vars {
+        if gv.is_param {
+            defined_in_init.insert(gv.var_id);
+        }
+    }
+    let init_stmts = wrap_stmt_ids(&wg.init_stmts);
+    collect_defined_vars(&init_stmts, m, &mut defined_in_init);
+    emit_save_vars_where(m, gen_vars, gen_obj_var, &mut body, span, |gv| {
+        defined_in_init.contains(&gv.var_id)
+    });
+
+    // Yield the pre-loop value, advance to the first loop state.
+    let yield_val = init_yield
+        .yield_expr
+        .map(|eid| clone_expr(m, eid))
+        .unwrap_or_else(|| mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span));
+    let set_state = mk_set_state(m, gen_obj_var, 1, span);
+    body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_state), span));
+    body.push(mk_leaf_stmt(
+        m,
+        hir::StmtKind::Return(Some(yield_val)),
+        span,
+    ));
+
+    body
+}
+
+/// A loop-body yield state for a pre-loop-yield generator. Loads vars, binds
+/// the value sent into the previous yield, optionally runs the post-yield
+/// update statements (`run_update`), re-checks the loop condition and either
+/// yields the in-loop value (advancing to `next_state`) or exhausts.
+#[allow(clippy::too_many_arguments)]
+fn build_loop_yield_state(
+    m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
+    wg: &super::WhileLoopGenerator,
+    section: &super::YieldSection,
+    gen_obj_var: VarId,
+    sent_target: Option<VarId>,
+    run_update: bool,
+    next_state: i64,
+    span: Span,
+) -> Vec<GenStmt> {
+    let mut body = Vec::new();
+
+    // Load all variables, then deliver the value sent into the previous yield.
+    emit_load_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
+    emit_bind_sent_value(m, gen_vars, gen_obj_var, sent_target, &mut body, span);
+
+    // Re-entry iterations run the post-yield body (e.g. `i += 1`) first.
+    if run_update {
+        body.extend(wrap_stmt_ids(&wg.update_stmts));
+    }
+
+    // Save the updated state, then either yield (cond true) or exhaust.
+    // Detection guarantees section.stmts_before is empty here.
+    emit_save_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
+
+    let yield_val = section
+        .yield_expr
+        .map(|eid| clone_expr(m, eid))
+        .unwrap_or_else(|| mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span));
+    let set_state = mk_set_state(m, gen_obj_var, next_state, span);
+    let ss = mk_leaf_stmt(m, hir::StmtKind::Expr(set_state), span);
+    let ret = mk_leaf_stmt(m, hir::StmtKind::Return(Some(yield_val)), span);
+
+    let exhaust = mk_exhaust_block(m, gen_obj_var, span);
+    let cond_check = GenStmt::If {
+        cond: clone_expr(m, wg.cond),
+        then_body: vec![ss, ret],
+        else_body: exhaust,
+        span,
+    };
+    body.push(cond_check);
+
+    body
 }
 
 fn build_while_init(
@@ -1322,12 +1619,17 @@ fn build_while_yield_with_next_state(
     section: &super::YieldSection,
     gen_obj_var: VarId,
     next_state: i64,
+    prev_sent_target: Option<VarId>,
     span: Span,
 ) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Load all variables
     emit_load_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
+
+    // Deliver the value sent into the previous section's yield (no-op for a
+    // bare `yield` with no assignment target).
+    emit_bind_sent_value(m, gen_vars, gen_obj_var, prev_sent_target, &mut body, span);
 
     // Execute statements before this yield (reuse original HIR)
     body.extend(wrap_stmt_ids(&section.stmts_before));
@@ -1361,12 +1663,17 @@ fn build_while_update(
     wg: &super::WhileLoopGenerator,
     gen_obj_var: VarId,
     num_yields: usize,
+    sent_target: Option<VarId>,
     span: Span,
 ) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Load all variables
     emit_load_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
+
+    // Deliver the value sent into the last in-loop yield before re-running the
+    // post-yield body (no-op for a bare `yield`).
+    emit_bind_sent_value(m, gen_vars, gen_obj_var, sent_target, &mut body, span);
 
     // Execute update statements (reuse original HIR)
     body.extend(wrap_stmt_ids(&wg.update_stmts));

@@ -30,8 +30,14 @@ use hir::BindingTarget;
 /// Information about a while-loop generator pattern
 #[derive(Debug, Clone)]
 pub(crate) struct WhileLoopGenerator {
-    /// Statements before the while loop (initialization)
+    /// Statements before the while loop (initialization), excluding any
+    /// trailing pre-loop yield (captured separately in `init_yield`).
     pub(crate) init_stmts: Vec<hir::StmtId>,
+    /// Optional pre-loop yield (e.g. `r = yield 0` immediately before the
+    /// `while`). When present, the resume state machine adds a dedicated
+    /// init-yield state (state 0) before the loop states, and binds the
+    /// sent value to this yield's target on the first loop resume.
+    pub(crate) init_yield: Option<YieldSection>,
     /// The while condition expression
     pub(crate) cond: hir::ExprId,
     /// Yield sections in the loop (supports multiple yields)
@@ -47,6 +53,11 @@ pub(crate) struct YieldSection {
     pub(crate) stmts_before: Vec<hir::StmtId>,
     /// The yield expression (None for `yield` without value)
     pub(crate) yield_expr: Option<hir::ExprId>,
+    /// Variable that receives the sent value (`r` in `r = yield expr`).
+    /// `None` for a bare `yield expr` statement with no assignment. When
+    /// `Some`, the resume state binds `GetSentValue` to this var before the
+    /// next yield so `send()` round-trips the value (CPython semantics).
+    pub(crate) assignment_target: Option<VarId>,
 }
 
 /// Information about a for-loop generator pattern

@@ -82,6 +82,10 @@ impl<'a> Lowering<'a> {
         // One prescan pass covers the new $resume functions (their params are
         // explicitly typed so this is cheap).
         self.precompute_all_local_var_types(&hir_module);
+        // Re-type generator `GetLocal` reads to match the resume function's
+        // prescan-inferred variable types (must run after the prescan above,
+        // before the base-var / expr caches below pick the types up).
+        self.retype_generator_local_reads(&mut hir_module);
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(&hir_module);
         self.lowering_seed_info.expr_types.clear();
