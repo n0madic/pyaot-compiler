@@ -137,32 +137,53 @@ impl<'a> Lowering<'a> {
             args: vec![mir::Operand::Constant(mir::Constant::Int(8))],
         });
 
-        // Create iterator over the source
-        let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
-
-        // Get appropriate iterator source kind based on type
-        let source = if iter_type.is_list_like() {
-            mir::IterSourceKind::List
-        } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some() {
-            mir::IterSourceKind::Tuple
-        } else if iter_type == Type::Str {
-            mir::IterSourceKind::Str
-        } else if iter_type.is_dict_like() {
-            mir::IterSourceKind::Dict
-        } else if iter_type.set_elem().is_some() {
-            mir::IterSourceKind::Set
+        // Create an iterator over the source. `range(...)` lowers to
+        // `Constant::None` as a standalone expression, so build a real range
+        // `IteratorObj` via `lower_iter_range` (mirrors list()/tuple()/sorted());
+        // otherwise the fallback `IterSourceKind::List` would read the `None`
+        // operand as a ListObj and crash. For all other containers, pick the
+        // matching `rt_iter_*` factory by element type.
+        let iter_local = if let hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Range,
+            args: range_args,
+            ..
+        } = &iter_expr.kind
+        {
+            let range_iter = self.lower_iter_range(range_args, hir_module, mir_func)?;
+            let it = self.alloc_and_add_local(Type::Iterator(Box::new(Type::Int)), mir_func);
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: it,
+                src: range_iter,
+            });
+            it
         } else {
-            mir::IterSourceKind::List // fallback
-        };
-        let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
+            let source_operand =
+                self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
-        // Create iterator
-        let iter_local = self.emit_runtime_call(
-            iter_func,
-            vec![source_operand],
-            Type::Iterator(Box::new(elem_type.clone())),
-            mir_func,
-        );
+            // Get appropriate iterator source kind based on type
+            let source = if iter_type.is_list_like() {
+                mir::IterSourceKind::List
+            } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some() {
+                mir::IterSourceKind::Tuple
+            } else if iter_type == Type::Str {
+                mir::IterSourceKind::Str
+            } else if iter_type.is_dict_like() {
+                mir::IterSourceKind::Dict
+            } else if iter_type.set_elem().is_some() {
+                mir::IterSourceKind::Set
+            } else {
+                mir::IterSourceKind::List // fallback
+            };
+            let iter_func =
+                mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
+
+            self.emit_runtime_call(
+                iter_func,
+                vec![source_operand],
+                Type::Iterator(Box::new(elem_type.clone())),
+                mir_func,
+            )
+        };
 
         // Loop to add each element from iterator
         let loop_header = self.new_block();
@@ -339,7 +360,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower list(range(start, stop, step))
-    fn lower_list_from_range(
+    pub(in crate::expressions::builtins) fn lower_list_from_range(
         &mut self,
         range_args: &[hir::ExprId],
         hir_module: &hir::Module,

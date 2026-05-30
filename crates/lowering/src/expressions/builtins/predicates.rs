@@ -126,6 +126,36 @@ impl<'a> Lowering<'a> {
         args
     }
 
+    /// Lower a predicate's iterable argument, returning `(operand, type)`.
+    ///
+    /// `all`/`any` iterate via an index-based `RT_LIST_LEN` / `RT_LIST_GET`
+    /// loop (see `predicate_iter_info`). A standalone `range(...)` lowers to
+    /// `Constant::None`, so without this special case the `None` operand would
+    /// be read as an empty list and the loop would never run (`all` → True,
+    /// `any` → False regardless of contents). Materialise the range into a
+    /// real `list[int]` (mirrors list()/set()/sorted()) so the existing
+    /// list-index loop iterates it correctly for both step signs.
+    fn lower_predicate_iterable(
+        &mut self,
+        arg: hir::ExprId,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<(mir::Operand, Type)> {
+        let iterable_expr = &hir_module.exprs[arg];
+        if let hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Range,
+            args: range_args,
+            ..
+        } = &iterable_expr.kind
+        {
+            let list = self.lower_list_from_range(range_args, hir_module, mir_func)?;
+            return Ok((list, Type::list_of(Type::Int)));
+        }
+        let operand = self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
+        let ty = self.seed_expr_type(arg, hir_module);
+        Ok((operand, ty))
+    }
+
     /// Lower all(iterable) -> bool
     pub(super) fn lower_all(
         &mut self,
@@ -137,10 +167,8 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::Bool(true)));
         }
 
-        let iterable_expr = &hir_module.exprs[args[0]];
-        let iterable_operand =
-            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
-        let iterable_type = self.seed_expr_type(args[0], hir_module);
+        let (iterable_operand, iterable_type) =
+            self.lower_predicate_iterable(args[0], hir_module, mir_func)?;
 
         let (len_func, get_func, elem_kind, item_type, zero_const) =
             self.predicate_iter_info(&iterable_type);
@@ -267,10 +295,8 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::Bool(false)));
         }
 
-        let iterable_expr = &hir_module.exprs[args[0]];
-        let iterable_operand =
-            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
-        let iterable_type = self.seed_expr_type(args[0], hir_module);
+        let (iterable_operand, iterable_type) =
+            self.lower_predicate_iterable(args[0], hir_module, mir_func)?;
 
         let (len_func, get_func, elem_kind, item_type, zero_const) =
             self.predicate_iter_info(&iterable_type);

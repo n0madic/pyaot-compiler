@@ -378,6 +378,15 @@ assert sorted_desc_range[2] == 3, "sorted_desc_range[2] should equal 3"
 assert sorted_desc_range[3] == 4, "sorted_desc_range[3] should equal 4"
 assert sorted_desc_range[4] == 5, "sorted_desc_range[4] should equal 5"
 
+# Test set(range(...)) - must build a real range iterator (no crash)
+set_from_range: set[int] = set(range(3))
+assert len(set_from_range) == 3, "set(range(3)) should have 3 elements"
+assert 0 in set_from_range, "set(range(3)) should contain 0"
+assert 2 in set_from_range, "set(range(3)) should contain 2"
+set_desc_range: set[int] = set(range(5, 0, -1))
+assert len(set_desc_range) == 5, "set(range(5,0,-1)) should have 5 elements"
+assert 5 in set_desc_range, "set(range(5,0,-1)) should contain 5"
+
 # Test empty list
 empty: list[int] = []
 sorted_empty: list[int] = sorted(empty)

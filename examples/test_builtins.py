@@ -340,6 +340,13 @@ assert any(empty_int) == False, "any(empty_int) should equal False"     # empty 
 assert any(single_true) == True, "any(single_true) should equal True"
 assert any(single_false) == False, "any(single_false) should equal False"
 
+# all()/any() over range() - must iterate the range (materialized list[int])
+assert all(range(1, 5)) == True, "all(range(1,5)) should be True"
+assert all(range(0, 5)) == False, "all(range(0,5)) should be False (contains 0)"
+assert any(range(0, 1)) == False, "any(range(0,1)) should be False (only 0)"
+assert any(range(1, 3)) == True, "any(range(1,3)) should be True"
+assert all(range(5, 0, -1)) == True, "all(range(5,0,-1)) should be True"
+
 print("all() and any() tests passed")
 
 
@@ -407,6 +414,12 @@ assert sum(single_float) == 42.5, "sum(single_float) should equal 42.5"
 # sum() with zeros
 zeros_float: list[float] = [0.0, 1.5, 0.0, 2.5]
 assert sum(zeros_float) == 4.0, "sum(zeros_float) should equal 4.0"
+
+# sum() over range() - must build a real range iterator (both step signs)
+assert sum(range(5)) == 10, "sum(range(5)) should equal 10"
+assert sum(range(1, 11)) == 55, "sum(range(1, 11)) should equal 55"
+assert sum(range(0, 10, 2)) == 20, "sum(range(0, 10, 2)) should equal 20"
+assert sum(range(10, 0, -1)) == 55, "sum(range(10, 0, -1)) should equal 55"
 
 print("sum() tests passed")
 

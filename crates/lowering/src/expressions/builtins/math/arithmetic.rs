@@ -388,9 +388,27 @@ impl<'a> Lowering<'a> {
             src: start_operand,
         });
 
-        // Lower the iterable
-        let iterable_operand =
-            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
+        // Lower the iterable.
+        //
+        // `range(...)` as a standalone expression lowers to `Constant::None`
+        // (see `lower_builtin_call`), so `sum(range(...))` would otherwise
+        // iterate an empty/None iterator and return the start identity (0).
+        // Mirror the `min`/`max` (`lower_minmax_range`) and `list(range(...))`
+        // special cases: build a real range `IteratorObj` via `rt_iter_range`,
+        // whose `iter_next_range` already honours the step sign. The seed type
+        // for a range expression is `Iterator(Int)` (helpers.rs), so the
+        // unified Iterator branch below copies this operand into `iter_local`
+        // and runs the standard next/exhausted loop for both step signs.
+        let iterable_operand = if let hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Range,
+            args: range_args,
+            ..
+        } = &iterable_expr.kind
+        {
+            self.lower_iter_range(range_args, hir_module, mir_func)?
+        } else {
+            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?
+        };
 
         // Unified Iterator path for everything except `list` (which keeps
         // its dedicated indexed-access fast-path below). For
