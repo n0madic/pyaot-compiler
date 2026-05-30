@@ -49,13 +49,14 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let value_arg = crate::first_arg_or_none(arg_operands);
-        // Only box the value if it's a heap type; raw types pass through directly.
+        // Always box the search value: tuple slots are tagged `Value`s
+        // (§F.7c storage-uniform invariant) and `rt_tuple_index` /
+        // `rt_tuple_count` compare it against stored elements via `rt_obj_eq`,
+        // which interprets the bits as a `Value`. Passing a raw `Int`/`Bool`
+        // through (low bit 0) would be misread as a heap pointer and
+        // dereferenced. Mirrors `list.index` / `list.count`.
         let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
-        let search_value = if value_type.is_heap() {
-            self.emit_value_slot(value_arg, &value_type, mir_func)
-        } else {
-            value_arg
-        };
+        let search_value = self.emit_value_slot(value_arg, &value_type, mir_func);
 
         let result_local =
             self.emit_runtime_call(func, vec![obj_operand, search_value], Type::Int, mir_func);

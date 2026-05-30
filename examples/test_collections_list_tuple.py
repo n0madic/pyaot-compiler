@@ -484,6 +484,32 @@ start_beyond: tuple[int, int, int, int, int, int] = tuple_nums[100:]
 assert len(start_beyond) == 0, "len(start_beyond) should equal 0"
 print("Tuple start beyond [100:] passed")
 
+# ===== SECTION: Tuple index() and count() =====
+# The search value must be boxed to a tagged Value before being compared
+# against the (tagged) tuple slots via rt_obj_eq. A raw int/bool argument
+# (low bit 0) would otherwise be misread as a heap pointer and dereferenced.
+tuple_search: tuple[int, int, int, int] = (1, 2, 2, 3)
+assert tuple_search.index(2) == 1, "tuple.index(int) first occurrence"
+assert tuple_search.index(3) == 3, "tuple.index(int) last element"
+assert tuple_search.count(2) == 2, "tuple.count(int) repeated"
+assert tuple_search.count(1) == 1, "tuple.count(int) single"
+assert tuple_search.count(99) == 0, "tuple.count(int) absent"
+# Bool elements (also tagged immediates).
+tuple_bools: tuple[bool, bool, bool] = (True, False, True)
+assert tuple_bools.index(False) == 1, "tuple.index(bool)"
+assert tuple_bools.count(True) == 2, "tuple.count(bool)"
+# Heap elements (strings) still resolve via the same path.
+tuple_strs: tuple[str, str, str] = ("a", "b", "b")
+assert tuple_strs.index("b") == 1, "tuple.index(str)"
+assert tuple_strs.count("b") == 2, "tuple.count(str)"
+# Not-found raises ValueError.
+try:
+    tuple_search.index(99)
+    raise AssertionError("tuple.index of absent value should raise")
+except ValueError:
+    pass
+print("Tuple index() and count() passed")
+
 # ===== SECTION: List sort method =====
 
 # Basic sort
