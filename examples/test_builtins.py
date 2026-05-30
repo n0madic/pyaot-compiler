@@ -1543,9 +1543,46 @@ def _rv_minmax_str() -> None:
     print(max("b", "a", "c"))
 
 
+# int(obj) / float(obj): dispatch __int__/__float__; TypeError when absent.
+class _RvIntable:
+    def __int__(self) -> int:
+        return 7
+
+
+class _RvFloatable:
+    def __float__(self) -> float:
+        return 3.5
+
+
+class _RvPlainObj:
+    def __init__(self) -> None:
+        self.x = 1
+
+
+def _rv_int_float_dispatch() -> None:
+    print(int(_RvIntable()))
+    print(float(_RvFloatable()))
+    try:
+        int(None)
+        print("int(None): no error")
+    except TypeError:
+        print("int(None): TypeError")
+    try:
+        float([1, 2])
+        print("float(list): no error")
+    except TypeError:
+        print("float(list): TypeError")
+    try:
+        int(_RvPlainObj())
+        print("int(plain): no error")
+    except TypeError:
+        print("int(plain): TypeError")
+
+
 _rv_pow()
 _rv_all_any()
 _rv_int_nan_inf()
 _rv_minmax_str()
+_rv_int_float_dispatch()
 
 print("All builtins code-review regression tests passed!")

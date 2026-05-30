@@ -209,7 +209,10 @@ impl<'a> Lowering<'a> {
                 }
             }
             Type::Class { class_id, .. } => {
-                // int(obj) -> call __int__ dunder if defined
+                // int(obj) -> call __int__ dunder if statically visible (fast
+                // direct call). Otherwise (cross-module class, or no static
+                // dunder) fall through to the runtime dispatcher, which
+                // resolves __int__ via the method registry or raises TypeError.
                 if let Some(int_func) = self
                     .get_class_info(&class_id)
                     .and_then(|ci| ci.get_dunder_func("__int__"))
@@ -220,18 +223,26 @@ impl<'a> Lowering<'a> {
                         args: vec![arg_operand],
                     });
                 } else {
-                    self.emit_instruction(mir::InstructionKind::Const {
-                        dest: result_local,
-                        value: mir::Constant::Int(0),
-                    });
+                    let unboxed = self.emit_tagged_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BUILTIN_INT),
+                        vec![arg_operand],
+                        Type::Int,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(unboxed));
                 }
             }
             _ => {
-                // For other types, return 0 as fallback
-                self.emit_instruction(mir::InstructionKind::Const {
-                    dest: result_local,
-                    value: mir::Constant::Int(0),
-                });
+                // Union / Any / None / container types: dispatch at runtime.
+                // `rt_builtin_int` raises TypeError for non-convertible values
+                // (matching CPython) instead of silently yielding 0.
+                let unboxed = self.emit_tagged_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BUILTIN_INT),
+                    vec![arg_operand],
+                    Type::Int,
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(unboxed));
             }
         }
 
@@ -296,7 +307,9 @@ impl<'a> Lowering<'a> {
                 });
             }
             Type::Class { class_id, .. } => {
-                // float(obj) -> call __float__ dunder if defined
+                // float(obj) -> call __float__ dunder if statically visible.
+                // Otherwise fall through to the runtime dispatcher (registry
+                // lookup or TypeError), mirroring `lower_int`.
                 if let Some(float_func) = self
                     .get_class_info(&class_id)
                     .and_then(|ci| ci.get_dunder_func("__float__"))
@@ -307,18 +320,28 @@ impl<'a> Lowering<'a> {
                         args: vec![arg_operand],
                     });
                 } else {
-                    self.emit_instruction(mir::InstructionKind::Const {
-                        dest: result_local,
-                        value: mir::Constant::Float(0.0),
-                    });
+                    let unboxed = self.emit_tagged_runtime_call(
+                        mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_BUILTIN_FLOAT,
+                        ),
+                        vec![arg_operand],
+                        Type::Float,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(unboxed));
                 }
             }
             _ => {
-                // For other types, return 0.0 as fallback
-                self.emit_instruction(mir::InstructionKind::Const {
-                    dest: result_local,
-                    value: mir::Constant::Float(0.0),
-                });
+                // Union / Any / None / container types: dispatch at runtime.
+                // `rt_builtin_float` raises TypeError for non-convertible
+                // values instead of silently yielding 0.0.
+                let unboxed = self.emit_tagged_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BUILTIN_FLOAT),
+                    vec![arg_operand],
+                    Type::Float,
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(unboxed));
             }
         }
 

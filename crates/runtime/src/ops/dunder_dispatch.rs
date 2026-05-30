@@ -45,6 +45,8 @@ pub(super) const FNV_RPOW: u64 = fnv1a(b"__rpow__");
 pub(super) const FNV_NEG: u64 = fnv1a(b"__neg__");
 pub(super) const FNV_POS: u64 = fnv1a(b"__pos__");
 pub(super) const FNV_INVERT: u64 = fnv1a(b"__invert__");
+pub(super) const FNV_INT: u64 = fnv1a(b"__int__");
+pub(super) const FNV_FLOAT: u64 = fnv1a(b"__float__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
 /// called as `(self_obj, other_value) -> Value`. The `Value` return slot
@@ -147,4 +149,26 @@ pub(super) unsafe fn try_class_unary_dunder(a: *mut Obj, dunder_hash: u64) -> Op
     let f: UnaryDunderFn = std::mem::transmute(func_ptr);
     let result = f(a);
     Some(result.0 as *mut Obj)
+}
+
+/// Dispatch `__int__` for `int(obj)` when `obj` is a class instance.
+/// Returns the boxed dunder result (a tagged `Value`, typically an Int);
+/// `None` when the instance has no `__int__`. Mirrors `rt_obj_neg`'s use of
+/// `try_class_unary_dunder` so `int()`/`float()` follow CPython's protocol.
+///
+/// # Safety
+/// `obj` must be a valid object pointer (the caller verifies `is_ptr` and the
+/// Instance type tag before calling).
+pub unsafe fn try_int_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_INT)
+}
+
+/// Dispatch `__float__` for `float(obj)` when `obj` is a class instance.
+/// Returns the boxed dunder result (typically a boxed `FloatObj` pointer);
+/// `None` when the instance has no `__float__`.
+///
+/// # Safety
+/// See [`try_int_dunder`].
+pub unsafe fn try_float_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_FLOAT)
 }

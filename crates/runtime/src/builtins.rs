@@ -84,6 +84,14 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
         v.unwrap_int()
     } else if v.is_bool() {
         v.unwrap_bool() as i64
+    } else if !v.is_ptr() {
+        // Non-pointer tagged value (e.g. None): not convertible — CPython
+        // raises TypeError. Guards the heap deref below.
+        unsafe {
+            raise_type_error(
+                "int() argument must be a string, a bytes-like object or a real number",
+            )
+        }
     } else {
         unsafe {
             match (*obj).type_tag() {
@@ -107,6 +115,17 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
                     f as i64
                 }
                 TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
+                TypeTagKind::Instance => {
+                    // CPython: int(obj) dispatches to obj.__int__(). The dunder
+                    // returns a boxed Value (tagged Int) which is exactly what
+                    // this function returns, so surface it verbatim.
+                    if let Some(result) = crate::ops::try_int_dunder(obj) {
+                        return result;
+                    }
+                    raise_type_error(
+                        "int() argument must be a string, a bytes-like object or a real number",
+                    )
+                }
                 _ => raise_type_error(
                     "int() argument must be a string, a bytes-like object or a real number",
                 ),
@@ -119,7 +138,11 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
 #[export_name = "rt_builtin_int"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_builtin_int_abi(obj: Value) -> Value {
-    Value::from_ptr(rt_builtin_int(obj.unwrap_ptr()))
+    // Pass the raw bits through, not `unwrap_ptr()`: `obj` may be a tagged
+    // immediate (int/bool/None from `int(union)` / `int(None)`), and
+    // `rt_builtin_int` reconstructs `Value(obj as u64)` to inspect the tag.
+    // `unwrap_ptr` would debug-assert `is_ptr` on those immediates.
+    Value::from_ptr(rt_builtin_int(obj.0 as *mut Obj))
 }
 
 /// float(obj) -> *mut Obj (boxed Float)
@@ -139,11 +162,24 @@ pub fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
         } else {
             0.0
         }
+    } else if !v.is_ptr() {
+        // Non-pointer tagged value (e.g. None): not convertible — CPython
+        // raises TypeError. Guards the heap deref below.
+        unsafe { raise_type_error("float() argument must be a string or a real number") }
     } else {
         unsafe {
             match (*obj).type_tag() {
                 TypeTagKind::Float => (*(obj as *mut FloatObj)).value,
                 TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
+                TypeTagKind::Instance => {
+                    // CPython: float(obj) dispatches to obj.__float__(). The
+                    // dunder returns a boxed FloatObj pointer — return it
+                    // verbatim rather than re-boxing.
+                    if let Some(result) = crate::ops::try_float_dunder(obj) {
+                        return result;
+                    }
+                    raise_type_error("float() argument must be a string or a real number")
+                }
                 _ => raise_type_error("float() argument must be a string or a real number"),
             }
         }
@@ -154,7 +190,10 @@ pub fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
 #[export_name = "rt_builtin_float"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_builtin_float_abi(obj: Value) -> Value {
-    Value::from_ptr(rt_builtin_float(obj.unwrap_ptr()))
+    // See `rt_builtin_int_abi`: pass raw bits so tagged immediates (e.g.
+    // `float(union)` holding an int) reach the tag inspection instead of
+    // tripping `unwrap_ptr`'s debug `is_ptr` assertion.
+    Value::from_ptr(rt_builtin_float(obj.0 as *mut Obj))
 }
 
 /// bool(obj) -> *mut Obj (boxed Bool)

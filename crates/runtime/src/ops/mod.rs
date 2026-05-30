@@ -13,6 +13,8 @@ pub use arithmetic::{
     rt_sub_float, rt_sub_int, rt_true_div_int,
 };
 
+pub use dunder_dispatch::{try_float_dunder, try_int_dunder};
+
 pub use comparison::{
     rt_any_getitem, rt_is_none, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq,
 };

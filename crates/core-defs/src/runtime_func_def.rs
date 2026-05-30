@@ -901,6 +901,13 @@ pub static RT_STR_TO_FLOAT: RuntimeFuncDef =
 /// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64
 pub static RT_STR_TO_INT_WITH_BASE: RuntimeFuncDef =
     RuntimeFuncDef::binary_to_i64("rt_str_to_int_with_base");
+/// rt_builtin_int(obj: Value) -> Value (boxed Int). Dynamic `int(obj)` for
+/// non-statically-resolved args (Union/Any/class instance): dispatches
+/// `__int__`, raises TypeError for non-convertible types.
+pub static RT_BUILTIN_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_builtin_int");
+/// rt_builtin_float(obj: Value) -> Value (boxed Float). Dynamic `float(obj)`:
+/// dispatches `__float__`, raises TypeError for non-convertible types.
+pub static RT_BUILTIN_FLOAT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_builtin_float");
 /// rt_str_contains(haystack: *mut Obj, needle: *mut Obj) -> i8
 pub static RT_STR_CONTAINS: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_str_contains", &[PI64, PI64], Some(RI8), true);
