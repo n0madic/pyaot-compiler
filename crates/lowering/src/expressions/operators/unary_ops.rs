@@ -19,18 +19,13 @@ impl<'a> Lowering<'a> {
         let operand_expr = &hir_module.exprs[operand];
         let operand_op = self.lower_expr(operand_expr, hir_module, mir_func)?;
 
-        // Determine result type based on operation and operand type
+        // Determine result type based on operation and operand type. For a
+        // class operand with the relevant unary dunder this is the dunder's
+        // declared return type (e.g. `__neg__ -> int`, `__invert__ -> Self`),
+        // so the result slot stays consistent with the inferred expression
+        // type — see `unary_op_result_type`.
         let operand_ty = self.seed_expr_type(operand, hir_module);
-        let result_type = match op {
-            hir::UnOp::Not => Type::Bool, // not always returns bool
-            // `-bool`/`+bool` yield int in CPython (-True == -1, +True == 1),
-            // so a Bool operand widens to Int; otherwise the operand type is
-            // preserved.
-            hir::UnOp::Neg | hir::UnOp::Pos if matches!(operand_ty, Type::Bool) => Type::Int,
-            hir::UnOp::Neg => operand_ty.clone(), // neg preserves operand type
-            hir::UnOp::Invert => Type::Int,       // bitwise NOT always returns Int
-            hir::UnOp::Pos => operand_ty.clone(), // unary plus preserves type
-        };
+        let result_type = self.unary_op_result_type(op, &operand_ty);
 
         let result_local = self.alloc_and_add_local(result_type.clone(), mir_func);
 
@@ -56,7 +51,9 @@ impl<'a> Lowering<'a> {
                         operand: mir::Operand::Local(bool_local),
                     });
                 } else {
-                    // __neg__ returns same type
+                    // `result_local` is already typed by the dunder's return
+                    // type (via `unary_op_result_type`), so the CallDirect dest
+                    // matches the callee return — no Int↔Class mismatch.
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: func_id,

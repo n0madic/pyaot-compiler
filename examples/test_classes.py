@@ -1604,6 +1604,28 @@ assert +0 == 0, "unary + on zero"
 
 print("Unary dunders (__pos__, __abs__, __invert__): PASS")
 
+# Unary dunders whose return type differs from the receiver class. The result
+# dest must be typed by the dunder's actual return type, not by the operator's
+# primitive semantics — otherwise `__neg__ -> int` (a non-Class return into a
+# Class-typed dest) and `__invert__ -> Class` (a Class return into the Int dest
+# the Invert path defaults to) both trip the codegen/verifier.
+class UnaryRet:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __neg__(self) -> int:
+        return self.v * 100
+
+    def __invert__(self) -> UnaryRet:
+        return UnaryRet(self.v + 1)
+
+_ur = UnaryRet(3)
+assert (-_ur) == 300, "__neg__ -> int"
+_ur_inv = ~_ur
+assert _ur_inv.v == 4, "__invert__ -> UnaryRet"
+
+print("Unary dunders with cross-type returns: PASS")
+
 # ==================== Conversion Dunders: __int__, __float__, __bool__ ====================
 
 class ConvNum:

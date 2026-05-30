@@ -624,6 +624,49 @@ impl<'a> Lowering<'a> {
 // =============================================================================
 
 impl<'a> Lowering<'a> {
+    /// Result type of a unary operation given the operand's type.
+    ///
+    /// For a class operand defining the relevant unary dunder, the result is
+    /// the dunder's *declared return type* (e.g. `__neg__ -> int`,
+    /// `__invert__ -> SameClass`) — not the operator's primitive semantics.
+    /// This keeps the inferred expression type consistent with what
+    /// `lower_unop` writes into the result slot; otherwise a `__neg__ -> int`
+    /// result bound to a class-typed (GC-root) variable holds a raw int and
+    /// segfaults on the next pointer-shaped use. For the common
+    /// same-type-returning dunders (`__neg__ -> Self`, `__invert__ -> int`)
+    /// this returns exactly what the primitive heuristic did, so existing
+    /// behaviour is unchanged.
+    pub(crate) fn unary_op_result_type(&self, op: hir::UnOp, operand_ty: &Type) -> Type {
+        match op {
+            // `not x` is always bool (dispatches through `__bool__`, negated).
+            hir::UnOp::Not => Type::Bool,
+            hir::UnOp::Neg | hir::UnOp::Pos | hir::UnOp::Invert => {
+                if let Type::Class { class_id, .. } = operand_ty {
+                    if let Some(ret) = self
+                        .get_class_info(class_id)
+                        .and_then(|ci| ci.get_dunder_func(op.dunder_name()))
+                        .and_then(|fid| self.get_func_return_type(&fid).cloned())
+                    {
+                        return ret;
+                    }
+                }
+                match op {
+                    // `-bool`/`+bool` yield int; other operands keep their type.
+                    hir::UnOp::Neg | hir::UnOp::Pos => {
+                        if matches!(operand_ty, Type::Bool) {
+                            Type::Int
+                        } else {
+                            operand_ty.clone()
+                        }
+                    }
+                    // Bitwise NOT on primitives is always int.
+                    hir::UnOp::Invert => Type::Int,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
     /// **Internal** — codegen-path implementation of the memoized HIR type
     /// query. External callers must go through `seed_expr_type_by_id`
     /// (which wraps this with caching). S1.9b merges this with
@@ -646,11 +689,10 @@ impl<'a> Lowering<'a> {
                 let right_ty = self.seed_expr_type_by_id(*right, hir_module);
                 self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
-            hir::ExprKind::UnOp { op, operand } => match op {
-                hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg | hir::UnOp::Pos => self.seed_expr_type_by_id(*operand, hir_module),
-                hir::UnOp::Invert => Type::Int,
-            },
+            hir::ExprKind::UnOp { op, operand } => {
+                let operand_ty = self.seed_expr_type_by_id(*operand, hir_module);
+                self.unary_op_result_type(*op, &operand_ty)
+            }
             hir::ExprKind::Compare { .. } => Type::Bool,
             hir::ExprKind::LogicalOp { left, right, .. } => {
                 let left_ty = self.seed_expr_type_by_id(*left, hir_module);
@@ -881,13 +923,11 @@ impl<'a> Lowering<'a> {
                     self.infer_seed_expr_type_inner(&module.exprs[*right], module, param_types);
                 self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
-            hir::ExprKind::UnOp { op, operand } => match op {
-                hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg | hir::UnOp::Pos => {
-                    self.infer_seed_expr_type_inner(&module.exprs[*operand], module, param_types)
-                }
-                hir::UnOp::Invert => Type::Int,
-            },
+            hir::ExprKind::UnOp { op, operand } => {
+                let operand_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*operand], module, param_types);
+                self.unary_op_result_type(*op, &operand_ty)
+            }
             hir::ExprKind::Compare { .. } => Type::Bool,
             hir::ExprKind::LogicalOp { left, right, .. } => {
                 let left_ty =
