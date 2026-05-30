@@ -61,6 +61,29 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Transitive holder propagation: `g = inner` where `inner` already
+        // tracks a closure / function reference. Without this, lowering copies
+        // `inner`'s value but `g(args)` falls through to a crashing indirect
+        // dispatch because `get_var_closure(g)` / `get_var_func(g)` are empty.
+        // Propagate the tracking so `g(args)` resolves identically to
+        // `inner(args)` (the defining bind precedes this one in statement
+        // order, so the source's tracking is already populated).
+        if let hir::ExprKind::Var(src_v) = &expr.kind {
+            if let Some((fid, captures)) = self.get_var_closure(src_v).cloned() {
+                // Fall through to copy `inner`'s closure tuple into `g` too, so
+                // `g` also works as a first-class value (returned / passed),
+                // not just directly callable via `get_var_closure`.
+                self.insert_var_closure(target, fid, captures);
+            } else if let Some(fid) = self.get_var_func(src_v) {
+                // A bare function reference emits no runtime value (the
+                // `FuncRef` arm below returns early), so mirror it: track the
+                // holder and skip the value copy.
+                self.insert_var_func(target, fid);
+                self.remove_block_narrowed_local(&target);
+                return Ok(());
+            }
+        }
+
         // Track if RHS is a function reference or closure for later call resolution
         // For these cases, we don't need to emit any code - we resolve calls through tracking maps
         match &expr.kind {

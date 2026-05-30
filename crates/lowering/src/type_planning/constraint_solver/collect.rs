@@ -64,23 +64,26 @@ pub struct Collector<'a> {
     /// [`Collector::collect_module`]. Mirrors the legacy `method_self_types`
     /// map in `closure_scan`.
     method_owner: HashMap<FuncId, ClassId>,
-    /// `VarId → FuncId` for variables that hold a directly-assigned,
-    /// **capture-free** lambda / function reference (`f = lambda x: …` or
-    /// `f = some_func`). Lets the `Call` collector resolve an indirect
-    /// call `f(args)` (`CalleeRef::Dynamic(Var f)`) to the concrete target
-    /// so the call args hint the lambda's params and the result reads its
-    /// `FuncReturn`. Without this the lambda's params stay `Any`/Tagged
-    /// while a direct `CallDirect` passes them as primitives → the result
-    /// is a tagged `Value` the `int`-typed dest never unboxes.
+    /// `VarId → (FuncId, capture_count)` for variables that hold a
+    /// directly-assigned lambda / nested function / function reference
+    /// (`f = lambda x: …`, `def inner(): …`, or `f = some_func`). Lets the
+    /// `Call` collector resolve an indirect call `f(args)`
+    /// (`CalleeRef::Dynamic(Var f)`) to the concrete target so the call args
+    /// hint the callee's user params and the result reads its `FuncReturn`.
+    /// Without this the params stay `Any`/Tagged while lowering already
+    /// lowers `f(args)` to a `CallDirect` (via `get_var_closure`) passing
+    /// them as primitives → the call result is a tagged `Value` the
+    /// concrete-typed dest never unboxes, and a consumer (`print`,
+    /// `is None`, `: int` assignment) reads the stale solver type.
     ///
-    /// Restricted to capture-free targets — a `Var` holding a *capturing*
-    /// closure value isn't reliably lowered to a `CallDirect`, so resolving
-    /// it here could mis-type the call. (The lifted-closure capture offset
-    /// itself is now handled uniformly by the `CalleeRef::Func` hint loop via
-    /// `callee_cap_count`.) Also restricted to variables assigned exactly
+    /// **Capturing** closures are included: a lifted closure delivers its
+    /// captures as the LEADING positional params, so the stored
+    /// `capture_count` lets the hint loop slot the call's user args at
+    /// `[capture_count..]` (matching `callee_cap_count`). `FuncRef` targets
+    /// carry `capture_count == 0`. Restricted to variables assigned exactly
     /// once (a `VarId` re-bound to a different target is removed —
     /// `Some`→absent — so an ambiguous holder never mis-hints).
-    var_to_lambda: HashMap<VarId, FuncId>,
+    var_to_lambda: HashMap<VarId, (FuncId, usize)>,
     /// `FuncId → set of param indices` that are mutated in-place via a
     /// container mutator (`append`/`add`/`insert`/`extend`/`update`),
     /// possibly through `Index` chains (`keys[i].append(x)`). Python passes
@@ -551,12 +554,13 @@ impl<'a> Collector<'a> {
             }
         }
 
-        // Pre-pass: map variables to a directly-assigned, capture-free
-        // lambda / function reference so an indirect call `f(args)`
+        // Pre-pass: map variables to a directly-assigned lambda / nested
+        // function / function reference so an indirect call `f(args)`
         // resolves to the concrete target (see `var_to_lambda` docs).
         // Walk every function's `Bind` statements; a `VarId` bound to more
         // than one distinct target is removed (ambiguous holders must not
-        // mis-hint).
+        // mis-hint). Capturing closures are recorded with their capture
+        // count so the hint loop slots user args past the leading captures.
         let mut ambiguous: std::collections::HashSet<VarId> = std::collections::HashSet::new();
         for func in self.module.func_defs.values() {
             for block in func.blocks.values() {
@@ -569,24 +573,31 @@ impl<'a> Collector<'a> {
                     let hir::BindingTarget::Var(v) = target else {
                         continue;
                     };
-                    let target_fid = match &self.module.exprs[*value].kind {
-                        ExprKind::Closure { func, captures } if captures.is_empty() => Some(*func),
-                        ExprKind::FuncRef(fid) => Some(*fid),
+                    let target: Option<(FuncId, usize)> = match &self.module.exprs[*value].kind {
+                        ExprKind::Closure { func, captures } => Some((*func, captures.len())),
+                        ExprKind::FuncRef(fid) => Some((*fid, 0)),
+                        // Transitive holder: `g = inner` where `inner` already
+                        // resolves to a lambda/closure. The defining bind
+                        // (`def inner` / `inner = lambda …`) precedes this one
+                        // in statement order, so `var_to_lambda[inner]` is
+                        // already populated. Lets `g(args)` read the same
+                        // `FuncReturn` as `inner(args)`.
+                        ExprKind::Var(src_v) => self.var_to_lambda.get(src_v).copied(),
                         _ => None,
                     };
-                    match target_fid {
-                        Some(fid) => {
+                    match target {
+                        Some(entry) => {
                             if ambiguous.contains(v) {
                                 continue;
                             }
                             match self.var_to_lambda.get(v) {
-                                Some(prev) if *prev != fid => {
+                                Some(prev) if prev.0 != entry.0 => {
                                     self.var_to_lambda.remove(v);
                                     ambiguous.insert(*v);
                                 }
                                 Some(_) => {}
                                 None => {
-                                    self.var_to_lambda.insert(*v, fid);
+                                    self.var_to_lambda.insert(*v, entry);
                                 }
                             }
                         }
@@ -1393,7 +1404,7 @@ impl<'a> Collector<'a> {
                     // this to a `CallDirect`, so the typing now matches the
                     // direct-call ABI instead of leaving the params `Any`.
                     ExprKind::Var(v) if self.var_to_lambda.contains_key(v) => {
-                        CalleeRef::Func(self.var_to_lambda[v])
+                        CalleeRef::Func(self.var_to_lambda[v].0)
                     }
                     _ => CalleeRef::Dynamic(TypeKey::Expr(*func)),
                 };
@@ -1405,10 +1416,13 @@ impl<'a> Collector<'a> {
                 // a `Func` whose params are `[c, x]`; without this offset arg
                 // `5` would hint the `c` capture slot and leave `x` untyped —
                 // the same mis-slotting `propagate_hof_iterable_hint` guards
-                // against with `cap_count + i`. `FuncRef` and the capture-free
-                // `var_to_lambda` arm contribute 0.
+                // against with `cap_count + i`. A `Var` bound to a capturing
+                // closure carries its capture count in `var_to_lambda`;
+                // direct `Closure` literals read it from the expr. `FuncRef`
+                // contributes 0.
                 let callee_cap_count = match &self.module.exprs[*func].kind {
                     ExprKind::Closure { captures, .. } => captures.len(),
+                    ExprKind::Var(v) => self.var_to_lambda.get(v).map_or(0, |entry| entry.1),
                     _ => 0,
                 };
                 // Walk positional args.

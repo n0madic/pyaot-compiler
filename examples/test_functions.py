@@ -1863,4 +1863,45 @@ def _test_mixed_value_void() -> None:
 
 _test_mixed_value_void()
 
+
+# Regression: UNANNOTATED capturing closures called by value. The solver used
+# to resolve a call to a capturing nested def / lambda held in a variable as a
+# dynamic (Any) call, so the enclosing function's return type stayed Any at
+# lowering time while WPA narrowed the value to a raw primitive — the consumer
+# then read the raw bits through a tagged lens (`True` instead of 43) or
+# crashed on an indirect-call ABI mismatch (assign-then-call).
+def _closure_immediate():
+    x = 42
+
+    def inner():
+        return x + 1
+
+    return inner()
+
+
+def _closure_assign_then_call():
+    x = 42
+
+    def inner():
+        return x + 1
+
+    g = inner
+    return g()
+
+
+def _closure_lambda_arith():
+    c = 100
+    g = lambda a, b: a + b - c
+    return g(20, 5)
+
+
+def _test_unannotated_capturing_closures() -> None:
+    assert _closure_immediate() == 43, "immediate capturing-closure call"
+    assert _closure_assign_then_call() == 43, "assign-then-call capturing closure"
+    assert _closure_lambda_arith() == -75, "capturing lambda arithmetic"
+    print("unannotated capturing closure test passed")
+
+
+_test_unannotated_capturing_closures()
+
 print("All function tests passed!")
