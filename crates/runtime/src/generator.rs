@@ -322,7 +322,14 @@ pub unsafe fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj {
     (*gen_obj).sent_value = pyaot_core_defs::Value(value as u64);
 
     // Call the resume function
-    __pyaot_generator_resume(gen)
+    let result = __pyaot_generator_resume(gen);
+    // The resume may have just exhausted the generator (loop condition went
+    // false). Mirror the pre-call check above for the became-exhausted case so
+    // `gen.send(v)` raises StopIteration like CPython.
+    if (*gen_obj).exhausted {
+        raise_exc!(ExceptionType::StopIteration, "generator already exhausted");
+    }
+    result
 }
 #[export_name = "rt_generator_send"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

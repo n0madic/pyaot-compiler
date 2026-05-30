@@ -393,6 +393,57 @@ def test_while_loop_generator():
 test_while_loop_generator()
 
 # =============================================================================
+# Test 15b: Exhausted while-loop generator raises StopIteration via next()/send()
+# Regression: explicit next()/send() on a just-exhausted while-loop generator
+# must raise StopIteration, not silently return 0. The `exhausted` flag — not
+# the 0 return value — is the discriminator (a legit `yield 0` keeps it false).
+# =============================================================================
+
+def test_while_gen_exhaust_next_raises():
+    gen_next = range_gen(0, 3)
+    assert next(gen_next) == 0, "next #1 (first value is 0)"
+    assert next(gen_next) == 1, "next #2"
+    assert next(gen_next) == 2, "next #3"
+    next_raised: bool = False
+    try:
+        next(gen_next)
+    except StopIteration:
+        next_raised = True
+    assert next_raised, "next() on exhausted while-gen must raise StopIteration"
+    print("test_while_gen_exhaust_next_raises passed")
+
+test_while_gen_exhaust_next_raises()
+
+def test_while_gen_exhaust_send_raises():
+    gen_send = range_gen(0, 2)
+    assert gen_send.send(None) == 0, "send #1 (first value is 0)"
+    assert gen_send.send(None) == 1, "send #2"
+    send_raised: bool = False
+    try:
+        gen_send.send(None)
+    except StopIteration:
+        send_raised = True
+    assert send_raised, "send() on exhausted while-gen must raise StopIteration"
+    print("test_while_gen_exhaust_send_raises passed")
+
+test_while_gen_exhaust_send_raises()
+
+def test_while_gen_yield_zero_not_swallowed():
+    # Control case: a legit value of 0 must be returned, not mistaken for
+    # exhaustion. range_gen(0, 1) yields 0, then the while condition fails.
+    gen_zero = range_gen(0, 1)
+    assert next(gen_zero) == 0, "yield 0 must be returned, not swallowed"
+    zero_raised: bool = False
+    try:
+        next(gen_zero)
+    except StopIteration:
+        zero_raised = True
+    assert zero_raised, "exhaustion after yield 0 must raise StopIteration"
+    print("test_while_gen_yield_zero_not_swallowed passed")
+
+test_while_gen_yield_zero_not_swallowed()
+
+# =============================================================================
 # Test 16: For loop over while-loop generator
 # =============================================================================
 

@@ -36,7 +36,16 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
         if (*iter_obj).header.type_tag == TypeTagKind::Generator {
             // For generators, we must use the normal path since they use longjmp internally
             // This is OK because generators properly set exhausted flag before raising
-            return rt_generator_next(iter_obj);
+            let result = rt_generator_next(iter_obj);
+            // Match the non-generator branch (below): surface exhaustion as
+            // StopIteration on the explicit next() path. The for-loop path passes
+            // raise_on_exhausted=false and reads the flag via rt_iter_next_no_exc,
+            // so it must NOT raise here. `exhausted` (not the 0 return) is the
+            // discriminator — a legit `yield 0` leaves the flag false.
+            if raise_on_exhausted && (*(iter_obj as *mut GeneratorObj)).exhausted {
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
+            }
+            return result;
         }
 
         let iter = iter_obj as *mut IteratorObj;
