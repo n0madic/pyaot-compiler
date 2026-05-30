@@ -1557,6 +1557,47 @@ assert rn6.v == 12, "__rmul__: 4 * RevNum(3)"
 
 print("Reverse arithmetic dunders: PASS")
 
+# ==================== Binop Dunder Returning a Non-Class Type ====================
+# A binary dunder may return a type OTHER than the defining class — e.g.
+# `__add__ -> int`. The result of the binop must be typed by the dunder's
+# ACTUAL return type (int here), not assumed to be the receiver class. The
+# constraint solver is the authority for variable types, so when the result is
+# bound to a variable (`n = a + b`) it must agree the variable is `int`;
+# otherwise the variable is typed as the class (a GC root) while holding a raw
+# int, mismatching what lowering emits and segfaulting on use.
+
+class DotProduct:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __add__(self, other: "DotProduct") -> int:
+        # Returns a scalar int, NOT a DotProduct.
+        return self.x * other.x + self.y * other.y
+
+# Direct use of the binop result as an int.
+assert DotProduct(1, 2) + DotProduct(3, 4) == 11, "binop dunder -> int (direct)"
+
+# Bound to a variable first — exercises the solver's view of the variable type.
+dot_bound = DotProduct(2, 3) + DotProduct(4, 5)
+assert dot_bound == 23, "binop dunder -> int (bound to variable)"
+# The bound result flows into an int-typed context; if it were mistyped as
+# DotProduct this would dispatch DotProduct.__add__ on an int and fail.
+assert dot_bound + 1 == 24, "binop dunder -> int (used as int)"
+
+# Companion case: a dunder that DOES return its own class still resolves.
+class Scaled:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __mul__(self, other: "Scaled") -> "Scaled":
+        return Scaled(self.v * other.v)
+
+scaled_result = Scaled(2) * Scaled(3)
+assert scaled_result.v == 6, "binop dunder -> class (returns own type)"
+
+print("Binop dunder returning non-class type: PASS")
+
 # ==================== Unary Dunders: __pos__, __abs__, __invert__ ====================
 
 class UnaryNum:

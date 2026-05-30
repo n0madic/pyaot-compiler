@@ -37,6 +37,19 @@ pub trait ReducerCtx {
     /// `class_implements_protocol` policy in `infer.rs`).
     fn class_has_dunder(&self, class_id: ClassId, dunder: &str) -> bool;
 
+    /// When at least one operand of a binary op is a user class, resolve
+    /// the dispatched dunder's *actual* inferred return type (forward /
+    /// reflected, subclass-first, NotImplemented-stripped). Returns `None`
+    /// when neither operand is a user class or the dunder's return type is
+    /// unknown — in which case [`eval_binop`] falls back to the structural
+    /// `resolve_binop_type_class_aware` heuristic. Production wiring
+    /// delegates to `Lowering::resolve_class_binop_return`; the default
+    /// `None` keeps unit-test contexts on the heuristic path.
+    #[allow(unused_variables)]
+    fn binop_class_return(&self, op: &pyaot_hir::BinOp, lt: &Type, rt: &Type) -> Option<Type> {
+        None
+    }
+
     /// Resolve `recv.method(args)` → result type. Wraps
     /// `Lowering::method_call_result_type` / `resolve_method_on_type` in
     /// production. Default impl returns `None` (→ `Type::Any`).
@@ -796,6 +809,16 @@ fn eval_binop<C: ReducerCtx>(
     // `Never` lets the reducer re-evaluate on the next propagation tick.
     if matches!(lt, Type::Never) || matches!(rt, Type::Never) {
         return Type::Never;
+    }
+    // When an operand is a user class, the result type is whatever the
+    // dispatched dunder actually returns — NOT the class itself. Consult
+    // the production resolver first so e.g. `__add__ -> int` types the
+    // binop result as `Int`, matching what lowering's `alloc_dunder_result`
+    // already emits for the dest. The default ctx returns `None`, so the
+    // structural heuristic below stays in force for unit tests and for
+    // dunders whose return type isn't known yet.
+    if let Some(ty) = ctx.binop_class_return(op, &lt, &rt) {
+        return ty;
     }
     // Defer to the existing pure resolver in `helpers`. The class-dunder
     // callback consults the production Lowering in S5 wire-in time; the

@@ -54,6 +54,16 @@ impl<'a, 'b> ReducerCtx for LoweringReducerCtx<'a, 'b> {
         }
     }
 
+    /// Delegate to the existing `infer.rs` resolver, which consults the
+    /// dispatched dunder's actual return type (forward / reflected,
+    /// subclass-first, NotImplemented-stripped). Reuses the same logic the
+    /// seed-inference layer (`binop_result_type`) and lowering dest
+    /// (`alloc_dunder_result`) already rely on, so the solver's view of a
+    /// binop-result variable now agrees with both.
+    fn binop_class_return(&self, op: &hir::BinOp, lt: &Type, rt: &Type) -> Option<Type> {
+        self.lowering.resolve_class_binop_return(op, lt, rt)
+    }
+
     fn method_return(&self, recv: &Type, method: InternedString, _args: &[Type]) -> Option<Type> {
         let unwrapped = helpers::unwrap_optional(recv);
         let method_name = self.lowering.resolve(method);
