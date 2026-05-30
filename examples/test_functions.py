@@ -1747,4 +1747,94 @@ _hof_msg = f"min-by-neg={sorted(_hof_nums, key=lambda n: -n)[-1]}"
 assert _hof_msg == "min-by-neg=1", f"key= in f-string: {_hof_msg}"
 print("HOF key= callback in f-string format spec: PASS")
 
+# ===== Whole-project code-review regression: complete free-var capture
+# coverage — closures referencing an outer var from a loop `else`, `try`/`else`,
+# `match` case, slice bounds or a walrus value (formerly test_review_wave3a.py).
+def _rv_for_else_capture() -> int:
+    base = 100
+
+    def inner() -> int:
+        total = 0
+        for i in range(3):
+            total += i
+        else:
+            total += base
+        return total
+
+    return inner()
+
+
+def _rv_while_else_capture() -> int:
+    bonus = 7
+
+    def inner() -> int:
+        total = 0
+        n = 0
+        while n < 3:
+            total += n
+            n += 1
+        else:
+            total += bonus
+        return total
+
+    return inner()
+
+
+def _rv_try_else_capture() -> int:
+    extra = 11
+
+    def inner() -> int:
+        total = 0
+        try:
+            total += 1
+        except ValueError:
+            total += 999
+        else:
+            total += extra
+        return total
+
+    return inner()
+
+
+def _rv_match_capture(n: int) -> int:
+    factor = 10
+
+    def inner(x: int) -> int:
+        match x:
+            case 0:
+                return factor
+            case _:
+                return x * factor
+
+    return inner(n)
+
+
+def _rv_slice_capture() -> list[int]:
+    lo = 1
+    hi = 3
+    data = [10, 20, 30, 40, 50]
+
+    def inner() -> list[int]:
+        return data[lo:hi]
+
+    return inner()
+
+
+def _rv_walrus_capture() -> int:
+    seed = 5
+
+    def inner() -> int:
+        return (x := seed + 1) + x
+
+    return inner()
+
+
+print(_rv_for_else_capture())
+print(_rv_while_else_capture())
+print(_rv_try_else_capture())
+print(_rv_match_capture(0))
+print(_rv_match_capture(3))
+print(_rv_slice_capture())
+print(_rv_walrus_capture())
+
 print("All function tests passed!")

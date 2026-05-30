@@ -774,4 +774,42 @@ print("Generator truthiness tests passed!")
 # All tests passed
 # =============================================================================
 
+# ===== Whole-project code-review regression: send(None) priming + chained
+# generators (formerly test_review_wave1.py) =====
+import itertools
+
+
+def _rv_echo():
+    received = yield 0
+    yield received
+    yield received
+
+
+def _rv_gen_a():
+    yield 1
+    yield 2
+    yield 3
+
+
+def _rv_gen_b():
+    yield 4
+    yield 5
+
+
+def _rv_gen_send_none() -> None:
+    g = _rv_echo()
+    print(g.send(None))  # priming must not raise TypeError
+    print(g.send(10))
+
+
+def _rv_gen_chain() -> None:
+    out: list[int] = []
+    for v in itertools.chain(_rv_gen_a(), _rv_gen_b()):
+        out.append(v)
+    print(out)
+
+
+_rv_gen_send_none()
+_rv_gen_chain()
+
 print("All generator tests passed!")

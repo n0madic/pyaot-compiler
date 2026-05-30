@@ -282,4 +282,35 @@ os.remove(enc_utf8_file)
 os.remove(enc_ascii_file)
 os.remove(enc_latin1_file)
 
+# ===== Whole-project code-review regression. This file is excluded from the
+# CPython differential check (temp paths), so these use asserts to self-verify.
+# - StringIO/BytesIO seek-past-end gap must be NUL-filled (formerly
+#   test_review_wave0a.py).
+# - file.write must write the whole buffer (write_all; formerly part of
+#   test_review_wave2_runtime.py).
+import io
+
+_rv_sio = io.StringIO("ab")
+_rv_sio.seek(5)
+_rv_sio.write("X")
+assert _rv_sio.getvalue() == "ab\x00\x00\x00X", "StringIO seek-past-end gap not NUL-filled"
+assert len(_rv_sio.getvalue()) == 6
+
+_rv_bio = io.BytesIO(b"ab")
+_rv_bio.seek(5)
+_rv_bio.write(b"X")
+assert _rv_bio.getvalue() == b"ab\x00\x00\x00X", "BytesIO seek-past-end gap not NUL-filled"
+assert len(_rv_bio.getvalue()) == 6
+
+_rv_big_path = "/tmp/test_aot_review_bigwrite.txt"
+_rv_big = "X" * 200000
+with open(_rv_big_path, "w") as _rv_f:
+    _rv_n = _rv_f.write(_rv_big)
+assert _rv_n == 200000, "file.write must report the full byte count"
+with open(_rv_big_path, "r") as _rv_f2:
+    _rv_content = _rv_f2.read()
+assert len(_rv_content) == 200000, "file.write must not drop the buffer tail"
+os.remove(_rv_big_path)
+print("file I/O code-review regression tests passed!")
+
 print("All file I/O tests passed!")

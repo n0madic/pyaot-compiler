@@ -1109,4 +1109,21 @@ for _w in _ord_words:
 assert _ord_min == "apple", f"str ordering manual min: {_ord_min}"
 print("String ordering comparison tests passed!")
 
+# Code-review regression: str.split/rsplit(None, maxsplit) keep the remainder
+# (with interior whitespace) instead of dropping middle words; formerly part
+# of test_review_wave2_runtime.py.
+def _rv_str_split_maxsplit() -> None:
+    print("a b c".split(None, 1))
+    print("a b c".rsplit(None, 1))
+    print("a b c".split(None, 0))
+    print("  a  b  c  ".split(None, 1))
+    print("  a  b  c  ".rsplit(None, 1))
+    print("a b c d".split(None, 2))
+    print("a b c d".rsplit(None, 2))
+    print("a-b-c-d".split("-", 1))
+    print("a-b-c-d".rsplit("-", 1))
+
+
+_rv_str_split_maxsplit()
+
 print("All string tests passed!")

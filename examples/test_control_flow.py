@@ -678,4 +678,38 @@ assert _ifexpr_y == "hello", "ifexpr union: false branch str"
 
 print("IfExpr Union type tests passed!")
 
+# ===== Whole-project code-review regression: unary -/+ on bool yields int, and
+# for-loop range step direction peeks through UnOp(Neg) incl. double negation
+# (formerly test_review_wave3e.py).
+def _rv_unary_bool() -> None:
+    print(-True)
+    print(+True)
+    print(-False)
+    x = True
+    print(-x + 5)
+    y = False
+    print(+y)
+
+
+def _rv_range_step() -> None:
+    total = 0
+    for i in range(10, 0, -1):
+        total += i
+    print(total)
+
+    desc: list[int] = []
+    for i in range(5, 0, -1):
+        desc.append(i)
+    print(desc)
+
+    # `-(-1)` is +1 (double negation): range(10, 0, 1) is empty.
+    total2 = 0
+    for i in range(10, 0, -(-1)):
+        total2 += i
+    print(total2)
+
+
+_rv_unary_bool()
+_rv_range_step()
+
 print("All control flow tests passed!")

@@ -232,4 +232,36 @@ assert pi_from_func > 3.14, "pi_from_func should be greater than 3.14"
 assert pi_from_func < 3.15, "pi_from_func should be less than 3.15"
 print(pi_from_func)
 
+# ============================================================
+# SECTION 8: A generator in the main module of a multi-module program
+# exercises the MIR merger's resume-func id remap and the func_id baked
+# into RT_MAKE_GENERATOR (formerly test_review_wave1_multimod.py).
+# ============================================================
+from genmod import bump
+
+
+def _rv_count_up(n: int):
+    i: int = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+
+def _rv_squares(n: int):
+    i: int = 0
+    while i < n:
+        yield i * i
+        i = i + 1
+
+
+print(bump(5))
+_rv_imp_a: list[int] = []
+for _rv_imp_v in _rv_count_up(5):
+    _rv_imp_a.append(_rv_imp_v)
+print(_rv_imp_a)
+_rv_imp_b: list[int] = []
+for _rv_imp_w in _rv_squares(5):
+    _rv_imp_b.append(_rv_imp_w)
+print(_rv_imp_b)
+
 print("All import tests passed!")

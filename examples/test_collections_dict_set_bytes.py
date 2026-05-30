@@ -851,4 +851,23 @@ assert (_bord_a <= _bord_a) is True, "bytes <="
 assert (_bord_b >= _bord_a) is True, "bytes >="
 print("Bytes ordering comparison tests passed")
 
+# Code-review regression: bytes.split/rsplit(None, maxsplit) remainder (formerly
+# test_review_wave2_runtime.py) + bytes strip/join/repeat/concat (formerly
+# test_review_wave0a.py; the rooting fixes are exercised more thoroughly under
+# gc_stress_test, correctness checked here).
+def _rv_bytes_ops() -> None:
+    print(b"a b c".split(None, 1))
+    print(b"a b c".rsplit(None, 1))
+    print(b"x y z w".split(None, 2))
+    print(b"x y z w".rsplit(None, 2))
+    print(b"a-b-c-d".split(b"-", 1))
+    print(b"a-b-c-d".rsplit(b"-", 1))
+    print(b"  hello world  ".strip())
+    print(b",".join([b"a", b"bb", b"ccc"]))
+    print(b"ab" * 3)
+    print(b"ab" + b"cd")
+
+
+_rv_bytes_ops()
+
 print("All dict, set, and bytes tests passed!")

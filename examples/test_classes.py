@@ -3518,4 +3518,42 @@ assert abs(_union_a.grad - 0.5) < 1e-9, f"_union_a.grad = {_union_a.grad}"
 assert abs(_union_b.grad - 0.5) < 1e-9, f"_union_b.grad = {_union_b.grad}"
 print("Field store through a polymorphic (Union) receiver: PASS")
 
+# ===== Whole-project code-review regression: the iterative GC mark phase must
+# not overflow the native stack on a long reference chain (formerly
+# test_review_wave0b.py; the old recursive mark_object SIGSEGV'd here).
+class _RvChainNode:
+    val: int
+    next: "_RvChainNode | None"
+
+    def __init__(self, val: int) -> None:
+        self.val = val
+        self.next = None
+
+
+def _rv_build_chain(n: int) -> _RvChainNode:
+    head = _RvChainNode(0)
+    cur = head
+    for i in range(1, n):
+        node = _RvChainNode(i)
+        cur.next = node
+        cur = node
+    return head
+
+
+def _rv_deep_gc_chain() -> None:
+    head = _rv_build_chain(200000)
+    # Force allocation churn → GC collections while the deep chain is live.
+    junk: list[list[int]] = []
+    for i in range(1000):
+        junk.append([i, i + 1])
+    count = 0
+    cur: "_RvChainNode | None" = head
+    while cur is not None:
+        count += 1
+        cur = cur.next
+    print(count)
+
+
+_rv_deep_gc_chain()
+
 print("All class tests passed!")

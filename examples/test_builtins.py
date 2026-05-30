@@ -1480,3 +1480,48 @@ assert repr(min(mm_flt_t)) == "1.5", "min(tuple[Any] of float) should be 1.5"
 assert repr(max(mm_flt_t)) == "3.5", "max(tuple[Any] of float) should be 3.5"
 
 print("sum/min/max over Any-typed elements tests passed!")
+
+
+# ===== Whole-project code-review regression: pow()/all()/any() coercion
+# (formerly test_review_wave2_lowering.py) and int(NaN)/int(inf)
+# (formerly part of test_review_wave3f.py) =====
+def _rv_pow() -> None:
+    print(round(pow(2, 0.5), 10))
+    print(pow(2.0, 10.0))
+    print(pow(True, 2.0))
+    print(round(pow(0.5, 2), 10))
+
+
+def _rv_all_any() -> None:
+    print(all([0.0]))
+    print(any([0.0]))
+    print(all([1.0, 2.0]))
+    print(any([0.0, 3.0]))
+    print(all([""]))
+    print(any([""]))
+    print(all(["a", "b"]))
+    print(any(["", "x"]))
+    print(all([1, 2, 0]))
+    print(any([0, 0]))
+
+
+def _rv_int_nan_inf() -> None:
+    nan = float("nan")
+    try:
+        print(int(nan))
+    except ValueError:
+        print("int(nan) ValueError")
+    inf = float("inf")
+    try:
+        print(int(inf))
+    except OverflowError:
+        print("int(inf) OverflowError")
+    print(int(2.7))
+    print(int(-2.7))
+
+
+_rv_pow()
+_rv_all_any()
+_rv_int_nan_inf()
+
+print("All builtins code-review regression tests passed!")

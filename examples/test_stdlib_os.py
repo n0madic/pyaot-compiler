@@ -224,4 +224,13 @@ assert chain_base == "z.txt", (
 )
 print("chained stdlib-submodule call regression test passed!")
 
+# Code-review regression: abspath of an absolute path collapses a leading
+# `/..` to `/` (normalize_path; formerly part of test_review_wave3f.py).
+_rv_abs1: str = abspath("/../foo")
+print(_rv_abs1)
+_rv_abs2: str = abspath("/..")
+print(_rv_abs2)
+_rv_abs3: str = abspath("/../../a/b")
+print(_rv_abs3)
+
 print("\nAll os module tests passed!")

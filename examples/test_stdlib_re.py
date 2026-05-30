@@ -29,4 +29,13 @@ span_match2 = re.match(r"hello", "hello world")
 span_result2 = span_match2.span()
 assert span_result2 == (0, 5), f"Expected (0, 5), got {span_result2}"
 
+# Code-review regression: a literal `$` in the replacement is kept literally
+# (not read as a capture-group ref); formerly part of test_review_wave3f.py.
+_rv_sub1: str = re.sub(r"(\d+)", r"$\1", "abc123")
+print(_rv_sub1)
+_rv_sub2: str = re.sub(r"\d+", "[$]", "x5y")
+print(_rv_sub2)
+_rv_sub3: str = re.sub(r"(\w)(\w)", r"\2\1", "ab")
+print(_rv_sub3)
+
 print("All re module tests passed!")

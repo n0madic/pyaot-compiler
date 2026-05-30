@@ -105,16 +105,6 @@ runtime_cases!(
         ]
     ),
     (runtime_collections, "test_collections.py"),
-    // Whole-project code-review regression repros
-    (runtime_review_wave0a, "test_review_wave0a.py"),
-    (runtime_review_wave0b, "test_review_wave0b.py"),
-    (runtime_review_wave1, "test_review_wave1.py"),
-    (runtime_review_wave1_multimod, "test_review_wave1_multimod.py"),
-    (runtime_review_wave2_lowering, "test_review_wave2_lowering.py"),
-    (runtime_review_wave2_runtime, "test_review_wave2_runtime.py"),
-    (runtime_review_wave3a, "test_review_wave3a.py"),
-    (runtime_review_wave3e, "test_review_wave3e.py"),
-    (runtime_review_wave3f, "test_review_wave3f.py"),
     // Builtins
     (runtime_builtins, "test_builtins.py"),
     // Print output (with expected output verification)
