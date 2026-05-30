@@ -1626,6 +1626,27 @@ assert _ur_inv.v == 4, "__invert__ -> UnaryRet"
 
 print("Unary dunders with cross-type returns: PASS")
 
+# ==================== getattr(obj, name[, default]) ====================
+
+class GetAttrBox:
+    def __init__(self, x: int):
+        self.x = x
+
+    def grow(self) -> int:
+        return self.x * 2
+
+_gab = GetAttrBox(7)
+assert getattr(_gab, "x") == 7, "getattr existing field"
+assert getattr(_gab, "missing", -1) == -1, "getattr missing with default"
+_ga_raised = False
+try:
+    getattr(_gab, "nope")
+except AttributeError:
+    _ga_raised = True
+assert _ga_raised, "getattr missing without default raises AttributeError"
+
+print("getattr: PASS")
+
 # ==================== Conversion Dunders: __int__, __float__, __bool__ ====================
 
 class ConvNum:

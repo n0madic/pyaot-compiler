@@ -778,7 +778,8 @@ impl<'a> Lowering<'a> {
             let attr_str = self.resolve(*attr_name).to_string();
 
             // For class instances, get the attribute value
-            if let Type::Class { class_id, .. } = &obj_type {
+            if let Type::Class { class_id, name } = &obj_type {
+                let class_name = self.resolve(*name).to_string();
                 if let Some(class_info) = self.get_class_info(class_id).cloned() {
                     // Use lookup to find the interned string
                     if let Some(attr_interned) = self.lookup_interned(&attr_str) {
@@ -798,6 +799,27 @@ impl<'a> Lowering<'a> {
 
                             return Ok(mir::Operand::Local(result_local));
                         }
+
+                        // The name is not a field. Only raise AttributeError
+                        // when it matches *no* member at all (method, property,
+                        // class attribute, static/class method, dunder) and no
+                        // default was supplied — that is the one case we can
+                        // prove the attribute is genuinely absent. Names that
+                        // match a method/property fall through to the
+                        // conservative `None` below (returning them as bound
+                        // members isn't supported yet), preserving existing
+                        // behaviour for valid lookups.
+                        let is_member = class_info.method_funcs.contains_key(&attr_interned)
+                            || class_info.vtable_slots.contains_key(&attr_interned)
+                            || class_info.class_attr_offsets.contains_key(&attr_interned)
+                            || class_info.static_methods.contains_key(&attr_interned)
+                            || class_info.class_methods.contains_key(&attr_interned)
+                            || class_info.properties.contains_key(&attr_interned)
+                            || class_info.dunder_methods.contains_key(attr_str.as_str());
+
+                        if default_operand.is_none() && !is_member {
+                            return Ok(self.emit_attribute_error(&class_name, &attr_str));
+                        }
                     }
                 }
             }
@@ -807,9 +829,30 @@ impl<'a> Lowering<'a> {
         if let Some(default) = default_operand {
             Ok(default)
         } else {
-            // Should raise AttributeError, but for simplicity return None
+            // Conservative fallback: dynamic name, cross-module class, or a
+            // name matching a not-yet-bindable member. CPython would raise
+            // AttributeError for a truly-missing attribute, but raising here
+            // could break valid method/cross-module lookups, so return None.
             Ok(mir::Operand::Constant(mir::Constant::None))
         }
+    }
+
+    /// Emit a `Raise AttributeError("'<class>' object has no attribute
+    /// '<name>'")` terminator plus a fresh unreachable block, and return a
+    /// placeholder operand (never used — the raise diverges). Mirrors the
+    /// raise pattern used by `lower_hash` for unhashable types.
+    fn emit_attribute_error(&mut self, class_name: &str, attr_name: &str) -> mir::Operand {
+        let msg = format!("'{class_name}' object has no attribute '{attr_name}'");
+        let msg_interned = self.intern(&msg);
+        self.current_block_mut().terminator = mir::Terminator::Raise {
+            exc_type: pyaot_core_defs::exceptions::BuiltinExceptionKind::AttributeError.tag(),
+            message: Some(mir::Operand::Constant(mir::Constant::Str(msg_interned))),
+            cause: None,
+            suppress_context: false,
+        };
+        let unreachable_bb = self.new_block();
+        self.push_block(unreachable_bb);
+        mir::Operand::Constant(mir::Constant::None)
     }
 
     /// Lower format(value, format_spec='') -> str
