@@ -1442,6 +1442,29 @@ impl<'a> Collector<'a> {
                             hint: arg_key,
                         });
                     }
+                    // Keyword arguments hint the callee param with the
+                    // matching name. Matching by name yields the absolute
+                    // param index (leading capture params carry `__capture_*`
+                    // names that never collide with a user keyword), so no
+                    // `callee_cap_count` offset is applied here. Without this,
+                    // a param supplied only by keyword (`helper(k=v)`) gets no
+                    // `LambdaParamHint`, so it stays bottom and the callee's
+                    // return type — hence the call result — mis-resolves
+                    // (`helper(k=5)` typed `None` instead of `int`).
+                    for &(kw_name, kw_key) in &kw_keys {
+                        if let Some(param_ix) = self
+                            .module
+                            .func_defs
+                            .get(&target_fid)
+                            .and_then(|f| f.params.iter().position(|p| p.name == kw_name))
+                        {
+                            self.solver.add(Constraint::LambdaParamHint {
+                                func: target_fid,
+                                param_ix,
+                                hint: kw_key,
+                            });
+                        }
+                    }
                     // Inter-procedural mutation flow-back: if the callee
                     // mutates a container param in place (`keys[i].append`),
                     // that mutation also refines the caller's argument object

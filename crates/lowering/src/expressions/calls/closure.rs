@@ -20,7 +20,7 @@ impl<'a> Lowering<'a> {
         func_id: pyaot_utils::FuncId,
         captures: &[hir::ExprId],
         args: &[ExpandedArg],
-        _kwargs: &[hir::KeywordArg],
+        kwargs: &[hir::KeywordArg],
         _expr: &hir::Expr,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
@@ -61,9 +61,14 @@ impl<'a> Lowering<'a> {
             let n_captures = captures.len();
             let user_params: Vec<hir::Param> =
                 func_def.params.iter().skip(n_captures).cloned().collect();
+            // Pass `kwargs` through (not `&[]`): calling a capturing closure
+            // with keyword arguments (`g = lambda a: a + c; g(a=5)`) must
+            // bind them to the user params. `resolve_call_args` maps keyword
+            // names against `user_params` (capture params already stripped),
+            // so `n_captures` keeps the positional offset correct.
             self.resolve_call_args(
                 args,
-                &[],
+                kwargs,
                 &user_params,
                 Some(func_id),
                 n_captures,

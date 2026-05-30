@@ -546,11 +546,13 @@ impl AstToHir {
                 for arg in &call.args {
                     self.collect_free_variables(arg, local_params, free_vars);
                 }
-                // NOTE: keyword-argument values (`f(k=outer_var)`) are
-                // intentionally not collected here. Doing so surfaces a
-                // separate latent bug in the capture-cell wiring (an SSA
-                // "used without definition" violation), which is out of scope
-                // for this free-var coverage fix.
+                // Keyword-argument values (`f(k=outer_var)`) reference outer
+                // variables just like positional args do, so they must be
+                // captured too — otherwise the closure body uses `outer_var`
+                // with no capture parameter ("undefined name").
+                for kw in &call.keywords {
+                    self.collect_free_variables(&kw.value, local_params, free_vars);
+                }
             }
             // Slice bounds reference variables (e.g. `xs[a:b:c]`); previously
             // the whole Slice fell through to the catch-all and was ignored.
