@@ -141,6 +141,13 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
             let elem = if *binary { Type::Bytes } else { Type::Str };
             Some((IterableKind::File, elem))
         }
+        // NOTE: a deque is intentionally NOT iterable here. It carries no
+        // element type, so iteration would yield `Any`, and arithmetic /
+        // method calls on an `Any` loop variable hit the conservative
+        // `operand_is_guaranteed_tagged` gate (raw-BinOp verifier reject) and
+        // the Any-method silent-miss. `list(deque)` (a direct conversion) is
+        // supported for display/inspection; full deque iteration awaits deque
+        // element-type tracking.
         _ => None,
     }
 }

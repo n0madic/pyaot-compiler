@@ -641,6 +641,8 @@ pub static RT_LIST_FROM_ITER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_lis
 pub static RT_LIST_FROM_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_set");
 /// rt_list_from_dict(dict: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_DICT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_dict");
+/// rt_list_from_deque(deque: *mut Obj) -> *mut Obj
+pub static RT_LIST_FROM_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_deque");
 /// rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj
 pub static RT_LIST_TAIL_TO_TUPLE: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_list_tail_to_tuple");

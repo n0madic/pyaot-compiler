@@ -74,6 +74,82 @@ pub extern "C" fn rt_deque_from_iter_abi(iter: Value, maxlen: i64) -> Value {
     Value::from_ptr(rt_deque_from_iter(iter.unwrap_ptr(), maxlen))
 }
 
+/// Convert a deque to a list, preserving left-to-right order. Backs
+/// `list(deque)` and the for-loop iteration path (a deque is not an
+/// `IteratorObj`, so it cannot be fed to `rt_list_from_iter` directly —
+/// lowering converts to a list first, mirroring set/dict iteration).
+/// Elements are tagged `Value`s, copied verbatim from the ring buffer.
+pub fn rt_list_from_deque(deque: *mut Obj) -> *mut Obj {
+    use crate::object::ListObj;
+    use std::alloc::{alloc_zeroed, Layout};
+
+    let alloc_empty_list = || -> *mut Obj {
+        let size = std::mem::size_of::<ListObj>();
+        let obj = gc::gc_alloc(size, TypeTagKind::List as u8);
+        unsafe {
+            let list = obj as *mut ListObj;
+            (*list).len = 0;
+            (*list).capacity = 0;
+            (*list).data = std::ptr::null_mut();
+        }
+        obj
+    };
+
+    if deque.is_null() {
+        return alloc_empty_list();
+    }
+
+    unsafe {
+        crate::debug_assert_type_tag!(deque, TypeTagKind::Deque, "rt_list_from_deque");
+        let len = (*(deque as *mut DequeObj)).len;
+        if len == 0 {
+            return alloc_empty_list();
+        }
+
+        // Root the deque across gc_alloc, which may trigger a collection.
+        let mut roots: [*mut Obj; 1] = [deque];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
+        let list_size = std::mem::size_of::<ListObj>();
+        let list_obj = gc::gc_alloc(list_size, TypeTagKind::List as u8);
+
+        gc::gc_pop();
+
+        // Re-derive the deque pointer through the rooted slot after allocation.
+        let d = roots[0] as *mut DequeObj;
+        let list = list_obj as *mut ListObj;
+
+        // Raw allocator (does not trigger GC); deque slots are tagged Values
+        // with the same layout as list storage, so a verbatim copy is sound.
+        let data_layout =
+            Layout::array::<Value>(len).expect("Allocation size overflow - capacity too large");
+        let data = alloc_zeroed(data_layout) as *mut Value;
+
+        let capacity = (*d).capacity;
+        let head = (*d).head;
+        for i in 0..len {
+            let ring_idx = (head + i) % capacity;
+            *data.add(i) = *(*d).data.add(ring_idx);
+        }
+
+        (*list).len = len;
+        (*list).capacity = len;
+        (*list).data = data;
+
+        list_obj
+    }
+}
+#[export_name = "rt_list_from_deque"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_deque_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_list_from_deque(deque.unwrap_ptr()))
+}
+
 /// deque.append(elem) — add to the right end
 pub fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
     unsafe {

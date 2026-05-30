@@ -347,6 +347,17 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
                 args: vec![source_operand],
             });
+        } else if matches!(iter_type, Type::RuntimeObject(TypeTagKind::Deque)) {
+            // list(deque): a deque is not an IteratorObj, so convert it to a
+            // list directly rather than falling through to RT_LIST_FROM_ITER
+            // (which would misread the DequeObj header as an iterator).
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE,
+                ),
+                args: vec![source_operand],
+            });
         } else {
             // Iterator or fallback: try as iterator (assume heap objects)
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

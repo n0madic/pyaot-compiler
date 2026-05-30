@@ -250,6 +250,28 @@ dq_mext = deque(maxlen=5)
 dq_mext.extend(["a", "b", "c", "d", "e", "f", "g"])
 assert len(dq_mext) == 5, "deque maxlen=5 after extending with 7 items"
 
+# ===== SECTION: list(deque) =====
+# A deque is not an iterator object; list(deque) must convert via
+# rt_list_from_deque (walking the ring buffer left-to-right), not feed the
+# DequeObj to rt_list_from_iter (which would misread its header as an
+# iterator kind and yield garbage / an empty list).
+dq_tl = deque()
+dq_tl.append("b")
+dq_tl.append("c")
+dq_tl.appendleft("a")
+assert list(dq_tl) == ["a", "b", "c"], "list(deque) preserves left-to-right order"
+assert len(list(dq_tl)) == 3, "list(deque) length"
+# Int elements (tagged immediates) survive the conversion.
+dq_ti = deque()
+dq_ti.append(1)
+dq_ti.append(2)
+dq_ti.append(3)
+assert list(dq_ti) == [1, 2, 3], "list(deque) of ints"
+# Constructed from an iterable, then converted back.
+assert list(deque([10, 20, 30])) == [10, 20, 30], "list(deque(iterable))"
+# Empty deque converts to an empty list.
+assert list(deque()) == [], "list(empty deque)"
+
 # =============================================================================
 # OrderedDict
 # =============================================================================
