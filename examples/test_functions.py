@@ -1837,4 +1837,30 @@ print(_rv_match_capture(3))
 print(_rv_slice_capture())
 print(_rv_walrus_capture())
 
+
+# Regression: a function that returns a value on one path and falls off / bare
+# `return`s (→ None) on another. Under -O the function is inlined and the
+# value/None paths merge into one dest; the None path used to be stored as a
+# raw `i8 0` and read back as `False` instead of `None`.
+def _maybe(x: int):
+    if x:
+        return x
+    return
+
+
+def _test_mixed_value_void() -> None:
+    assert _maybe(0) is None, "falls off -> None"
+    assert _maybe(5) == 5, "value path returns 5"
+    # Loop where both the value and the None path are live across iterations.
+    acc = 0
+    for v in [0, 5, 0, 9]:
+        r = _maybe(v)
+        if r is not None:
+            acc += r
+    assert acc == 14, "sum of non-None results"
+    print("mixed value/void return test passed")
+
+
+_test_mixed_value_void()
+
 print("All function tests passed!")

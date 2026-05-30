@@ -288,17 +288,76 @@ fn perform_inline(
             matches!(
                 l.ty,
                 pyaot_types::Type::Any | pyaot_types::Type::None | pyaot_types::Type::Union(_)
-            )
+            ) || matches!(l.resolved_mir_type(), pyaot_mir::MirType::Tagged)
         });
-        let void_placeholder = if dest_is_tagged {
+        // A bare `return` lowers to `Return(Some(Constant::None))`, so it lands
+        // in `return_sources` (not `void_return_blocks`). The merge therefore
+        // mixes a value (e.g. raw `Int`) with `None`. The result must be a
+        // tagged Value whenever it can be None: a raw slot stores `None` as
+        // `i8 0` (reads back as `False`/`0`), and an earlier WPA pass may have
+        // narrowed the dest to a raw primitive. Also force-tagged when the
+        // dest is already a tagged slot or there are genuinely-void paths.
+        let any_none_source = return_sources
+            .iter()
+            .any(|(_, op)| matches!(op, pyaot_mir::Operand::Constant(pyaot_mir::Constant::None)));
+        let result_is_tagged = dest_is_tagged || !void_return_blocks.is_empty() || any_none_source;
+
+        // Combined Phi sources: value returns plus void returns (→ None).
+        let mut phi_sources: Vec<(BlockId, pyaot_mir::Operand)> = return_sources.clone();
+        let void_placeholder = if result_is_tagged {
             pyaot_mir::Operand::Constant(pyaot_mir::Constant::None)
         } else {
             pyaot_mir::Operand::Constant(pyaot_mir::Constant::Int(0))
         };
-        let mut phi_sources: Vec<(BlockId, pyaot_mir::Operand)> = return_sources.clone();
         for &vb in &void_return_blocks {
             phi_sources.push((vb, void_placeholder.clone()));
         }
+
+        if result_is_tagged {
+            // Retype the merge dest to a tagged slot so it can hold None.
+            // GC-rooting is computed from `mir_ty`, so `Some(Tagged)` suffices.
+            if !dest_is_tagged {
+                if let Some(l) = caller.locals.get_mut(&dest) {
+                    l.ty = pyaot_types::Type::Any;
+                    l.mir_ty = Some(pyaot_mir::MirType::Tagged);
+                }
+            }
+            // Box every raw-primitive Phi source into a tagged Value in its
+            // source block — a `Raw → Tagged` Phi edge is rejected by the
+            // verifier, and `None`/`Int(0)`/`False` raw bits must become a
+            // real tagged `Value` so downstream `is None` / print observe it.
+            let mut next_local = caller.locals.keys().map(|k| k.0).max().unwrap_or(0) + 1;
+            for (block_id, op) in phi_sources.iter_mut() {
+                let Some(src_type) = inline_raw_src_type(op, caller) else {
+                    continue;
+                };
+                let fresh = pyaot_utils::LocalId(next_local);
+                next_local += 1;
+                caller.locals.insert(
+                    fresh,
+                    Local {
+                        id: fresh,
+                        name: None,
+                        ty: pyaot_types::Type::Any,
+                        abi_immutable: false,
+                        is_var_local: false,
+                        mir_ty: Some(pyaot_mir::MirType::Tagged),
+                    },
+                );
+                if let Some(src_block) = inlined_blocks.get_mut(block_id) {
+                    src_block.instructions.push(Instruction {
+                        kind: InstructionKind::BoxValue {
+                            dest: fresh,
+                            src: op.clone(),
+                            src_type,
+                        },
+                        span: call_span,
+                    });
+                }
+                *op = pyaot_mir::Operand::Local(fresh);
+            }
+        }
+
         continuation_instructions.push(Instruction {
             kind: InstructionKind::Phi {
                 dest,
@@ -347,6 +406,38 @@ fn perform_inline(
 
     caller.invalidate_dom_tree();
     true
+}
+
+/// If `op` is a raw-primitive Phi source that must be boxed before feeding a
+/// tagged merge dest, return the `src_type` to use for the `BoxValue`. Returns
+/// `None` for operands that are already tagged Values / heap pointers (which
+/// widen to `Tagged` implicitly).
+fn inline_raw_src_type(op: &pyaot_mir::Operand, func: &Function) -> Option<pyaot_types::Type> {
+    use pyaot_mir::{Constant, MirType, Operand, RawKind};
+    use pyaot_types::Type;
+    match op {
+        Operand::Constant(Constant::Int(_)) => Some(Type::Int),
+        Operand::Constant(Constant::Bool(_)) => Some(Type::Bool),
+        Operand::Constant(Constant::Float(_)) => Some(Type::Float),
+        Operand::Constant(Constant::None) => Some(Type::None),
+        // Str/Bytes constants are already heap-shaped Values.
+        Operand::Constant(_) => None,
+        Operand::Local(id) => {
+            let l = func.locals.get(id)?;
+            match l.resolved_mir_type() {
+                MirType::Raw(RawKind::F64) => Some(Type::Float),
+                MirType::Raw(_) => match &l.ty {
+                    Type::Int | Type::Bool | Type::Float | Type::None => Some(l.ty.clone()),
+                    // Raw mir_ty with a non-primitive declared type (an `Any`
+                    // local narrowed to raw bits): map by raw kind (I64/I32/I8
+                    // → Int is the only safe integer reading).
+                    _ => Some(Type::Int),
+                },
+                // Tagged / Heap / FuncPtr / Closure — already a tagged Value.
+                _ => None,
+            }
+        }
+    }
 }
 
 /// Collect every successor block id a terminator can jump to.
