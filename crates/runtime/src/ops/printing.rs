@@ -192,7 +192,8 @@ unsafe fn print_instance_repr(obj: *mut Obj) {
             return;
         }
     }
-    print!("<object at {:p}>", obj);
+    // No user `__repr__`: CPython's default `<__main__.Cls object at 0x..>`.
+    print!("{}", crate::instance::instance_default_repr(obj));
 }
 
 /// Print list repr: [elem, elem, ...]
@@ -365,7 +366,7 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Tuple => print_tuple_repr(obj),
             TypeTagKind::Dict => print_dict_repr(obj),
             TypeTagKind::Set => print_set_repr(obj),
-            TypeTagKind::Instance => print!("<object at {:p}>", obj),
+            TypeTagKind::Instance => print!("{}", crate::instance::instance_default_repr(obj)),
             TypeTagKind::Iterator => print!("<iterator>"),
             TypeTagKind::Cell => print!("<cell>"),
             // For these types, use type_name() from core-defs (single source of truth)

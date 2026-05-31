@@ -1378,6 +1378,11 @@ pub static RT_REGISTER_CLASS: RuntimeFuncDef =
 /// rt_register_class_field_count(class_id: i8, field_count: i64) -> void
 pub static RT_REGISTER_CLASS_FIELD_COUNT: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_class_field_count", &[PI8, PI64]);
+/// rt_register_class_qualname(class_id: i64, name: *mut StrObj) -> void
+/// Registers a class's qualified name (e.g. "__main__.Widget") for the
+/// default object repr `<__main__.Widget object at 0x..>`.
+pub static RT_REGISTER_CLASS_QUALNAME: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_class_qualname", &[PI64, PI64]);
 /// rt_register_method_name(class_id: i64, name_hash: i64, slot: i64) -> void
 pub static RT_REGISTER_METHOD_NAME: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_method_name", &[PI64, PI64, PI64]);

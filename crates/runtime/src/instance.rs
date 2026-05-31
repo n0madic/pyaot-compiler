@@ -270,3 +270,65 @@ pub extern "C" fn rt_issubclass(child_vtable: i64, parent_vtable: i64) -> i8 {
     // vtable IDs are class IDs as u8
     crate::vtable::rt_class_inherits_from(child_vtable as u8, parent_vtable as u8)
 }
+
+// =============================================================================
+// Class qualified-name registry (for the default object repr)
+// =============================================================================
+
+use std::cell::UnsafeCell;
+
+/// Max class_id range (class_id is u8); mirrors `vtable::MAX_CLASSES`.
+const MAX_QUALNAME_CLASSES: usize = 256;
+
+struct ClassQualnameRegistry(UnsafeCell<[Option<String>; MAX_QUALNAME_CLASSES]>);
+// Safety: the AOT runtime is single-threaded; the registry is populated once
+// at module init before any instance is rendered.
+unsafe impl Sync for ClassQualnameRegistry {}
+
+static CLASS_QUALNAME_REGISTRY: ClassQualnameRegistry =
+    ClassQualnameRegistry(UnsafeCell::new([const { None }; MAX_QUALNAME_CLASSES]));
+
+/// Register a class's qualified name (e.g. `"__main__.Widget"`) for the
+/// default object repr. Emitted once per class at module init. `name` is a
+/// `StrObj` pointer (the `Value::from_ptr` encoding is identity for aligned
+/// pointers, so the raw operand bits are the pointer).
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_register_class_qualname(class_id: i64, name: *mut Obj) {
+    use crate::object::StrObj;
+    if name.is_null() || class_id < 0 || class_id >= MAX_QUALNAME_CLASSES as i64 {
+        return;
+    }
+    unsafe {
+        let s = name as *mut StrObj;
+        let len = (*s).len;
+        let bytes = std::slice::from_raw_parts((*s).data.as_ptr(), len);
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            (*CLASS_QUALNAME_REGISTRY.0.get())[class_id as usize] = Some(text.to_string());
+        }
+    }
+}
+
+/// Look up a class's registered qualified name by class id.
+pub(crate) fn lookup_class_qualname(class_id: u8) -> Option<String> {
+    unsafe { (*CLASS_QUALNAME_REGISTRY.0.get())[class_id as usize].clone() }
+}
+
+/// Default repr string for a class instance — `<{qualname} object at 0x..>`,
+/// matching CPython's `<__main__.Widget object at 0x..>`. Falls back to
+/// `<object at 0x..>` when the class registered no qualified name. Callers
+/// have already confirmed the instance has no user `__repr__`/`__str__`.
+///
+/// # Safety
+/// `obj` must be a valid object pointer or a tagged primitive `Value`.
+pub(crate) unsafe fn instance_default_repr(obj: *mut Obj) -> String {
+    use crate::object::InstanceObj;
+    let v = Value(obj as u64);
+    if v.is_ptr() && !obj.is_null() && (*obj).type_tag() == TypeTagKind::Instance {
+        let class_id = (*(obj as *const InstanceObj)).class_id;
+        if let Some(qn) = lookup_class_qualname(class_id) {
+            return format!("<{} object at {:p}>", qn, obj);
+        }
+    }
+    format!("<object at {:p}>", obj)
+}

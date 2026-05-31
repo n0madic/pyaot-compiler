@@ -118,11 +118,13 @@ pub extern "C" fn rt_type_name_extract_abi(type_str: Value) -> Value {
     Value::from_ptr(rt_type_name_extract(type_str.unwrap_ptr()))
 }
 
-/// Default repr for objects without __str__ or __repr__
-/// Returns: pointer to string like "<object at 0x...>"
+/// Default repr for objects without __str__ or __repr__.
+/// Returns: pointer to a string like "<__main__.Cls object at 0x...>"
+/// (CPython compatible; falls back to "<object at 0x...>" when the class
+/// registered no qualified name).
 pub fn rt_obj_default_repr(obj: *mut Obj) -> *mut Obj {
     unsafe {
-        let s = format!("<object at {:p}>", obj);
+        let s = crate::instance::instance_default_repr(obj);
         let bytes = s.as_bytes();
         rt_make_str(bytes.as_ptr(), bytes.len())
     }

@@ -440,6 +440,22 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             s.push(')');
             s
         }
+        TypeTagKind::Instance => {
+            // Dynamic repr/str of a class instance: dispatch the user
+            // `__repr__` via DUNDER_FUNC_REGISTRY, else the module-qualified
+            // default `<__main__.Cls object at 0x..>`.
+            if let Some(str_obj) = crate::ops::try_repr_dunder(obj) {
+                if !str_obj.is_null() {
+                    let so = str_obj as *mut StrObj;
+                    let len = (*so).len;
+                    let bytes = std::slice::from_raw_parts((*so).data.as_ptr(), len);
+                    if let Ok(text) = std::str::from_utf8(bytes) {
+                        return text.to_string();
+                    }
+                }
+            }
+            crate::instance::instance_default_repr(obj)
+        }
         _ => format!("<object at {:p}>", obj),
     }
 }
@@ -511,7 +527,8 @@ pub(super) unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
                     }
                 }
             }
-            let _ = write!(s, "<object at {:p}>", obj);
+            // No user `__repr__`: CPython's default `<__main__.Cls object at 0x..>`.
+            s.push_str(&crate::instance::instance_default_repr(obj));
         }
         _ => {
             // Recurse into containers

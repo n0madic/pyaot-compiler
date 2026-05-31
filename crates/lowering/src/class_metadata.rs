@@ -374,6 +374,32 @@ impl<'a> Lowering<'a> {
                 mir_func,
             );
 
+            // Register the class's qualified name (e.g. "__main__.Widget") for
+            // the default object repr `<__main__.Widget object at 0x..>`
+            // (CPython compatible). The main script's classes live in
+            // `__main__`; the qualified name is materialized as a StrObj and
+            // stored in the runtime registry keyed by class id.
+            let qualname = format!("__main__.{}", self.resolve(class_def.name));
+            let qualname_interned = self.intern(&qualname);
+            let qualname_local = self.alloc_and_add_local(Type::Str, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: qualname_local,
+                func: mir::RuntimeFunc::MakeStr,
+                args: vec![mir::Operand::Constant(mir::Constant::Str(
+                    qualname_interned,
+                ))],
+            });
+            self.emit_void_call(
+                mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_QUALNAME,
+                ),
+                vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                    mir::Operand::Local(qualname_local),
+                ],
+                mir_func,
+            );
+
             // Register dunder function pointers (__del__, __copy__, __deepcopy__)
             // These are called from the runtime via function pointer registries.
             let dunder_registrations: Vec<(FuncId, mir::RuntimeFunc)> = self

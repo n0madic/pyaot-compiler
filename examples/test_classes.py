@@ -3718,4 +3718,26 @@ _obs_sorted = sorted([_OrderBox(5), _OrderBox(4)])
 assert _obs_sorted[0].v == 4, "sorted class instances order via __lt__"
 assert _obs_sorted[1].v == 5, "sorted class instances order via __lt__"
 
+
+# ===== SECTION: default object repr (no __repr__) =====
+# CPython: a class without __repr__ reprs as `<__main__.Cls object at 0x..>`.
+# The address is non-deterministic, so assert on the qualified-name prefix
+# (and that container elements use the same default).
+class _NoRepr:
+    def __init__(self) -> None:
+        self.x = 1
+
+
+_nr_repr = repr(_NoRepr())
+assert _nr_repr.startswith(
+    "<__main__._NoRepr object at 0x"
+), "default repr is module-qualified"
+assert _nr_repr.endswith(">"), "default repr closes the angle bracket"
+assert str(_NoRepr()).startswith(
+    "<__main__._NoRepr object at 0x"
+), "str() falls back to the default repr"
+assert repr([_NoRepr()]).startswith(
+    "[<__main__._NoRepr object at 0x"
+), "container element uses the module-qualified default repr"
+
 print("All class tests passed!")
