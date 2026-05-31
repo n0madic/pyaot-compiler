@@ -3,7 +3,7 @@
 //! This module provides common hashing and equality functions
 //! used by both dictionaries and sets.
 
-use crate::object::{FloatObj, Obj, StrObj, TupleObj, TypeTagKind};
+use crate::object::{BytesObj, FloatObj, Obj, StrObj, TupleObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 // FNV-1a hash constants
@@ -50,6 +50,20 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
             let len = (*str_obj).len;
             let data = (*str_obj).data.as_ptr();
             // FNV-1a hash
+            let mut hash = FNV_OFFSET_BASIS;
+            for i in 0..len {
+                hash ^= *data.add(i) as u64;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash
+        }
+        TypeTagKind::Bytes => {
+            // Same layout as StrObj; hash the raw bytes via FNV-1a. A
+            // collision with an equal-content Str is harmless because
+            // `eq_hashable_obj` rejects the Str-vs-Bytes type mismatch first.
+            let bytes_obj = obj as *mut BytesObj;
+            let len = (*bytes_obj).len;
+            let data = (*bytes_obj).data.as_ptr();
             let mut hash = FNV_OFFSET_BASIS;
             for i in 0..len {
                 hash ^= *data.add(i) as u64;
@@ -171,6 +185,21 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             }
             let data_a = (*str_a).data.as_ptr();
             let data_b = (*str_b).data.as_ptr();
+            std::slice::from_raw_parts(data_a, len) == std::slice::from_raw_parts(data_b, len)
+        }
+        TypeTagKind::Bytes => {
+            // Same layout as StrObj; compare raw byte content (mirrors
+            // `rt_bytes_eq`). Without this arm, two equal-content bytes
+            // objects fall through to pointer equality below and compare
+            // unequal — breaking list/tuple `==`, set/dict membership.
+            let bytes_a = a as *mut BytesObj;
+            let bytes_b = b as *mut BytesObj;
+            let len = (*bytes_a).len;
+            if len != (*bytes_b).len {
+                return false;
+            }
+            let data_a = (*bytes_a).data.as_ptr();
+            let data_b = (*bytes_b).data.as_ptr();
             std::slice::from_raw_parts(data_a, len) == std::slice::from_raw_parts(data_b, len)
         }
         TypeTagKind::Float => {

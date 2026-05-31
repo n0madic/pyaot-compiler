@@ -13,7 +13,7 @@ use pyaot_core_defs::Value;
 /// cast to `*mut Obj`. Dispatches on `Value::tag()` for Int/Bool/None, then on the
 /// object header's `TypeTagKind` for heap objects (Str, Float, …).
 pub(crate) unsafe fn compare_list_elements(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
-    use crate::object::{FloatObj, StrObj, TypeTagKind};
+    use crate::object::{BytesObj, FloatObj, StrObj, TypeTagKind};
     use pyaot_core_defs::Value;
     use std::cmp::Ordering;
 
@@ -68,6 +68,19 @@ pub(crate) unsafe fn compare_list_elements(a: *mut Obj, b: *mut Obj) -> std::cmp
             let len_b = (*str_b).len;
             let data_a = std::slice::from_raw_parts((*str_a).data.as_ptr(), len_a);
             let data_b = std::slice::from_raw_parts((*str_b).data.as_ptr(), len_b);
+            data_a.cmp(data_b)
+        }
+        TypeTagKind::Bytes => {
+            // Same layout as StrObj; lexicographic byte-slice ordering
+            // (CPython compares bytes by unsigned byte value). Without this
+            // arm bytes elements fall through to pointer-address comparison
+            // below, so `sorted([b"c", b"a"])` would not sort by content.
+            let bytes_a = a as *mut BytesObj;
+            let bytes_b = b as *mut BytesObj;
+            let len_a = (*bytes_a).len;
+            let len_b = (*bytes_b).len;
+            let data_a = std::slice::from_raw_parts((*bytes_a).data.as_ptr(), len_a);
+            let data_b = std::slice::from_raw_parts((*bytes_b).data.as_ptr(), len_b);
             data_a.cmp(data_b)
         }
         TypeTagKind::Float => {

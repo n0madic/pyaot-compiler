@@ -90,6 +90,27 @@ pub(crate) fn classify_reduction_elem(elem_ty: &Type) -> ReductionResult {
     }
 }
 
+/// Physical comparison hint for `min`/`max` over a container/iterator of
+/// `elem_ty`. Distinct from [`classify_reduction_elem`] (which computes a
+/// reduction *accumulator* type for `sum`): min/max selects an existing
+/// element, so the *result type* is the element type itself — this only
+/// picks how the runtime compares slots.
+///
+/// Maps to the runtime's `elem_kind` dispatch (`0=int, 1=float, 2=tagged`):
+/// raw `i64` for int/bool, raw `f64` boxes for float, and the universal
+/// `rt_obj_cmp` path (returning the winning element's tagged `Value` bits)
+/// for `Str`/`Bytes`/class/containers/`Any`/`Union`.
+pub(crate) fn minmax_compare_kind(elem_ty: &Type) -> pyaot_mir::ElementKind {
+    use pyaot_mir::ElementKind;
+    match elem_ty {
+        Type::Float => ElementKind::Float,          // raw f64 boxes
+        Type::Int | Type::Bool => ElementKind::Int, // raw i64 / tagged-int slots
+        // Str, Bytes, class, containers, Any, Union → universal rt_obj_cmp,
+        // returns the winning element's tagged Value bits.
+        _ => ElementKind::Tagged,
+    }
+}
+
 /// Resolve the return type of a method call based on the object type and method name.
 /// Returns `None` if the method is not recognized (caller should apply its own fallback).
 pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Option<Type> {
@@ -740,13 +761,17 @@ pub(crate) fn resolve_builtin_call_type(
             if arg_types.len() == 1 {
                 return Some(extract_iterable_element_type(&arg_types[0]));
             }
-            // Multi-arg form: min(a, b, c). All-string arguments compare
-            // lexicographically and return a str (the lowering routes the
-            // comparison through the runtime string comparator). Otherwise
-            // only the numeric common type is inferred — typing other
-            // non-numeric results (e.g. mixed) is a separate feature.
+            // Multi-arg form: min(a, b, c). All-string / all-bytes arguments
+            // compare lexicographically and return the heap element type (the
+            // lowering routes the comparison through the runtime obj
+            // comparator). Otherwise only the numeric common type is inferred
+            // — typing other non-numeric results (e.g. mixed) is a separate
+            // feature.
             if arg_types.iter().all(|t| matches!(t, Type::Str)) {
                 return Some(Type::Str);
+            }
+            if arg_types.iter().all(|t| matches!(t, Type::Bytes)) {
+                return Some(Type::Bytes);
             }
             let has_float = arg_types.contains(&Type::Float);
             Some(if has_float { Type::Float } else { Type::Int })

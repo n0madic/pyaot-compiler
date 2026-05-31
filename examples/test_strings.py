@@ -1129,6 +1129,28 @@ for _w in _ord_words:
 assert _ord_min == "apple", f"str ordering manual min: {_ord_min}"
 print("String ordering comparison tests passed!")
 
+# Regression: min()/max() over a str-element iterable must type the result as
+# the element type (str), not Int — otherwise the str pointer prints/compares
+# as a raw integer. Covers list, tuple, set, deque, generator, and the
+# multi-arg (variadic) form; mirrors the bytes coverage in
+# test_collections_dict_set_bytes.py.
+_mm_list: list[str] = ["c", "a", "b"]
+assert min(_mm_list) == "a", f"min(list[str]): {min(_mm_list)}"
+assert max(_mm_list) == "c", f"max(list[str]): {max(_mm_list)}"
+_mm_tuple: tuple[str, str, str] = ("c", "a", "b")
+assert min(_mm_tuple) == "a", "min(tuple[str])"
+assert max(_mm_tuple) == "c", "max(tuple[str])"
+_mm_set: set[str] = {"c", "a", "b"}
+assert min(_mm_set) == "a", "min(set[str])"
+assert max(_mm_set) == "c", "max(set[str])"
+assert min(c for c in "cab") == "a", "min(str generator)"
+assert max(c for c in "cab") == "c", "max(str generator)"
+assert min("a", "b") == "a", "min(variadic str)"
+assert max("a", "b") == "b", "max(variadic str)"
+# Result is a real str (heap), usable in str context.
+assert min(_mm_list) + "!" == "a!", "min(list[str]) concat"
+print("min/max over str iterables tests passed!")
+
 # Code-review regression: str.split/rsplit(None, maxsplit) keep the remainder
 # (with interior whitespace) instead of dropping middle words; formerly part
 # of test_review_wave2_runtime.py.

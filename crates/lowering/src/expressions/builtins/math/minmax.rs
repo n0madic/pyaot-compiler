@@ -124,24 +124,15 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Non-key case. 3-way classification (shared with
-                // `lower_sum` and the iterator branch): `Float` for a
-                // float / `Union`-containing-`Float` element; `Tagged`
-                // for bare `Any` (runtime compares slots via `rt_obj_cmp`
-                // and returns a tagged `Value`, so int vs float is
-                // preserved); `Int` otherwise.
-                let (result_type, elem_kind) =
-                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
-                        crate::type_planning::helpers::ReductionResult::Float => {
-                            (Type::Float, ElementKind::Float)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Tagged => {
-                            (Type::Any, ElementKind::Tagged)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Int => {
-                            (Type::Int, ElementKind::Int)
-                        }
-                    };
+                // Non-key case. min/max *selects* an element, so the result
+                // type is the element type itself (== the seed authority
+                // `extract_iterable_element_type`); `minmax_compare_kind`
+                // supplies only the physical comparison hint. Heap elements
+                // (`Str`/`Bytes`/class) route through `rt_obj_cmp` (Tagged)
+                // and keep their precise type — fixing the prior mis-typing
+                // of every non-float element as `Int`.
+                let result_type = elem_type.clone();
+                let elem_kind = crate::type_planning::helpers::minmax_compare_kind(&elem_type);
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
@@ -200,26 +191,18 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Non-key case. Classify the join of all element types
-                // (a fixed tuple is heterogeneous): any `Any` slot makes
-                // the join `Any` → tagged path; `int|float` → `Float`.
+                // Non-key case. A fixed tuple is heterogeneous, so the
+                // result type is the join of all element types (== the seed
+                // authority `extract_iterable_element_type`);
+                // `minmax_compare_kind` supplies only the physical
+                // comparison hint, routing heap elements through `rt_obj_cmp`.
                 let effective_elem = elem_types
                     .iter()
                     .cloned()
                     .reduce(|a, b| a.join(&b))
                     .unwrap_or(Type::Int);
-                let (result_type, elem_kind) =
-                    match crate::type_planning::helpers::classify_reduction_elem(&effective_elem) {
-                        crate::type_planning::helpers::ReductionResult::Float => {
-                            (Type::Float, ElementKind::Float)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Tagged => {
-                            (Type::Any, ElementKind::Tagged)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Int => {
-                            (Type::Int, ElementKind::Int)
-                        }
-                    };
+                let result_type = effective_elem.clone();
+                let elem_kind = crate::type_planning::helpers::minmax_compare_kind(&effective_elem);
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
@@ -276,19 +259,11 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Non-key case — same 3-way classification as list/tuple.
-                let (result_type, elem_kind) =
-                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
-                        crate::type_planning::helpers::ReductionResult::Float => {
-                            (Type::Float, ElementKind::Float)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Tagged => {
-                            (Type::Any, ElementKind::Tagged)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Int => {
-                            (Type::Int, ElementKind::Int)
-                        }
-                    };
+                // Non-key case — result is the element type (== seed
+                // `extract_iterable_element_type`); `minmax_compare_kind`
+                // supplies the physical comparison hint.
+                let result_type = elem_type.clone();
+                let elem_kind = crate::type_planning::helpers::minmax_compare_kind(&elem_type);
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
@@ -347,18 +322,11 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                let (result_type, elem_kind) =
-                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
-                        crate::type_planning::helpers::ReductionResult::Float => {
-                            (Type::Float, ElementKind::Float)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Tagged => {
-                            (Type::Any, ElementKind::Tagged)
-                        }
-                        crate::type_planning::helpers::ReductionResult::Int => {
-                            (Type::Int, ElementKind::Int)
-                        }
-                    };
+                // Non-key case — result is the element type (== seed
+                // `extract_iterable_element_type`); `minmax_compare_kind`
+                // supplies the physical comparison hint.
+                let result_type = elem_type.clone();
+                let elem_kind = crate::type_planning::helpers::minmax_compare_kind(&elem_type);
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
@@ -404,21 +372,27 @@ impl<'a> Lowering<'a> {
                     src: iter_operand,
                 });
 
-                // Result-type classification (3-way), shared with
-                // `lower_sum` and `resolve_builtin_call_type`.
-                // `Float` → the unbox path (`rt_unbox_float`); also covers
-                // a `Union` containing `Float` (the microgpt polymorphic-
-                // dunder seed `Union[Float, Class[Self]]`, whose runtime
-                // yield tag is always a `FloatObj` pointer).
-                // `Tagged` → the element is bare `Any`: keep it a tagged
-                // `Value` and compare via `rt_obj_cmp`, so int vs float is
-                // preserved per CPython.
-                // `Int` → the raw `i64` path.
-                use crate::type_planning::helpers::{classify_reduction_elem, ReductionResult};
-                let elem_kind = classify_reduction_elem(elem_ty.as_ref());
-                let is_tagged = elem_kind == ReductionResult::Tagged;
-                let is_float_iter = elem_kind == ReductionResult::Float;
-                let iter_result_type = elem_kind.result_type();
+                // Physical comparison hint via the min/max-specific
+                // classifier (NOT `classify_reduction_elem`, which is a
+                // `sum` accumulator classifier and maps heap elements to
+                // `Int`). min/max selects an element, so the result type is
+                // the element type itself for the Tagged (heap) case:
+                // `Float` → the unbox path (`rt_unbox_float`); also covers a
+                // `Union` containing `Float` whose runtime yield tag is a
+                // `FloatObj` pointer.
+                // `Tagged` → `Str`/`Bytes`/class/`Any`/`Union`: keep the
+                // tagged `Value` and compare via `rt_obj_cmp`, so the exact
+                // element type (and int-vs-float identity) is preserved.
+                // `Int` → the raw `i64` path (`int`/`bool`).
+                let cmp_kind = crate::type_planning::helpers::minmax_compare_kind(elem_ty.as_ref());
+                let is_tagged = cmp_kind == ElementKind::Tagged;
+                let is_float_iter = cmp_kind == ElementKind::Float;
+                let iter_result_type = match cmp_kind {
+                    ElementKind::Float => Type::Float,
+                    ElementKind::Int => Type::Int,
+                    // Tagged: precise heap/Str/Bytes/Any/Union type.
+                    _ => elem_ty.as_ref().clone(),
+                };
                 let cmp_op = if is_min {
                     mir::BinOp::Lt
                 } else {
@@ -622,17 +596,25 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // All-string multi-arg min/max compares lexicographically and
-        // returns a str. The comparison below routes through the runtime
-        // string comparator (`rt_obj_cmp`, same ABI as `s1 < s2`) instead of
-        // a raw `BinOp` — a raw `BinOp Lt/Gt` on `Heap(Str)` operands (and a
-        // `Heap(Str)` → `Int` dest Copy) are both rejected by the verifier.
+        // All-string / all-bytes multi-arg min/max compares lexicographically
+        // and returns the heap element type. The comparison below routes
+        // through the runtime obj comparator (`rt_obj_cmp`, same ABI as
+        // `s1 < s2`) instead of a raw `BinOp` — a raw `BinOp Lt/Gt` on
+        // `Heap(Str)`/`Heap(Bytes)` operands (and a `Heap → Int` dest Copy)
+        // are both rejected by the verifier.
         let all_str = args
             .iter()
             .all(|&arg_id| self.seed_expr_type(arg_id, hir_module) == Type::Str);
+        let all_bytes = args
+            .iter()
+            .all(|&arg_id| self.seed_expr_type(arg_id, hir_module) == Type::Bytes);
+        // Route both heap-element cases through the tagged `rt_obj_cmp` path.
+        let heap_cmp = all_str || all_bytes;
 
         let result_type = if all_str {
             Type::Str
+        } else if all_bytes {
+            Type::Bytes
         } else if is_float {
             Type::Float
         } else {
@@ -689,9 +671,10 @@ impl<'a> Lowering<'a> {
             let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
             // cmp = (operand < result) for min, (operand > result) for max
-            if all_str {
-                // Lexicographic string ordering via the runtime obj comparator
-                // (`rt_obj_cmp` dispatches by type tag), mirroring `s1 < s2`.
+            if heap_cmp {
+                // Lexicographic str/bytes ordering via the runtime obj
+                // comparator (`rt_obj_cmp` dispatches by type tag), mirroring
+                // `s1 < s2`.
                 let cmp = if is_min {
                     mir::ComparisonOp::Lt
                 } else {

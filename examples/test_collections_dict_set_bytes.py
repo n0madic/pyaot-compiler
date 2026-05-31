@@ -1,5 +1,7 @@
 # Consolidated test file for dict, set, and bytes collections
 
+from collections import deque
+
 # ===== SECTION: Dict creation, indexing, assignment =====
 
 # Dict creation with string keys
@@ -606,13 +608,38 @@ assert bj_empty == b"xy", "bytes.join with empty sep should concat"
 # lowering before rt_bytes_join reads it (same path as str.join).
 bj_tuple: bytes = b",".join((b"a", b"b"))
 assert bj_tuple == b"a,b", "bytes.join over tuple should equal b\"a,b\""
-# set-of-bytes: hash-table order is non-deterministic; verify via the decoded
-# str sorted trick (list[bytes] comparison is a separate pre-existing gap).
+# set-of-bytes: hash-table order is non-deterministic; verify via sorted.
 bj_set_joined: bytes = b",".join({b"a", b"b", b"c"})
-assert sorted(bj_set_joined.decode().split(",")) == ["a", "b", "c"], \
+assert sorted(bj_set_joined.split(b",")) == [b"a", b"b", b"c"], \
     "bytes.join over set should contain all elements"
 
 print("bytes.join() tests passed")
+
+# ===== SECTION: bytes as comparable / hashable list & set elements =====
+# Regression: eq_hashable_obj / compare_list_elements / hash_hashable_obj
+# previously had no Bytes arm, so equal-content bytes objects compared by
+# pointer identity (list/tuple == wrong, sorted unordered, set/dict deduped
+# by identity instead of value).
+assert [b"a", b"b", b"c"] == [b"a", b"b", b"c"], "list[bytes] equality by content"
+assert [b"a", b"b"] != [b"a", b"c"], "list[bytes] inequality by content"
+assert (b"x", b"y") == (b"x", b"y"), "tuple[bytes] equality by content"
+assert sorted([b"c", b"a", b"b"]) == [b"a", b"b", b"c"], "sorted(list[bytes]) by content"
+assert sorted([b"c", b"a", b"b"], reverse=True) == [b"c", b"b", b"a"], \
+    "sorted(list[bytes], reverse=True)"
+assert b"a" in [b"a", b"b"], "bytes membership in list by content"
+# Fresh (non-interned) equal-content bytes must dedup in a set / dict.
+bk1: bytes = b"a" + b""
+bk2: bytes = b"a" + b""
+assert bk1 == bk2, "fresh equal-content bytes are equal"
+assert len({bk1, bk2}) == 1, "set dedups equal-content bytes"
+byte_keyed: dict[bytes, int] = {}
+byte_keyed[bk1] = 1
+byte_keyed[bk2] = 2
+assert len(byte_keyed) == 1, "dict dedups equal-content bytes keys"
+assert byte_keyed[b"a"] == 2, "dict bytes key lookup by content"
+assert b"a" in {b"a", b"b"}, "bytes membership in set by content"
+
+print("bytes comparison/hash element tests passed")
 
 # ===== SECTION: bytes concatenation and repetition =====
 bcat_a: bytes = b"hello"
@@ -860,6 +887,30 @@ assert (_bord_a > _bord_b) is False, "bytes >"
 assert (_bord_a <= _bord_a) is True, "bytes <="
 assert (_bord_b >= _bord_a) is True, "bytes >="
 print("Bytes ordering comparison tests passed")
+
+# Regression: min()/max() over a bytes-element iterable must type the result as
+# the element type (bytes), not Int — otherwise the bytes pointer prints as a
+# raw integer (e.g. 50814066688). Covers list, tuple, set, deque, generator,
+# and the multi-arg (variadic) form. The runtime compares slots via rt_obj_cmp
+# (lexicographic Bytes arm) and returns the winning element's tagged Value.
+_mmb_list: list[bytes] = [b"c", b"a", b"b"]
+assert min(_mmb_list) == b"a", f"min(list[bytes]): {min(_mmb_list)}"
+assert max(_mmb_list) == b"c", f"max(list[bytes]): {max(_mmb_list)}"
+_mmb_tuple: tuple[bytes, bytes, bytes] = (b"c", b"a", b"b")
+assert min(_mmb_tuple) == b"a", "min(tuple[bytes])"
+assert max(_mmb_tuple) == b"c", "max(tuple[bytes])"
+_mmb_set: set[bytes] = {b"c", b"a", b"b"}
+assert min(_mmb_set) == b"a", "min(set[bytes])"
+assert max(_mmb_set) == b"c", "max(set[bytes])"
+assert min(deque([b"c", b"a", b"b"])) == b"a", "min(deque[bytes])"
+assert max(deque([b"c", b"a", b"b"])) == b"c", "max(deque[bytes])"
+assert min(s for s in [b"yy", b"xx", b"zz"]) == b"xx", "min(bytes generator)"
+assert max(s for s in [b"yy", b"xx", b"zz"]) == b"zz", "max(bytes generator)"
+assert min(b"a", b"b") == b"a", "min(variadic bytes)"
+assert max(b"a", b"b") == b"b", "max(variadic bytes)"
+# Result is a real bytes (heap) — usable in bytes context (length, indexing).
+assert len(min(_mmb_list)) == 1, "min(list[bytes]) len"
+print("min/max over bytes iterables tests passed")
 
 # Code-review regression: bytes.split/rsplit(None, maxsplit) remainder (formerly
 # test_review_wave2_runtime.py) + bytes strip/join/repeat/concat (formerly
