@@ -54,6 +54,11 @@ impl<'a> Lowering<'a> {
             Type::Bytes => {
                 self.lower_bytes_method(obj_operand, &method_name, arg_operands, mir_func)
             }
+            // `int` / `bool` methods (bool is an int subtype). Receiver is a
+            // raw scalar; see `lower_int_method`.
+            Type::Int | Type::Bool => {
+                self.lower_int_method(obj_operand, &obj_type, &method_name, mir_func)
+            }
             _ if obj_type.is_list_like() => {
                 let elem_ty = Box::new(obj_type.list_elem().expect("list_like").clone());
                 self.lower_list_method(

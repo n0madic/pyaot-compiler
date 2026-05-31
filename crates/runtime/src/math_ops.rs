@@ -1,5 +1,21 @@
 //! Mathematical operations for Python runtime
 
+/// `int.bit_length()` — number of bits needed to represent the absolute
+/// value, ignoring sign and leading zeros. `(0).bit_length() == 0`,
+/// `(255).bit_length() == 8`, `(-7).bit_length() == 3`. Uses `unsigned_abs`
+/// so `i64::MIN` does not overflow.
+#[no_mangle]
+pub extern "C" fn rt_int_bit_length(n: i64) -> i64 {
+    (64 - n.unsigned_abs().leading_zeros()) as i64
+}
+
+/// `int.bit_count()` (Python 3.10+) — number of set bits in the absolute
+/// value. `(255).bit_count() == 8`, `(-7).bit_count() == 3`.
+#[no_mangle]
+pub extern "C" fn rt_int_bit_count(n: i64) -> i64 {
+    n.unsigned_abs().count_ones() as i64
+}
+
 /// Power function: pow(base, exp) -> f64
 /// Returns: base raised to the power of exp
 #[no_mangle]

@@ -791,6 +791,10 @@ pub static RT_ROUND_TO_DIGITS: RuntimeFuncDef =
 pub static RT_INT_TO_CHR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_chr");
 /// rt_chr_to_int(s: *mut Obj) -> i64
 pub static RT_CHR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_chr_to_int");
+/// rt_int_bit_length(n: i64) -> i64 — `int.bit_length()`
+pub static RT_INT_BIT_LENGTH: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_int_bit_length");
+/// rt_int_bit_count(n: i64) -> i64 — `int.bit_count()` (3.10+)
+pub static RT_INT_BIT_COUNT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_int_bit_count");
 
 // ===== Comparison operations =====
 // Compare(kind, op) → static defs for all valid (kind, op) combinations.

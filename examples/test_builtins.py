@@ -53,6 +53,43 @@ print("int() tests passed")
 
 
 # ============================================================================
+# int methods - bit_length(), bit_count(), conjugate()
+# ============================================================================
+
+# bit_length(): number of bits to represent abs(n), 0 for 0.
+assert (0).bit_length() == 0, "bit_length(0)"
+assert (5).bit_length() == 3, "bit_length(5)"
+assert (255).bit_length() == 8, "bit_length(255)"
+assert (1024).bit_length() == 11, "bit_length(1024)"
+assert (-7).bit_length() == 3, "bit_length(-7) ignores sign"
+
+# bit_length() on a variable receiver (raw int local).
+_bl_n = 1000
+assert _bl_n.bit_length() == 10, "bit_length(variable)"
+
+# bit_length() on a loop variable (the originally-reported None bug).
+_bl_expected = [1, 2, 4, 8]
+_bl_i = 0
+for _bl_x in [1, 2, 8, 255]:
+    assert _bl_x.bit_length() == _bl_expected[_bl_i], "bit_length(loop var)"
+    _bl_i += 1
+
+# bit_count(): set bits of abs(n) (Python 3.10+).
+assert (0).bit_count() == 0, "bit_count(0)"
+assert (255).bit_count() == 8, "bit_count(255)"
+assert (-7).bit_count() == 3, "bit_count(-7) ignores sign"
+
+# bool is an int subtype: bit_length() works on bools too.
+assert True.bit_length() == 1, "bit_length(True)"
+assert False.bit_length() == 0, "bit_length(False)"
+
+# conjugate() returns the int unchanged.
+assert (42).conjugate() == 42, "conjugate(42)"
+
+print("int method tests passed")
+
+
+# ============================================================================
 # float() - Float conversion
 # ============================================================================
 

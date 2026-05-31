@@ -19,6 +19,7 @@ pub(super) mod dict;
 pub(super) mod dispatch;
 pub(super) mod file;
 pub(super) mod generator;
+pub(super) mod int;
 pub(super) mod list;
 pub(super) mod set;
 pub(super) mod string;

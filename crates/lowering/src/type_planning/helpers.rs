@@ -147,6 +147,14 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
         };
     }
     match obj_ty {
+        // int / bool methods (bool is an int subtype). All currently
+        // supported ones yield int.
+        Type::Int | Type::Bool => match method_name {
+            "bit_length" | "bit_count" | "conjugate" | "__int__" | "__index__" | "__trunc__" => {
+                Some(Type::Int)
+            }
+            _ => None,
+        },
         Type::Str => match method_name {
             // String transformation methods
             "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "title"
