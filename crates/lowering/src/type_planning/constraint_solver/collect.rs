@@ -110,6 +110,16 @@ pub struct Collector<'a> {
     /// `inputs_of(Attribute)` lists only `[recv]`, and the reducer's
     /// `ClassField` read is a one-shot snapshot that misses later updates.
     field_to_classes: HashMap<InternedString, Vec<ClassId>>,
+    /// Variables that hold a `collections.deque`. Populated by a pre-pass
+    /// before constraint collection (mirror of `var_to_lambda`'s pre-pass).
+    /// A `VarId` is marked when it is bound to a `BuiltinCall{Deque}` OR is
+    /// the receiver of a deque-only method (`appendleft` / `extendleft` /
+    /// `rotate` / `popleft`). Used by `propagate_mutator_elem_refinement` to
+    /// disambiguate the shared `append`/`extend` mutators: a deque receiver
+    /// refines into `deque[T]`, a list receiver into `list[T]`. Without this
+    /// `join(deque[T], list[T])` would widen the var to `Union` (the
+    /// `rt_deque_append` vs `rt_list_append` SIGSEGV hazard).
+    deque_vars: std::collections::HashSet<VarId>,
     /// Active `else`-branch narrowing context `(v, T)` while collecting the
     /// else arm of `… if isinstance(v, T) else …`. In that arm `v` is NOT a
     /// `T`, so the coercion ctor `T(v)` (the idiom
@@ -139,8 +149,15 @@ impl<'a> Collector<'a> {
             mutated_param_indices: HashMap::new(),
             ni_methods: std::collections::HashSet::new(),
             field_to_classes: HashMap::new(),
+            deque_vars: std::collections::HashSet::new(),
             else_isinstance: None,
         }
+    }
+
+    /// True if `name` is a deque-exclusive method (never defined on
+    /// list/set/dict). Receiving one is a definitive deque marker.
+    fn is_deque_only_method(name: &str) -> bool {
+        matches!(name, "appendleft" | "extendleft" | "rotate" | "popleft")
     }
 
     /// If `cond` is `isinstance(Var(v), ClassRef(T))`, return `(v, T)` — the
@@ -287,13 +304,29 @@ impl<'a> Collector<'a> {
         // `self.interner` is released before we mutate `self.solver`.
         let method_name = self.interned_method_name(method).to_owned();
         let kind = match method_name.as_str() {
-            "append" | "add" if args.len() == 1 => RefineKind::SingleElem(args[0]),
+            "append" | "appendleft" | "add" if args.len() == 1 => RefineKind::SingleElem(args[0]),
             "insert" if args.len() == 2 => RefineKind::SingleElem(args[1]),
-            "extend" | "update" if args.len() == 1 => RefineKind::IterableArg(args[0]),
+            "extend" | "extendleft" | "update" if args.len() == 1 => {
+                RefineKind::IterableArg(args[0])
+            }
             _ => return,
         };
-        let container_kind = match method_name.as_str() {
+        let is_deque_recv = self.deque_vars.contains(&var);
+        // Kind of the container that DIRECTLY holds the appended element (the
+        // receiver at depth 0; an indexed element container at depth > 0):
+        // - `add`/`update`            → set
+        // - `appendleft`/`extendleft` → deque (these are deque-exclusive)
+        // - `append`/`extend`/`insert` on a known deque receiver (depth 0)
+        //                             → deque
+        // - otherwise                 → list (unchanged list behaviour)
+        // Choosing `deque` for a deque receiver instead of `list` is the core
+        // disambiguation: `join(deque[T], list[T])` is `Union` (different base
+        // ids), which would corrupt the var — exactly the `rt_deque_append`
+        // vs `rt_list_append` hazard.
+        let inner_kind = match method_name.as_str() {
             "add" | "update" => ContainerKind::Set,
+            "appendleft" | "extendleft" => ContainerKind::Deque,
+            _ if outer_wrap_levels == 0 && is_deque_recv => ContainerKind::Deque,
             _ => ContainerKind::List,
         };
         let elem_key = match kind {
@@ -308,22 +341,30 @@ impl<'a> Collector<'a> {
             }
         };
         // Inner container holding the appended element: `list[elem]` /
-        // `set[elem]` per the method.
+        // `set[elem]` / `deque[elem]` per the method.
         let mut wrap_meta = self.solver.fresh_meta();
         self.solver.add(Constraint::ContainerLiteral {
             result: wrap_meta,
-            kind: container_kind,
+            kind: inner_kind,
             elems: vec![elem_key],
             kv: Vec::new(),
         });
         // For an indexed receiver (`var[idx].append`), wrap one more level:
-        // the OUTER container is always list-shaped (it was indexed by an
-        // integer position), holding the inner containers.
-        for _ in 0..outer_wrap_levels {
+        // the OUTER containers were indexed by integer positions, so they are
+        // list-shaped — except the OUTERMOST (the base var itself), which is a
+        // deque when the var is a known deque (`dq[i].append(x)` →
+        // `dq : deque[list[x]]`).
+        for level in 0..outer_wrap_levels {
+            let is_outermost = level == outer_wrap_levels - 1;
+            let outer_kind = if is_outermost && is_deque_recv {
+                ContainerKind::Deque
+            } else {
+                ContainerKind::List
+            };
             let outer_meta = self.solver.fresh_meta();
             self.solver.add(Constraint::ContainerLiteral {
                 result: outer_meta,
-                kind: ContainerKind::List,
+                kind: outer_kind,
                 elems: vec![wrap_meta],
                 kv: Vec::new(),
             });
@@ -609,6 +650,59 @@ impl<'a> Collector<'a> {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Pre-pass: identify variables that hold a `deque`. A var is a deque
+        // if it is bound to a `BuiltinCall{Deque}` (`dq = deque(...)`) or if
+        // it (directly, or through `Index` chains) receives a deque-only
+        // method (`appendleft`/`extendleft`/`rotate`/`popleft`). This drives
+        // the `append`/`extend` kind disambiguation below — see `deque_vars`.
+        for func in self.module.func_defs.values() {
+            for block in func.blocks.values() {
+                for &stmt_id in &block.stmts {
+                    if let hir::StmtKind::Bind {
+                        target: hir::BindingTarget::Var(v),
+                        value,
+                        ..
+                    } = &self.module.stmts[stmt_id].kind
+                    {
+                        if matches!(
+                            &self.module.exprs[*value].kind,
+                            ExprKind::BuiltinCall {
+                                builtin: hir::Builtin::Deque,
+                                ..
+                            }
+                        ) {
+                            self.deque_vars.insert(*v);
+                        }
+                    }
+                }
+            }
+        }
+        for (_, expr) in self.module.exprs.iter() {
+            let ExprKind::MethodCall { obj, method, .. } = &expr.kind else {
+                continue;
+            };
+            let is_deque_only = self
+                .interner
+                .get(*method)
+                .map(Self::is_deque_only_method)
+                .unwrap_or(false);
+            if !is_deque_only {
+                continue;
+            }
+            // Peel `Index` levels to reach the base `Var`.
+            let mut cur = *obj;
+            loop {
+                match &self.module.exprs[cur].kind {
+                    ExprKind::Var(v) => {
+                        self.deque_vars.insert(*v);
+                        break;
+                    }
+                    ExprKind::Index { obj: inner, .. } => cur = *inner,
+                    _ => break,
                 }
             }
         }

@@ -315,8 +315,8 @@ fn test_join_numeric_promotion() {
 #[test]
 fn test_generic_builtin_class_ids_are_unique() {
     use crate::{
-        BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
-        BUILTIN_TUPLE_VAR_CLASS_ID, FIRST_USER_CLASS_ID,
+        BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
+        BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID, FIRST_USER_CLASS_ID,
     };
     let ids = [
         BUILTIN_LIST_CLASS_ID.0,
@@ -324,13 +324,16 @@ fn test_generic_builtin_class_ids_are_unique() {
         BUILTIN_SET_CLASS_ID.0,
         BUILTIN_TUPLE_CLASS_ID.0,
         BUILTIN_TUPLE_VAR_CLASS_ID.0,
+        BUILTIN_DEQUE_CLASS_ID.0,
     ];
-    // All five IDs must be distinct.
+    // All six IDs must be distinct.
     let mut seen = std::collections::HashSet::new();
     for id in ids {
         assert!(seen.insert(id), "duplicate builtin class id: {id}");
     }
-    // All must be strictly below FIRST_USER_CLASS_ID.
+    // All must be strictly below FIRST_USER_CLASS_ID — notably
+    // BUILTIN_DEQUE_CLASS_ID (BASE+5) must NOT collide with the first user
+    // class id (RESERVED_BUILTIN_TYPE_SLOTS bumped to 6 to make room).
     for id in ids {
         assert!(
             id < FIRST_USER_CLASS_ID as u32,
@@ -365,9 +368,18 @@ fn test_accessor_roundtrip_legacy_variants() {
     let iter = Type::Iterator(Box::new(Type::Str));
     assert_eq!(iter.iter_elem(), Some(&Type::Str));
 
+    let dq = Type::deque_of(Type::Int);
+    assert_eq!(dq.deque_elem(), Some(&Type::Int));
+    assert!(dq.is_deque_like());
+    // A deque is not list/set/tuple-like (distinct base id).
+    assert!(!dq.is_list_like());
+    assert!(!dq.is_set_like());
+    assert!(!dq.is_tuple_like());
+
     // Non-list types return None from list_elem.
     assert_eq!(Type::Int.list_elem(), None);
     assert_eq!(Type::Str.set_elem(), None);
+    assert_eq!(Type::list_of(Type::Int).deque_elem(), None);
 }
 
 #[test]

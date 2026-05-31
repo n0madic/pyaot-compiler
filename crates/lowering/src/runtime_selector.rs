@@ -20,7 +20,12 @@ use crate::Lowering;
 /// (`*mut Obj`). Compile-time-only types route through the `Int` arm so
 /// they never reach storage operations in practice.
 fn is_ptr_storage(ty: &Type) -> bool {
-    if ty.is_list_like() || ty.is_dict_like() || ty.is_tuple_like() || ty.is_set_like() {
+    if ty.is_list_like()
+        || ty.is_dict_like()
+        || ty.is_tuple_like()
+        || ty.is_set_like()
+        || ty.is_deque_like()
+    {
         return true;
     }
     matches!(

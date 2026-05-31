@@ -157,6 +157,9 @@ pub(crate) fn default_iter_elem(iter: &Type) -> Option<Type> {
     if let Some(t) = iter.tuple_var_elem() {
         return Some(t.clone());
     }
+    if let Some(t) = iter.deque_elem() {
+        return Some(t.clone());
+    }
     if matches!(iter, Type::Str) {
         return Some(Type::Str);
     }
@@ -182,6 +185,9 @@ pub(crate) fn element_is_bottom(ty: &Type) -> bool {
         return matches!(t, Type::Never);
     }
     if let Some(t) = ty.tuple_var_elem() {
+        return matches!(t, Type::Never);
+    }
+    if let Some(t) = ty.deque_elem() {
         return matches!(t, Type::Never);
     }
     if let Some((_, v)) = ty.dict_kv() {
@@ -859,6 +865,10 @@ fn eval_container_literal(
         ContainerKind::Set => {
             let elem_ty = join_keys(env, elems);
             Type::set_of(elem_ty)
+        }
+        ContainerKind::Deque => {
+            let elem_ty = join_keys(env, elems);
+            Type::deque_of(elem_ty)
         }
         ContainerKind::Tuple => {
             // Fixed-length heterogeneous tuple: preserve per-position

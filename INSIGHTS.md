@@ -653,6 +653,24 @@ c = Node(3, (a, b))             # caller hands in Tuple([Class(Node), Class(Node
 
 This requires cross-site inference that threads argument types at every constructor call back into the class's field type. Area E (cross-site type inference for class attributes with numeric promotion) is the natural home. Until then, widen explicitly with an annotation: `children: tuple[Node, ...] = ()`.
 
+## Deque — Typed Container `deque[T]` Backed by a Runtime Object
+
+`collections.deque` was migrated from the opaque `Type::RuntimeObject(TypeTagKind::Deque)` (no element type) to a typed `Type::Generic { base: BUILTIN_DEQUE_CLASS_ID, args: [T] }`, mirroring the five S3.2 builtin containers. Construct via `Type::deque_of(T)`; query via `deque_elem()` / `is_deque_like()`. This unlocks iteration (`for x in dq`), `dq[i]`, `x in dq`, and `sum/sorted/min/max(dq)` — all of which need a concrete element type so the loop/result variable is typed `T` (raw for primitives) and bypasses the `operand_is_guaranteed_tagged` gate that only fires for `Type::Any`.
+
+Four non-obvious load-bearing points:
+
+1. **Runtime-backed, not a typed heap shape (Blocker 2).** Unlike `list[T]`, a deque has no typed `HeapShape`. `mir::types::translate_generic` maps `BUILTIN_DEQUE_CLASS_ID → Heap(RuntimeObj(TypeTagKind::Deque))` — identical physical representation to the legacy `RuntimeObject(Deque)`, so GC tracing / object layout / `DequeObj` are unchanged. Without this explicit arm the base falls through to `MirType::class(base, …)` and the GC walker would misread the `DequeObj` header as a user-class instance. **The deque element type is purely compile-time; it never reaches codegen as a typed heap shape.**
+
+2. **ClassId slot (Blocker 1).** `BUILTIN_DEQUE_CLASS_ID = BASE+5` would have collided with `FIRST_USER_CLASS_ID`; `core-defs` `RESERVED_BUILTIN_TYPE_SLOTS` was bumped `5 → 6`. The value is never hardcoded — only derived from the constant.
+
+3. **Method-dispatch guard ordering.** A deque is now `Type::Generic`, and the `Type::Generic` arm in `expressions/access/method/dispatch.rs` routes to the user-class method path (`lower_class_method_call`). The `_ if obj_type.is_deque_like()` guard MUST precede it; otherwise every deque method is silently lost. The same "deque before Generic" ordering applies in `resolve_method_return_type` (deque branch before the `match obj_ty` Class/RuntimeObject arms via the early `deque_elem()` check).
+
+4. **Empty-bootstrap narrowing needs both the solver AND the `refined_container_types` bridge.** `dq = deque(); dq.append(1)` must narrow `deque[Never] → deque[int]`. Two cooperating mechanisms:
+   - **Solver disambiguation (`deque_vars` pre-pass, `constraint_solver/collect.rs`):** `append`/`extend` are shared with `list`, and `join(deque[T], list[T])` is a `Union` (different base ids) — which corrupts the var (the `rt_deque_append` vs `rt_list_append` SIGSEGV hazard). A pre-pass marks any var bound to `deque(...)` or receiving a deque-only method (`appendleft`/`extendleft`/`rotate`/`popleft`) as a deque; `propagate_mutator_elem_refinement` then emits `ContainerLiteral{Deque}` for those receivers and `ContainerLiteral{List}` otherwise (list behaviour bit-for-bit unchanged).
+   - **Wire-in bridge (`constraint_solver/wire_in.rs`):** the solver writes the narrowed `deque[int]` to `base_var_types`, but `seed_expr_type` for a `Var` consults `get_var_type` (the lowering-side assignment type, which for `deque()` is the demoted `deque[Any]`) BEFORE `base_var_types`. The fix mirrors `deque[int]` into `refined_container_types` (previously list-only). This is safe for deque specifically because `deque[T]` and `deque[Any]` translate to the SAME physical MIR type, so it cannot introduce the `Heap(DefaultDict) → Heap(Dict)` shape-mismatch Copy error that blocked the broad (all-container) form.
+
+Reductions (`sum`/`sorted`/`min`/`max`/membership) and iteration all take the low-risk route: snapshot the deque to a `list[T]` via `rt_list_from_deque` (a left-to-right ring-buffer walk preserving tagged Values — matching `maxlen` snapshot semantics), then reuse the tested list path. Only `dq[i]` and `len(dq)` stay direct (`rt_deque_get` O(1), `rt_deque_len`). No new runtime functions beyond `rt_deque_get` (which already existed; only its `RuntimeFuncDef` was added to `core-defs`).
+
 ## Expected Type Propagation for Empty Collections
 
 Empty collection literals (`[]`, `{}`) have no elements to infer the type from, defaulting to `List(Any)` → `ELEM_HEAP_OBJ`. This causes GC issues when ints are later appended.

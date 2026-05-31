@@ -347,7 +347,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
                 args: vec![source_operand],
             });
-        } else if matches!(iter_type, Type::RuntimeObject(TypeTagKind::Deque)) {
+        } else if iter_type.is_deque_like() {
             // list(deque): a deque is not an IteratorObj, so convert it to a
             // list directly rather than falling through to RT_LIST_FROM_ITER
             // (which would misread the DequeObj header as an iterator).
@@ -775,8 +775,22 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let result_local =
-            self.alloc_and_add_local(Type::RuntimeObject(TypeTagKind::Deque), mir_func);
+        // Element type from the iterable source (if any). `deque()` and
+        // `deque(maxlen=N)` (args[0] padded with `None`) carry no element →
+        // `deque[Never]` (boundary coercion demotes an unrefined Never to
+        // Any). Mirrors `Builtin::Deque` in helpers.rs so the local type
+        // agrees with the seed type.
+        let elem_ty = match args.first() {
+            None => Type::Never,
+            Some(&first) if matches!(hir_module.exprs[first].kind, hir::ExprKind::None) => {
+                Type::Never
+            }
+            Some(&first) => {
+                let iter_ty = self.seed_expr_type(first, hir_module);
+                crate::type_planning::infer::extract_iterable_element_type(&iter_ty)
+            }
+        };
+        let result_local = self.alloc_and_add_local(Type::deque_of(elem_ty), mir_func);
 
         // Get maxlen (default -1 = unbounded)
         let maxlen = if args.len() >= 2 {

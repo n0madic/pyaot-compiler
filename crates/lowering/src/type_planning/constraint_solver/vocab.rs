@@ -29,6 +29,7 @@ pub enum ContainerKind {
     Set,
     Dict,
     Tuple,
+    Deque,
 }
 
 /// Callee discriminator for `Constraint::Call`.

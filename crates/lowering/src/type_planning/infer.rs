@@ -1284,6 +1284,9 @@ pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
     if let Some((key, _)) = ty.dict_kv() {
         return key.clone();
     }
+    if let Some(elem) = ty.deque_elem() {
+        return elem.clone();
+    }
     match ty {
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
@@ -1315,6 +1318,9 @@ pub(crate) fn extract_iterable_first_element_type(ty: &Type) -> Type {
     }
     if let Some((key, _)) = ty.dict_kv() {
         return key.clone();
+    }
+    if let Some(elem) = ty.deque_elem() {
+        return elem.clone();
     }
     match ty {
         Type::Str => Type::Str,

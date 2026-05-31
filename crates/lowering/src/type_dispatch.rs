@@ -72,6 +72,10 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
     if ty.is_set_like() {
         return Some(&runtime_func_def::RT_SET_LEN);
     }
+    if ty.is_deque_like() {
+        // Deque has its own len; no list conversion needed (O(1)).
+        return Some(&pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen);
+    }
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_LEN_INT),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_LEN),

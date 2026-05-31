@@ -3,9 +3,9 @@
 ## Type System
 
 - **Primitives**: `int` (i64), `float` (f64), `bool` (i8), `str`, `None`
-- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]` (fixed-length heterogeneous → `Type::Generic{BUILTIN_TUPLE_CLASS_ID, [T1..Tn]}`), `tuple[T, ...]` (variable-length homogeneous → `Type::Generic{BUILTIN_TUPLE_VAR_CLASS_ID, [T]}`, PEP 484/585), `set[T]`, `bytes`. **All five builtin container types use `Type::Generic{base, args}`** since S3.2c. Construct via `Type::list_of(T)`, `Type::dict_of(K,V)`, `Type::set_of(T)`, `Type::tuple_of(elems)`, `Type::tuple_var_of(T)`; query via `list_elem()`, `dict_kv()`, `set_elem()`, `tuple_elems()`, `tuple_var_elem()`, `is_list_like()`, `is_dict_like()`, `is_set_like()`, `is_tuple_like()`.
+- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]` (fixed-length heterogeneous → `Type::Generic{BUILTIN_TUPLE_CLASS_ID, [T1..Tn]}`), `tuple[T, ...]` (variable-length homogeneous → `Type::Generic{BUILTIN_TUPLE_VAR_CLASS_ID, [T]}`, PEP 484/585), `set[T]`, `bytes`, `deque[T]` (`Type::Generic{BUILTIN_DEQUE_CLASS_ID, [T]}`, runtime-backed). **All six builtin container types use `Type::Generic{base, args}`** (five since S3.2c plus `deque`). Construct via `Type::list_of(T)`, `Type::dict_of(K,V)`, `Type::set_of(T)`, `Type::tuple_of(elems)`, `Type::tuple_var_of(T)`, `Type::deque_of(T)`; query via `list_elem()`, `dict_kv()`, `set_elem()`, `tuple_elems()`, `tuple_var_elem()`, `deque_elem()`, `is_list_like()`, `is_dict_like()`, `is_set_like()`, `is_tuple_like()`, `is_deque_like()`.
 - **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`, `Any`, `HeapAny`, `NotImplementedT`
-- **Collections**: `Type::DefaultDict(K, V)`, `Type::RuntimeObject(TypeTagKind::Counter)`, `Type::RuntimeObject(TypeTagKind::Deque)`
+- **Collections**: `Type::DefaultDict(K, V)`, `Type::RuntimeObject(TypeTagKind::Counter)`, `deque[T]` → `Type::Generic{BUILTIN_DEQUE_CLASS_ID, [T]}` (construct via `Type::deque_of(T)`; query via `deque_elem()` / `is_deque_like()`; runtime-backed by `TypeTagKind::Deque`, so MIR maps it to `Heap(RuntimeObj(Deque))`)
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)

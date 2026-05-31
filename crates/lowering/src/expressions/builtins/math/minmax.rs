@@ -302,6 +302,81 @@ impl<'a> Lowering<'a> {
                 return Ok(mir::Operand::Local(result_local));
             }
 
+            // deque: snapshot to a list (left-to-right ring walk via
+            // `rt_list_from_deque`) and reuse the List min/max runtime. A
+            // deque has no dedicated `ContainerKind`, so routing through
+            // `ContainerKind::List` after conversion is correct and reuses the
+            // tested list path bit-for-bit.
+            if let Some(elem_type) = arg_type.deque_elem() {
+                let elem_type = elem_type.clone();
+                let deque_operand =
+                    self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+                let list_operand = mir::Operand::Local(self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
+                    vec![deque_operand],
+                    Type::list_of(elem_type.clone()),
+                    mir_func,
+                ));
+                let op = if is_min { MinMaxOp::Min } else { MinMaxOp::Max };
+
+                if let Some(ref func_or_builtin) = key_func {
+                    use crate::context::KeyFuncSource;
+                    let key_source = match func_or_builtin {
+                        FuncOrBuiltin::UserFunc(func_id, captures) => {
+                            KeyFuncSource::UserFunc(*func_id, captures.clone())
+                        }
+                        FuncOrBuiltin::Builtin(builtin_kind) => {
+                            KeyFuncSource::Builtin(*builtin_kind)
+                        }
+                    };
+                    let resolved = self
+                        .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
+                        .expect("key_source is Some");
+                    let _ = func_or_builtin;
+                    let result_type = elem_type;
+                    let is_min_operand =
+                        mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(ContainerKind::List.minmax_with_key_def()),
+                        vec![
+                            list_operand,
+                            resolved.func_addr,
+                            resolved.captures,
+                            resolved.capture_count,
+                            is_min_operand,
+                            resolved.key_return_tag,
+                        ],
+                        result_type,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
+                let (result_type, elem_kind) =
+                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
+                        crate::type_planning::helpers::ReductionResult::Float => {
+                            (Type::Float, ElementKind::Float)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Tagged => {
+                            (Type::Any, ElementKind::Tagged)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Int => {
+                            (Type::Int, ElementKind::Int)
+                        }
+                    };
+                let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                let elem_kind_operand =
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
+                    vec![list_operand, is_min_operand, elem_kind_operand],
+                    result_type,
+                    mir_func,
+                );
+
+                return Ok(mir::Operand::Local(result_local));
+            }
+
             // Iterator/generator: use IterNextNoExc + GeneratorIsExhausted protocol
             if let Type::Iterator(elem_ty) = &arg_type {
                 // Area G §G.4: tuple-yielding iterators need lexicographic

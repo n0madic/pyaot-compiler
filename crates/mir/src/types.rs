@@ -27,8 +27,8 @@
 use pyaot_core_defs::{BuiltinExceptionKind, TypeTagKind};
 use pyaot_types::Type;
 use pyaot_types::{
-    BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
-    BUILTIN_TUPLE_VAR_CLASS_ID,
+    BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
+    BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
 };
 use pyaot_utils::{ClassId, InternedString};
 
@@ -799,6 +799,7 @@ impl HeapShape {
 ///   - `BUILTIN_SET_CLASS_ID` → `Heap(Set(map(args[0])))`
 ///   - `BUILTIN_TUPLE_CLASS_ID` → `Heap(TupleFixed(args.map(map)))`
 ///   - `BUILTIN_TUPLE_VAR_CLASS_ID` → `Heap(TupleVar(map(args[0])))`
+///   - `BUILTIN_DEQUE_CLASS_ID` → `Heap(RuntimeObj(Deque))` (runtime-backed)
 ///   - user generic → `Heap(Class { id: base, type_args: args.map(map) })`
 /// - `DefaultDict(k, v)` → `Heap(DefaultDict { map(k), map(v) })`
 /// - `Iterator(elem)` → `Heap(Iterator(map(elem)))`
@@ -885,6 +886,12 @@ fn translate_generic(base: ClassId, args: &[Type]) -> MirType {
             .map(type_to_mir_type_storage)
             .unwrap_or(MirType::Tagged);
         MirType::tuple_var(elem)
+    } else if base == BUILTIN_DEQUE_CLASS_ID {
+        // `deque[T]` is a typed container at the type-system level, but its
+        // runtime backing is `DequeObj` (`TypeTagKind::Deque`), not a typed
+        // heap shape. Map to the same physical representation as the legacy
+        // `RuntimeObject(Deque)` so GC tracing / object layout are unchanged.
+        MirType::Heap(HeapShape::RuntimeObj(TypeTagKind::Deque))
     } else {
         let type_args = args.iter().map(type_to_mir_type_storage).collect();
         MirType::class(base, type_args)
@@ -1146,6 +1153,20 @@ mod tests {
         assert_eq!(
             type_to_mir_type_storage(&tuple_var),
             MirType::tuple_var(MirType::Tagged)
+        );
+
+        // `deque[T]` is runtime-backed: translates to the same physical shape
+        // as the legacy `RuntimeObject(Deque)`, regardless of `T`. This
+        // guards Blocker 2 — a deque-as-Generic must NOT be treated as a
+        // user class instance (wrong GC tracing / layout).
+        let deque_int = Type::deque_of(Type::Int);
+        assert_eq!(
+            type_to_mir_type_storage(&deque_int),
+            MirType::Heap(HeapShape::RuntimeObj(TypeTagKind::Deque))
+        );
+        assert_eq!(
+            type_to_mir_type_storage(&deque_int),
+            type_to_mir_type_storage(&Type::RuntimeObject(TypeTagKind::Deque))
         );
     }
 

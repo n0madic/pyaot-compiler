@@ -56,6 +56,8 @@ pub(crate) enum IterableKind {
     Iterator,
     /// Iterate over file lines (readlines then iterate)
     File,
+    /// Iterate over deque elements (converted to a list snapshot first)
+    Deque,
 }
 
 /// Try to determine if an expression is an iterable and extract its kind and element type.
@@ -122,6 +124,16 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
         // Iterating over a set yields elements
         return Some((IterableKind::Set, elem_ty.clone()));
     }
+    if let Some(elem_ty) = ty.deque_elem() {
+        // Iterating over a deque yields its elements. A deque carries a
+        // concrete element type now (`deque[T]`), so the index loop allocates
+        // the loop variable as raw `T` and arithmetic stays raw — the
+        // `operand_is_guaranteed_tagged` gate (which only fires for `Any`) is
+        // bypassed entirely. Iteration converts the deque to a list snapshot
+        // via `rt_list_from_deque` (see iter_protocol.rs), matching the
+        // `maxlen` snapshot semantics.
+        return Some((IterableKind::Deque, elem_ty.clone()));
+    }
     match ty {
         Type::Str => {
             // Iterating over a string yields single-character strings
@@ -141,13 +153,6 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
             let elem = if *binary { Type::Bytes } else { Type::Str };
             Some((IterableKind::File, elem))
         }
-        // NOTE: a deque is intentionally NOT iterable here. It carries no
-        // element type, so iteration would yield `Any`, and arithmetic /
-        // method calls on an `Any` loop variable hit the conservative
-        // `operand_is_guaranteed_tagged` gate (raw-BinOp verifier reject) and
-        // the Any-method silent-miss. `list(deque)` (a direct conversion) is
-        // supported for display/inspection; full deque iteration awaits deque
-        // element-type tracking.
         _ => None,
     }
 }

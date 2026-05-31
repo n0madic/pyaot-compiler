@@ -132,6 +132,20 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             _ => None,
         };
     }
+    if let Some(elem_ty) = obj_ty.deque_elem() {
+        // deque methods (see DEQUE_METHODS in stdlib-defs). `pop`/`popleft`
+        // yield the element type; `copy` preserves the deque type; `count`
+        // is Int; the mutators return None.
+        return match method_name {
+            "pop" | "popleft" => Some(elem_ty.clone()),
+            "copy" => Some(Type::deque_of(elem_ty.clone())),
+            "count" => Some(Type::Int),
+            "append" | "appendleft" | "extend" | "extendleft" | "rotate" | "clear" | "reverse" => {
+                Some(Type::None)
+            }
+            _ => None,
+        };
+    }
     match obj_ty {
         Type::Str => match method_name {
             // String transformation methods
@@ -571,6 +585,11 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
         let t = elem.clone();
         return if matches!(t, Type::Any) { Type::Any } else { t };
     }
+    // deque[T] — `dq[i]` returns the element type (lowered via rt_deque_get).
+    if let Some(elem) = obj_ty.deque_elem() {
+        let t = elem.clone();
+        return if matches!(t, Type::Any) { Type::Any } else { t };
+    }
     Type::Any
 }
 
@@ -909,7 +928,18 @@ pub(crate) fn resolve_builtin_call_type(
             }
         }
         Builtin::Counter => Some(Type::RuntimeObject(TypeTagKind::Counter)),
-        Builtin::Deque => Some(Type::RuntimeObject(TypeTagKind::Deque)),
+        // Deque — element type from the iterable argument (mirror of
+        // `Builtin::List`). `deque()` (no args) and `deque(maxlen=N)` (the
+        // frontend pads args[0] with `None`) seed `deque[Never]`, the empty
+        // bootstrap the solver narrows through observed appends; boundary
+        // coercion demotes an unrefined `Never` to `Any`.
+        Builtin::Deque => {
+            let elem = match arg_types.first() {
+                None | Some(Type::None) => Type::Never,
+                Some(t) => extract_iterable_element_type(t),
+            };
+            Some(Type::deque_of(elem))
+        }
         Builtin::ObjectNew => Some(Type::Any),
     }
 }

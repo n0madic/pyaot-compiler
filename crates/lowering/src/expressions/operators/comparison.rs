@@ -179,6 +179,7 @@ impl<'a> Lowering<'a> {
                 || is_dict_family(t)
                 || t.is_set_like()
                 || t.is_tuple_like()
+                || t.is_deque_like()
                 || matches!(t, Type::Str | Type::Bytes)
                 // RuntimeObject (StructTime/StringIO/BytesIO/Deque/...) and
                 // Iterator are heap-allocated objects whose runtime tag drives
@@ -472,6 +473,30 @@ impl<'a> Lowering<'a> {
                         &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
                     ),
                     args: vec![right_op, boxed_elem], // (tuple, elem)
+                });
+            } else if right_type.is_deque_like() {
+                // elem in deque — snapshot to a list and reuse the list
+                // membership path (`rt_list_index >= 0`). `rt_obj_contains`
+                // has no deque arm, so the direct route would mis-answer.
+                let elem_ty = right_type.deque_elem().cloned().unwrap_or(Type::Any);
+                let list_op = mir::Operand::Local(self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
+                    vec![right_op],
+                    Type::list_of(elem_ty),
+                    mir_func,
+                ));
+                let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
+                let idx_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
+                    vec![list_op, boxed_elem],
+                    Type::Int,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: result_local,
+                    op: mir::BinOp::GtE,
+                    left: mir::Operand::Local(idx_local),
+                    right: mir::Operand::Constant(mir::Constant::Int(0)),
                 });
             } else if let Type::Class { class_id, .. } = right_type {
                 // Class with __contains__ dunder

@@ -96,6 +96,26 @@ impl<'a> Lowering<'a> {
                 arg_types,
                 mir_func,
             ),
+            // `deque[T]` is `Type::Generic{DEQUE_ID, [T]}` but runtime-backed
+            // (`TypeTagKind::Deque`). This guard MUST precede the
+            // `Type::Generic` arm below: otherwise a deque is routed to
+            // `lower_class_method_call` (the user-class path) and every deque
+            // method is silently lost. The runtime tag is statically known
+            // from `is_deque_like()`.
+            _ if obj_type.is_deque_like() => {
+                if let Some(method_def) =
+                    lookup_object_method(pyaot_types::TypeTagKind::Deque, &method_name)
+                {
+                    return self.lower_object_method_call(
+                        obj_operand,
+                        method_def,
+                        args,
+                        hir_module,
+                        mir_func,
+                    );
+                }
+                Ok(mir::Operand::Constant(mir::Constant::None))
+            }
             Type::Class { ref class_id, .. } => self.lower_class_method_call(
                 obj_operand,
                 method,

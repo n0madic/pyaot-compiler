@@ -410,6 +410,22 @@ impl<'a> Lowering<'a> {
             self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?
         };
 
+        // A deque is not an IteratorObj and has no `rt_iter_*` factory;
+        // snapshot it to a list (left-to-right ring walk) and fall into the
+        // List fast-path below (`use_iter_branch` is false for a deque, since
+        // it matches neither the iterator-factory checks nor `Type::Iterator`).
+        // `element_type` is already deque-aware via `extract_iterable_element_type`.
+        let iterable_operand = if iterable_type.is_deque_like() {
+            mir::Operand::Local(self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
+                vec![iterable_operand],
+                Type::list_of(element_type.clone()),
+                mir_func,
+            ))
+        } else {
+            iterable_operand
+        };
+
         // Unified Iterator path for everything except `list` (which keeps
         // its dedicated indexed-access fast-path below). For
         // set/tuple/tuple-var/dict/str/bytes containers we materialise an

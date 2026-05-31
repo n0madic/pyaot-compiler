@@ -11,8 +11,8 @@ pub mod tag_kinds;
 pub use derive::derive_subst;
 
 pub use builtin_classes::{
-    BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
-    BUILTIN_TUPLE_VAR_CLASS_ID,
+    BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
+    BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
 };
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
@@ -318,6 +318,11 @@ impl Type {
         self.tuple_elems().is_some() || self.tuple_var_elem().is_some()
     }
 
+    /// Returns `true` for `Generic{DEQUE_ID, [T]}` (`collections.deque[T]`).
+    pub fn is_deque_like(&self) -> bool {
+        self.deque_elem().is_some()
+    }
+
     /// Element type of a list, or `None` if this is not a list type.
     pub fn list_elem(&self) -> Option<&Type> {
         match self {
@@ -373,6 +378,18 @@ impl Type {
         match self {
             Type::Generic { base, args }
                 if *base == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID && !args.is_empty() =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Element type of a `deque[T]`, or `None` if this is not a deque type.
+    pub fn deque_elem(&self) -> Option<&Type> {
+        match self {
+            Type::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_DEQUE_CLASS_ID && !args.is_empty() =>
             {
                 Some(&args[0])
             }
@@ -446,6 +463,14 @@ impl Type {
     pub fn tuple_var_of(elem: Type) -> Type {
         Type::Generic {
             base: builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID,
+            args: vec![elem],
+        }
+    }
+
+    /// Construct a `deque[elem]` type (`collections.deque[T]`).
+    pub fn deque_of(elem: Type) -> Type {
+        Type::Generic {
+            base: builtin_classes::BUILTIN_DEQUE_CLASS_ID,
             args: vec![elem],
         }
     }
@@ -1134,7 +1159,11 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::Hash => Type::RuntimeObject(TypeTagKind::Hash),
         TypeSpec::StringIO => Type::RuntimeObject(TypeTagKind::StringIO),
         TypeSpec::BytesIO => Type::RuntimeObject(TypeTagKind::BytesIO),
-        TypeSpec::Deque => Type::RuntimeObject(TypeTagKind::Deque),
+        // A `deque` named in a stdlib signature carries no element type, so
+        // it lowers to `deque[Any]` (mirrors `TypeSpec::List` → `list[Any]`).
+        // `dq.copy()` reaches here and loses `T`; acceptable per the plan
+        // (element re-inferred at the receiver).
+        TypeSpec::Deque => Type::deque_of(Type::Any),
         TypeSpec::Counter => Type::RuntimeObject(TypeTagKind::Counter),
     }
 }

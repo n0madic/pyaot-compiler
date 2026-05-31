@@ -272,6 +272,61 @@ assert list(deque([10, 20, 30])) == [10, 20, 30], "list(deque(iterable))"
 # Empty deque converts to an empty list.
 assert list(deque()) == [], "list(empty deque)"
 
+# ===== SECTION: deque iteration (typed element) =====
+# A deque[T] is iterable; the loop variable is typed `T` (raw for primitives),
+# so arithmetic and methods on it work exactly as for list[T].
+dq_it = deque([1, 2, 3])
+dq_it_total = 0
+for dq_it_x in dq_it:
+    dq_it_total += dq_it_x
+assert dq_it_total == 6, "deque iteration sums elements"
+# Iteration over a constructed deque with arithmetic in the body.
+dq_it_doubled = []
+for dq_it_y in deque([10, 20, 30]):
+    dq_it_doubled.append(dq_it_y * 2)
+assert dq_it_doubled == [20, 40, 60], "deque iteration with element arithmetic"
+
+# ===== SECTION: deque iteration after empty-bootstrap appends =====
+# An empty `deque()` narrowed to `deque[int]` purely through observed appends
+# must iterate with a raw-int loop variable (the solver disambiguation path).
+dq_boot = deque()
+dq_boot.append(1)
+dq_boot.append(2)
+dq_boot.append(3)
+dq_boot_total = 0
+for dq_boot_x in dq_boot:
+    dq_boot_total += dq_boot_x * 10
+assert dq_boot_total == 60, "empty-bootstrap deque iterates as deque[int]"
+# appendleft-only bootstrap also marks the var as a deque.
+dq_bootl = deque()
+dq_bootl.appendleft(5)
+dq_bootl.appendleft(7)
+dq_bootl_sum = 0
+for dq_bootl_x in dq_bootl:
+    dq_bootl_sum += dq_bootl_x
+assert dq_bootl_sum == 12, "appendleft-bootstrap deque iterates as deque[int]"
+
+# ===== SECTION: deque reductions (sum / sorted / min / max) =====
+assert sum(deque([1, 2, 3, 4])) == 10, "sum(deque)"
+assert sorted(deque([3, 1, 2])) == [1, 2, 3], "sorted(deque)"
+assert sorted(deque([3, 1, 2]), reverse=True) == [3, 2, 1], "sorted(deque, reverse)"
+assert min(deque([3, 1, 2])) == 1, "min(deque)"
+assert max(deque([3, 1, 2])) == 3, "max(deque)"
+assert sum(deque([1.5, 2.5])) == 4.0, "sum(deque[float])"
+
+# ===== SECTION: deque subscript dq[i] =====
+dq_sub = deque([10, 20, 30])
+assert dq_sub[0] == 10, "deque subscript first"
+assert dq_sub[2] == 30, "deque subscript last (positive)"
+assert dq_sub[-1] == 30, "deque subscript negative index"
+assert dq_sub[-3] == 10, "deque subscript negative to first"
+
+# ===== SECTION: deque membership x in dq =====
+dq_mem = deque([10, 20, 30])
+assert 20 in dq_mem, "deque membership present"
+assert 99 not in dq_mem, "deque membership absent"
+assert 10 in dq_mem, "deque membership first element"
+
 # =============================================================================
 # OrderedDict
 # =============================================================================

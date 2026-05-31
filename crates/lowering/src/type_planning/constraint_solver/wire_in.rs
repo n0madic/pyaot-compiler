@@ -233,20 +233,30 @@ pub(crate) fn apply_to_lowering(
     //     read-only view the plan calls for: `for x in acc` then resolves
     //     `acc`'s element type to the refined `V`, not the `[]` literal's
     //     `list[Never]`.
-    //     Restricted to `list`-shaped vars with a concrete element type.
-    //     The broad form (all container shapes) regressed
+    //     Restricted to `list`- and `deque`-shaped vars with a concrete
+    //     element type. The broad form (all container shapes) regressed
     //     `test_collections`: mirroring a `dict`/`defaultdict` var pinned
     //     a `defaultdict` slot to a plain `Dict` shape, producing a
     //     `Heap(DefaultDict) → Heap(Dict)` Copy verifier error. Lists are
     //     the shape that actually needs this bridge (`x = []; x.append`),
     //     and a degenerate `list[Never]`/`list[Any]` carries no refinement
-    //     worth pinning.
+    //     worth pinning. `deque` is safe to include too: `deque[T]` and
+    //     `deque[Any]` translate to the SAME physical MIR type
+    //     (`Heap(RuntimeObj(Deque))`), so mirroring `deque[Int]` cannot
+    //     introduce a shape-mismatch Copy error — it just lets the
+    //     empty-then-appended `dq = deque(); dq.append(1)` bootstrap reach
+    //     the prescan / `get_var_type` chain with the refined element type
+    //     (otherwise iteration / `dq[i]` see `deque[Any]` and the loop var
+    //     stays tagged).
     for (v, ty) in &out.base_var_types {
-        if !ty.is_list_like() {
+        let elem = if ty.is_list_like() {
+            ty.list_elem()
+        } else if ty.is_deque_like() {
+            ty.deque_elem()
+        } else {
             continue;
-        }
-        let elem_trivial = ty
-            .list_elem()
+        };
+        let elem_trivial = elem
             .map(|e| matches!(e, Type::Never | Type::Any))
             .unwrap_or(true);
         if elem_trivial {

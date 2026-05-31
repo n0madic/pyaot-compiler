@@ -167,6 +167,21 @@ impl<'a> Lowering<'a> {
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
+        // A deque has no `SortableKind`; snapshot it to a list (left-to-right
+        // ring walk via `rt_list_from_deque`) and sort that. The `source`
+        // selection below then falls into the `_ => List` default — correct,
+        // since `arg_operand` now points at a real list.
+        let arg_operand = if arg_type.is_deque_like() {
+            mir::Operand::Local(self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
+                vec![arg_operand],
+                Type::list_of(elem_type.clone()),
+                mir_func,
+            ))
+        } else {
+            arg_operand
+        };
+
         // After §F.7c: containers store uniform tagged Values; runtime no
         // longer needs an elem_tag hint.
         let result_local = self.alloc_and_add_local(Type::list_of(elem_type), mir_func);

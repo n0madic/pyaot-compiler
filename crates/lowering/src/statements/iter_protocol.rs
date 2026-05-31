@@ -231,7 +231,8 @@ impl<'a> Lowering<'a> {
             | IterableKind::Str
             | IterableKind::Bytes
             | IterableKind::Dict
-            | IterableKind::Set => {
+            | IterableKind::Set
+            | IterableKind::Deque => {
                 let container_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
                 let raw_container_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
@@ -258,6 +259,22 @@ impl<'a> Lowering<'a> {
                     IterableKind::Set => {
                         let list_local = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(&runtime_func_def::RT_SET_TO_LIST),
+                            vec![mir::Operand::Local(raw_container_local)],
+                            Type::list_of(elem_type.clone()),
+                            mir_func,
+                        );
+                        (
+                            list_local,
+                            IterableKindCached::List,
+                            &runtime_func_def::RT_LIST_LEN,
+                        )
+                    }
+                    IterableKind::Deque => {
+                        // A deque is not an IteratorObj; snapshot it to a list
+                        // (left-to-right ring walk, preserving tagged Values)
+                        // and iterate that — exact mirror of the Set path.
+                        let list_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_FROM_DEQUE),
                             vec![mir::Operand::Local(raw_container_local)],
                             Type::list_of(elem_type.clone()),
                             mir_func,
@@ -366,7 +383,9 @@ impl<'a> Lowering<'a> {
             IterableKind::Bytes => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_BYTES),
             IterableKind::Iterator => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR),
             IterableKind::File => unreachable!("handled above"),
-            IterableKind::List | IterableKind::Tuple => unreachable!("handled above"),
+            IterableKind::List | IterableKind::Tuple | IterableKind::Deque => {
+                unreachable!("handled above")
+            }
         };
         let iter_local = self.emit_runtime_call(rt_func, vec![iter_operand], Type::Any, mir_func);
         // Allocate value_local as HeapAny (next returns *mut Obj). Will

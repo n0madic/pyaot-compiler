@@ -178,6 +178,35 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
+            _ if obj_type.is_deque_like() => {
+                // dq[i] — O(1) ring access via rt_deque_get, which returns the
+                // tagged Value at the index (negative indices + bounds checks
+                // are handled in the runtime). Mirror emit_instance_get_field:
+                // load as a tagged Value, then unbox primitive element types;
+                // heap/Any elements pass through as the tagged result.
+                let elem_ty = obj_type
+                    .deque_elem()
+                    .expect("deque_like but no deque_elem")
+                    .clone();
+                let load_label = match elem_ty {
+                    Type::Int | Type::Bool | Type::Float => Type::Any,
+                    ref other => other.clone(),
+                };
+                let boxed_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DEQUE_GET),
+                    vec![obj_operand, index_operand],
+                    load_label,
+                    mir_func,
+                );
+                return match elem_ty {
+                    Type::Int | Type::Bool | Type::Float => Ok(self.unbox_if_needed(
+                        mir::Operand::Local(boxed_local),
+                        &elem_ty,
+                        mir_func,
+                    )),
+                    _ => Ok(mir::Operand::Local(boxed_local)),
+                };
+            }
             _ if obj_type.tuple_elems().is_some() => {
                 let elem_types = obj_type.tuple_elems().expect("checked above");
                 // Tuple indexing - try to extract precise element type from constant index
