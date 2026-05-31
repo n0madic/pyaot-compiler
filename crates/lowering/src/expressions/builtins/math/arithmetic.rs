@@ -416,12 +416,7 @@ impl<'a> Lowering<'a> {
         // it matches neither the iterator-factory checks nor `Type::Iterator`).
         // `element_type` is already deque-aware via `extract_iterable_element_type`.
         let iterable_operand = if iterable_type.is_deque_like() {
-            mir::Operand::Local(self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
-                vec![iterable_operand],
-                Type::list_of(element_type.clone()),
-                mir_func,
-            ))
+            self.snapshot_deque_to_list(iterable_operand, &element_type, mir_func)
         } else {
             iterable_operand
         };

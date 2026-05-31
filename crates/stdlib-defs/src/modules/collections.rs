@@ -331,6 +331,42 @@ pub static DEQUE_COUNT: StdlibMethodDef = StdlibMethodDef {
     codegen: RuntimeFuncDef::new("rt_deque_count", &[P_I64, P_I64], Some(R_I64), false),
 };
 
+/// deque.index(value) -> int
+pub static DEQUE_INDEX: StdlibMethodDef = StdlibMethodDef {
+    name: "index",
+    runtime_name: "rt_deque_index",
+    params: &[ParamDef::required("x", TypeSpec::Any)],
+    return_type: TypeSpec::Int,
+    min_args: 1,
+    max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_deque_index", &[P_I64, P_I64], Some(R_I64), false),
+};
+
+/// deque.insert(index, value)
+pub static DEQUE_INSERT: StdlibMethodDef = StdlibMethodDef {
+    name: "insert",
+    runtime_name: "rt_deque_insert",
+    params: &[
+        ParamDef::required("i", TypeSpec::Int),
+        ParamDef::required("x", TypeSpec::Any),
+    ],
+    return_type: TypeSpec::None,
+    min_args: 2,
+    max_args: 2,
+    codegen: RuntimeFuncDef::void("rt_deque_insert", &[P_I64, P_I64, P_I64]),
+};
+
+/// deque.remove(value)
+pub static DEQUE_REMOVE: StdlibMethodDef = StdlibMethodDef {
+    name: "remove",
+    runtime_name: "rt_deque_remove",
+    params: &[ParamDef::required("x", TypeSpec::Any)],
+    return_type: TypeSpec::None,
+    min_args: 1,
+    max_args: 1,
+    codegen: RuntimeFuncDef::void("rt_deque_remove", &[P_I64, P_I64]),
+};
+
 /// Helper for len(deque) -- used by StdlibCall in lowering
 pub static DEQUE_LEN: StdlibFunctionDef = StdlibFunctionDef {
     name: "deque_len",

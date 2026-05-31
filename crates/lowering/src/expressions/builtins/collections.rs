@@ -171,6 +171,8 @@ impl<'a> Lowering<'a> {
                 mir::IterSourceKind::Dict
             } else if iter_type.set_elem().is_some() {
                 mir::IterSourceKind::Set
+            } else if iter_type.is_deque_like() {
+                mir::IterSourceKind::Deque
             } else {
                 mir::IterSourceKind::List // fallback
             };
@@ -489,6 +491,18 @@ impl<'a> Lowering<'a> {
                 dest: result_local,
                 src: source_operand,
             });
+        } else if iter_type.is_deque_like() {
+            // tuple(deque): a deque is not an IteratorObj; snapshot it to a
+            // list and reuse the tested RT_TUPLE_FROM_LIST path.
+            let elem_ty = iter_type.deque_elem().cloned().unwrap_or(Type::Any);
+            let list_op = self.snapshot_deque_to_list(source_operand, &elem_ty, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_LIST,
+                ),
+                args: vec![list_op],
+            });
         } else {
             // Iterator or fallback: try as iterator
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -743,6 +757,8 @@ impl<'a> Lowering<'a> {
                     mir::IterSourceKind::Set
                 } else if iter_type == Type::Str {
                     mir::IterSourceKind::Str
+                } else if iter_type.is_deque_like() {
+                    mir::IterSourceKind::Deque
                 } else {
                     mir::IterSourceKind::List
                 };
@@ -775,21 +791,18 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Element type from the iterable source (if any). `deque()` and
-        // `deque(maxlen=N)` (args[0] padded with `None`) carry no element →
-        // `deque[Never]` (boundary coercion demotes an unrefined Never to
-        // Any). Mirrors `Builtin::Deque` in helpers.rs so the local type
-        // agrees with the seed type.
-        let elem_ty = match args.first() {
-            None => Type::Never,
-            Some(&first) if matches!(hir_module.exprs[first].kind, hir::ExprKind::None) => {
-                Type::Never
-            }
-            Some(&first) => {
-                let iter_ty = self.seed_expr_type(first, hir_module);
-                crate::type_planning::infer::extract_iterable_element_type(&iter_ty)
-            }
-        };
+        // Element type from the iterable source (if any). Routed through the
+        // shared `deque_elem_from_arg_types` so the lowered local type agrees
+        // with the seed type from `resolve_builtin_call_type` (both inspect the
+        // static `Type` of the first arg — `Type::None` for the `deque()` /
+        // `deque(maxlen=N)` empty cases, where the frontend pads args[0] with
+        // a `None` literal — instead of one peeking at the AST and the other
+        // at the type).
+        let arg_types: Vec<Type> = args
+            .iter()
+            .map(|&a| self.seed_expr_type(a, hir_module))
+            .collect();
+        let elem_ty = crate::type_planning::helpers::deque_elem_from_arg_types(&arg_types);
         let result_local = self.alloc_and_add_local(Type::deque_of(elem_ty), mir_func);
 
         // Get maxlen (default -1 = unbounded)
@@ -837,6 +850,8 @@ impl<'a> Lowering<'a> {
                     mir::IterSourceKind::Set
                 } else if iter_type == Type::Str {
                     mir::IterSourceKind::Str
+                } else if iter_type.is_deque_like() {
+                    mir::IterSourceKind::Deque
                 } else {
                     mir::IterSourceKind::List
                 };

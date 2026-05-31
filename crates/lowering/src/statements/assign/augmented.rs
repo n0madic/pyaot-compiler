@@ -43,6 +43,15 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
+            _ if obj_type.is_deque_like() => {
+                // del dq[index] → rt_deque_delete(deque, index) (ring-aware,
+                // negative-index-aware; void).
+                self.emit_void_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DEQUE_DELETE),
+                    vec![obj_operand, index_operand],
+                    mir_func,
+                );
+            }
             Type::Class { class_id, .. } => {
                 // Class with __delitem__ dunder
                 let delitem_func = self

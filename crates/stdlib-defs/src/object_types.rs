@@ -580,6 +580,9 @@ static DEQUE_METHODS: &[&StdlibMethodDef] = &[
     &collections::DEQUE_REVERSE,
     &collections::DEQUE_COPY,
     &collections::DEQUE_COUNT,
+    &collections::DEQUE_INDEX,
+    &collections::DEQUE_INSERT,
+    &collections::DEQUE_REMOVE,
 ];
 
 pub static DEQUE: ObjectTypeDef = ObjectTypeDef {

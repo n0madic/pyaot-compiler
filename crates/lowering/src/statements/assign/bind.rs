@@ -833,6 +833,22 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
+            _ if obj_type.is_deque_like() => {
+                // `dq[i] = v`: ring slots store uniform tagged Values, so box
+                // every primitive before the store (mirror the list arm).
+                let elem_ty = obj_type.deque_elem().expect("is_deque_like invariant");
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
+                    value_type
+                } else {
+                    elem_ty
+                };
+                let store_operand = self.emit_value_slot(value_operand, box_type, mir_func);
+                self.emit_void_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DEQUE_SET),
+                    vec![obj_operand, index_operand, store_operand],
+                    mir_func,
+                );
+            }
             Type::Class { class_id, .. } => {
                 let setitem_func = self
                     .get_class_info(class_id)

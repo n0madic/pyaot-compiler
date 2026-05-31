@@ -479,12 +479,7 @@ impl<'a> Lowering<'a> {
                 // membership path (`rt_list_index >= 0`). `rt_obj_contains`
                 // has no deque arm, so the direct route would mis-answer.
                 let elem_ty = right_type.deque_elem().cloned().unwrap_or(Type::Any);
-                let list_op = mir::Operand::Local(self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
-                    vec![right_op],
-                    Type::list_of(elem_ty),
-                    mir_func,
-                ));
+                let list_op = self.snapshot_deque_to_list(right_op, &elem_ty, mir_func);
                 let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
                 let idx_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),

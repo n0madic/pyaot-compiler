@@ -247,6 +247,32 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Snapshot a `deque` into a fresh `list` (left-to-right ring walk via
+    /// `rt_list_from_deque`, preserving tagged `Value` slots) and return the
+    /// list operand.
+    ///
+    /// A `DequeObj` is not an `IteratorObj` and has no `rt_iter_*` factory of
+    /// its own, so iterable-consuming builtins/operators (`tuple`, `set`,
+    /// `min`/`max`, `sorted`, `sum`, `in`, `*dq` unpacking, the `for` loop)
+    /// materialise a list copy first and reuse the tested list path. This is
+    /// the single source of truth for that conversion — see the call sites in
+    /// `collections.rs`, `comparison.rs`, `math/{minmax,arithmetic}.rs`,
+    /// `iteration/transform.rs`, `statements/iter_protocol.rs`, and
+    /// `expressions/calls/args.rs`.
+    pub(crate) fn snapshot_deque_to_list(
+        &mut self,
+        deque_operand: mir::Operand,
+        elem_ty: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        mir::Operand::Local(self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
+            vec![deque_operand],
+            Type::list_of(elem_ty.clone()),
+            mir_func,
+        ))
+    }
+
     /// Emit `RT_INSTANCE_GET_FIELD(obj, offset)` and recover the typed
     /// value. Storage is uniform tagged `Value` for every field:
     /// `Float` slots hold `Value::from_ptr(*FloatObj)` recovered via

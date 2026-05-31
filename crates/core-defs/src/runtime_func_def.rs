@@ -646,6 +646,12 @@ pub static RT_LIST_FROM_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_li
 /// rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj
 /// O(1) ring-buffer access; negative indices and bounds checks handled inside.
 pub static RT_DEQUE_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_deque_get");
+/// rt_deque_set(deque: *mut Obj, index: i64, value: i64) -> void
+/// Element assignment `dq[i] = v`; negative indices and bounds checks inside.
+pub static RT_DEQUE_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_deque_set", &[PI64, PI64, PI64]);
+/// rt_deque_delete(deque: *mut Obj, index: i64) -> void
+/// `del dq[i]`; negative indices and bounds checks inside.
+pub static RT_DEQUE_DELETE: RuntimeFuncDef = RuntimeFuncDef::void("rt_deque_delete", &[PI64, PI64]);
 /// rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj
 pub static RT_LIST_TAIL_TO_TUPLE: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_list_tail_to_tuple");
@@ -1122,6 +1128,8 @@ pub static RT_ITER_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_iter_
 pub static RT_ITER_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_set");
 /// rt_iter_bytes(container: *mut Obj) -> *mut Obj
 pub static RT_ITER_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_bytes");
+/// rt_iter_deque(container: *mut Obj) -> *mut Obj — iterates a snapshot list
+pub static RT_ITER_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_deque");
 /// rt_iter_generator(container: *mut Obj) -> *mut Obj
 pub static RT_ITER_GENERATOR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_generator");
 /// rt_iter_value(val: Value) -> *mut Obj — dynamic dispatch for Any/HeapAny iterables
@@ -1147,6 +1155,9 @@ pub static RT_ITER_REVERSED_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_
 /// rt_iter_reversed_bytes(container: *mut Obj) -> *mut Obj
 pub static RT_ITER_REVERSED_BYTES: RuntimeFuncDef =
     RuntimeFuncDef::ptr_unary("rt_iter_reversed_bytes");
+/// rt_iter_reversed_deque(container: *mut Obj) -> *mut Obj — reversed snapshot list
+pub static RT_ITER_REVERSED_DEQUE: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_deque");
 /// rt_iter_reversed_generator(container: *mut Obj) -> *mut Obj
 pub static RT_ITER_REVERSED_GENERATOR: RuntimeFuncDef =
     RuntimeFuncDef::ptr_unary("rt_iter_reversed_generator");

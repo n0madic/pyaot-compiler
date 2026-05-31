@@ -153,6 +153,15 @@ impl<'a> Lowering<'a> {
         }
         let operand = self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
         let ty = self.seed_expr_type(arg, hir_module);
+        // A deque is not list-indexable; `predicate_iter_info` would route it
+        // to the `RT_LIST_*` fallback and misread the `DequeObj` header.
+        // Snapshot it to a real list (and report a `list` type) so the
+        // index-based all/any loop iterates the snapshot correctly.
+        if let Some(elem) = ty.deque_elem() {
+            let elem = elem.clone();
+            let list_op = self.snapshot_deque_to_list(operand, &elem, mir_func);
+            return Ok((list_op, Type::list_of(elem)));
+        }
         Ok((operand, ty))
     }
 

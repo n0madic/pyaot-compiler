@@ -416,6 +416,30 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             s.push('}');
             s
         }
+        TypeTagKind::Deque => {
+            // `str(deque) == repr(deque)` in CPython; walk the ring buffer in
+            // logical left-to-right order (mirror `print_deque_repr`).
+            let d = obj as *mut DequeObj;
+            let len = (*d).len;
+            let cap = (*d).capacity;
+            let head = (*d).head;
+            let maxlen = (*d).maxlen;
+            let mut s = String::from("deque([");
+            for i in 0..len {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                let ring_idx = (head + i) % cap;
+                let val = *(*d).data.add(ring_idx);
+                elem_repr_string(&mut s, val.0 as *mut Obj);
+            }
+            s.push(']');
+            if maxlen >= 0 {
+                s.push_str(&format!(", maxlen={}", maxlen));
+            }
+            s.push(')');
+            s
+        }
         _ => format!("<object at {:p}>", obj),
     }
 }

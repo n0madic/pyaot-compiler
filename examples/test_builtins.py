@@ -86,6 +86,14 @@ assert False.bit_length() == 0, "bit_length(False)"
 # conjugate() returns the int unchanged.
 assert (42).conjugate() == 42, "conjugate(42)"
 
+# bool receiver: identity-like int methods widen the i8 receiver to i64 so the
+# result is Int-typed (the i8-vs-i64 verifier hard-error regression).
+assert True.conjugate() == 1, "conjugate(True)"
+assert False.conjugate() == 0, "conjugate(False)"
+assert True.bit_count() == 1, "bit_count(True)"
+assert True.__index__() == 1, "bool.__index__()"
+assert (True.conjugate() + 5) == 6, "conjugate(True) usable as int"
+
 print("int method tests passed")
 
 

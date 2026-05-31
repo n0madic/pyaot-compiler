@@ -120,6 +120,15 @@ pub struct Collector<'a> {
     /// `join(deque[T], list[T])` would widen the var to `Union` (the
     /// `rt_deque_append` vs `rt_list_append` SIGSEGV hazard).
     deque_vars: std::collections::HashSet<VarId>,
+    /// Variables bound to a class-constructor call (`obj = MyClass(...)`).
+    /// Populated by the same module-level pre-pass that fills `deque_vars`.
+    /// A class instance that happens to define a method whose name collides
+    /// with a container mutator (`append`/`extend`/`rotate`/`popleft`/…) must
+    /// NOT be marked as a deque/list/set: doing so emits a bogus
+    /// `ContainerLiteral` into the var and `join(Class, container)` widens it
+    /// to `Union`. Both the `deque_vars` marking and
+    /// `propagate_mutator_elem_refinement` skip vars in this set.
+    class_instance_vars: std::collections::HashSet<VarId>,
     /// Active `else`-branch narrowing context `(v, T)` while collecting the
     /// else arm of `… if isinstance(v, T) else …`. In that arm `v` is NOT a
     /// `T`, so the coercion ctor `T(v)` (the idiom
@@ -150,6 +159,7 @@ impl<'a> Collector<'a> {
             ni_methods: std::collections::HashSet::new(),
             field_to_classes: HashMap::new(),
             deque_vars: std::collections::HashSet::new(),
+            class_instance_vars: std::collections::HashSet::new(),
             else_isinstance: None,
         }
     }
@@ -300,6 +310,13 @@ impl<'a> Collector<'a> {
                 }
             }
         };
+        // A known class instance whose method name collides with a container
+        // mutator (`append`/`extend`/`add`/`insert`/…) must not be refined into
+        // a list/set/deque — that would `join(Class, container) = Union` and
+        // corrupt the var. The real method is dispatched via the class vtable.
+        if self.class_instance_vars.contains(&var) {
+            return;
+        }
         // Own the resolved method name so the immutable borrow on
         // `self.interner` is released before we mutate `self.solver`.
         let method_name = self.interned_method_name(method).to_owned();
@@ -676,6 +693,12 @@ impl<'a> Collector<'a> {
                             }
                         ) {
                             self.deque_vars.insert(*v);
+                        } else if self.ctor_call_class(*value).is_some() {
+                            // `obj = MyClass(...)`: record the class instance so
+                            // a colliding method name (e.g. a user-defined
+                            // `rotate`/`append`) is not misread as a container
+                            // mutator below.
+                            self.class_instance_vars.insert(*v);
                         }
                     }
                 }
@@ -698,7 +721,11 @@ impl<'a> Collector<'a> {
             loop {
                 match &self.module.exprs[cur].kind {
                     ExprKind::Var(v) => {
-                        self.deque_vars.insert(*v);
+                        // A known class instance with a colliding method name
+                        // (`popleft`/`rotate`/…) is not a deque — skip it.
+                        if !self.class_instance_vars.contains(v) {
+                            self.deque_vars.insert(*v);
+                        }
                         break;
                     }
                     ExprKind::Index { obj: inner, .. } => cur = *inner,

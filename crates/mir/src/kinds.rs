@@ -170,6 +170,8 @@ pub enum IterSourceKind {
     Set,
     /// Bytes container (iterates over integers)
     Bytes,
+    /// Deque container (iterates over a snapshot list)
+    Deque,
     /// Generator/iterator (returns itself)
     Generator,
 }
@@ -185,6 +187,7 @@ impl IterSourceKind {
             IterSourceKind::Range => "range",
             IterSourceKind::Set => "set",
             IterSourceKind::Bytes => "bytes",
+            IterSourceKind::Deque => "deque",
             IterSourceKind::Generator => "generator",
         }
     }
@@ -208,6 +211,7 @@ impl IterSourceKind {
             (IterDirection::Forward, IterSourceKind::Range) => &RT_ITER_RANGE,
             (IterDirection::Forward, IterSourceKind::Set) => &RT_ITER_SET,
             (IterDirection::Forward, IterSourceKind::Bytes) => &RT_ITER_BYTES,
+            (IterDirection::Forward, IterSourceKind::Deque) => &RT_ITER_DEQUE,
             (IterDirection::Forward, IterSourceKind::Generator) => &RT_ITER_GENERATOR,
             (IterDirection::Reversed, IterSourceKind::List) => &RT_ITER_REVERSED_LIST,
             (IterDirection::Reversed, IterSourceKind::Tuple) => &RT_ITER_REVERSED_TUPLE,
@@ -216,6 +220,7 @@ impl IterSourceKind {
             (IterDirection::Reversed, IterSourceKind::Range) => &RT_ITER_REVERSED_RANGE,
             (IterDirection::Reversed, IterSourceKind::Set) => &RT_ITER_REVERSED_SET,
             (IterDirection::Reversed, IterSourceKind::Bytes) => &RT_ITER_REVERSED_BYTES,
+            (IterDirection::Reversed, IterSourceKind::Deque) => &RT_ITER_REVERSED_DEQUE,
             (IterDirection::Reversed, IterSourceKind::Generator) => &RT_ITER_REVERSED_GENERATOR,
         }
     }

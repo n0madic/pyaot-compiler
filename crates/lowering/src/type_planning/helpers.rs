@@ -139,16 +139,17 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
         return match method_name {
             "pop" | "popleft" => Some(elem_ty.clone()),
             "copy" => Some(Type::deque_of(elem_ty.clone())),
-            "count" => Some(Type::Int),
-            "append" | "appendleft" | "extend" | "extendleft" | "rotate" | "clear" | "reverse" => {
-                Some(Type::None)
-            }
+            "count" | "index" => Some(Type::Int),
+            "append" | "appendleft" | "extend" | "extendleft" | "rotate" | "clear" | "reverse"
+            | "insert" | "remove" => Some(Type::None),
             _ => None,
         };
     }
     match obj_ty {
         // int / bool methods (bool is an int subtype). All currently
-        // supported ones yield int.
+        // supported ones yield int. Keep this name list in sync with
+        // `lower_int_method` in expressions/access/method/int.rs (the lowering
+        // side that emits the runtime call / identity widening).
         Type::Int | Type::Bool => match method_name {
             "bit_length" | "bit_count" | "conjugate" | "__int__" | "__index__" | "__trunc__" => {
                 Some(Type::Int)
@@ -601,6 +602,22 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
     Type::Any
 }
 
+/// Single source of truth for a `deque(...)` element type.
+///
+/// Shared by the builtin-return-type reducer (`resolve_builtin_call_type`)
+/// and `lower_deque` so the seeded type and the lowered local type agree.
+/// `deque()` (no args) and `deque(maxlen=N)` (the frontend pads `args[0]`
+/// with a `None` whose static type is `Type::None`) seed `deque[Never]` —
+/// the empty bootstrap the solver narrows through observed appends; boundary
+/// coercion demotes an unrefined `Never` to `Any`. Otherwise the element type
+/// comes from the iterable argument.
+pub(crate) fn deque_elem_from_arg_types(arg_types: &[Type]) -> Type {
+    match arg_types.first() {
+        None | Some(Type::None) => Type::Never,
+        Some(t) => extract_iterable_element_type(t),
+    }
+}
+
 /// Resolve the return type of a builtin function call.
 ///
 /// `arg_types` must be pre-computed by the caller (one entry per element in `args`).
@@ -941,13 +958,7 @@ pub(crate) fn resolve_builtin_call_type(
         // frontend pads args[0] with `None`) seed `deque[Never]`, the empty
         // bootstrap the solver narrows through observed appends; boundary
         // coercion demotes an unrefined `Never` to `Any`.
-        Builtin::Deque => {
-            let elem = match arg_types.first() {
-                None | Some(Type::None) => Type::Never,
-                Some(t) => extract_iterable_element_type(t),
-            };
-            Some(Type::deque_of(elem))
-        }
+        Builtin::Deque => Some(Type::deque_of(deque_elem_from_arg_types(arg_types))),
         Builtin::ObjectNew => Some(Type::Any),
     }
 }

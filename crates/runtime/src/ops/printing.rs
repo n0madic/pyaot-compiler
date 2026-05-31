@@ -1,6 +1,8 @@
 //! Print operations for Python runtime
 
-use crate::object::{DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind};
+use crate::object::{
+    DequeObj, DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind,
+};
 use crate::print::{rt_print_bytes_obj, rt_print_str_obj};
 use pyaot_core_defs::Value;
 
@@ -166,7 +168,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
         TypeTagKind::DefaultDict => print_dict_repr(obj), // Same repr as dict
         TypeTagKind::Counter => print_dict_repr(obj),     // Same repr as dict
-        TypeTagKind::Deque => print!("<deque at {:p}>", obj),
+        TypeTagKind::Deque => print_deque_repr(obj),
         TypeTagKind::Request => print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
         TypeTagKind::NotImplemented => print!("NotImplemented"),
     }
@@ -205,6 +207,32 @@ unsafe fn print_tuple_repr(obj: *mut Obj) {
     }
     if len == 1 {
         print!(",");
+    }
+    print!(")");
+}
+
+/// Print deque repr: `deque([elem, ...])` or `deque([...], maxlen=N)`.
+/// Walks the ring buffer in logical left-to-right order. In CPython
+/// `str(deque) == repr(deque)`, so both print paths route here.
+unsafe fn print_deque_repr(obj: *mut Obj) {
+    let d = obj as *mut DequeObj;
+    let len = (*d).len;
+    let cap = (*d).capacity;
+    let head = (*d).head;
+    let maxlen = (*d).maxlen;
+
+    print!("deque([");
+    for i in 0..len {
+        if i > 0 {
+            print!(", ");
+        }
+        let ring_idx = (head + i) % cap;
+        let elem = (*(*d).data.add(ring_idx)).0 as *mut Obj;
+        print_elem_repr(elem);
+    }
+    print!("]");
+    if maxlen >= 0 {
+        print!(", maxlen={}", maxlen);
     }
     print!(")");
 }
@@ -351,7 +379,7 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
             TypeTagKind::DefaultDict => print_dict_repr(obj),
             TypeTagKind::Counter => print_dict_repr(obj),
-            TypeTagKind::Deque => print!("<deque at {:p}>", obj),
+            TypeTagKind::Deque => print_deque_repr(obj),
             TypeTagKind::Request => {
                 print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj)
             }

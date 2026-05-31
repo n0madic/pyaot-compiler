@@ -156,6 +156,8 @@ impl<'a> Lowering<'a> {
                 mir::IterSourceKind::Dict
             } else if first_type.is_set_like() {
                 mir::IterSourceKind::Set
+            } else if first_type.is_deque_like() {
+                mir::IterSourceKind::Deque
             } else {
                 match &first_type {
                     Type::Str => mir::IterSourceKind::Str,
@@ -229,6 +231,8 @@ impl<'a> Lowering<'a> {
                 mir::IterSourceKind::Dict
             } else if second_type.is_set_like() {
                 mir::IterSourceKind::Set
+            } else if second_type.is_deque_like() {
+                mir::IterSourceKind::Deque
             } else {
                 match &second_type {
                     Type::Str => mir::IterSourceKind::Str,

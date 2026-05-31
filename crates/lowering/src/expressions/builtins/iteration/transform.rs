@@ -45,6 +45,8 @@ impl<'a> Lowering<'a> {
             mir::IterSourceKind::Tuple
         } else if arg_type.is_dict_like() {
             mir::IterSourceKind::Dict
+        } else if arg_type.is_deque_like() {
+            mir::IterSourceKind::Deque
         } else {
             match &arg_type {
                 Type::Str => mir::IterSourceKind::Str,
@@ -172,12 +174,7 @@ impl<'a> Lowering<'a> {
         // selection below then falls into the `_ => List` default — correct,
         // since `arg_operand` now points at a real list.
         let arg_operand = if arg_type.is_deque_like() {
-            mir::Operand::Local(self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
-                vec![arg_operand],
-                Type::list_of(elem_type.clone()),
-                mir_func,
-            ))
+            self.snapshot_deque_to_list(arg_operand, &elem_type, mir_func)
         } else {
             arg_operand
         };

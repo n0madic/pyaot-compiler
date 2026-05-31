@@ -273,12 +273,15 @@ impl<'a> Lowering<'a> {
                         // A deque is not an IteratorObj; snapshot it to a list
                         // (left-to-right ring walk, preserving tagged Values)
                         // and iterate that — exact mirror of the Set path.
-                        let list_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_FROM_DEQUE),
-                            vec![mir::Operand::Local(raw_container_local)],
-                            Type::list_of(elem_type.clone()),
+                        let list_op = self.snapshot_deque_to_list(
+                            mir::Operand::Local(raw_container_local),
+                            &elem_type,
                             mir_func,
                         );
+                        let list_local = match list_op {
+                            mir::Operand::Local(id) => id,
+                            other => panic!("snapshot_deque_to_list returned non-local: {other:?}"),
+                        };
                         (
                             list_local,
                             IterableKindCached::List,

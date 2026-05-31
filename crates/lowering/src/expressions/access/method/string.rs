@@ -14,6 +14,7 @@ impl<'a> Lowering<'a> {
         obj_operand: mir::Operand,
         method_name: &str,
         arg_operands: Vec<mir::Operand>,
+        arg_types: &[Type],
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Handle methods with special argument processing
@@ -27,7 +28,7 @@ impl<'a> Lowering<'a> {
                 );
             }
             "join" => {
-                return self.lower_str_join(obj_operand, arg_operands, mir_func);
+                return self.lower_str_join(obj_operand, arg_operands, arg_types, mir_func);
             }
             "lstrip" | "rstrip" => {
                 return self.lower_str_strip_variant(
@@ -214,12 +215,24 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower str.join(iterable)
+    ///
+    /// `rt_str_join` reads its argument as a `ListObj`. A deque is not a list,
+    /// so snapshot it to one first (mirror the other deque-consuming builtins);
+    /// otherwise the `DequeObj` header is misread and the call SEGVs.
     fn lower_str_join(
         &mut self,
         obj_operand: mir::Operand,
-        arg_operands: Vec<mir::Operand>,
+        mut arg_operands: Vec<mir::Operand>,
+        arg_types: &[Type],
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
+        if let (Some(arg_op), Some(arg_ty)) = (arg_operands.first(), arg_types.first()) {
+            if let Some(elem) = arg_ty.deque_elem() {
+                let elem = elem.clone();
+                let list_op = self.snapshot_deque_to_list(arg_op.clone(), &elem, mir_func);
+                arg_operands[0] = list_op;
+            }
+        }
         self.lower_join_impl(
             obj_operand,
             arg_operands,

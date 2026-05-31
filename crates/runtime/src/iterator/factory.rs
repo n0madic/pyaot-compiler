@@ -541,3 +541,60 @@ pub fn rt_iter_reversed_bytes(bytes: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_reversed_bytes_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_bytes(bytes.unwrap_ptr()))
 }
+
+/// Create a deque iterator.
+///
+/// A `DequeObj` is a ring buffer, not an `IteratorObj`, so we materialize a
+/// left-to-right list snapshot and iterate that — the same "iterate a derived
+/// list" strategy used for set/dict. The snapshot is rooted across the
+/// iterator allocation (`rt_iter_list` calls `gc_alloc`) so a stress-test GC
+/// cannot free it before the iterator's `source` field pins it.
+pub fn rt_iter_deque(deque: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    let snapshot = crate::deque::rt_list_from_deque(deque);
+
+    let mut roots: [*mut Obj; 1] = [snapshot];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
+    let iter = rt_iter_list(roots[0]);
+
+    gc_pop();
+    iter
+}
+#[export_name = "rt_iter_deque"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_deque_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_iter_deque(deque.unwrap_ptr()))
+}
+
+/// Create a reversed deque iterator (snapshot list iterated end-to-front).
+/// See `rt_iter_deque` for the snapshot/rooting rationale.
+pub fn rt_iter_reversed_deque(deque: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    let snapshot = crate::deque::rt_list_from_deque(deque);
+
+    let mut roots: [*mut Obj; 1] = [snapshot];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
+    let iter = rt_iter_reversed_list(roots[0]);
+
+    gc_pop();
+    iter
+}
+#[export_name = "rt_iter_reversed_deque"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_deque_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_deque(deque.unwrap_ptr()))
+}

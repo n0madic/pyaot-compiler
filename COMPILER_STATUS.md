@@ -319,7 +319,7 @@ Architectural rationale: `INSIGHTS.md` (top section).
 | hashlib | md5, sha256, sha1; Hash.hexdigest(), Hash.digest() |
 | base64 | b64encode, b64decode, urlsafe_b64encode, urlsafe_b64decode |
 | copy | copy, deepcopy |
-| collections | defaultdict(int/float/str/bool/list/dict/set), Counter(iterable).most_common/.total/.update/.subtract, deque(maxlen=N) — typed `deque[T]`: methods (.append/.appendleft/.pop/.popleft/.extend/.extendleft/.rotate/.reverse/.clear/.copy/.count), iteration (`for x in dq`), `dq[i]`, `x in dq`, `sum/sorted/min/max(dq)`, `list(dq)`, `len(dq)`, OrderedDict.move_to_end/.popitem(last=) |
+| collections | defaultdict(int/float/str/bool/list/dict/set), Counter(iterable).most_common/.total/.update/.subtract, deque(maxlen=N) — typed `deque[T]`: methods (.append/.appendleft/.pop/.popleft/.extend/.extendleft/.rotate/.reverse/.clear/.copy/.count/.index/.insert/.remove), iteration (`for x in dq`), `dq[i]`, `dq[i] = v`, `del dq[i]`, `x in dq`, `sum/sorted/min/max(dq)`, `tuple/set/list/iter/reversed/enumerate/zip/map/Counter(dq)`, `str.join(dq)`, `all/any(dq)`, `f(*dq)`, `print/str/repr(dq)`, `len(dq)`, OrderedDict.move_to_end/.popitem(last=) |
 | functools | reduce |
 | itertools | chain, islice (with for-loop and next(); both import styles) |
 | io | StringIO (write, read, readline, getvalue, seek, tell, close, truncate), BytesIO (write, read, readline, getvalue, seek, tell, close, truncate) |

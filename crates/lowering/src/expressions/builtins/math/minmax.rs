@@ -311,12 +311,7 @@ impl<'a> Lowering<'a> {
                 let elem_type = elem_type.clone();
                 let deque_operand =
                     self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
-                let list_operand = mir::Operand::Local(self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DEQUE),
-                    vec![deque_operand],
-                    Type::list_of(elem_type.clone()),
-                    mir_func,
-                ));
+                let list_operand = self.snapshot_deque_to_list(deque_operand, &elem_type, mir_func);
                 let op = if is_min { MinMaxOp::Min } else { MinMaxOp::Max };
 
                 if let Some(ref func_or_builtin) = key_func {

@@ -21,7 +21,12 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
     if ty.is_union() {
         return &runtime_func_def::RT_PRINT_OBJ;
     }
-    if ty.is_list_like() || ty.is_tuple_like() || ty.is_dict_like() || ty.is_set_like() {
+    if ty.is_list_like()
+        || ty.is_tuple_like()
+        || ty.is_dict_like()
+        || ty.is_set_like()
+        || ty.is_deque_like()
+    {
         return &runtime_func_def::RT_PRINT_OBJ;
     }
     match ty {
@@ -83,10 +88,6 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
         Type::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter) => {
             Some(&runtime_func_def::RT_DICT_LEN)
         }
-        // Deque has its own len
-        Type::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque) => {
-            Some(&pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen)
-        }
         Type::Any => Some(&runtime_func_def::RT_OBJ_LEN),
         // A `Union` value is a tagged `Value` at runtime; `rt_obj_len`
         // dispatches on its tag. Without this a `Union`-typed operand (e.g.
@@ -133,6 +134,9 @@ pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
     }
     if ty.is_set_like() {
         return mir::IterSourceKind::Set;
+    }
+    if ty.is_deque_like() {
+        return mir::IterSourceKind::Deque;
     }
     match ty {
         Type::Str => mir::IterSourceKind::Str,

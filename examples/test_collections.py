@@ -327,6 +327,109 @@ assert 20 in dq_mem, "deque membership present"
 assert 99 not in dq_mem, "deque membership absent"
 assert 10 in dq_mem, "deque membership first element"
 
+# ===== SECTION: deque repr (str == repr) =====
+assert str(deque([1, 2, 3])) == "deque([1, 2, 3])", "deque repr"
+assert str(deque([1, 2, 3], 5)) == "deque([1, 2, 3], maxlen=5)", "deque repr with maxlen"
+assert str(deque()) == "deque([])", "empty deque repr"
+
+# ===== SECTION: deque as iterable into other builtins =====
+# A deque has no rt_iter_* factory of its own; every iterable-consuming
+# builtin snapshots it to a list (or routes through IterSourceKind::Deque).
+assert tuple(deque([1, 2, 3])) == (1, 2, 3), "tuple(deque)"
+assert sorted(set(deque([1, 2, 2, 3]))) == [1, 2, 3], "set(deque)"
+dq_iter_src = iter(deque([10, 20, 30]))
+assert next(dq_iter_src) == 10, "iter(deque) first"
+assert next(dq_iter_src) == 20, "iter(deque) second"
+dq_rev_acc = []
+for dq_rev_x in reversed(deque([1, 2, 3])):
+    dq_rev_acc.append(dq_rev_x)
+assert dq_rev_acc == [3, 2, 1], "reversed(deque)"
+dq_enum_acc = []
+for dq_enum_i, dq_enum_v in enumerate(deque([5, 6, 7])):
+    dq_enum_acc.append(dq_enum_i * 100 + dq_enum_v)
+assert dq_enum_acc == [5, 106, 207], "enumerate(deque)"
+dq_zip_acc = []
+for dq_zip_a, dq_zip_b in zip(deque([1, 2, 3]), deque([4, 5, 6])):
+    dq_zip_acc.append(dq_zip_a * 10 + dq_zip_b)
+assert dq_zip_acc == [14, 25, 36], "zip(deque, deque)"
+assert list(map(lambda dq_m: dq_m * 2, deque([1, 2, 3]))) == [2, 4, 6], "map over deque"
+dq_cnt_b = Counter(deque([1, 1, 2, 3, 3, 3]))
+assert dq_cnt_b[1] == 2 and dq_cnt_b[2] == 1 and dq_cnt_b[3] == 3, "Counter(deque)"
+assert ",".join(deque(["a", "b", "c"])) == "a,b,c", "str.join(deque)"
+
+# ===== SECTION: all / any over deque =====
+assert all(deque([1, 2, 3])) is True, "all(deque) truthy"
+assert all(deque([1, 0, 3])) is False, "all(deque) with falsy"
+assert any(deque([0, 0, 0])) is False, "any(deque) all falsy"
+assert any(deque([0, 1, 0])) is True, "any(deque) one truthy"
+
+# ===== SECTION: deque pop / popleft unbox primitive elements =====
+dq_pop_u = deque([5, 6, 7])
+assert dq_pop_u.pop() == 7, "deque.pop() unboxes int"
+assert dq_pop_u.popleft() == 5, "deque.popleft() unboxes int"
+assert list(dq_pop_u) == [6], "deque after pop/popleft"
+
+# ===== SECTION: deque item assignment dq[i] = v =====
+dq_set = deque([1, 2, 3])
+dq_set[1] = 99
+assert list(dq_set) == [1, 99, 3], "deque dq[i] = v positive index"
+dq_set[-1] = 77
+assert list(dq_set) == [1, 99, 77], "deque dq[i] = v negative index"
+
+# ===== SECTION: del dq[i] =====
+dq_del = deque([10, 20, 30, 40])
+del dq_del[1]
+assert list(dq_del) == [10, 30, 40], "del dq[i] middle"
+del dq_del[-1]
+assert list(dq_del) == [10, 30], "del dq[i] negative index"
+del dq_del[0]
+assert list(dq_del) == [30], "del dq[i] first"
+
+# ===== SECTION: deque index / insert / remove =====
+dq_idx = deque([10, 20, 30, 20])
+assert dq_idx.index(20) == 1, "deque.index returns first match"
+assert dq_idx.index(30) == 2, "deque.index middle"
+dq_ins = deque([10, 20, 30])
+dq_ins.insert(1, 15)
+assert list(dq_ins) == [10, 15, 20, 30], "deque.insert middle"
+dq_ins.insert(0, 5)
+assert list(dq_ins) == [5, 10, 15, 20, 30], "deque.insert front"
+dq_ins.insert(100, 99)
+assert list(dq_ins) == [5, 10, 15, 20, 30, 99], "deque.insert clamps past end"
+dq_rem = deque([10, 20, 30, 20])
+dq_rem.remove(20)
+assert list(dq_rem) == [10, 30, 20], "deque.remove first occurrence"
+
+# ===== SECTION: deque insert at maxlen raises IndexError =====
+dq_insmax = deque([1, 2, 3], 3)
+try:
+    dq_insmax.insert(1, 99)
+    assert False, "deque.insert at maxlen should raise"
+except IndexError:
+    pass
+
+# ===== SECTION: deque.index / remove of absent element raises ValueError =====
+dq_absent = deque([1, 2, 3])
+try:
+    dq_absent.index(99)
+    assert False, "deque.index absent should raise"
+except ValueError:
+    pass
+try:
+    dq_absent.remove(99)
+    assert False, "deque.remove absent should raise"
+except ValueError:
+    pass
+
+
+# ===== SECTION: f(*deque) argument unpacking =====
+def _deque_sum3(a: int, b: int, c: int) -> int:
+    return a + b + c
+
+
+dq_star = deque([1, 2, 3])
+assert _deque_sum3(*dq_star) == 6, "f(*deque) unpacking"
+
 # =============================================================================
 # OrderedDict
 # =============================================================================

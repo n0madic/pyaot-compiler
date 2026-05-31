@@ -113,7 +113,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<Vec<mir::Operand>> {
         let list_expr = &hir_module.exprs[expr_id];
-        let list_operand = self.lower_expr(list_expr, hir_module, mir_func)?;
+        let mut list_operand = self.lower_expr(list_expr, hir_module, mir_func)?;
         let list_type = match &list_operand {
             mir::Operand::Local(local_id) => mir_func
                 .locals
@@ -123,8 +123,16 @@ impl<'a> Lowering<'a> {
             _ => self.seed_expr_type(expr_id, hir_module),
         };
 
-        let Some(elem_type) = list_type.list_elem().cloned() else {
-            // Not a list - return as-is
+        // `f(*dq)`: a deque is not list-indexable, so snapshot it to a list
+        // first; the extract loop below then runs on a real ListObj.
+        let elem_type = if let Some(deque_elem) = list_type.deque_elem() {
+            let deque_elem = deque_elem.clone();
+            list_operand = self.snapshot_deque_to_list(list_operand, &deque_elem, mir_func);
+            deque_elem
+        } else if let Some(elem_type) = list_type.list_elem().cloned() {
+            elem_type
+        } else {
+            // Not a list or deque - return as-is
             return Ok(vec![list_operand]);
         };
 

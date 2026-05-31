@@ -55,8 +55,10 @@ impl<'a> Lowering<'a> {
                             if arg_type.is_tuple_like() {
                                 // Mark for runtime tuple unpacking
                                 expanded_args.push(ExpandedArg::RuntimeUnpackTuple(*expr_id));
-                            } else if arg_type.is_list_like() {
-                                // Mark for runtime list unpacking
+                            } else if arg_type.is_list_like() || arg_type.is_deque_like() {
+                                // Mark for runtime list unpacking. A deque is
+                                // snapshotted to a list inside
+                                // `lower_runtime_list_unpack`.
                                 expanded_args.push(ExpandedArg::RuntimeUnpackList(*expr_id));
                             } else {
                                 // Not a tuple or list - pass as is (will cause type error)

@@ -500,6 +500,163 @@ pub extern "C" fn rt_deque_count_abi(deque: Value, value: Value) -> i64 {
     rt_deque_count(deque.unwrap_ptr(), value.0 as *mut Obj)
 }
 
+/// `del dq[index]` — remove the element at `index`, ring-aware.
+/// Negative indices count from the right (mirrors `rt_deque_get`).
+pub fn rt_deque_delete(deque: *mut Obj, index: i64) {
+    unsafe {
+        let d = deque as *mut DequeObj;
+        let len_i = (*d).len as i64;
+        let actual_idx = if index < 0 { len_i + index } else { index };
+        if actual_idx < 0 || actual_idx >= len_i {
+            raise_exc!(ExceptionType::IndexError, "deque index out of range");
+        }
+        let idx = actual_idx as usize;
+        let len = (*d).len;
+        let cap = (*d).capacity;
+        let left_count = idx;
+        let right_count = len - 1 - idx;
+        if left_count <= right_count {
+            // Shift the left block one step toward the gap, then drop the front.
+            let mut j = idx;
+            while j > 0 {
+                let dst = ((*d).head + j) % cap;
+                let src = ((*d).head + j - 1) % cap;
+                *(*d).data.add(dst) = *(*d).data.add(src);
+                j -= 1;
+            }
+            (*d).head = ((*d).head + 1) % cap;
+        } else {
+            // Shift the right block one step toward the gap, then drop the tail.
+            let mut j = idx;
+            while j < len - 1 {
+                let dst = ((*d).head + j) % cap;
+                let src = ((*d).head + j + 1) % cap;
+                *(*d).data.add(dst) = *(*d).data.add(src);
+                j += 1;
+            }
+        }
+        (*d).len -= 1;
+    }
+}
+#[export_name = "rt_deque_delete"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_delete_abi(deque: Value, index: i64) {
+    rt_deque_delete(deque.unwrap_ptr(), index)
+}
+
+/// deque.index(value) -> i64 — first logical position of `value`.
+/// Raises `ValueError: deque.index(x): x not in deque` if absent (matches
+/// CPython 3.14's message).
+pub fn rt_deque_index(deque: *mut Obj, value: *mut Obj) -> i64 {
+    unsafe {
+        let d = deque as *mut DequeObj;
+        for i in 0..(*d).len {
+            let idx = ((*d).head + i) % (*d).capacity;
+            let elem = (*(*d).data.add(idx)).0 as *mut Obj;
+            if crate::hash_table_utils::eq_hashable_obj(elem, value) {
+                return i as i64;
+            }
+        }
+        raise_exc!(ExceptionType::ValueError, "deque.index(x): x not in deque");
+    }
+}
+#[export_name = "rt_deque_index"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_index_abi(deque: Value, value: Value) -> i64 {
+    // `value` is the search element, possibly a tagged immediate; pass raw bits
+    // (see `rt_deque_count_abi`). `deque` is always a heap pointer.
+    rt_deque_index(deque.unwrap_ptr(), value.0 as *mut Obj)
+}
+
+/// deque.insert(index, value) — insert `value` before logical `index`.
+/// Raises `IndexError` when the deque is already at `maxlen` (CPython 3.5+).
+pub fn rt_deque_insert(deque: *mut Obj, index: i64, value: *mut Obj) {
+    unsafe {
+        let d = deque as *mut DequeObj;
+        let maxlen = (*d).maxlen;
+        if maxlen >= 0 && (*d).len >= maxlen as usize {
+            raise_exc!(
+                ExceptionType::IndexError,
+                "deque already at its maximum size"
+            );
+        }
+        // Clamp `index` CPython-style: negatives count from the right, then the
+        // result is pinned to [0, len].
+        let len_i = (*d).len as i64;
+        let mut idx = index;
+        if idx < 0 {
+            idx += len_i;
+            if idx < 0 {
+                idx = 0;
+            }
+        }
+        if idx > len_i {
+            idx = len_i;
+        }
+        let idx = idx as usize;
+
+        ensure_capacity(d);
+        let cap = (*d).capacity;
+        let len = (*d).len; // unchanged by ensure_capacity
+        let left_count = idx;
+        let right_count = len - idx;
+        if left_count <= right_count {
+            // Open the slot by shifting the left block toward a new head.
+            let new_head = ((*d).head + cap - 1) % cap;
+            for p in 0..idx {
+                let src = ((*d).head + p) % cap;
+                let dst = (new_head + p) % cap;
+                *(*d).data.add(dst) = *(*d).data.add(src);
+            }
+            (*d).head = new_head;
+            let slot = (new_head + idx) % cap;
+            *(*d).data.add(slot) = pyaot_core_defs::Value(value as u64);
+        } else {
+            // Open the slot by shifting the right block one step right.
+            let mut k = len;
+            while k > idx {
+                let src = ((*d).head + k - 1) % cap;
+                let dst = ((*d).head + k) % cap;
+                *(*d).data.add(dst) = *(*d).data.add(src);
+                k -= 1;
+            }
+            let slot = ((*d).head + idx) % cap;
+            *(*d).data.add(slot) = pyaot_core_defs::Value(value as u64);
+        }
+        (*d).len += 1;
+    }
+}
+#[export_name = "rt_deque_insert"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_insert_abi(deque: Value, index: i64, value: Value) {
+    // `index` arrives raw (TypeSpec::Int, unboxed); `value` may be a tagged
+    // immediate — pass raw bits (see `rt_deque_count_abi`).
+    rt_deque_insert(deque.unwrap_ptr(), index, value.0 as *mut Obj)
+}
+
+/// deque.remove(value) — remove the first occurrence of `value`.
+/// Raises `ValueError` if absent (CPython message).
+pub fn rt_deque_remove(deque: *mut Obj, value: *mut Obj) {
+    unsafe {
+        let d = deque as *mut DequeObj;
+        for i in 0..(*d).len {
+            let idx = ((*d).head + i) % (*d).capacity;
+            let elem = (*(*d).data.add(idx)).0 as *mut Obj;
+            if crate::hash_table_utils::eq_hashable_obj(elem, value) {
+                rt_deque_delete(deque, i as i64);
+                return;
+            }
+        }
+        raise_exc!(ExceptionType::ValueError, "deque.remove(x): x not in deque");
+    }
+}
+#[export_name = "rt_deque_remove"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_remove_abi(deque: Value, value: Value) {
+    // `value` may be a tagged immediate; pass raw bits (see `rt_deque_count_abi`).
+    rt_deque_remove(deque.unwrap_ptr(), value.0 as *mut Obj)
+}
+
 /// Finalize a deque (free the ring buffer)
 pub unsafe fn deque_finalize(obj: *mut Obj) {
     use std::alloc::{dealloc, Layout};

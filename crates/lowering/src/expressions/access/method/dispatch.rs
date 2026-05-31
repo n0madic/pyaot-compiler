@@ -50,7 +50,13 @@ impl<'a> Lowering<'a> {
         }
 
         match obj_type {
-            Type::Str => self.lower_str_method(obj_operand, &method_name, arg_operands, mir_func),
+            Type::Str => self.lower_str_method(
+                obj_operand,
+                &method_name,
+                arg_operands,
+                &arg_types,
+                mir_func,
+            ),
             Type::Bytes => {
                 self.lower_bytes_method(obj_operand, &method_name, arg_operands, mir_func)
             }
@@ -111,15 +117,33 @@ impl<'a> Lowering<'a> {
                 if let Some(method_def) =
                     lookup_object_method(pyaot_types::TypeTagKind::Deque, &method_name)
                 {
-                    return self.lower_object_method_call(
+                    let result = self.lower_object_method_call(
                         obj_operand,
                         method_def,
                         args,
                         hir_module,
                         mir_func,
-                    );
+                    )?;
+                    // `pop`/`popleft` return the stored tagged Value; unbox
+                    // primitive element types so the result matches the deque's
+                    // declared element type (mirror the `dq[i]` read in
+                    // indexing.rs). Heap/Any elements pass through unchanged.
+                    if matches!(method_name.as_str(), "pop" | "popleft") {
+                        if let Some(elem_ty) = obj_type.deque_elem() {
+                            if matches!(elem_ty, Type::Int | Type::Bool | Type::Float) {
+                                let elem_ty = elem_ty.clone();
+                                return Ok(self.unbox_if_needed(result, &elem_ty, mir_func));
+                            }
+                        }
+                    }
+                    return Ok(result);
                 }
-                Ok(mir::Operand::Constant(mir::Constant::None))
+                // A genuinely-unimplemented deque method must fail the compile
+                // loudly rather than silently evaluating to `None`.
+                Err(pyaot_diagnostics::CompilerError::semantic_error(
+                    format!("deque has no method '{}'", method_name),
+                    self.call_span(),
+                ))
             }
             Type::Class { ref class_id, .. } => self.lower_class_method_call(
                 obj_operand,
