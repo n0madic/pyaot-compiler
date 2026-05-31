@@ -1,7 +1,8 @@
 //! Unified type planning system
 //!
 //! Single module for all type inference in lowering:
-//! - `infer`: bottom-up type synthesis (`compute_expr_type`)
+//! - `infer`: bottom-up type synthesis (`arm_dispatch` — the single
+//!   arm table shared by the Planning/Prescan/Lowering shells)
 //! - `pre_scan`: closure/lambda/decorator discovery before codegen
 //! - `check`: top-down type validation + error reporting
 
@@ -155,8 +156,8 @@ impl<'a> Lowering<'a> {
     ///   type. Never writes to the cache — Var types are
     ///   context-sensitive.
     /// - **Non-`Var`**: cache hit when available, otherwise call
-    ///   `compute_seed_expr_type` (which is now a pure function of HIR
-    ///   + F/M state — it does not read `symbols.var_types`) and cache.
+    ///   `arm_dispatch` in `Planning` mode (a pure function of HIR + F/M
+    ///   state — it does not read `symbols.var_types`) and cache.
     ///
     /// The cache is populated eagerly by `eagerly_populate_expr_types`
     /// at the end of `build_lowering_seed_info`, so during lowering this
@@ -183,7 +184,7 @@ impl<'a> Lowering<'a> {
         if let Some(cached) = self.lowering_seed_info.lookup(expr_id).cloned() {
             return cached;
         }
-        let result = self.compute_seed_expr_type(expr, hir_module);
+        let result = self.arm_dispatch(expr, hir_module, infer::SeedMode::Planning);
         // Do NOT cache `Any` or `Union` results — they signal narrowing
         // sensitivity. At eager-pass time no narrowing frame is active,
         // so a contained `Var` reads its *base* Union/Any type; a later

@@ -1,72 +1,65 @@
 //! Infer mode: bottom-up type synthesis
 //!
-//! # Phase 1 §1.4 migration surface (updated 2026-04-18 for §1.4u)
+//! # Unified arm dispatch (single source of truth)
 //!
-//! **Two public HIR type-query entry points.** Consumers outside
-//! `type_planning/` must route through exactly one of these:
+//! [`Lowering::arm_dispatch`] is THE single `match &expr.kind` over every
+//! `ExprKind`. The three historical expression-type recursion shells all
+//! delegate to it, so a new `ExprKind` (or a changed arm) is edited in
+//! ONE place rather than kept in sync across three matches:
 //!
-//! - [`Lowering::seed_expr_type_by_id`] — the memoized lowering-time
-//!   query. Takes an `ExprId`, caches per-expression results. Nearly
-//!   every post-type-planning caller in `statements/`, `expressions/`,
-//!   `exceptions.rs`, etc. funnels through this path (~124 call
-//!   sites per the §1.4u caller audit).
-//! - [`Lowering::seed_infer_expr_type`] — the pre-scan / non-memoized
-//!   path. Takes an `&hir::Expr` and a `param_types` overlay (pass
-//!   `&IndexMap::new()` for no overlay). Used by the 10 prescan
-//!   walkers in `type_planning/*` that need to query types before the
-//!   memoization cache is populated.
+//! | Shell | Entry point | Driver |
+//! |-------|-------------|--------|
+//! | **Planning** | [`Lowering::seed_expr_type_by_id`] | memoized (`&mut self`), reads the eager-populated cache |
+//! | **Prescan** | [`Lowering::seed_infer_expr_type`] | direct (`&self`), parameter-type overlay |
+//! | **Lowering** | [`Lowering::seed_expr_type`] | flow-set re-eval + cache, `Never`→`Any` coercion |
 //!
-//! Nothing outside `type_planning/` should call `compute_expr_type` or
-//! `infer_expr_type_inner` directly — these are `pub(super)`
-//! implementation details. Full unification into a single unified
-//! match (the spec's §1.4u goal) is blocked on the borrow-checker
-//! issue documented below; the two wrappers share 11 `resolve_*`
-//! helpers for complex arms (Method/Call/Builtin/Attribute/Index/
-//! Class/Closure/Module), so the real duplication is limited to the
-//! per-arm sub-expression resolution dispatch.
+//! Each shell is a thin wrapper. Per-shell mechanics (caching, coercion,
+//! the variable-source chain) live in [`Lowering::seed_sub`] — the ONE
+//! place modes differ in how they recurse. `arm_dispatch` itself is mode-
+//! agnostic except for a handful of arms gated on [`SeedMode`]:
+//! `Var` ([`Lowering::seed_var`]), the literals (Planning defers to
+//! `expr.ty`; the others use concrete literal types), `TypeRef`,
+//! `NotImplemented`, `FormatSpec`, `IfExpr`, and the catch-all
+//! ([`Lowering::seed_catchall`]). Every other arm is identical across all
+//! three modes and recurses through `seed_sub(mode)`.
 //!
-//! # Internal structure (deleted in S1.9b)
+//! ## Why the divergence is gated, not merged
 //!
-//! - `compute_expr_type` — codegen path (`&mut self`), recurses via
-//!   `seed_expr_type_by_id` for memoized sub-expression resolution.
-//! - `infer_expr_type_inner` — pre-scan path (`&self`), recurses directly
-//!   without memoization. Used by `seed_infer_expr_type` for return type
-//!   inference and lambda/closure analysis before codegen starts.
+//! The three shells deliberately keep distinct caching/coercion mechanics
+//! (the "safe" scope — runtime behavior is preserved exactly):
 //!
-//! Complex match arms (MethodCall, Call, BuiltinCall, Attribute, Index)
-//! are factored into shared `resolve_*` helpers that both paths call
-//! after resolving sub-expression types.
+//! - **Planning** recurses via a read-only cache lookup (no writes during
+//!   recursion — cache writes are hoisted to the `&mut`
+//!   `seed_expr_type_by_id` wrapper, the only `&mut` entry point). The
+//!   eager-populate pass (`eagerly_populate_expr_types`) visits every
+//!   `ExprId` in arena order (children < parents), so a sub-expression is
+//!   already cached by the time its parent is computed → O(n), equivalent
+//!   to the historical by-id memoized recursion.
+//! - **Prescan** recurses directly with no cache (it runs before the
+//!   memoization cache is populated; caching there would freeze stale
+//!   types). Literals resolve to concrete types so unannotated literal
+//!   shapes type-plan precisely.
+//! - **Lowering** re-evaluates only a fixed flow-set of arms against the
+//!   current narrowing state and reads the cache for everything else
+//!   (preserving the "unannotated `int+float` stays `Any` at lowering
+//!   reads" contract); it coerces `Never`→`Any` at every level.
 //!
-//! # Why two functions instead of one
-//!
-//! `compute_seed_expr_type` MUST recurse through `seed_expr_type_by_id` (which
-//! caches results in `expr_types`). During lowering, `var_types` evolves
-//! as statements are processed. If sub-expression types are computed fresh
-//! (without cache), the same expression can produce different types at
-//! different points in time — e.g., a variable starts as `Any` before
-//! assignment, then becomes `Str` after. The cache freezes the type at
-//! first computation, ensuring consistent codegen.
-//!
-//! `infer_seed_expr_type_inner` takes `&self` and cannot call `seed_expr_type_by_id`
-//! (which requires `&mut self`). It also MUST NOT cache into `expr_types`
-//! because it runs during pre-scan before lowering — caching at that point
-//! would freeze stale types that the codegen path would later pick up.
-//!
-//! A closure-based unification also fails: a shared `unified(&self, ..., F)`
-//! cannot accept a closure `|id| self.seed_expr_type_by_id(id)` because the
-//! closure needs `&mut self` while `unified` already holds `&self`.
+//! Planning/Prescan never coerce — empty-container narrowing
+//! (`list[Never]`), `element_is_bottom` defer, and Union refinement all
+//! need raw `Never`. Planning literals fall to `expr.ty` (preserving the
+//! `ty:None` defaultdict-factory-tag → `Any` behavior the cache depends
+//! on).
 //!
 //! # Adding new match arms
 //!
-//! When adding support for a new `ExprKind` variant:
-//! 1. Add the match arm to BOTH `compute_expr_type` and `infer_expr_type_inner`.
-//! 2. If the arm has complex logic (>5 lines) that doesn't depend on how
-//!    sub-expressions are resolved, extract it into a `resolve_*` helper
-//!    method (takes `&self`, receives pre-computed types as arguments).
-//! 3. Do NOT add explicit literal arms (Int/Float/Bool/Str/Bytes/None) to
-//!    `compute_expr_type` — the codegen path relies on `expr.ty` fallback
-//!    for literals to maintain consistency with how `var_types` caching
-//!    interacts with type resolution order.
+//! Add the arm to [`Lowering::arm_dispatch`] **once**. Gate it on
+//! [`SeedMode`] only where the shells genuinely differ; otherwise recurse
+//! into sub-expressions via `seed_sub(*child, module, mode)` so the per-
+//! mode caching/coercion is applied uniformly. If the arm has complex
+//! logic that doesn't depend on how sub-expressions are resolved, extract
+//! it into a `*_result_type` / `resolve_*` helper (takes `&self`,
+//! receives pre-computed sub-expression types as arguments) so the table
+//! stays a flat dispatch.
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
@@ -77,6 +70,44 @@ use pyaot_utils::VarId;
 
 use super::helpers;
 use crate::context::Lowering;
+
+/// Which expression-type recursion shell is driving [`Lowering::arm_dispatch`].
+///
+/// The three shells share every uniform arm and differ ONLY in:
+/// - variable resolution ([`Lowering::seed_var`]),
+/// - literal handling (Planning defers to `expr.ty`; the others use concrete
+///   literal types),
+/// - sub-expression recursion + caching + coercion ([`Lowering::seed_sub`]),
+/// - the catch-all fallback ([`Lowering::seed_catchall`]).
+///
+/// See the module-level docs for why the divergence is gated, not merged.
+#[derive(Clone, Copy)]
+pub(crate) enum SeedMode<'p> {
+    /// Planning — [`Lowering::seed_expr_type_by_id`]. Reads the
+    /// eager-populated cache for sub-expressions, resolves vars from their
+    /// base type, never coerces.
+    Planning,
+    /// Prescan — [`Lowering::seed_infer_expr_type`]. Direct (non-memoized)
+    /// recursion with an optional parameter-type overlay; never coerces.
+    Prescan(Option<&'p IndexMap<VarId, Type>>),
+    /// Lowering — [`Lowering::seed_expr_type`]. Re-evaluates a fixed
+    /// flow-set of arms against the current narrowing state and reads the
+    /// cache for everything else; coerces `Never`→`Any` at every level.
+    Lowering,
+}
+
+/// Lowering-shell boundary coercion. Internal join-state
+/// (`current_local_seed_types`, `refined_container_types`, `expr.ty` from
+/// empty-literal seeding) may carry `Never` for correct `TypeLattice::join`
+/// narrowing; consumers of the effective expression type expect a
+/// runtime-safe shape so dispatch / unbox decisions match what MIR/codegen
+/// sees. Idempotent — applied at every `seed_sub(Lowering)` level.
+fn coerce_lowering_seed(ty: Type) -> Type {
+    match ty {
+        Type::Never => Type::Any,
+        other => other.demote_never_params_to_any(),
+    }
+}
 
 // =============================================================================
 // Shared helpers: type resolution after sub-expressions are computed.
@@ -564,8 +595,8 @@ impl<'a> Lowering<'a> {
     ///   `IterNextNoExc`; callers resolve it via their own sub-expression
     ///   strategy before calling this helper (memoized vs. direct recursion).
     ///
-    /// Both `compute_expr_type` and `infer_expr_type_inner` delegate here
-    /// after resolving `iter_ty` with their respective strategies.
+    /// The `GeneratorIntrinsic` arm of `arm_dispatch` delegates here after
+    /// resolving `iter_ty` via the mode-appropriate recursion (`seed_sub`).
     fn resolve_generator_intrinsic_type(
         &self,
         intrinsic: &hir::GeneratorIntrinsic,
@@ -667,372 +698,126 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// **Internal** — codegen-path implementation of the memoized HIR type
-    /// query. External callers must go through `seed_expr_type_by_id`
-    /// (which wraps this with caching). S1.9b merges this with
-    /// [`Self::infer_seed_expr_type_inner`] into a single unified match.
+    /// THE single arm table shared by all three expression-type recursion
+    /// shells (Planning / Prescan / Lowering). Recurses into
+    /// sub-expressions via [`Self::seed_sub`], which applies the per-mode
+    /// caching/coercion. Mode-divergent arms (`Var`, literals, `TypeRef`,
+    /// `NotImplemented`, `FormatSpec`, `IfExpr`, the catch-all) are gated
+    /// on `mode`; every other arm is identical across all three modes.
     ///
-    /// Uses `seed_expr_type_by_id` for sub-expressions to ensure caching.
-    pub(super) fn compute_seed_expr_type(
-        &mut self,
+    /// `&self` so it is callable from both the memoized (`&mut self`)
+    /// Planning wrapper and the `&self` Prescan/Lowering wrappers.
+    pub(crate) fn arm_dispatch(
+        &self,
         expr: &hir::Expr,
-        hir_module: &hir::Module,
+        module: &hir::Module,
+        mode: SeedMode<'_>,
     ) -> Type {
         match &expr.kind {
-            hir::ExprKind::Var(var_id) => self
-                .get_base_var_type(var_id)
-                .cloned()
-                .or_else(|| expr.ty.clone())
-                .unwrap_or(Type::Any),
-            hir::ExprKind::BinOp { op, left, right } => {
-                let left_ty = self.seed_expr_type_by_id(*left, hir_module);
-                let right_ty = self.seed_expr_type_by_id(*right, hir_module);
-                self.binop_result_type(op, &left_ty, &right_ty, expr)
-            }
-            hir::ExprKind::UnOp { op, operand } => {
-                let operand_ty = self.seed_expr_type_by_id(*operand, hir_module);
-                self.unary_op_result_type(*op, &operand_ty)
-            }
-            hir::ExprKind::Compare { .. } => Type::Bool,
-            hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_ty = self.seed_expr_type_by_id(*left, hir_module);
-                let right_ty = self.seed_expr_type_by_id(*right, hir_module);
-                self.logical_op_result_type(left_ty, right_ty)
-            }
+            // ===== mode-divergent arms =====
+            hir::ExprKind::Var(var_id) => self.seed_var(var_id, expr, mode),
+            // Literals: Planning defers to `expr.ty` (preserves the
+            // `ty:None` factory-tag → `Any` behavior the cache depends
+            // on); Prescan/Lowering resolve to the concrete literal type.
+            hir::ExprKind::Int(_) => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::Int,
+            },
+            hir::ExprKind::Float(_) => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::Float,
+            },
+            hir::ExprKind::Bool(_) => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::Bool,
+            },
+            hir::ExprKind::Str(_) => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::Str,
+            },
+            hir::ExprKind::Bytes(_) => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::Bytes,
+            },
+            hir::ExprKind::None => match mode {
+                SeedMode::Planning => self.seed_catchall(expr),
+                _ => Type::None,
+            },
+            // TypeRef is an explicit Lowering arm only; Planning/Prescan
+            // never had one, so they fall to the catch-all (`expr.ty`).
+            hir::ExprKind::TypeRef(ty) => match mode {
+                SeedMode::Lowering => ty.clone(),
+                _ => self.seed_catchall(expr),
+            },
+            // NotImplemented / FormatSpec are explicit Prescan arms only.
+            hir::ExprKind::NotImplemented => match mode {
+                SeedMode::Prescan(_) => Type::NotImplementedT,
+                _ => self.seed_catchall(expr),
+            },
+            hir::ExprKind::FormatSpec { .. } => match mode {
+                SeedMode::Prescan(_) => Type::Str,
+                _ => self.seed_catchall(expr),
+            },
             hir::ExprKind::IfExpr {
                 cond,
                 then_val,
                 else_val,
-            } => {
-                // Apply isinstance narrowing to the ternary branches so
-                // `x if isinstance(x, T) else T(x)` infers as `T` at the
-                // lowering path (§G.13). Without this, the `other = other
-                // if isinstance(other, Value) else Value(other)` pattern
-                // used in Value.__add__ and friends keeps `other` widened
-                // to `Any`, and subsequent `other.data` fails with
-                // "unknown attribute 'data'".
-                let cond_expr = &hir_module.exprs[*cond];
-                let narrow = self.extract_simple_isinstance_narrowing(cond_expr, hir_module, None);
-                match narrow {
-                    Some((var_id, then_narrow, else_narrow)) => {
-                        let then_expr = &hir_module.exprs[*then_val];
-                        let else_expr = &hir_module.exprs[*else_val];
-                        let then_ty = if matches!(
-                            &then_expr.kind,
-                            hir::ExprKind::Var(v) if *v == var_id
-                        ) {
-                            then_narrow
-                        } else {
-                            self.seed_expr_type_by_id(*then_val, hir_module)
-                        };
-                        let else_ty = if matches!(
-                            &else_expr.kind,
-                            hir::ExprKind::Var(v) if *v == var_id
-                        ) {
-                            else_narrow
-                        } else {
-                            self.seed_expr_type_by_id(*else_val, hir_module)
-                        };
-                        helpers::union_or_any(then_ty, else_ty)
-                    }
-                    None => {
-                        let then_ty = self.seed_expr_type_by_id(*then_val, hir_module);
-                        let else_ty = self.seed_expr_type_by_id(*else_val, hir_module);
-                        helpers::union_or_any(then_ty, else_ty)
-                    }
-                }
+            } => self.seed_if_expr(*cond, *then_val, *else_val, module, mode),
+            // ===== uniform arms (identical across modes) =====
+            hir::ExprKind::BinOp { op, left, right } => {
+                let left_ty = self.seed_sub(*left, module, mode);
+                let right_ty = self.seed_sub(*right, module, mode);
+                self.binop_result_type(op, &left_ty, &right_ty, expr)
+            }
+            hir::ExprKind::UnOp { op, operand } => {
+                let operand_ty = self.seed_sub(*operand, module, mode);
+                self.unary_op_result_type(*op, &operand_ty)
+            }
+            hir::ExprKind::Compare { .. } => Type::Bool,
+            hir::ExprKind::LogicalOp { left, right, .. } => {
+                let left_ty = self.seed_sub(*left, module, mode);
+                let right_ty = self.seed_sub(*right, module, mode);
+                self.logical_op_result_type(left_ty, right_ty)
             }
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
+                    .map(|e| self.seed_sub(*e, module, mode))
                     .collect();
                 helpers::infer_list_type(elem_types, expr.ty.as_ref())
             }
             hir::ExprKind::Tuple(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
+                    .map(|e| self.seed_sub(*e, module, mode))
                     .collect();
                 Type::tuple_of(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
                 let key_types: Vec<Type> = pairs
                     .iter()
-                    .map(|(k, _)| self.seed_expr_type_by_id(*k, hir_module))
+                    .map(|(k, _)| self.seed_sub(*k, module, mode))
                     .collect();
                 let val_types: Vec<Type> = pairs
                     .iter()
-                    .map(|(_, v)| self.seed_expr_type_by_id(*v, hir_module))
+                    .map(|(_, v)| self.seed_sub(*v, module, mode))
                     .collect();
                 helpers::infer_dict_type(key_types, val_types)
             }
             hir::ExprKind::Set(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
+                    .map(|e| self.seed_sub(*e, module, mode))
                     .collect();
                 helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
-                self.method_call_result_type(&obj_ty, *method, hir_module, expr)
-            }
-            hir::ExprKind::Slice { obj, .. } => self.seed_expr_type_by_id(*obj, hir_module),
-            hir::ExprKind::Index { obj, index } => {
-                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
-                let index_expr = &hir_module.exprs[*index];
-                self.index_result_type(&obj_ty, index_expr, expr)
-            }
-            hir::ExprKind::Call { func, .. } => {
-                let func_expr = &hir_module.exprs[*func];
-                self.call_result_type(func_expr, hir_module, expr)
-            }
-            hir::ExprKind::BuiltinCall { builtin, args, .. } => {
-                let arg_types: Vec<Type> = args
-                    .iter()
-                    .map(|id| self.seed_expr_type_by_id(*id, hir_module))
-                    .collect();
-                self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
-            }
-            hir::ExprKind::StdlibCall { func, args } => {
-                let declared = typespec_to_type(&func.return_type);
-                if !matches!(declared, Type::Any) {
-                    declared
-                } else if let Some(annotated) = expr.ty.clone() {
-                    if !matches!(annotated, Type::Any) {
-                        annotated
-                    } else {
-                        match func.name {
-                            "choice" => args
-                                .first()
-                                .map(|arg_id| {
-                                    extract_iterable_first_element_type(
-                                        &self.seed_expr_type_by_id(*arg_id, hir_module),
-                                    )
-                                })
-                                .unwrap_or(Type::Any),
-                            "sample" | "choices" => args
-                                .first()
-                                .map(|arg_id| {
-                                    Type::list_of(extract_iterable_first_element_type(
-                                        &self.seed_expr_type_by_id(*arg_id, hir_module),
-                                    ))
-                                })
-                                .unwrap_or(Type::Any),
-                            _ => annotated,
-                        }
-                    }
-                } else {
-                    declared
-                }
-            }
-            hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
-            hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
-            hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
-                self.attribute_result_type(&obj_ty, *attr, expr)
-            }
-            hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, hir_module),
-            hir::ExprKind::ClassAttrRef { class_id, attr } => {
-                self.class_attr_ref_type(*class_id, *attr)
-            }
-            hir::ExprKind::Closure { func, .. } => self.closure_result_type(*func, hir_module),
-            hir::ExprKind::ModuleAttr { module, attr } => {
-                let attr_name = self.resolve(*attr).to_string();
-                self.module_export_type(module, &attr_name)
-            }
-            hir::ExprKind::ImportedRef { module, name } => self.module_export_type(module, name),
-            // Generator intrinsics — delegate to shared helper; resolve
-            // iter_ty here via the memoized seed_expr_type_by_id path.
-            hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
-                let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
-                    self.seed_expr_type_by_id(*iter_id, hir_module)
-                } else {
-                    Type::Any
-                };
-                self.resolve_generator_intrinsic_type(intrinsic, expr.ty.as_ref(), iter_ty)
-            }
-            _ => expr.ty.clone().unwrap_or(Type::Any),
-        }
-    }
-}
-
-// =============================================================================
-// Pre-scan path: direct recursion without memoization
-// =============================================================================
-
-impl<'a> Lowering<'a> {
-    /// **Public** — pre-scan entry point with a parameter-type overlay.
-    /// Use this from any `type_planning/*` walker that has pre-computed
-    /// types for unassigned parameters (e.g. lambda/closure capture
-    /// analysis, container refinement). Non-memoized — caller pays the
-    /// full sub-expression walk on every call. Pass `&IndexMap::new()`
-    /// when no overlay is needed (the former `infer_expr_type`
-    /// no-overlay wrapper was deleted in §1.4u step 1 since its sole
-    /// caller migrated).
-    pub(crate) fn seed_infer_expr_type(
-        &self,
-        expr: &hir::Expr,
-        module: &hir::Module,
-        param_types: &IndexMap<VarId, Type>,
-    ) -> Type {
-        self.infer_seed_expr_type_inner(expr, module, Some(param_types))
-    }
-
-    /// **Internal** — pre-scan inference engine. Direct recursion, no
-    /// memoization. External callers must go through
-    /// [`Self::seed_infer_expr_type`]. Same match arms as
-    /// [`Self::compute_seed_expr_type`] but different sub-expression
-    /// resolution and variable lookup strategy — full unification
-    /// (§1.4u) requires the borrow-checker work documented at the top
-    /// of this file.
-    pub(super) fn infer_seed_expr_type_inner(
-        &self,
-        expr: &hir::Expr,
-        module: &hir::Module,
-        param_types: Option<&IndexMap<VarId, Type>>,
-    ) -> Type {
-        match &expr.kind {
-            // === Literals ===
-            hir::ExprKind::Int(_) => Type::Int,
-            hir::ExprKind::Float(_) => Type::Float,
-            hir::ExprKind::Bool(_) => Type::Bool,
-            hir::ExprKind::Str(_) => Type::Str,
-            hir::ExprKind::Bytes(_) => Type::Bytes,
-            hir::ExprKind::None => Type::None,
-            hir::ExprKind::NotImplemented => Type::NotImplementedT,
-
-            hir::ExprKind::Var(var_id) => {
-                if let Some(pt) = param_types {
-                    pt.get(var_id)
-                        .cloned()
-                        .or_else(|| self.get_var_type(var_id).cloned())
-                        .unwrap_or(Type::Any)
-                } else {
-                    self.get_var_type(var_id)
-                        .cloned()
-                        .or_else(|| expr.ty.clone())
-                        .unwrap_or(Type::Any)
-                }
-            }
-            hir::ExprKind::BinOp { op, left, right } => {
-                let left_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*left], module, param_types);
-                let right_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*right], module, param_types);
-                self.binop_result_type(op, &left_ty, &right_ty, expr)
-            }
-            hir::ExprKind::UnOp { op, operand } => {
-                let operand_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*operand], module, param_types);
-                self.unary_op_result_type(*op, &operand_ty)
-            }
-            hir::ExprKind::Compare { .. } => Type::Bool,
-            hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*left], module, param_types);
-                let right_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*right], module, param_types);
-                self.logical_op_result_type(left_ty, right_ty)
-            }
-            hir::ExprKind::IfExpr {
-                cond,
-                then_val,
-                else_val,
-            } => {
-                // Apply isinstance narrowing to the ternary branches so
-                // `x if isinstance(x, T) else T(x)` infers `T` instead of
-                // `Union[Any, T]` (§G.13). Without this, unannotated-param
-                // idioms like
-                //     other = other if isinstance(other, Value) else Value(other)
-                // keep `other` as `Any` and subsequent `other.data` fails
-                // with "unknown attribute".
-                let cond_expr = &module.exprs[*cond];
-                let (then_ty, else_ty) = if let Some((then_overlay, else_overlay)) =
-                    self.build_isinstance_branch_overlays(cond_expr, module, param_types)
-                {
-                    (
-                        self.infer_seed_expr_type_inner(
-                            &module.exprs[*then_val],
-                            module,
-                            Some(&then_overlay),
-                        ),
-                        self.infer_seed_expr_type_inner(
-                            &module.exprs[*else_val],
-                            module,
-                            Some(&else_overlay),
-                        ),
-                    )
-                } else {
-                    (
-                        self.infer_seed_expr_type_inner(
-                            &module.exprs[*then_val],
-                            module,
-                            param_types,
-                        ),
-                        self.infer_seed_expr_type_inner(
-                            &module.exprs[*else_val],
-                            module,
-                            param_types,
-                        ),
-                    )
-                };
-                helpers::union_or_any(then_ty, else_ty)
-            }
-            hir::ExprKind::List(elements) => {
-                let elem_types: Vec<Type> = elements
-                    .iter()
-                    .map(|e| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
-                    })
-                    .collect();
-                helpers::infer_list_type(elem_types, expr.ty.as_ref())
-            }
-            hir::ExprKind::Tuple(elements) => {
-                let elem_types: Vec<Type> = elements
-                    .iter()
-                    .map(|e| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
-                    })
-                    .collect();
-                Type::tuple_of(elem_types)
-            }
-            hir::ExprKind::Dict(pairs) => {
-                let key_types: Vec<Type> = pairs
-                    .iter()
-                    .map(|(k, _)| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*k], module, param_types)
-                    })
-                    .collect();
-                let val_types: Vec<Type> = pairs
-                    .iter()
-                    .map(|(_, v)| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*v], module, param_types)
-                    })
-                    .collect();
-                helpers::infer_dict_type(key_types, val_types)
-            }
-            hir::ExprKind::Set(elements) => {
-                let elem_types: Vec<Type> = elements
-                    .iter()
-                    .map(|e| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
-                    })
-                    .collect();
-                helpers::infer_set_type(elem_types)
-            }
-            hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.seed_sub(*obj, module, mode);
                 self.method_call_result_type(&obj_ty, *method, module, expr)
             }
-            hir::ExprKind::Slice { obj, .. } => {
-                self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types)
-            }
+            hir::ExprKind::Slice { obj, .. } => self.seed_sub(*obj, module, mode),
             hir::ExprKind::Index { obj, index } => {
-                let obj_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.seed_sub(*obj, module, mode);
                 let index_expr = &module.exprs[*index];
                 self.index_result_type(&obj_ty, index_expr, expr)
             }
@@ -1043,9 +828,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
-                    .map(|id| {
-                        self.infer_seed_expr_type_inner(&module.exprs[*id], module, param_types)
-                    })
+                    .map(|id| self.seed_sub(*id, module, mode))
                     .collect();
                 self.builtin_call_result_type(builtin, args, &arg_types, module, expr)
             }
@@ -1062,11 +845,7 @@ impl<'a> Lowering<'a> {
                                 .first()
                                 .map(|arg_id| {
                                     extract_iterable_first_element_type(
-                                        &self.infer_seed_expr_type_inner(
-                                            &module.exprs[*arg_id],
-                                            module,
-                                            param_types,
-                                        ),
+                                        &self.seed_sub(*arg_id, module, mode),
                                     )
                                 })
                                 .unwrap_or(Type::Any),
@@ -1074,11 +853,7 @@ impl<'a> Lowering<'a> {
                                 .first()
                                 .map(|arg_id| {
                                     Type::list_of(extract_iterable_first_element_type(
-                                        &self.infer_seed_expr_type_inner(
-                                            &module.exprs[*arg_id],
-                                            module,
-                                            param_types,
-                                        ),
+                                        &self.seed_sub(*arg_id, module, mode),
                                     ))
                                 })
                                 .unwrap_or(Type::Any),
@@ -1092,8 +867,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty =
-                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.seed_sub(*obj, module, mode);
                 self.attribute_result_type(&obj_ty, *attr, expr)
             }
             hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, module),
@@ -1113,24 +887,228 @@ impl<'a> Lowering<'a> {
                 name,
             } => self.module_export_type(mod_name, name),
             // Generator intrinsics — delegate to shared helper; resolve
-            // iter_ty here via the direct (non-memoized) recursion path.
+            // iter_ty here via the mode-appropriate recursion (`seed_sub`).
             hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
                 let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
-                    self.infer_seed_expr_type_inner(&module.exprs[*iter_id], module, param_types)
+                    self.seed_sub(*iter_id, module, mode)
                 } else {
                     Type::Any
                 };
                 self.resolve_generator_intrinsic_type(intrinsic, expr.ty.as_ref(), iter_ty)
             }
-            hir::ExprKind::FormatSpec { .. } => Type::Str,
-            _ => expr.ty.clone().unwrap_or(Type::Any),
+            _ => self.seed_catchall(expr),
         }
+    }
+
+    /// Per-mode variable-type resolution. The three shells read the
+    /// variable's type from different sources:
+    ///
+    /// - **Planning** (matching the `seed_expr_type_by_id` Var fast-path):
+    ///   `get_var_type` → `get_base_var_type` → `expr.ty` → `Any`.
+    /// - **Prescan**: overlay (when present) → `get_var_type` → `Any`;
+    ///   with no overlay, `get_var_type` → `expr.ty` → `Any`.
+    /// - **Lowering**: `block_narrowed_locals` (the current narrowing
+    ///   frame) → `get_var_type` → `get_base_var_type` → `expr.ty` → `Any`.
+    fn seed_var(&self, var_id: &VarId, expr: &hir::Expr, mode: SeedMode<'_>) -> Type {
+        match mode {
+            SeedMode::Planning => self
+                .get_var_type(var_id)
+                .cloned()
+                .or_else(|| self.get_base_var_type(var_id).cloned())
+                .or_else(|| expr.ty.clone())
+                .unwrap_or(Type::Any),
+            SeedMode::Prescan(param_types) => {
+                if let Some(pt) = param_types {
+                    pt.get(var_id)
+                        .cloned()
+                        .or_else(|| self.get_var_type(var_id).cloned())
+                        .unwrap_or(Type::Any)
+                } else {
+                    self.get_var_type(var_id)
+                        .cloned()
+                        .or_else(|| expr.ty.clone())
+                        .unwrap_or(Type::Any)
+                }
+            }
+            SeedMode::Lowering => self
+                .codegen
+                .block_narrowed_locals
+                .get(var_id)
+                .map(|info| info.narrowed_ty.clone())
+                .or_else(|| self.get_var_type(var_id).cloned())
+                .or_else(|| self.get_base_var_type(var_id).cloned())
+                .or_else(|| expr.ty.clone())
+                .unwrap_or(Type::Any),
+        }
+    }
+
+    /// Catch-all for arms not handled explicitly. Planning/Prescan return
+    /// the HIR-annotated type (`expr.ty`), falling back to `Any`. The
+    /// Lowering catch-all (a cache lookup) is handled in [`Self::seed_sub`]
+    /// before `arm_dispatch` is reached — non-flow kinds never enter
+    /// `arm_dispatch` in Lowering mode — so this helper is mode-agnostic.
+    fn seed_catchall(&self, expr: &hir::Expr) -> Type {
+        expr.ty.clone().unwrap_or(Type::Any)
+    }
+
+    /// `IfExpr` arm. Prescan builds per-branch isinstance *overlays* and
+    /// recurses with the narrowed param-type map on each branch; Planning
+    /// (and the structurally-unreachable Lowering case) narrows the base
+    /// var type via `extract_simple_isinstance_narrowing` with no overlay.
+    /// Both apply `x if isinstance(x, T) else …` narrowing so the pattern
+    /// `other = other if isinstance(other, Value) else Value(other)` infers
+    /// `T` instead of widening to `Any` (§G.13).
+    fn seed_if_expr(
+        &self,
+        cond: hir::ExprId,
+        then_val: hir::ExprId,
+        else_val: hir::ExprId,
+        module: &hir::Module,
+        mode: SeedMode<'_>,
+    ) -> Type {
+        if let SeedMode::Prescan(param_types) = mode {
+            let cond_expr = &module.exprs[cond];
+            let (then_ty, else_ty) = if let Some((then_overlay, else_overlay)) =
+                self.build_isinstance_branch_overlays(cond_expr, module, param_types)
+            {
+                (
+                    self.seed_sub(then_val, module, SeedMode::Prescan(Some(&then_overlay))),
+                    self.seed_sub(else_val, module, SeedMode::Prescan(Some(&else_overlay))),
+                )
+            } else {
+                (
+                    self.seed_sub(then_val, module, mode),
+                    self.seed_sub(else_val, module, mode),
+                )
+            };
+            return helpers::union_or_any(then_ty, else_ty);
+        }
+        // Planning (and the unreachable Lowering case): narrow the base
+        // var type, no overlay.
+        let cond_expr = &module.exprs[cond];
+        let narrow = self.extract_simple_isinstance_narrowing(cond_expr, module, None);
+        match narrow {
+            Some((var_id, then_narrow, else_narrow)) => {
+                let then_expr = &module.exprs[then_val];
+                let else_expr = &module.exprs[else_val];
+                let then_ty = if matches!(&then_expr.kind, hir::ExprKind::Var(v) if *v == var_id) {
+                    then_narrow
+                } else {
+                    self.seed_sub(then_val, module, mode)
+                };
+                let else_ty = if matches!(&else_expr.kind, hir::ExprKind::Var(v) if *v == var_id) {
+                    else_narrow
+                } else {
+                    self.seed_sub(else_val, module, mode)
+                };
+                helpers::union_or_any(then_ty, else_ty)
+            }
+            None => {
+                let then_ty = self.seed_sub(then_val, module, mode);
+                let else_ty = self.seed_sub(else_val, module, mode);
+                helpers::union_or_any(then_ty, else_ty)
+            }
+        }
+    }
+
+    /// Per-mode sub-expression recursion — the ONE place the three shells
+    /// differ mechanically. `arm_dispatch` calls this for every child.
+    ///
+    /// - **Planning**: read-only cache lookup (no writes during recursion —
+    ///   they are hoisted to the `&mut` `seed_expr_type_by_id` wrapper),
+    ///   compute via `arm_dispatch` on a miss. Vars are never cached, so
+    ///   they always recompute through `arm_dispatch` → `seed_var`.
+    ///   Eager-populate (children-before-parents) makes the read-only
+    ///   lookup hit for already-visited sub-expressions → O(n).
+    /// - **Prescan**: direct, non-memoized `arm_dispatch`.
+    /// - **Lowering**: re-evaluate the fixed flow-set of arms via
+    ///   `arm_dispatch`; read the cache (falling back to `expr.ty`) for
+    ///   every other kind; coerce `Never`→`Any` at every level.
+    pub(crate) fn seed_sub(
+        &self,
+        expr_id: hir::ExprId,
+        module: &hir::Module,
+        mode: SeedMode<'_>,
+    ) -> Type {
+        match mode {
+            SeedMode::Planning => {
+                let expr = &module.exprs[expr_id];
+                if !matches!(expr.kind, hir::ExprKind::Var(_)) {
+                    if let Some(cached) = self.lowering_seed_info.lookup(expr_id) {
+                        return cached.clone();
+                    }
+                }
+                self.arm_dispatch(expr, module, mode)
+            }
+            SeedMode::Prescan(_) => {
+                let expr = &module.exprs[expr_id];
+                self.arm_dispatch(expr, module, mode)
+            }
+            SeedMode::Lowering => {
+                let expr = &module.exprs[expr_id];
+                let raw = if Self::is_lowering_flow_kind(&expr.kind) {
+                    self.arm_dispatch(expr, module, mode)
+                } else {
+                    self.lowering_seed_info
+                        .lookup(expr_id)
+                        .cloned()
+                        .or_else(|| expr.ty.clone())
+                        .unwrap_or(Type::Any)
+                };
+                coerce_lowering_seed(raw)
+            }
+        }
+    }
+
+    /// The fixed set of `ExprKind`s that the Lowering shell re-evaluates
+    /// against the current narrowing state (everything else reads the
+    /// cache). Mirrors the historical explicit arms of `seed_expr_type`.
+    fn is_lowering_flow_kind(kind: &hir::ExprKind) -> bool {
+        matches!(
+            kind,
+            hir::ExprKind::Var(_)
+                | hir::ExprKind::Int(_)
+                | hir::ExprKind::Float(_)
+                | hir::ExprKind::Bool(_)
+                | hir::ExprKind::Str(_)
+                | hir::ExprKind::Bytes(_)
+                | hir::ExprKind::None
+                | hir::ExprKind::TypeRef(_)
+                | hir::ExprKind::Attribute { .. }
+                | hir::ExprKind::Slice { .. }
+                | hir::ExprKind::Index { .. }
+                | hir::ExprKind::BuiltinCall { .. }
+        )
+    }
+}
+
+// =============================================================================
+// Pre-scan path: direct recursion without memoization
+// =============================================================================
+
+impl<'a> Lowering<'a> {
+    /// **Public** — pre-scan (Prescan-shell) entry point with a
+    /// parameter-type overlay. Use this from any `type_planning/*` walker
+    /// that has pre-computed types for unassigned parameters (e.g.
+    /// lambda/closure capture analysis, container refinement). Non-memoized
+    /// — caller pays the full sub-expression walk on every call. Pass
+    /// `&IndexMap::new()` when no overlay is needed.
+    ///
+    /// Thin wrapper over [`Self::arm_dispatch`] in `Prescan` mode — the
+    /// single shared arm table (see module docs).
+    pub(crate) fn seed_infer_expr_type(
+        &self,
+        expr: &hir::Expr,
+        module: &hir::Module,
+        param_types: &IndexMap<VarId, Type>,
+    ) -> Type {
+        self.arm_dispatch(expr, module, SeedMode::Prescan(Some(param_types)))
     }
 
     /// Extract `isinstance(var, T)` (or `not isinstance(var, T)`) narrowing
     /// info from a condition expression. Returns `(var_id, then_ty, else_ty)`
-    /// with the narrowing applied. Used by the `IfExpr` arm of
-    /// `infer_seed_expr_type_inner` to give ternary branches refined types.
+    /// with the narrowing applied. Used by the `IfExpr` arm (`seed_if_expr`)
+    /// of `arm_dispatch` to give ternary branches refined types.
     ///
     /// Unlike `narrowing::extract_isinstance_info`, this helper consults the
     /// supplied `param_types` overlay first so it works during pre-scan
@@ -1191,8 +1169,8 @@ impl<'a> Lowering<'a> {
 
         // Resolve the var's base type: overlay first, then the lowering's
         // stable state (refined/prescan/global), else default to Any.
-        // §1.4u-b: this helper is called from `compute_expr_type`'s
-        // IfExpr arm, which must be free of `symbols.var_types` reads so
+        // §1.4u-b: in Planning mode this helper is reached from
+        // `seed_if_expr`, which must be free of `symbols.var_types` reads so
         // non-Var expressions can be eagerly cached in `build_lowering_seed_info`.
         // The narrowing heuristic works on the base (pre-narrowing) type
         // anyway — narrowing INSIDE an isinstance condition is the
@@ -1222,7 +1200,7 @@ impl<'a> Lowering<'a> {
     /// branches in that case.
     ///
     /// Single DRY source for the overlay-building half of the
-    /// isinstance-narrowing IfExpr arms in `infer_seed_expr_type_inner`,
+    /// isinstance-narrowing IfExpr arms in `seed_if_expr` (Prescan mode),
     /// `scan_expr_for_calls`, and `scan_constructor_calls_in_expr`. Fixes to
     /// the overlay logic propagate automatically to all three callers.
     pub(crate) fn build_isinstance_branch_overlays(
@@ -1331,17 +1309,16 @@ pub(crate) fn extract_iterable_first_element_type(ty: &Type) -> Type {
 }
 
 // =============================================================================
-// S1.9b shared result-computation helpers
+// Shared result-computation (leaf-dispatcher) helpers
 // =============================================================================
 //
 // Each helper takes **already-resolved sub-expression types** and produces the
-// parent expression's result type. The helper body is identical to what used
-// to live inline in both `compute_expr_type` and `infer_expr_type_inner`,
-// factored out so the two dispatchers share logic without needing to share
-// sub-expression-recursion strategy.
+// parent expression's result type. `arm_dispatch` calls these after resolving
+// sub-expressions via `seed_sub(mode)`, so the leaf logic is shared across all
+// three shells without sharing the sub-expression-recursion strategy.
 //
-// `&self` — safe to call from both the memoized (`&mut self`) and pre-scan
-// (`&self`) paths.
+// `&self` — safe to call from both the memoized (`&mut self`) Planning wrapper
+// and the `&self` Prescan/Lowering wrappers.
 
 impl<'a> Lowering<'a> {
     /// Result type of `left op right`. Prefers a class-dunder's inferred

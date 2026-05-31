@@ -27,6 +27,76 @@ use pyaot_mir as mir;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Dev-time guard against selection-builtin handler/seed drift.
+    ///
+    /// `min` / `max` / `sorted` *select* (or collect) elements from their
+    /// iterable, so the result local's logical type must stay *comparable*
+    /// with the seed authority's view of the whole-call type
+    /// (`extract_iterable_element_type` for `min`/`max`; `list[elem]` for
+    /// `sorted`). A handler that re-derives a primitive result type
+    /// incomparable with the seed — e.g. an `Int` result local over a `Str`
+    /// iterable, the exact historical min/max-over-heap bug — trips this
+    /// assertion.
+    ///
+    /// `sum` is intentionally **exempt**: its `Tagged`/`Int` accumulator
+    /// legitimately differs from the element seed (see
+    /// `classify_reduction_elem`).
+    ///
+    /// Debug-only: a pure consistency check between two already-computed
+    /// types, no MIR effect. Precision differences (Any/Never/Var/Union and
+    /// the numeric tower) never fire — only genuinely disjoint types do.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_selection_builtin_seed(
+        &self,
+        builtin: &hir::Builtin,
+        call_expr: &hir::Expr,
+        result: &mir::Operand,
+        hir_module: &hir::Module,
+        mir_func: &mir::Function,
+    ) {
+        use crate::type_planning::infer::SeedMode;
+        use pyaot_types::Type;
+
+        if !matches!(
+            builtin,
+            hir::Builtin::Min | hir::Builtin::Max | hir::Builtin::Sorted
+        ) {
+            return;
+        }
+
+        // `imprecise` types are top/bottom/placeholder/widened — a difference
+        // there is a precision gap, never drift.
+        fn imprecise(t: &Type) -> bool {
+            matches!(t, Type::Any | Type::Never | Type::Var(_)) || t.is_union()
+        }
+        // Comparable up to subtyping; for same-kind list results unwrap one
+        // level (is_subtype_of does not uniformly model container covariance,
+        // and the bug class is about the *element* primitive type anyway).
+        fn drift(result_ty: &Type, seed_ty: &Type) -> bool {
+            if imprecise(result_ty) || imprecise(seed_ty) {
+                return false;
+            }
+            if let (Some(a), Some(b)) = (result_ty.list_elem(), seed_ty.list_elem()) {
+                return drift(a, b);
+            }
+            !result_ty.is_subtype_of(seed_ty) && !seed_ty.is_subtype_of(result_ty)
+        }
+
+        let result_ty = self.operand_type(result, mir_func);
+        // Seed authority for the whole call (Lowering shell, the same view
+        // the handlers seed their result locals from).
+        let seed_ty = self.arm_dispatch(call_expr, hir_module, SeedMode::Lowering);
+        debug_assert!(
+            !drift(&result_ty, &seed_ty),
+            "selection-builtin seed drift: {:?} result local typed {:?}, but the seed authority \
+             says {:?} (incomparable) at {:?}",
+            builtin,
+            result_ty,
+            seed_ty,
+            call_expr.span,
+        );
+    }
+
     /// Lower a built-in function call expression.
     pub(crate) fn lower_builtin_call(
         &mut self,

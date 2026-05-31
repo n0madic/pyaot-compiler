@@ -12,6 +12,7 @@ use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, VarId};
 
 use super::{CrossModuleClassInfo, LoweredClassInfo, Lowering};
 use crate::narrowing::DeadBranch;
+use crate::type_planning::infer::SeedMode;
 
 // =============================================================================
 // String Interning
@@ -107,9 +108,9 @@ impl<'a> Lowering<'a> {
     /// Read a variable's **base** type — fully independent of
     /// `symbols.var_types` (which is cleared per function and only
     /// tracks lowering-time writes). §1.4u-b step 4
-    /// restricts this accessor to stable sources so `compute_expr_type`
-    /// can be a pure function of HIR + F/M state, cacheable at
-    /// module level.
+    /// restricts this accessor to stable sources so `arm_dispatch`
+    /// (Planning mode) can be a pure function of HIR + F/M state,
+    /// cacheable at module level.
     ///
     /// Fallback chain (all stable after `build_lowering_seed_info`
     /// completes, never touched by narrowing):
@@ -145,78 +146,21 @@ impl<'a> Lowering<'a> {
     ///
     /// Regular lowering mostly reads precomputed seed metadata for non-`Var`
     /// expressions and the current lowered view for `Var`s. A small set of
-    /// context-sensitive expression kinds (`Attribute`, `BuiltinCall`) are
-    /// recomputed against the current lowering-time var map so loop-carried
-    /// locals like `v` in `zip(v._children, v._local_grads)` can refine after
-    /// earlier `IterAdvance` binds in the same CFG block.
+    /// context-sensitive expression kinds (the Lowering flow-set: `Var`,
+    /// literals, `TypeRef`, `Attribute`, `Slice`, `Index`, `BuiltinCall`)
+    /// are recomputed against the current narrowing state so loop-carried
+    /// locals like `v` in `zip(v._children, v._local_grads)` can refine
+    /// after earlier `IterAdvance` binds in the same CFG block.
+    ///
+    /// Thin wrapper over [`Lowering::seed_sub`] in `Lowering` mode — the
+    /// single shared arm table (see `type_planning::infer` module docs).
+    /// `seed_sub` applies the flow-set re-evaluation, the cache fallback
+    /// for non-flow kinds, and the boundary `Never`→`Any` coercion.
     ///
     /// Seed-building inside `type_planning` continues to use
     /// `seed_expr_type_by_id`.
     pub(crate) fn seed_expr_type(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
-        let expr = &hir_module.exprs[expr_id];
-        let ty = match &expr.kind {
-            hir::ExprKind::Var(var_id) => self
-                .codegen
-                .block_narrowed_locals
-                .get(var_id)
-                .map(|info| info.narrowed_ty.clone())
-                .or_else(|| self.get_var_type(var_id).cloned())
-                .or_else(|| self.get_base_var_type(var_id).cloned())
-                .or_else(|| expr.ty.clone())
-                .unwrap_or(Type::Any),
-            hir::ExprKind::Int(_) => Type::Int,
-            hir::ExprKind::Float(_) => Type::Float,
-            hir::ExprKind::Bool(_) => Type::Bool,
-            hir::ExprKind::Str(_) => Type::Str,
-            hir::ExprKind::Bytes(_) => Type::Bytes,
-            hir::ExprKind::None => Type::None,
-            hir::ExprKind::TypeRef(ty) => ty.clone(),
-            hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty = self.seed_expr_type(*obj, hir_module);
-                self.attribute_result_type(&obj_ty, *attr, expr)
-            }
-            hir::ExprKind::BuiltinCall { builtin, args, .. } => {
-                let arg_types: Vec<Type> = args
-                    .iter()
-                    .map(|arg_id| self.seed_expr_type(*arg_id, hir_module))
-                    .collect();
-                self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
-            }
-            // `obj[a:b]` preserves the container type — slicing list[V] gives
-            // list[V], slicing str gives str, etc. Without this arm the read
-            // API falls through to the cache; for inline slice expressions
-            // (e.g. `len(ki[0:2])`) the cache may carry stale `Any` from an
-            // early type-planning round, and downstream `lower_len` /
-            // `select_len_func` then see `Any` → fall back to `Const(0)`,
-            // silently producing 0-length results. Mirrors the
-            // `compute_seed_expr_type` Slice arm in `type_planning/infer.rs`.
-            hir::ExprKind::Slice { obj, .. } => self.seed_expr_type(*obj, hir_module),
-            // `obj[i]` element type — same rationale as Slice. Without this
-            // arm `len(d[k])` and similar inline uses fall back to `Any`
-            // and downstream dispatch silently degrades.
-            hir::ExprKind::Index { obj, index } => {
-                let obj_ty = self.seed_expr_type(*obj, hir_module);
-                let index_expr = &hir_module.exprs[*index];
-                self.index_result_type(&obj_ty, index_expr, expr)
-            }
-            _ => self
-                .lowering_seed_info
-                .lookup(expr_id)
-                .cloned()
-                .or_else(|| expr.ty.clone())
-                .unwrap_or(Type::Any),
-        };
-        // Boundary coercion at the lowering-side read API. Internal
-        // join-state (`current_local_seed_types`, `refined_container_types`,
-        // `expr.ty` from empty-literal seeding) may carry `Never` for
-        // correct `TypeLattice::join` narrowing; consumers of the
-        // effective expression type expect a runtime-safe shape so that
-        // dispatch / unbox decisions (e.g. `dict_kv` value type for
-        // `RT_DICT_GET` unboxing) match what MIR / codegen sees.
-        match ty {
-            Type::Never => Type::Any,
-            other => other.demote_never_params_to_any(),
-        }
+        self.seed_sub(expr_id, hir_module, SeedMode::Lowering)
     }
 }
 

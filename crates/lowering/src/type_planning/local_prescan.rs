@@ -185,8 +185,8 @@ impl<'a> Lowering<'a> {
                 let rhs_expr = &hir_module.exprs[*value];
                 // `def inner(): ...` becomes a Bind with a FuncRef or
                 // Closure value — those synthesize the enclosing
-                // function's *return* type under `infer_expr_type_inner`,
-                // which is nonsense for the binding target.
+                // function's *return* type under the Prescan shell
+                // (`arm_dispatch`), which is nonsense for the binding target.
                 if matches!(
                     rhs_expr.kind,
                     hir::ExprKind::FuncRef(_) | hir::ExprKind::Closure { .. }

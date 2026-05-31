@@ -435,9 +435,9 @@ pub struct LoweringSeedInfo {
     /// parameters (`hir::Param::ty`), every function's prescan-inferred
     /// local types (`per_function_local_seed_types`), and module-level
     /// globals. Never mutated during lowering — independent of
-    /// narrowing. Consulted by `get_base_var_type` so `compute_expr_type`
-    /// can be a pure function of HIR + stable state and its results
-    /// can be cached at the module level.
+    /// narrowing. Consulted by `get_base_var_type` so `arm_dispatch`
+    /// (Planning mode) can be a pure function of HIR + stable state and
+    /// its results can be cached at the module level.
     pub base_var_types: IndexMap<VarId, Type>,
     /// Early read-time field refinements learned from constructor call sites.
     ///
@@ -490,7 +490,7 @@ impl LoweringSeedInfo {
     }
 
     /// Insert a computed type into the memoization cache. Used by the
-    /// lowering-path `compute_expr_type` wrapper to seed the cache.
+    /// Planning wrapper `seed_expr_type_by_id` to seed the cache.
     pub fn insert_type(&mut self, expr_id: hir::ExprId, ty: Type) {
         self.expr_types.insert(expr_id, ty);
     }

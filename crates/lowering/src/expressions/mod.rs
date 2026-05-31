@@ -141,7 +141,18 @@ impl<'a> Lowering<'a> {
                 builtin,
                 args,
                 kwargs,
-            } => self.lower_builtin_call(builtin, args, kwargs, hir_module, mir_func),
+            } => {
+                let r = self.lower_builtin_call(builtin, args, kwargs, hir_module, mir_func);
+                // Dev-time guard: catch selection-builtin (min/max/sorted)
+                // handler/seed drift (the historical min/max-over-heap bug).
+                #[cfg(debug_assertions)]
+                if let Ok(ref op) = r {
+                    self.debug_assert_selection_builtin_seed(
+                        builtin, expr, op, hir_module, mir_func,
+                    );
+                }
+                r
+            }
 
             // Collections (collections.rs)
             hir::ExprKind::List(elements) => self.lower_list(elements, expr, hir_module, mir_func),

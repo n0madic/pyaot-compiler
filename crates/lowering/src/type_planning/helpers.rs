@@ -2,8 +2,9 @@
 //!
 //! Pure functions for method return types, binary operations, container
 //! element unification, builtin call types, and index resolution.
-//! Used by both `compute_expr_type` (codegen) and `seed_infer_expr_type`
-//! (return type inference) to ensure consistent behavior.
+//! Consumed by the leaf dispatchers in `infer`, which `arm_dispatch`
+//! calls for all three shells (Planning/Prescan/Lowering) to ensure
+//! consistent behavior.
 
 use pyaot_hir as hir;
 use pyaot_types::{Type, TypeLattice, TypeTagKind};

@@ -766,13 +766,17 @@ All type inference is in one module `crates/lowering/src/type_planning/`:
 
 ```
 type_planning/
-  mod.rs       — public API: get_type_of_expr_id, get_expr_type, run_type_planning
-  infer.rs     — bottom-up: compute_expr_type(&mut self) → Type (memoized in expr_types)
-  pre_scan.rs  — pre-scan: closure/lambda/decorator discovery before codegen
-  check.rs     — top-down: check_expr_type validates types, reports CompilerWarning::TypeError
+  mod.rs       — Planning wrapper seed_expr_type_by_id(&mut self), build_lowering_seed_info
+  infer.rs     — bottom-up: arm_dispatch(&self, mode: SeedMode) → Type, the single arm table
+                 + seed_sub (per-mode recursion/cache/coercion) + the *_result_type leaf helpers
+  constraint_solver/ — worklist type solver (sole type planner, S5+)
+  check.rs     — top-down: validates types, reports CompilerWarning::TypeError
 ```
 
-**No RefCell** — `compute_expr_type(&mut self)` stores results directly in `expr_types: HashMap<ExprId, Type>`. Memoized types persist across functions (ExprIds are unique per-module).
+See "Type Inference: One Arm Table, Three Mode-Gated Shells" below for the
+`SeedMode` contract.
+
+**No RefCell** — the Planning wrapper `seed_expr_type_by_id(&mut self)` stores results directly in `expr_types: HashMap<ExprId, Type>`. Memoized types persist across functions (ExprIds are unique per-module).
 
 **Bidirectional propagation** via `lower_expr_expecting(expr, expected_type, ...)`:
 - Assignment: `x: list[int] = []` → expected = `list[int]`
@@ -812,17 +816,75 @@ This matches Python's MRO: instance dict first, then class dict. Assignment thro
 
 ---
 
-## Type Inference: Two Parallel Functions, Cannot Merge
+## Type Inference: One Arm Table, Three Mode-Gated Shells (`arm_dispatch`)
 
-`compute_expr_type` (codegen, `&mut self`) and `infer_expr_type_inner` (pre-scan, `&self`) in `type_planning/infer.rs` have nearly identical match arms but **cannot be unified into one function** due to a memoization constraint.
+`type_planning/infer.rs::arm_dispatch(&self, expr, module, mode: SeedMode)` is
+**THE single `match &expr.kind`** over every `ExprKind`. The three historical
+expression-type recursion shells all delegate to it, so a new `ExprKind` (or a
+changed arm) is edited in **one** place — the old "add the arm to BOTH
+functions" footgun is gone. (This supersedes the earlier "two parallel
+functions, cannot merge" note: the borrow-checker obstacle was sidestepped by
+making `arm_dispatch` `&self` and hoisting the only cache *write* into the
+`&mut` Planning wrapper.)
 
-During lowering, `var_types` evolves as statements are processed (e.g., after `x = "hello"`, `x` changes from `Any` to `Str`). `compute_expr_type` recurses through `get_type_of_expr_id` which caches sub-expression types in `expr_types`. This cache freezes types at first access, ensuring the same expression consistently returns the same type throughout codegen. Without this cache, the same variable expression would return `Any` before assignment and `Str` after — producing inconsistent MIR that causes runtime segfaults.
+The three shells are thin wrappers, distinguished by `SeedMode`:
 
-`infer_expr_type_inner` runs during pre-scan (before lowering starts) and takes `&self`, so it cannot call `get_type_of_expr_id` (`&mut self`). It also must not write to `expr_types` — doing so would freeze pre-scan types that the codegen path would later read as authoritative.
+| Shell | Entry point | `SeedMode` | Driver |
+|-------|-------------|------------|--------|
+| **Planning** | `seed_expr_type_by_id` (`&mut self`) | `Planning` | reads the eager-populated cache; resolves vars from base type; raw (no coercion) |
+| **Prescan** | `seed_infer_expr_type` (`&self`) | `Prescan(Option<&overlay>)` | direct, non-memoized recursion with a param-type overlay; raw |
+| **Lowering** | `seed_expr_type` (`&self`) | `Lowering` | re-evaluates a fixed flow-set against the current narrowing state, reads the cache otherwise; coerces `Never`→`Any` |
 
-The two functions share complex logic via `resolve_*` helper methods (`resolve_method_on_type`, `resolve_call_target_type`, `resolve_builtin_with_overrides`, `resolve_attribute_on_type`, `resolve_index_with_getitem`). The remaining duplication is only in the thin match arms that resolve sub-expressions differently and apply fallbacks.
+Per-mode mechanics live in `seed_sub(expr_id, module, mode)` — the ONE place the
+shells differ in how they recurse, cache, and coerce. `arm_dispatch` itself is
+mode-agnostic except for the arms that genuinely diverge: `Var` (`seed_var`),
+the literals (Planning defers to `expr.ty`; the others use concrete literal
+types), `TypeRef`, `NotImplemented`, `FormatSpec`, `IfExpr` (`seed_if_expr`),
+and the catch-all (`seed_catchall`). Every other arm is identical across all
+three modes and recurses through `seed_sub(mode)`.
 
-**When adding a new `ExprKind`:** add the match arm to BOTH functions. Do NOT add explicit literal arms to `compute_expr_type` — it relies on the `_ => expr.ty` fallback for literals to preserve consistency with the caching model.
+**Load-bearing invariants (why behavior is preserved exactly):**
+
+- **Planning cache, no writes during recursion.** `seed_sub(Planning)` does a
+  *read-only* cache lookup and computes via `arm_dispatch` on a miss; the only
+  cache *write* is in the `&mut` `seed_expr_type_by_id` wrapper. This is
+  sound because `eagerly_populate_expr_types` visits every `ExprId` in arena
+  order (children < parents), so a sub-expression is already cached by the
+  time its parent is computed → O(n), equivalent to the historical by-id
+  memoized recursion.
+- **Coercion is per-mode.** Lowering coerces (`Never`→`Any` +
+  `demote_never_params_to_any`) at every `seed_sub`/wrapper return;
+  Planning/Prescan never coerce — empty-container narrowing (`list[Never]`),
+  `element_is_bottom` defer, and Union refinement all need raw `Never`.
+- **Planning literals fall to `expr.ty`** (not concrete types), preserving the
+  `ty:None` defaultdict-factory-tag → `Any` behavior the cache depends on.
+- **Lowering's flow-set** = `{Var, Int, Float, Bool, Str, Bytes, None, TypeRef,
+  Attribute, Slice, Index, BuiltinCall}` (the historical explicit arms of
+  `seed_expr_type`); everything else in Lowering mode reads the cache —
+  preserving the "unannotated `int+float` stays `Any` at lowering reads"
+  contract (unit test in `context/accessors.rs`).
+
+**When adding a new `ExprKind`:** add the arm to `arm_dispatch` once; gate it on
+`SeedMode` only where the shells genuinely differ; otherwise recurse via
+`seed_sub(*child, module, mode)`. Complex sub-expression-independent logic goes
+into a `*_result_type` / `resolve_*` leaf helper (`&self`, pre-resolved
+sub-types as args) so the table stays a flat dispatch.
+
+### Handler/seed drift guard (`debug_assert_selection_builtin_seed`)
+
+A second, handler-level drift surface is independent of the dispatch unification:
+a lowering *handler* that re-derives a result type instead of consuming the
+seed. `min`/`max`/`sorted` *select* (or collect) iterable elements, so the
+result local's logical type must stay **comparable** (one a subtype of the
+other) with the seed authority's whole-call type. A `#[cfg(debug_assertions)]`
+guard in `expressions/builtins/mod.rs` (called from the `BuiltinCall` arm of
+`lower_expr`) asserts this; an incomparable pair (e.g. an `Int` result over a
+`Str`/`Bytes` iterable — the historical min/max-over-heap bug) fires. `sum` is
+**exempt** — its `Tagged`/`Int` accumulator legitimately differs from the
+element seed (see `classify_reduction_elem`). The check is lenient: Any / Never
+/ Var / Union and the numeric tower never fire (zero false positives on
+precision differences), and same-kind list results are compared one element
+level down to dodge container-covariance gaps in `is_subtype_of`.
 
 ---
 
