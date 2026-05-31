@@ -3740,4 +3740,10 @@ assert repr([_NoRepr()]).startswith(
     "[<__main__._NoRepr object at 0x"
 ), "container element uses the module-qualified default repr"
 
+# type(instance) is module-qualified; __name__ is the bare class name.
+assert (
+    str(type(_NoRepr())) == "<class '__main__._NoRepr'>"
+), "type(instance) is module-qualified"
+assert type(_NoRepr()).__name__ == "_NoRepr", "type(instance).__name__ is the bare class name"
+
 print("All class tests passed!")

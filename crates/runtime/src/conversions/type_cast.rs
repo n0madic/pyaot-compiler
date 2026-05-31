@@ -77,6 +77,17 @@ pub fn rt_type_name(obj: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        // Class instances: use the registered qualified name so `type(w)`
+        // gives `<class '__main__.Widget'>` (CPython compatible) instead of
+        // the generic `<class 'object'>` from the `Instance` type tag.
+        if (*obj).header.type_tag == TypeTagKind::Instance {
+            let class_id = (*(obj as *const crate::object::InstanceObj)).class_id;
+            if let Some(qn) = crate::instance::lookup_class_qualname(class_id) {
+                let s = format!("<class '{}'>", qn);
+                let bytes = s.as_bytes();
+                return rt_make_str(bytes.as_ptr(), bytes.len());
+            }
+        }
         // Get type_class directly from the type tag - single source of truth in core-defs
         let type_class_str = (*obj).header.type_tag.type_class();
         let bytes = type_class_str.as_bytes();
@@ -93,16 +104,21 @@ pub extern "C" fn rt_type_name_abi(obj: Value) -> Value {
 /// Extracts "int" from "<class 'int'>" for type(x).__name__
 /// Input: string object like "<class 'int'>"
 /// Output: string object like "int"
+///
+/// `__name__` is the bare class name, NOT module-qualified: CPython's
+/// `type(w).__name__` is `"Widget"` (not `"__main__.Widget"`) and
+/// `time.struct_time.__name__` is `"struct_time"`. So the last dotted
+/// segment of the quoted name is taken.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_type_name_extract(type_str: *mut Obj) -> *mut Obj {
     let full_str = unsafe { crate::utils::str_obj_to_rust_string(type_str) };
 
-    // Parse "<class 'typename'>" format to extract typename
-    // Also handles multi-part names like "time.struct_time"
+    // Parse "<class 'module.typename'>" → bare "typename" (last `.` segment).
     if let Some(start) = full_str.find("'") {
         if let Some(end) = full_str.rfind("'") {
             if start < end {
-                let name = &full_str[start + 1..end];
+                let qualified = &full_str[start + 1..end];
+                let name = qualified.rsplit('.').next().unwrap_or(qualified);
                 let bytes = name.as_bytes();
                 return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
             }
