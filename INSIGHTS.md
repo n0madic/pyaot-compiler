@@ -684,6 +684,28 @@ Propagation sites:
 - `emit_mutable_default_initializations` — from parameter type annotation
 - `desugar_list_comprehension` — from `infer_comprehension_elem_type()` (checks if all generators are `range()` or int-list, and element expression is int)
 
+### Empty-bootstrapped annotated FIELD reconciliation
+
+The expected-type propagation above covers **locals**, not class **fields**. A
+field annotated `data: list[int]` but initialized empty in `__init__`
+(`self.data = []`) and grown only via `self.data.append(x)` is a separate hazard:
+the constraint solver's `propagate_mutator_elem_refinement` tracks `Var`/`Index`
+receivers but NOT attribute receivers (`self.data.append`), so the field refines
+purely from the empty write → `list[Never]`. `fold_refined_field_types_into_storage`
+(`class_metadata.rs`) used to blindly `demote_never_params_to_any` (`list[Never]`
+→ `list[Any]`), **overwriting the concrete annotation** that `class_metadata`
+loaded into `field_types` first. Then `self.data[0]` read as `Any`/Tagged and a
+`-> int` getter returning it got a Tagged return ABI clashing with the caller's
+`Raw(I64)` dest at the verifier (`return of Class$getter: Tagged not assignable
+to dest Raw(I64)`). Non-empty init worked because the write witnessed `int`.
+
+Fix: `Type::reconcile_never_with_annotation(annotation)` (`types/src/lib.rs`)
+walks the refined type and the annotation in parallel and fills **only** `Never`
+positions from the annotation — `Any` positions stay (deliberate cross-instance /
+heap-write widenings must not be narrowed back, so a blunt "annotation wins"
+would be unsound). The fold calls it when the field has an annotation, else falls
+back to `demote_never_params_to_any`.
+
 ## GlobalSet(Ptr) Type Coercion
 
 When storing values into global pointer slots via `GlobalSet(Ptr)`, the runtime expects i64. Values from different types need coercion:

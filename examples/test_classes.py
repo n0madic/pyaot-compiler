@@ -3640,4 +3640,53 @@ def _rv_deep_gc_chain() -> None:
 
 _rv_deep_gc_chain()
 
+
+# ===== SECTION: empty-bootstrapped annotated container field returned as primitive =====
+# Regression: a class field annotated `list[int]` but initialized empty
+# (`self.data = []`) and only grown via `self.data.append(x)` used to refine to
+# `list[Never]` → demoted to `list[Any]`, discarding the declared `int` element.
+# A method `-> int` returning `self.data[0]` then had a Tagged return ABI that
+# clashed with the caller's `Raw(I64)` dest at the verifier. The fold now
+# reconciles `Never` element positions against the annotation.
+class _EmptyFieldBox:
+    data: list[int]
+    ratios: list[float]
+    rows: list[list[int]]
+
+    def __init__(self) -> None:
+        self.data = []
+        self.ratios = []
+        self.rows = []
+
+    def push(self, x: int) -> None:
+        self.data.append(x)
+
+    def first(self) -> int:
+        return self.data[0]
+
+    def add_ratio(self, r: float) -> None:
+        self.ratios.append(r)
+
+    def first_ratio(self) -> float:
+        return self.ratios[0]
+
+    def add_row(self, row: list[int]) -> None:
+        self.rows.append(row)
+
+    def cell(self, i: int, j: int) -> int:
+        return self.rows[i][j]
+
+
+_efb = _EmptyFieldBox()
+_efb.push(10)
+_efb.push(20)
+assert _efb.first() == 10, "empty-bootstrap list[int] field: first() returns raw int"
+assert _efb.first() + 5 == 15, "empty-bootstrap field element usable as int"
+_efb.add_ratio(1.5)
+_efb.add_ratio(2.5)
+assert _efb.first_ratio() == 1.5, "empty-bootstrap list[float] field: first_ratio() returns float"
+_efb.add_row([1, 2, 3])
+_efb.add_row([4, 5, 6])
+assert _efb.cell(1, 2) == 6, "empty-bootstrap list[list[int]] field: nested element typed int"
+
 print("All class tests passed!")

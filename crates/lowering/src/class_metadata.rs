@@ -248,9 +248,21 @@ impl<'a> Lowering<'a> {
                     //     `Any` so an unwitnessed-element field (`list[Never]`)
                     //     never reaches codegen's register mapper as a bottom
                     //     type. (Locals are demoted at alloc time, but field
-                    //     types fold straight into storage.)
-                    let normalized =
-                        collapse_tuple_union_to_var(refined_ty).demote_never_params_to_any();
+                    //     types fold straight into storage.) When the field has
+                    //     an explicit annotation (already in `field_types` from
+                    //     `class_metadata`), reconcile `Never` positions against
+                    //     it FIRST: an empty-bootstrapped `data: list[int]`
+                    //     field refines to `list[Never]`, and a blind
+                    //     `Never → Any` demotion would discard the declared
+                    //     `int` element — leaving `self.data[0]` typed `Any`
+                    //     (Tagged) and a `-> int` getter with a Tagged return
+                    //     ABI that fails the verifier against the caller's
+                    //     `Raw(I64)` dest.
+                    let collapsed = collapse_tuple_union_to_var(refined_ty);
+                    let normalized = match info.field_types.get(&field_name) {
+                        Some(annotation) => collapsed.reconcile_never_with_annotation(annotation),
+                        None => collapsed.demote_never_params_to_any(),
+                    };
                     info.field_types.insert(field_name, normalized);
                 }
             }

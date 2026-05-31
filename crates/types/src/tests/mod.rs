@@ -652,3 +652,77 @@ fn test_substitute_non_var_identity() {
     let subst: HashMap<_, Type> = HashMap::new();
     assert_eq!(ty.substitute(&subst), Type::Int);
 }
+
+#[test]
+fn test_reconcile_never_fills_from_annotation() {
+    // Empty-bootstrapped `list[Never]` field reconciled against `list[int]`
+    // annotation yields `list[int]` (not `list[Any]`).
+    let refined = Type::list_of(Type::Never);
+    let annotation = Type::list_of(Type::Int);
+    assert_eq!(
+        refined.reconcile_never_with_annotation(&annotation),
+        Type::list_of(Type::Int)
+    );
+}
+
+#[test]
+fn test_reconcile_never_preserves_solver_narrowing() {
+    // A loose annotation (`list[Any]`) must NOT override the solver's concrete
+    // refinement (`list[int]`).
+    let refined = Type::list_of(Type::Int);
+    let annotation = Type::list_of(Type::Any);
+    assert_eq!(
+        refined.reconcile_never_with_annotation(&annotation),
+        Type::list_of(Type::Int)
+    );
+}
+
+#[test]
+fn test_reconcile_never_leaves_any_untouched() {
+    // A deliberate `Any` widening in the refined type is preserved even when
+    // the annotation is concrete (cross-instance / heap-write widenings must
+    // not be narrowed back).
+    let refined = Type::list_of(Type::Any);
+    let annotation = Type::list_of(Type::Int);
+    assert_eq!(
+        refined.reconcile_never_with_annotation(&annotation),
+        Type::list_of(Type::Any)
+    );
+}
+
+#[test]
+fn test_reconcile_never_nested_container() {
+    // `list[list[Never]]` reconciled against `list[list[int]]` → fully concrete.
+    let refined = Type::list_of(Type::list_of(Type::Never));
+    let annotation = Type::list_of(Type::list_of(Type::Int));
+    assert_eq!(
+        refined.reconcile_never_with_annotation(&annotation),
+        Type::list_of(Type::list_of(Type::Int))
+    );
+}
+
+#[test]
+fn test_reconcile_never_shape_mismatch_demotes() {
+    // Different shapes (annotation scalar, refined container) → fall back to
+    // the plain Never→Any demotion.
+    let refined = Type::list_of(Type::Never);
+    let annotation = Type::Any;
+    assert_eq!(
+        refined.reconcile_never_with_annotation(&annotation),
+        Type::list_of(Type::Any)
+    );
+}
+
+#[test]
+fn test_reconcile_bare_never_adopts_annotation() {
+    // A bare unwitnessed `Never` adopts the annotation outright.
+    assert_eq!(
+        Type::Never.reconcile_never_with_annotation(&Type::Int),
+        Type::Int
+    );
+    // Never reconciled against Never demotes to Any (no information).
+    assert_eq!(
+        Type::Never.reconcile_never_with_annotation(&Type::Never),
+        Type::Any
+    );
+}

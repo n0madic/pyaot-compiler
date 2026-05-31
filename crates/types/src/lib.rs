@@ -292,6 +292,61 @@ impl Type {
         }
     }
 
+    /// Reconcile a solver-refined type (`self`) with an explicit declared
+    /// annotation, filling **only** `Never` positions from the annotation.
+    ///
+    /// A field initialized with an empty container (`self.data = []`) and never
+    /// written a concrete element (the `.append(x)` mutates via an attribute
+    /// receiver the solver does not track back to the field) refines to
+    /// `list[Never]`. The plain `demote_never_params_to_any` would turn that
+    /// into `list[Any]`, silently discarding a concrete `data: list[int]`
+    /// annotation — so `self.data[0]` reads as `Any`/Tagged and a method
+    /// `-> int` returning it gets a Tagged return ABI that clashes with the
+    /// caller's `Raw(I64)` dest at the verifier.
+    ///
+    /// This walks `self` and `annotation` in parallel, substituting the
+    /// annotation's concrete type wherever `self` has `Never`. `Any` positions
+    /// in `self` are left untouched (deliberate cross-instance / heap-write
+    /// widenings must not be narrowed back). Positions with no usable
+    /// annotation counterpart fall back to the `Never → Any` demotion.
+    pub fn reconcile_never_with_annotation(&self, annotation: &Type) -> Type {
+        // A bare `Never` (unwitnessed scalar/container) adopts the annotation
+        // outright when the annotation carries real information.
+        if matches!(self, Type::Never) {
+            return if matches!(annotation, Type::Never) {
+                Type::Any
+            } else {
+                annotation.clone()
+            };
+        }
+        match (self, annotation) {
+            (
+                Type::Generic { base, args },
+                Type::Generic {
+                    base: abase,
+                    args: aargs,
+                },
+            ) if base == abase && args.len() == aargs.len() => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .zip(aargs.iter())
+                    .map(|(s, a)| s.reconcile_never_with_annotation(a))
+                    .collect(),
+            },
+            (Type::DefaultDict(k, v), Type::DefaultDict(ak, av)) => Type::DefaultDict(
+                Box::new(k.reconcile_never_with_annotation(ak)),
+                Box::new(v.reconcile_never_with_annotation(av)),
+            ),
+            (Type::Iterator(t), Type::Iterator(at)) => {
+                Type::Iterator(Box::new(t.reconcile_never_with_annotation(at)))
+            }
+            // Shapes differ (or no container match) — preserve the solver's
+            // type, demoting any residual `Never` to `Any` as before.
+            _ => self.demote_never_params_to_any(),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Container accessor API (S3.2) — works on both legacy variants and
     // `Type::Generic{base, args}` so call sites migrate once and survive S3.2c.
