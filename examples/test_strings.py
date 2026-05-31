@@ -595,6 +595,26 @@ empty_list: list[str] = []
 join_empty_list: str = ",".join(empty_list)
 assert join_empty_list == "", "join_empty_list should equal \"\""
 
+# join() over non-list iterables (tuple/str/dict/set/tuple-var/deque): the
+# arg is snapshotted to a list at lowering before rt_str_join reads it.
+from collections import deque
+
+join_tuple: str = ",".join(("a", "b", "c"))
+assert join_tuple == "a,b,c", "join over fixed tuple should equal \"a,b,c\""
+join_tuple_single: str = ",".join(("only",))
+assert join_tuple_single == "only", "join over single-elem tuple should equal \"only\""
+join_str_chars: str = ",".join("abc")
+assert join_str_chars == "a,b,c", "join over str should join characters"
+join_dict_keys: str = ",".join({"k1": 1, "k2": 2})
+assert join_dict_keys == "k1,k2", "join over dict should join keys in insertion order"
+join_tuple_var: tuple[str, ...] = ("p", "q", "r")
+assert ",".join(join_tuple_var) == "p,q,r", "join over variable tuple should equal \"p,q,r\""
+# set order is hash-table order (non-deterministic) — verify via sorted.
+assert sorted(",".join({"a", "b", "c"}).split(",")) == ["a", "b", "c"], \
+    "join over set should contain all elements"
+join_deque: str = ",".join(deque(["x", "y", "z"]))
+assert join_deque == "x,y,z", "join over deque should equal \"x,y,z\""
+
 print("split() and join() tests passed")
 
 # count()

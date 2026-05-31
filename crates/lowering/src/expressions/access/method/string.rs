@@ -216,28 +216,23 @@ impl<'a> Lowering<'a> {
 
     /// Lower str.join(iterable)
     ///
-    /// `rt_str_join` reads its argument as a `ListObj`. A deque is not a list,
-    /// so snapshot it to one first (mirror the other deque-consuming builtins);
-    /// otherwise the `DequeObj` header is misread and the call SEGVs.
+    /// `rt_str_join` reads its argument as a `ListObj`. A non-list iterable
+    /// (tuple/set/dict/str/deque) is snapshotted to a list inside
+    /// `lower_join_impl` via `snapshot_iterable_to_list`; otherwise the foreign
+    /// header is misread and the call SEGVs.
     fn lower_str_join(
         &mut self,
         obj_operand: mir::Operand,
-        mut arg_operands: Vec<mir::Operand>,
+        arg_operands: Vec<mir::Operand>,
         arg_types: &[Type],
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        if let (Some(arg_op), Some(arg_ty)) = (arg_operands.first(), arg_types.first()) {
-            if let Some(elem) = arg_ty.deque_elem() {
-                let elem = elem.clone();
-                let list_op = self.snapshot_deque_to_list(arg_op.clone(), &elem, mir_func);
-                arg_operands[0] = list_op;
-            }
-        }
         self.lower_join_impl(
             obj_operand,
             arg_operands,
             mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_JOIN),
             Type::Str,
+            arg_types.first().unwrap_or(&Type::Any),
             mir_func,
         )
     }

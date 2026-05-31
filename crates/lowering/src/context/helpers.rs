@@ -703,24 +703,37 @@ impl<'a> Lowering<'a> {
     }
 
     /// Shared helper for join methods (used by both str and bytes).
+    ///
+    /// `rt_str_join` / `rt_bytes_join` cast their argument straight to
+    /// `*mut ListObj`, so a non-list iterable (tuple/set/dict/str/deque) must
+    /// be snapshotted to a list first — otherwise the foreign header is
+    /// misread and the call SEGVs. `snapshot_iterable_to_list` selects the
+    /// matching `RT_LIST_FROM_*` converter from `arg_type`; `result_type`
+    /// (the joined sequence's element type, `Str`/`Bytes`) is the list's
+    /// element type. An `Any`/`Union`/`Iterator` arg has no concrete
+    /// container type and stays unsupported (documented gap).
     pub(crate) fn lower_join_impl(
         &mut self,
         obj_operand: mir::Operand,
         arg_operands: Vec<mir::Operand>,
         runtime_func: mir::RuntimeFunc,
         result_type: Type,
+        arg_type: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         if arg_operands.is_empty() {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
-        let result_local = self.emit_runtime_call(
-            runtime_func,
-            vec![obj_operand, arg_operands[0].clone()],
-            result_type,
+        let arg = self.snapshot_iterable_to_list(
+            arg_operands[0].clone(),
+            arg_type,
+            &result_type,
             mir_func,
         );
+
+        let result_local =
+            self.emit_runtime_call(runtime_func, vec![obj_operand, arg], result_type, mir_func);
 
         Ok(mir::Operand::Local(result_local))
     }

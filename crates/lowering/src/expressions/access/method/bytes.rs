@@ -14,6 +14,7 @@ impl<'a> Lowering<'a> {
         obj_operand: mir::Operand,
         method_name: &str,
         arg_operands: Vec<mir::Operand>,
+        arg_types: &[Type],
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Handle methods with special argument processing
@@ -27,7 +28,7 @@ impl<'a> Lowering<'a> {
                 );
             }
             "join" => {
-                return self.lower_bytes_join(obj_operand, arg_operands, mir_func);
+                return self.lower_bytes_join(obj_operand, arg_operands, arg_types, mir_func);
             }
             "fromhex" => {
                 return self.lower_bytes_from_hex(arg_operands, mir_func);
@@ -119,10 +120,16 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower bytes.join(iterable)
+    ///
+    /// Like `str.join`, a non-list iterable (tuple/set/dict/str/deque) is
+    /// snapshotted to a list inside `lower_join_impl` via
+    /// `snapshot_iterable_to_list` before `rt_bytes_join` reads it as a
+    /// `ListObj`.
     fn lower_bytes_join(
         &mut self,
         obj_operand: mir::Operand,
         arg_operands: Vec<mir::Operand>,
+        arg_types: &[Type],
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         self.lower_join_impl(
@@ -130,6 +137,7 @@ impl<'a> Lowering<'a> {
             arg_operands,
             mir::RuntimeFunc::Call(&RT_BYTES_JOIN),
             Type::Bytes,
+            arg_types.first().unwrap_or(&Type::Any),
             mir_func,
         )
     }

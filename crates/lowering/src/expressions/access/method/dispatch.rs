@@ -57,9 +57,13 @@ impl<'a> Lowering<'a> {
                 &arg_types,
                 mir_func,
             ),
-            Type::Bytes => {
-                self.lower_bytes_method(obj_operand, &method_name, arg_operands, mir_func)
-            }
+            Type::Bytes => self.lower_bytes_method(
+                obj_operand,
+                &method_name,
+                arg_operands,
+                &arg_types,
+                mir_func,
+            ),
             // `int` / `bool` methods (bool is an int subtype). Receiver is a
             // raw scalar; see `lower_int_method`.
             Type::Int | Type::Bool => {

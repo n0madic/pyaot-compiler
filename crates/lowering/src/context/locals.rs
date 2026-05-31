@@ -273,6 +273,66 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// Snapshot any statically-typed iterable into a fresh `list` so a
+    /// list-only runtime helper (e.g. `rt_str_join` / `rt_bytes_join`, which
+    /// cast their argument straight to `*mut ListObj`) can consume it without
+    /// misreading a `TupleObj`/`SetObj`/… header. The converter is selected
+    /// from `src_ty`; the materialised list is labelled `list[list_elem_ty]`
+    /// (the element type the caller wants — `Str` for `str.join`, `Bytes` for
+    /// `bytes.join`).
+    ///
+    /// Reuses the same tested `RT_LIST_FROM_*` converters as `list(iterable)`
+    /// (`lower_list_builtin` in `collections.rs`). A list arg is returned
+    /// unchanged (no regression for the existing list path); a `deque` is
+    /// routed through [`Self::snapshot_deque_to_list`] to keep
+    /// `RT_LIST_FROM_DEQUE` centralised.
+    ///
+    /// **Documented gap:** an `Any`/`Union`/`Iterator` (generator) arg has no
+    /// concrete container type at lowering, so no converter can be chosen — the
+    /// operand is returned unchanged and stays unsupported (same status as the
+    /// deferred deque-parameter gap).
+    pub(crate) fn snapshot_iterable_to_list(
+        &mut self,
+        operand: mir::Operand,
+        src_ty: &Type,
+        list_elem_ty: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        use pyaot_core_defs::runtime_func_def;
+        // Already a list — nothing to do.
+        if src_ty.is_list_like() {
+            return operand;
+        }
+        // deque → reuse the centralised deque snapshot (keeps
+        // RT_LIST_FROM_DEQUE in one place per INSIGHTS).
+        if src_ty.deque_elem().is_some() {
+            return self.snapshot_deque_to_list(operand, list_elem_ty, mir_func);
+        }
+        // Select the matching list converter from the source container type.
+        let converter = if src_ty.is_tuple_like() {
+            &runtime_func_def::RT_LIST_FROM_TUPLE
+        } else if src_ty.is_set_like() {
+            &runtime_func_def::RT_LIST_FROM_SET
+        } else if src_ty.is_dict_like() {
+            // CPython joins dict keys.
+            &runtime_func_def::RT_LIST_FROM_DICT
+        } else if matches!(src_ty, Type::Str) {
+            // str → joins characters.
+            &runtime_func_def::RT_LIST_FROM_STR
+        } else {
+            // Any/Union/Iterator/unknown: no concrete container type at
+            // lowering → no converter can be chosen. Leave unchanged
+            // (documented dynamic-arg gap).
+            return operand;
+        };
+        mir::Operand::Local(self.emit_runtime_call(
+            mir::RuntimeFunc::Call(converter),
+            vec![operand],
+            Type::list_of(list_elem_ty.clone()),
+            mir_func,
+        ))
+    }
+
     /// Emit `RT_INSTANCE_GET_FIELD(obj, offset)` and recover the typed
     /// value. Storage is uniform tagged `Value` for every field:
     /// `Float` slots hold `Value::from_ptr(*FloatObj)` recovered via

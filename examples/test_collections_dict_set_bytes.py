@@ -602,6 +602,16 @@ assert bj_result == b"a,b,c", "bytes.join should work"
 bj_empty: bytes = b"".join([b"x", b"y"])
 assert bj_empty == b"xy", "bytes.join with empty sep should concat"
 
+# bytes.join() over non-list iterables: the arg is snapshotted to a list at
+# lowering before rt_bytes_join reads it (same path as str.join).
+bj_tuple: bytes = b",".join((b"a", b"b"))
+assert bj_tuple == b"a,b", "bytes.join over tuple should equal b\"a,b\""
+# set-of-bytes: hash-table order is non-deterministic; verify via the decoded
+# str sorted trick (list[bytes] comparison is a separate pre-existing gap).
+bj_set_joined: bytes = b",".join({b"a", b"b", b"c"})
+assert sorted(bj_set_joined.decode().split(",")) == ["a", "b", "c"], \
+    "bytes.join over set should contain all elements"
+
 print("bytes.join() tests passed")
 
 # ===== SECTION: bytes concatenation and repetition =====
