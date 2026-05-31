@@ -445,12 +445,17 @@ impl<'a> Lowering<'a> {
                 Some(&r::RT_ITER_TUPLE)
             } else if iterable_type.dict_kv().is_some() {
                 Some(&r::RT_ITER_DICT)
+            } else if matches!(iterable_type, Type::Bytes) {
+                // `bytes` yields `int` elements, so `sum(b"ab") == 195` is
+                // well-typed (int accumulator + int element). `element_type`
+                // is already `Int` via `extract_iterable_element_type`.
+                Some(&r::RT_ITER_BYTES)
             } else {
-                // `Str` / `Bytes` are intentionally NOT supported as `sum`
-                // iterables: CPython raises `TypeError` for `sum("abc")`
-                // (the int accumulator + str element has no `__add__`),
-                // and emitting the iterator branch here would just trade
-                // garbage for a verifier reject downstream.
+                // `Str` is intentionally NOT supported as a `sum` iterable:
+                // CPython raises `TypeError` for `sum("abc")` (the int
+                // accumulator + str element has no `__add__`), and emitting
+                // the iterator branch here would just trade garbage for a
+                // verifier reject downstream.
                 None
             }
         };

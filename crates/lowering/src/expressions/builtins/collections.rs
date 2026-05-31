@@ -330,6 +330,18 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_STR),
                 args: vec![source_operand],
             });
+        } else if iter_type == Type::Bytes {
+            // list(bytes): each byte becomes a Python int. A bytes object is
+            // not an IteratorObj, so it must be converted directly rather than
+            // falling through to RT_LIST_FROM_ITER (which would misread the
+            // BytesObj header as an iterator and segfault).
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_BYTES,
+                ),
+                args: vec![source_operand],
+            });
         } else if iter_type.set_elem().is_some() {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,

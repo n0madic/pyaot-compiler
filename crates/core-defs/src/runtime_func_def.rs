@@ -633,6 +633,8 @@ pub static RT_LIST_SORT_WITH_KEY: RuntimeFuncDef =
 pub static RT_LIST_FROM_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_tuple");
 /// rt_list_from_str(str: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_str");
+/// rt_list_from_bytes(bytes: *mut Obj) -> *mut Obj — each byte becomes a Python int element
+pub static RT_LIST_FROM_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_bytes");
 /// rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_LIST_FROM_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_list_from_range");
 /// rt_list_from_iter(iter: *mut Obj) -> *mut Obj

@@ -172,9 +172,13 @@ impl<'a> Lowering<'a> {
         // A deque has no `SortableKind`; snapshot it to a list (left-to-right
         // ring walk via `rt_list_from_deque`) and sort that. The `source`
         // selection below then falls into the `_ => List` default — correct,
-        // since `arg_operand` now points at a real list.
+        // since `arg_operand` now points at a real list. `bytes` is the same
+        // shape of problem (not a `SortableKind`, each byte is an int), so it
+        // is snapshotted to a `list[int]` via `RT_LIST_FROM_BYTES`.
         let arg_operand = if arg_type.is_deque_like() {
             self.snapshot_deque_to_list(arg_operand, &elem_type, mir_func)
+        } else if matches!(arg_type, Type::Bytes) {
+            self.snapshot_iterable_to_list(arg_operand, &Type::Bytes, &elem_type, mir_func)
         } else {
             arg_operand
         };

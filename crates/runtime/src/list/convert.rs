@@ -2,7 +2,7 @@
 
 use super::core::{rt_list_push, rt_make_list};
 use crate::gc::{gc_pop, gc_push, ShadowFrame};
-use crate::object::{ListObj, Obj, StrObj, TupleObj};
+use crate::object::{BytesObj, ListObj, Obj, StrObj, TupleObj};
 use pyaot_core_defs::Value;
 
 /// Create a list from a tuple
@@ -103,6 +103,55 @@ pub fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_list_from_str_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_list_from_str(str_obj.unwrap_ptr()))
+}
+
+/// Create a list from a `bytes` object — each byte becomes a Python `int`
+/// element (CPython: `list(b"ab") == [97, 98]`).
+/// Returns: pointer to new ListObj
+pub fn rt_list_from_bytes(bytes: *mut Obj) -> *mut Obj {
+    if bytes.is_null() {
+        return rt_make_list(0);
+    }
+
+    unsafe {
+        let bytes_obj = bytes as *mut BytesObj;
+        let len = (*bytes_obj).len;
+
+        // Root the source bytes across rt_make_list which calls gc_alloc
+        // (a collection there would otherwise invalidate `data`).
+        let mut roots: [*mut Obj; 1] = [bytes];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let list = rt_make_list(len as i64);
+
+        gc_pop();
+
+        let bytes_obj = bytes as *mut BytesObj;
+        let list_obj = list as *mut ListObj;
+
+        if len > 0 {
+            // Elements are tagged ints (not heap pointers), so no per-element
+            // rooting is needed after the list is allocated.
+            let src = (*bytes_obj).data.as_ptr();
+            let dst = (*list_obj).data;
+            for i in 0..len {
+                *dst.add(i) = Value::from_int(*src.add(i) as i64);
+            }
+            (*list_obj).len = len;
+        }
+
+        list
+    }
+}
+#[export_name = "rt_list_from_bytes"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_bytes_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_list_from_bytes(bytes.unwrap_ptr()))
 }
 
 /// Create a list from a range

@@ -30,8 +30,8 @@ pub(crate) fn list_grow_capacity(capacity: usize) -> usize {
 // Re-export all public functions
 pub use compare::{rt_list_cmp, rt_list_eq};
 pub use convert::{
-    rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set, rt_list_from_str,
-    rt_list_from_tuple, rt_list_tail_to_tuple, rt_list_tail_to_tuple_bool,
+    rt_list_from_bytes, rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set,
+    rt_list_from_str, rt_list_from_tuple, rt_list_tail_to_tuple, rt_list_tail_to_tuple_bool,
     rt_list_tail_to_tuple_float,
 };
 pub use core::{

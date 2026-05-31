@@ -340,6 +340,67 @@ impl<'a> Lowering<'a> {
                 return Ok(mir::Operand::Local(result_local));
             }
 
+            // bytes: each byte is a Python int. A bytes object is not an
+            // IteratorObj, so snapshot it to a `list[int]` (via
+            // `RT_LIST_FROM_BYTES`) and reuse the List min/max runtime —
+            // mirroring the deque path above.
+            if matches!(arg_type, Type::Bytes) {
+                let elem_type = Type::Int;
+                let bytes_operand =
+                    self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+                let list_operand = self.snapshot_iterable_to_list(
+                    bytes_operand,
+                    &Type::Bytes,
+                    &elem_type,
+                    mir_func,
+                );
+                let op = if is_min { MinMaxOp::Min } else { MinMaxOp::Max };
+
+                if let Some(ref func_or_builtin) = key_func {
+                    use crate::context::KeyFuncSource;
+                    let key_source = match func_or_builtin {
+                        FuncOrBuiltin::UserFunc(func_id, captures) => {
+                            KeyFuncSource::UserFunc(*func_id, captures.clone())
+                        }
+                        FuncOrBuiltin::Builtin(builtin_kind) => {
+                            KeyFuncSource::Builtin(*builtin_kind)
+                        }
+                    };
+                    let resolved = self
+                        .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
+                        .expect("key_source is Some");
+                    let _ = func_or_builtin;
+                    let is_min_operand =
+                        mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(ContainerKind::List.minmax_with_key_def()),
+                        vec![
+                            list_operand,
+                            resolved.func_addr,
+                            resolved.captures,
+                            resolved.capture_count,
+                            is_min_operand,
+                            resolved.key_return_tag,
+                        ],
+                        elem_type,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
+                let elem_kind = crate::type_planning::helpers::minmax_compare_kind(&elem_type);
+                let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                let elem_kind_operand =
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
+                    vec![list_operand, is_min_operand, elem_kind_operand],
+                    elem_type,
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(result_local));
+            }
+
             // Iterator/generator: use IterNextNoExc + GeneratorIsExhausted protocol
             if let Type::Iterator(elem_ty) = &arg_type {
                 // Area G §G.4: tuple-yielding iterators need lexicographic

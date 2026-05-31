@@ -931,4 +931,20 @@ def _rv_bytes_ops() -> None:
 
 _rv_bytes_ops()
 
+
+def _rv_bytes_builtins() -> None:
+    # bytes is an iterable of ints; list/sum/min/max/sorted operate on the
+    # byte values (CPython: list(b"ab") == [97, 98], sum(b"ab") == 195).
+    bs = b"hello"
+    print(list(bs))
+    print(sum(bs))
+    print(min(bs), max(bs))
+    print(sorted(bs))
+    print(sum(b"hi"))
+    print(sorted(b"dcba"))
+    print(sum(bs, 1000))
+
+
+_rv_bytes_builtins()
+
 print("All dict, set, and bytes tests passed!")

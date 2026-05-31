@@ -319,6 +319,9 @@ impl<'a> Lowering<'a> {
         } else if matches!(src_ty, Type::Str) {
             // str → joins characters.
             &runtime_func_def::RT_LIST_FROM_STR
+        } else if matches!(src_ty, Type::Bytes) {
+            // bytes → each byte becomes a Python int element.
+            &runtime_func_def::RT_LIST_FROM_BYTES
         } else {
             // Any/Union/Iterator/unknown: no concrete container type at
             // lowering → no converter can be chosen. Leave unchanged
