@@ -429,6 +429,18 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
             None => 1, // NaN sorts to the end
             _ => 0,
         }
+    } else if a_type == TypeTagKind::Instance {
+        // Class instances order via their `__lt__` dunder (CPython sorts with
+        // `<`). Falls back to a stable address ordering when the class
+        // defines no `__lt__`. Shared with `sorted()`'s comparator.
+        match crate::ops::try_instance_lt_ordering(a, b) {
+            Some(std::cmp::Ordering::Less) => -1,
+            Some(std::cmp::Ordering::Greater) => 1,
+            Some(std::cmp::Ordering::Equal) => 0,
+            None if a < b => -1,
+            None if a > b => 1,
+            None => 0,
+        }
     } else if a < b {
         -1
     } else if a > b {

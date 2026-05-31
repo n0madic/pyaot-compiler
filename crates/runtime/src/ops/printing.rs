@@ -137,7 +137,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Dict => print_dict_repr(obj),
         TypeTagKind::Set => print_set_repr(obj),
         TypeTagKind::Bytes => rt_print_bytes_obj(obj),
-        TypeTagKind::Instance => print!("<object at {:p}>", obj),
+        TypeTagKind::Instance => print_instance_repr(obj),
         TypeTagKind::Iterator => print!("<iterator>"),
         TypeTagKind::Cell => print!("<cell>"),
         // For these types, use type_name() from core-defs (single source of truth)
@@ -172,6 +172,27 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Request => print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
         TypeTagKind::NotImplemented => print!("NotImplemented"),
     }
+}
+
+/// Render a class instance encountered as a container element. CPython
+/// renders container elements with `repr()`, so dispatch the user
+/// `__repr__` via `DUNDER_FUNC_REGISTRY` (the top-level `print(instance)`
+/// path resolves this at lowering time, but container elements are rendered
+/// by the runtime and have no static class type). Falls back to the default
+/// object repr when the class defines no `__repr__`.
+unsafe fn print_instance_repr(obj: *mut Obj) {
+    if let Some(str_obj) = crate::ops::try_repr_dunder(obj) {
+        if !str_obj.is_null() {
+            let s = str_obj as *mut StrObj;
+            let len = (*s).len;
+            let bytes = std::slice::from_raw_parts((*s).data.as_ptr(), len);
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                print!("{}", text);
+            }
+            return;
+        }
+    }
+    print!("<object at {:p}>", obj);
 }
 
 /// Print list repr: [elem, elem, ...]

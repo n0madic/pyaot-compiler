@@ -3689,4 +3689,33 @@ _efb.add_row([1, 2, 3])
 _efb.add_row([4, 5, 6])
 assert _efb.cell(1, 2) == 6, "empty-bootstrap list[list[int]] field: nested element typed int"
 
+# ===== SECTION: __repr__ in containers + __lt__ sorting =====
+# A container's repr renders each element with repr() (its __repr__), and
+# sorted()/list.sort() order class instances via their __lt__ dunder — both
+# dispatched in the runtime (no static class type at the element site).
+
+
+class _OrderBox:
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+    def __lt__(self, other: "_OrderBox") -> bool:
+        return self.v < other.v
+
+    def __repr__(self) -> str:
+        return "_OrderBox(" + str(self.v) + ")"
+
+
+_obs = [_OrderBox(3), _OrderBox(1), _OrderBox(2), _OrderBox(1)]
+print(_obs)
+print(sorted(_obs))
+print(sorted(_obs, reverse=True))
+_obs.sort()
+print(_obs)
+print(min(_obs), max(_obs))
+print((_OrderBox(7), _OrderBox(8)))
+_obs_sorted = sorted([_OrderBox(5), _OrderBox(4)])
+assert _obs_sorted[0].v == 4, "sorted class instances order via __lt__"
+assert _obs_sorted[1].v == 5, "sorted class instances order via __lt__"
+
 print("All class tests passed!")

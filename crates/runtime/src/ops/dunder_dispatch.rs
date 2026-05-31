@@ -47,6 +47,8 @@ pub(super) const FNV_POS: u64 = fnv1a(b"__pos__");
 pub(super) const FNV_INVERT: u64 = fnv1a(b"__invert__");
 pub(super) const FNV_INT: u64 = fnv1a(b"__int__");
 pub(super) const FNV_FLOAT: u64 = fnv1a(b"__float__");
+pub(super) const FNV_REPR: u64 = fnv1a(b"__repr__");
+pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
 /// called as `(self_obj, other_value) -> Value`. The `Value` return slot
@@ -171,4 +173,69 @@ pub unsafe fn try_int_dunder(obj: *mut Obj) -> Option<*mut Obj> {
 /// See [`try_int_dunder`].
 pub unsafe fn try_float_dunder(obj: *mut Obj) -> Option<*mut Obj> {
     try_class_unary_dunder(obj, FNV_FLOAT)
+}
+
+/// Dispatch `__repr__` for a class instance encountered while rendering a
+/// container's repr (e.g. `print([P(1)])` / `str({P(1)})`). Returns the
+/// resulting `StrObj` pointer, or `None` when the instance's class defines
+/// no `__repr__` (the caller then falls back to the default object repr).
+///
+/// Mirrors CPython: a container's repr uses each element's `repr()`
+/// (`type(elem).__repr__`), NOT `__str__`. The top-level `print(instance)`
+/// path dispatches `__str__`/`__repr__` at lowering time, but container
+/// elements are rendered by the runtime, which has no static class type —
+/// so it must dispatch through `DUNDER_FUNC_REGISTRY` here.
+///
+/// # Safety
+/// `obj` must be a valid object pointer (the caller is rendering it as a
+/// container element; this fn re-checks the `Instance` type tag).
+pub unsafe fn try_repr_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_REPR)
+}
+
+/// Order two class instances for sorting via their `__lt__` dunder. CPython
+/// sorts using `<` only: a truthy `a.__lt__(b)` → `Less`; else a truthy
+/// `b.__lt__(a)` → `Greater`; else `Equal`. Returns `None` when the
+/// instances' class defines no `__lt__` (the caller then falls back to a
+/// stable address ordering, matching the prior behaviour).
+///
+/// The runtime sort comparator (`compare_list_elements`) needs this because
+/// it has no static class type — `min`/`max` over class elements dispatch
+/// `__lt__` at lowering time, but `sorted`/`list.sort` compare elements in
+/// the runtime.
+///
+/// **Calling convention:** unlike the arithmetic dunders (which return a
+/// tagged `Value`), a comparison dunder `__lt__ -> bool` returns a **raw
+/// `i8`** (0/1) — the registry stores the method's native ABI, and a
+/// `bool`-typed return is not boxed. So this dispatches through an
+/// `i8`-returning fn pointer, not the `Value`-returning [`DunderFn`].
+///
+/// # Safety
+/// `a` and `b` must be valid object pointers; this fn re-checks the
+/// `Instance` type tag on both.
+pub unsafe fn try_instance_lt_ordering(a: *mut Obj, b: *mut Obj) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    type LtFn = unsafe extern "C" fn(*mut Obj, Value) -> i8;
+
+    if !is_instance(a) || !is_instance(b) {
+        return None;
+    }
+    let class_a = (*(a as *const InstanceObj)).class_id;
+    let lt_a = lookup_dunder_func(class_a, FNV_LT);
+    if lt_a.is_null() {
+        return None;
+    }
+    let fa: LtFn = std::mem::transmute(lt_a);
+    if fa(a, Value(b as u64)) != 0 {
+        return Some(Ordering::Less);
+    }
+    let class_b = (*(b as *const InstanceObj)).class_id;
+    let lt_b = lookup_dunder_func(class_b, FNV_LT);
+    if !lt_b.is_null() {
+        let fb: LtFn = std::mem::transmute(lt_b);
+        if fb(b, Value(a as u64)) != 0 {
+            return Some(Ordering::Greater);
+        }
+    }
+    Some(Ordering::Equal)
 }

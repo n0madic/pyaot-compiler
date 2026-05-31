@@ -495,6 +495,24 @@ pub(super) unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             s.push('\'');
         }
         TypeTagKind::None => s.push_str("None"),
+        TypeTagKind::Instance => {
+            // CPython renders container elements with `repr()`; dispatch the
+            // user `__repr__` via DUNDER_FUNC_REGISTRY (str/repr of a
+            // container is rendered by the runtime, which has no static class
+            // type). Falls back to the default object repr.
+            if let Some(str_obj) = crate::ops::try_repr_dunder(obj) {
+                if !str_obj.is_null() {
+                    let so = str_obj as *mut StrObj;
+                    let len = (*so).len;
+                    let bytes = std::slice::from_raw_parts((*so).data.as_ptr(), len);
+                    if let Ok(text) = std::str::from_utf8(bytes) {
+                        s.push_str(text);
+                        return;
+                    }
+                }
+            }
+            let _ = write!(s, "<object at {:p}>", obj);
+        }
         _ => {
             // Recurse into containers
             let inner = obj_to_repr_string(obj);

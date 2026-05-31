@@ -88,6 +88,13 @@ pub(crate) unsafe fn compare_list_elements(a: *mut Obj, b: *mut Obj) -> std::cmp
             let float_b = (*(b as *mut FloatObj)).value;
             float_a.partial_cmp(&float_b).unwrap_or(Ordering::Equal)
         }
+        TypeTagKind::Instance => {
+            // Class instances order via their `__lt__` dunder (CPython sorts
+            // with `<`). Falls back to a stable address ordering when the
+            // class defines no `__lt__`.
+            crate::ops::try_instance_lt_ordering(a, b)
+                .unwrap_or_else(|| (a as usize).cmp(&(b as usize)))
+        }
         _ => {
             // For other types, compare by pointer address
             (a as usize).cmp(&(b as usize))
