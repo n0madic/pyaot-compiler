@@ -21,7 +21,7 @@ pyaot-lowering = { path = "../lowering" }
 pyaot-optimizer = { path = "../optimizer" }
 pyaot-codegen-cranelift = { path = "../codegen-cranelift" }
 pyaot-linker = { path = "../linker" }
-# External deps to wire when implementing: clap, anyhow, tracing
+clap = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

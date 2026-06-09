@@ -186,6 +186,23 @@ no locking — valid only because there is no threading. **Cooperate by:** keepi
 threading/async out of scope; any future concurrency needs runtime synchronization
 designed in, not bolted on.
 
+### B15. The GC-rootless leaf path is conditionally correct
+The shadow-stack leaf optimization (a function with no live-across-allocation
+roots emits no `ShadowFrame`, `nroots == 0`) is correct — and tempting to leave in
+place because the first programs (`print("hello")`, where the one string is
+created and immediately consumed with nothing allocating between) genuinely don't
+need a frame. **Why it bites:** the boundary is silent and easy to cross. The
+moment *any* `is_gc_root()` local is live across an allocating call, the rootless
+path is a use-after-free waiting for the next collection — and "allocating call"
+includes the non-obvious ones: **bignum promotion** (`x = 2**100` boxes a heap
+`BigInt`), a second string/container literal while the first is still live, and
+**any function call** that may allocate. **Cooperate by:** deriving the root set
+from `locals[i].repr.is_gc_root()` (never a stored flag) and emitting
+`gc_push`/`gc_pop` + storing each live root into `frame.roots` whenever such a
+local survives an allocating call; keep the `nroots == 0` fast-path strictly for
+functions that provably have none. Do not let "it worked in Phase 1" justify
+skipping the frame in Phase 2.
+
 ---
 
 ## How to use this file

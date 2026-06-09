@@ -103,6 +103,15 @@ extension).
 **Build:** arithmetic/comparison/logical/bitwise ops with CPython floor-div/mod
 semantics (PITFALLS B1); truthiness; `typeck` still v1 (annotations + local
 literal inference, `Dyn` elsewhere). `int` stays `Tagged` (bignum-safe).
+**GC rooting becomes mandatory here** — Phase 1's no-shadow-frame leaf path is no
+longer always safe: bignum promotion (`2**100`) and function calls both allocate,
+so any `is_gc_root()` local live across them must be in a `ShadowFrame`. Emit
+`gc_push`/`gc_pop` + root every such local; keep the `nroots == 0` fast-path only
+for functions with no live-across-allocation roots (PITFALLS B15).
+**Codegen:** the Phase-1 `Vec<Option<Value>>` "one assignment per local" model
+breaks under loops/reassignment — switch to Cranelift `Variable`s
+(`declare_var`/`def_var`/`use_var`) and a real block-by-block CFG walk with
+jump/branch terminators.
 **Gate:** scalar + control-flow corpus subset green.
 
 ### Phase 3 — Real `typeck` + representation optimization

@@ -9,9 +9,12 @@ pyaot-core-defs = { path = "../core-defs" }
 pyaot-utils = { path = "../utils" }
 pyaot-types = { path = "../types" }
 pyaot-mir = { path = "../mir" }
-# External deps to wire when implementing (deferred to keep the skeleton build light):
-#   cranelift-codegen, cranelift-frontend, cranelift-module, cranelift-object,
-#   target-lexicon, gimli, object  (all already in [workspace.dependencies])
+pyaot-diagnostics = { path = "../diagnostics" }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-object = { workspace = true }
+cranelift-native = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -9,6 +9,7 @@ pyaot-utils = { path = "../utils" }
 pyaot-hir = { path = "../hir" }
 pyaot-types = { path = "../types" }
 pyaot-diagnostics = { path = "../diagnostics" }
+la-arena = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

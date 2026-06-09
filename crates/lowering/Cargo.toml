@@ -13,6 +13,7 @@ pyaot-mir = { path = "../mir" }
 pyaot-typeck = { path = "../typeck" }
 pyaot-stdlib-defs = { path = "../stdlib-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
+la-arena = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

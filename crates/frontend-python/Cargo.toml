@@ -11,8 +11,8 @@ pyaot-types = { path = "../types" }
 pyaot-hir = { path = "../hir" }
 pyaot-stdlib-defs = { path = "../stdlib-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
-# External deps to wire when implementing:
-#   rustpython-parser  (already in [workspace.dependencies])
+rustpython-parser = { workspace = true }
+la-arena = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
