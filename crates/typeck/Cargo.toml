@@ -11,5 +11,11 @@ pyaot-types = { path = "../types" }
 pyaot-diagnostics = { path = "../diagnostics" }
 la-arena = { workspace = true }
 
+[dev-dependencies]
+# Tests drive real Python through the front-half to assert inferred types; these
+# crates don't depend on typeck, so there is no dependency cycle.
+pyaot-frontend-python = { path = "../frontend-python" }
+pyaot-semantics = { path = "../semantics" }
+
 [lints.rust]
 unsafe_code = "forbid"

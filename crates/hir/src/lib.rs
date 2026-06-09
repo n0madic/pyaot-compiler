@@ -83,6 +83,14 @@ pub struct HirParam {
 pub struct HirLocal {
     pub name: InternedString,
     pub ty: SemTy,
+    /// Proof-gated representation override (Phase 3c): when `true` **and** the
+    /// inferred [`Self::ty`] is `int`, lowering stores this slot as an unboxed
+    /// `Raw(I64)` instead of the tagged default. Set only where a range proof
+    /// guarantees the value cannot overflow i64 *or* promote to a heap `BigInt`
+    /// (a literal-bounded `range()` cursor) — the soundness obligation of
+    /// PITFALLS A6/B16. It is **not** a `SemTy` change: the slot stays
+    /// semantically `int`. Default `false` (the always-correct tagged baseline).
+    pub raw_int_ok: bool,
 }
 
 /// A function: a flat `exprs` arena, a `locals` table, and a CFG of `blocks`.

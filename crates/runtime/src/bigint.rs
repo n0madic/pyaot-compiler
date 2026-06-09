@@ -342,10 +342,7 @@ pub fn num_cmp(a: &Num, b: &Num) -> Option<Ordering> {
 }
 
 pub fn num_eq(a: &Num, b: &Num) -> bool {
-    match num_cmp(a, b) {
-        Some(Ordering::Equal) => true,
-        _ => false,
-    }
+    matches!(num_cmp(a, b), Some(Ordering::Equal))
 }
 
 /// `int(s)` / large literal: parse decimal text into an `int` Value.

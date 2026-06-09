@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use cranelift_codegen::ir::{
-    types, AbiParam, InstBuilder, MemFlags, Signature, StackSlot, StackSlotData, StackSlotKind,
-    TrapCode, Type, Value,
+    condcodes::IntCC, types, AbiParam, InstBuilder, MemFlags, Signature, StackSlot, StackSlotData,
+    StackSlotKind, TrapCode, Type, Value,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
@@ -36,7 +36,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
-    classify_coercion, BinOp, CmpOp, Coercion, Const, MirFunction, MirInst, MirProgram,
+    classify_coercion, BinOp, CmpOp, Coercion, Const, LocalDecl, MirFunction, MirInst, MirProgram,
     MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
@@ -64,6 +64,9 @@ struct RuntimeFns {
     make_str: FuncId,
     bigint_from_str: FuncId,
     box_float: FuncId,
+    add_int: FuncId,
+    sub_int: FuncId,
+    mul_int: FuncId,
     obj_add: FuncId,
     obj_sub: FuncId,
     obj_mul: FuncId,
@@ -114,6 +117,13 @@ impl RuntimeFns {
             make_str: d("rt_make_str", &[ptr, ti], &[ti])?,
             bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
             box_float: d("rt_box_float", &[tf], &[ti])?,
+            // Raw i64 arithmetic (Phase 3c): used only on range-proven cursors.
+            // These RAISE OverflowError on i64 overflow (unlike CPython's bignum
+            // promotion), so they are correct only where overflow provably cannot
+            // occur — lowering emits them solely for literal-bounded cursors.
+            add_int: d("rt_add_int", &[ti, ti], &[ti])?,
+            sub_int: d("rt_sub_int", &[ti, ti], &[ti])?,
+            mul_int: d("rt_mul_int", &[ti, ti], &[ti])?,
             obj_add: d("rt_obj_add", &[ti, ti], &[ti])?,
             obj_sub: d("rt_obj_sub", &[ti, ti], &[ti])?,
             obj_mul: d("rt_obj_mul", &[ti, ti], &[ti])?,
@@ -360,6 +370,7 @@ fn define_function(
             func_ids,
             rt,
             data_ids,
+            locals: &mf.locals,
             program_ret: clif_ty(&mf.ret),
             ptr_ty,
             root_slot_of,
@@ -403,6 +414,11 @@ struct FnGen<'a, 'b> {
     func_ids: &'a [FuncId],
     rt: &'a RuntimeFns,
     data_ids: &'a HashMap<InternedString, (DataId, u32)>,
+    /// The MIR function's local Repr table — drives per-operand dispatch (a
+    /// `Raw(F64)`/`Raw(I64)` arithmetic operand inlines, a `Tagged` one calls
+    /// `rt_obj_*`). This is the same `Repr` the verifier checked; codegen never
+    /// re-derives it (Principle 6).
+    locals: &'a [LocalDecl],
     program_ret: Type,
     ptr_ty: Type,
     /// Per-local GC roots-array index (`Some` iff the local is a GC root).
@@ -420,6 +436,13 @@ impl FnGen<'_, '_> {
     fn use_operand(&mut self, op: &Operand) -> Value {
         match op {
             Operand::Local(id) => self.use_local(*id),
+        }
+    }
+
+    /// The declared representation of an operand (drives arithmetic dispatch).
+    fn operand_repr(&self, op: &Operand) -> &Repr {
+        match op {
+            Operand::Local(id) => &self.locals[id.index()].repr,
         }
     }
 
@@ -583,23 +606,36 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_binop(&mut self, dst: LocalId, op: BinOp, l: &Operand, r: &Operand) -> Result<()> {
+        let lrepr = self.operand_repr(l).clone();
         let a = self.use_operand(l);
         let b = self.use_operand(r);
-        let v = match op {
-            BinOp::Add => self.call(self.rt.obj_add, &[a, b]).unwrap(),
-            BinOp::Sub => self.call(self.rt.obj_sub, &[a, b]).unwrap(),
-            BinOp::Mul => self.call(self.rt.obj_mul, &[a, b]).unwrap(),
-            BinOp::Div => self.call(self.rt.obj_div, &[a, b]).unwrap(),
-            BinOp::FloorDiv => self.call(self.rt.obj_floordiv, &[a, b]).unwrap(),
-            BinOp::Mod => self.call(self.rt.obj_mod, &[a, b]).unwrap(),
-            BinOp::Pow => self.call(self.rt.obj_pow, &[a, b]).unwrap(),
+        // The verifier guarantees both operands and `dst` share `lrepr`, and that
+        // a `Raw` operand only ever carries `Add`/`Sub`/`Mul`. Dispatch on it:
+        // `Raw(F64)` inlines IEEE float arithmetic (no box, no call); `Tagged`
+        // calls the tag-dispatched, bignum-safe `rt_obj_*` shims.
+        let v = match (&lrepr, op) {
+            (Repr::Raw(RawKind::F64), BinOp::Add) => self.builder.ins().fadd(a, b),
+            (Repr::Raw(RawKind::F64), BinOp::Sub) => self.builder.ins().fsub(a, b),
+            (Repr::Raw(RawKind::F64), BinOp::Mul) => self.builder.ins().fmul(a, b),
+            // Raw i64 (range-proven cursors): checked machine arithmetic that
+            // raises on i64 overflow — sound only because lowering proved range.
+            (Repr::Raw(RawKind::I64), BinOp::Add) => self.call(self.rt.add_int, &[a, b]).unwrap(),
+            (Repr::Raw(RawKind::I64), BinOp::Sub) => self.call(self.rt.sub_int, &[a, b]).unwrap(),
+            (Repr::Raw(RawKind::I64), BinOp::Mul) => self.call(self.rt.mul_int, &[a, b]).unwrap(),
+            (_, BinOp::Add) => self.call(self.rt.obj_add, &[a, b]).unwrap(),
+            (_, BinOp::Sub) => self.call(self.rt.obj_sub, &[a, b]).unwrap(),
+            (_, BinOp::Mul) => self.call(self.rt.obj_mul, &[a, b]).unwrap(),
+            (_, BinOp::Div) => self.call(self.rt.obj_div, &[a, b]).unwrap(),
+            (_, BinOp::FloorDiv) => self.call(self.rt.obj_floordiv, &[a, b]).unwrap(),
+            (_, BinOp::Mod) => self.call(self.rt.obj_mod, &[a, b]).unwrap(),
+            (_, BinOp::Pow) => self.call(self.rt.obj_pow, &[a, b]).unwrap(),
             // Bitwise/shift dispatch on the tag in the runtime (bignum-safe);
             // operands are Tagged, never raw-unboxed (Invariant 2).
-            BinOp::BitAnd => self.call(self.rt.obj_bitand, &[a, b]).unwrap(),
-            BinOp::BitOr => self.call(self.rt.obj_bitor, &[a, b]).unwrap(),
-            BinOp::BitXor => self.call(self.rt.obj_bitxor, &[a, b]).unwrap(),
-            BinOp::Shl => self.call(self.rt.obj_lshift, &[a, b]).unwrap(),
-            BinOp::Shr => self.call(self.rt.obj_rshift, &[a, b]).unwrap(),
+            (_, BinOp::BitAnd) => self.call(self.rt.obj_bitand, &[a, b]).unwrap(),
+            (_, BinOp::BitOr) => self.call(self.rt.obj_bitor, &[a, b]).unwrap(),
+            (_, BinOp::BitXor) => self.call(self.rt.obj_bitxor, &[a, b]).unwrap(),
+            (_, BinOp::Shl) => self.call(self.rt.obj_lshift, &[a, b]).unwrap(),
+            (_, BinOp::Shr) => self.call(self.rt.obj_rshift, &[a, b]).unwrap(),
         };
         self.def_local(dst, v);
         Ok(())
@@ -622,8 +658,25 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_compare(&mut self, dst: LocalId, op: CmpOp, l: &Operand, r: &Operand) -> Result<()> {
+        let lrepr = self.operand_repr(l).clone();
         let a = self.use_operand(l);
         let b = self.use_operand(r);
+        // Raw i64 (range-proven cursors): a signed machine `icmp` yielding the
+        // `I8` boolean directly — no boxing, no `rt_obj_*` call. Bounded fixnums
+        // compare identically to Python ints.
+        if lrepr == Repr::Raw(RawKind::I64) {
+            let cc = match op {
+                CmpOp::Eq => IntCC::Equal,
+                CmpOp::NotEq => IntCC::NotEqual,
+                CmpOp::Lt => IntCC::SignedLessThan,
+                CmpOp::LtE => IntCC::SignedLessThanOrEqual,
+                CmpOp::Gt => IntCC::SignedGreaterThan,
+                CmpOp::GtE => IntCC::SignedGreaterThanOrEqual,
+            };
+            let v = self.builder.ins().icmp(cc, a, b);
+            self.def_local(dst, v);
+            return Ok(());
+        }
         let v = match op {
             CmpOp::Eq => self.call(self.rt.obj_eq, &[a, b]).unwrap(),
             CmpOp::NotEq => {

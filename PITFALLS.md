@@ -50,6 +50,31 @@ solve (union-find / worklist over the lattice) → materialize. No pass-fixpoint
 Cross-instance field widening and polymorphic dunders are *constraints*, not
 extra passes.
 
+**Test before adding a pass (so this trap is never re-opened by accident).** The
+smell is **not** the *number* of passes — a forward pipeline of many
+single-purpose passes (`parse → resolve → typeck → lower → verify → optimize →
+codegen`) is normal, healthy, universal compiler architecture. The smell is two
+specific things:
+
+- **(i) Feedback / iteration.** Does the new pass feed information *back* into a
+  pass that already ran, so the two must be re-run to converge? That re-creates
+  the fixpoint. A *terminal, forward* pass (runs once, never revisited) does not.
+- **(ii) Responsibility duplication.** Does the new pass *re-derive* something an
+  existing pass already computes — a second source of truth for the same fact
+  that can drift? (This is the same drift Invariant 1 and §A5 fight.)
+
+If a new step is **(a)** a single forward walk, **(b)** with a distinct
+responsibility, and **(c)** with no feedback into an earlier pass, add it freely
+regardless of count. Example: `typeck::check_repr_boundaries` (the int→`float`
+boundary check) is a single read-only validation that runs *once after* the infer
+worklist, changes nothing, and feeds nothing back — so it lives behind the one
+`infer` entry point (`infer` = derive **then** validate = bidirectional type
+checking), not as a new pipeline pass. That is fine.
+
+The one hard rule: **never split `infer` itself back into N interdependent
+sub-passes.** Type *derivation* stays one monotone worklist. Everything around it
+may be as many forward, single-purpose passes as the work needs.
+
 ### A4. Deciding the calling convention ad hoc, per function
 **Trap:** whether a function takes/returns boxed-or-raw, tagged-or-untagged, is
 decided case-by-case and recorded in per-function flags, a per-local "ABI is

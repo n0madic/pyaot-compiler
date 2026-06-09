@@ -125,7 +125,7 @@ impl<'a> FnLowerer<'a> {
     fn add_param(&mut self, name: InternedString, ty: SemTy) {
         let id = LocalId::new(self.locals.len() as u32);
         self.params.push(HirParam { name, ty: ty.clone() });
-        self.locals.push(HirLocal { name, ty });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
         self.scope.insert(name, id);
     }
 
@@ -325,7 +325,7 @@ impl<'a> FnLowerer<'a> {
             return lid;
         }
         let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal { name, ty });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
         self.scope.insert(name, id);
         id
     }
@@ -390,6 +390,19 @@ impl<'a> FnLowerer<'a> {
         let i_lid = self.declare_local(i_name, SemTy::Dyn);
         let cursor = self.fresh_local(SemTy::Dyn);
         let stop_l = self.fresh_local(SemTy::Dyn);
+
+        // Phase 3c: a literal-bounded `range()` cursor provably stays in a small
+        // i64 sub-range, so the loop compare and increment can run on raw machine
+        // i64 (no tagging, no `rt_obj_*` call). Flag the cursor + stop slot; the
+        // loop variable `i` stays tagged (it is read in the body, where derived
+        // expressions like `i * i` could leave the proven range — PITFALLS A6).
+        // Lowering narrows the flagged slots to `Raw(I64)` only after typeck
+        // confirms they are `int`. Non-literal or out-of-bounds ranges stay
+        // tagged (the always-correct baseline).
+        if range_is_raw_int_eligible(&start, &stop, step) {
+            self.locals[cursor.index()].raw_int_ok = true;
+            self.locals[stop_l.index()].raw_int_ok = true;
+        }
 
         // cursor = start; stop_l = stop  (range args evaluated once).
         let s_idx = self.lower_range_arg(&start, span)?;
@@ -539,7 +552,7 @@ impl<'a> FnLowerer<'a> {
     fn fresh_local(&mut self, ty: SemTy) -> LocalId {
         let name = self.interner.intern("");
         let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal { name, ty });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
         id
     }
 
@@ -801,6 +814,24 @@ fn parse_range(iter: &Expr, span: Span) -> Result<(RangeArg<'_>, RangeArg<'_>, i
             Ok((RangeArg::Expr(&call.args[0]), RangeArg::Expr(&call.args[1]), step))
         }
         _ => Err(parse_error("range() takes 1 to 3 arguments", span)),
+    }
+}
+
+/// True iff `range(start, stop, step)` is a proof-gated `Raw(I64)`-eligible loop
+/// (Phase 3c): every bound is an integer literal whose magnitude is well within
+/// the conservative narrowing bound, so the cursor cannot overflow i64 or
+/// promote to a heap `BigInt`. Conservative and sound — any non-literal bound
+/// (or one out of range) makes the whole loop ineligible (stays tagged).
+fn range_is_raw_int_eligible(start: &RangeArg, stop: &RangeArg, step: i64) -> bool {
+    let bound = pyaot_types::RAW_I64_NARROW_BOUND;
+    let in_bound = |v: i64| v >= -bound && v <= bound;
+    let lit = |a: &RangeArg| match a {
+        RangeArg::Zero => Some(0i64),
+        RangeArg::Expr(e) => literal_int(e),
+    };
+    match (lit(start), lit(stop)) {
+        (Some(lo), Some(hi)) => in_bound(lo) && in_bound(hi) && in_bound(step),
+        _ => false,
     }
 }
 

@@ -22,15 +22,20 @@ use pyaot_utils::StringInterner;
 struct Cli {
     /// Input `.py` source file.
     input: PathBuf,
-    /// Output executable path.
+    /// Output executable path. Optional when `--emit-mir` is given.
     #[arg(short = 'o', long = "output")]
-    output: PathBuf,
+    output: Option<PathBuf>,
     /// Path to `libpyaot_runtime.a` (overrides auto-detection).
     #[arg(long = "runtime-lib")]
     runtime_lib: Option<PathBuf>,
     /// Keep debug symbols / DWARF (no stripping).
     #[arg(long)]
     debug: bool,
+    /// Print the lowered, verified MIR to stdout and exit (a debug aid for
+    /// confirming representation specialization — e.g. unboxed `Raw(F64)`
+    /// arithmetic — that the differential gate cannot distinguish by output).
+    #[arg(long = "emit-mir")]
+    emit_mir: bool,
 }
 
 fn main() {
@@ -71,13 +76,25 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     let passes = pyaot_optimizer::PassManager::phase1();
     passes.run(&mut mir).map_err(verify_to_error)?;
 
+    // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
+    if cli.emit_mir {
+        for (i, func) in mir.funcs.iter().enumerate() {
+            println!("// ── fn {i} ──");
+            println!("{func:#?}");
+        }
+        return Ok(());
+    }
+
     // ── codegen → object → link. ──
-    let object_path = cli.output.with_extension("o");
+    let output = cli.output.as_ref().ok_or_else(|| {
+        CompilerError::codegen_error("an output path (-o) is required unless --emit-mir is set", None)
+    })?;
+    let object_path = output.with_extension("o");
     pyaot_codegen_cranelift::compile(&mir, &object_path)?;
 
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
-    linker.link(&object_path, &cli.output, &[])?;
+    linker.link(&object_path, output, &[])?;
 
     Ok(())
 }

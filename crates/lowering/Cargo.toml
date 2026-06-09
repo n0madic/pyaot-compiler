@@ -15,5 +15,10 @@ pyaot-stdlib-defs = { path = "../stdlib-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
 la-arena = { workspace = true }
 
+[dev-dependencies]
+# Tests drive real Python through the front-half to assert lowered MIR shapes.
+pyaot-frontend-python = { path = "../frontend-python" }
+pyaot-semantics = { path = "../semantics" }
+
 [lints.rust]
 unsafe_code = "forbid"

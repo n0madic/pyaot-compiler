@@ -29,14 +29,14 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp as HBinOp, CmpOp as HCmpOp, HirBlock, HirExpr, HirExprKind, HirFunction, HirModule,
-    HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
+    BinOp as HBinOp, CmpOp as HCmpOp, HirBlock, HirExpr, HirExprKind, HirFunction, HirLocal,
+    HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
     BinOp as MBinOp, CmpOp as MCmpOp, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram,
     MirTerminator, Operand, PrintKind, StrPool, UnaryOp as MUnaryOp,
 };
-use pyaot_types::{repr_of, HeapShape, RawKind, Repr, SemTy};
+use pyaot_types::{repr_of, HeapShape, RawKind, Repr, SemTy, RAW_I64_NARROW_BOUND};
 use pyaot_utils::{BlockId, LocalId, StringInterner};
 
 /// Lower a resolved, inferred [`HirModule`] into a [`MirProgram`].
@@ -98,7 +98,7 @@ impl<'a> FnLower<'a> {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
         // temporaries are appended after.
         let locals: Vec<LocalDecl> =
-            func.locals.iter().map(|l| LocalDecl { repr: repr_of(&l.ty) }).collect();
+            func.locals.iter().map(|l| LocalDecl { repr: local_repr(l) }).collect();
         FnLower {
             func,
             resolve,
@@ -199,6 +199,33 @@ impl<'a> FnLower<'a> {
         }
         self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to });
         Ok(())
+    }
+
+    /// Supply an already-lowered operand as a sound `Raw(I64)`, or `None`.
+    ///
+    /// It qualifies if it already lowered to `Raw(I64)` (a range-proven cursor),
+    /// or it is a fixnum integer literal within [`RAW_I64_NARROW_BOUND`] — such a
+    /// literal provably is not a heap `BigInt`, so untagging it to a machine i64
+    /// is sound (PITFALLS B16) and the bound keeps the arithmetic result in range.
+    fn raw_i64_operand(
+        &mut self,
+        expr: Idx<HirExpr>,
+        loc: LocalId,
+        repr: &Repr,
+    ) -> Result<Option<LocalId>> {
+        let i64r = Repr::Raw(RawKind::I64);
+        if *repr == i64r {
+            return Ok(Some(loc));
+        }
+        if *repr == Repr::Tagged {
+            if let HirExprKind::IntLit(v) = self.func.exprs[expr].kind {
+                if (-RAW_I64_NARROW_BOUND..=RAW_I64_NARROW_BOUND).contains(&v) {
+                    let raw = self.coerce(loc, Repr::Tagged, i64r)?;
+                    return Ok(Some(raw));
+                }
+            }
+        }
+        Ok(None)
     }
 
     // ── statements ────────────────────────────────────────────────────────────
@@ -371,10 +398,20 @@ impl<'a> FnLower<'a> {
         }
     }
 
-    /// Lower `l <op> r`. Every binary op (arithmetic *and* bitwise/shift) runs on
-    /// the tagged baseline so it stays bignum-safe — an `int` operand may be a
-    /// heap `BigInt`, and unboxing to raw `i64` would silently miscompile. A
-    /// range-proven raw fast path for bitwise/shift is a Phase-3 optimization.
+    /// Lower `l <op> r`.
+    ///
+    /// **Float fast path (Phase 3b):** when `op ∈ {+, -, *}` and *both* operands
+    /// lower to unboxed `Raw(F64)`, emit a `Raw(F64)` `BinOp` — codegen inlines it
+    /// as `fadd`/`fsub`/`fmul` with no boxing and no call. These three ops are
+    /// exception-free; `/` differs from CPython on `x/0.0` and `// % **` carry
+    /// floor/sign/promotion semantics, so they stay on the tagged baseline
+    /// (PITFALLS B1). Mixed int/float also stays tagged (the runtime promotes).
+    ///
+    /// **Tagged baseline (everything else):** every operand is coerced to a
+    /// `Tagged` `Value` and the op dispatches on the tag in the runtime
+    /// (`rt_obj_*`), so it is bignum-safe — an `int` operand may dynamically be a
+    /// heap `BigInt`, and unboxing it to raw `i64` would silently miscompile
+    /// (Invariant 2). The proof-gated raw `int` fast path is Phase 3c.
     fn lower_binop(
         &mut self,
         op: HBinOp,
@@ -383,8 +420,43 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let mop = map_binop(op);
         let (ll, lr) = self.lower_expr(l)?;
-        let la = self.coerce(ll, lr, Repr::Tagged)?;
         let (rl, rr) = self.lower_expr(r)?;
+
+        let raw_addsubmul = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul);
+        let f64 = Repr::Raw(RawKind::F64);
+        if raw_addsubmul && lr == f64 && rr == f64 {
+            let dst = self.alloc_temp(f64.clone());
+            self.emit(MirInst::BinOp {
+                dst,
+                op: mop,
+                l: Operand::Local(ll),
+                r: Operand::Local(rl),
+            });
+            return Ok((dst, f64));
+        }
+
+        // Raw int fast path (Phase 3c): when one operand is a range-proven
+        // `Raw(I64)` cursor, emit a raw machine `Add`/`Sub`. The other operand is
+        // supplied as `Raw(I64)` too (another cursor, or a fixnum literal small
+        // enough to untag soundly). `Mul` is deliberately excluded — a raw product
+        // of two bounded values could leave the proven fixnum range and overflow.
+        let i64r = Repr::Raw(RawKind::I64);
+        if matches!(mop, MBinOp::Add | MBinOp::Sub) && (lr == i64r || rr == i64r) {
+            if let (Some(la), Some(ra)) =
+                (self.raw_i64_operand(l, ll, &lr)?, self.raw_i64_operand(r, rl, &rr)?)
+            {
+                let dst = self.alloc_temp(i64r.clone());
+                self.emit(MirInst::BinOp {
+                    dst,
+                    op: mop,
+                    l: Operand::Local(la),
+                    r: Operand::Local(ra),
+                });
+                return Ok((dst, i64r));
+            }
+        }
+
+        let la = self.coerce(ll, lr, Repr::Tagged)?;
         let ra = self.coerce(rl, rr, Repr::Tagged)?;
         let dst = self.alloc_temp(Repr::Tagged);
         self.emit(MirInst::BinOp {
@@ -417,9 +489,17 @@ impl<'a> FnLower<'a> {
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
         let (ll, lr) = self.lower_expr(l)?;
-        let la = self.coerce(ll, lr, Repr::Tagged)?;
         let (rl, rr) = self.lower_expr(r)?;
-        let ra = self.coerce(rl, rr, Repr::Tagged)?;
+        let i64r = Repr::Raw(RawKind::I64);
+        // Raw int compare (Phase 3c): when both operands are range-proven
+        // `Raw(I64)` cursors (the `range()` loop guard `cursor < stop`), compare
+        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Anything
+        // else runs on the tagged baseline (a lone raw operand re-tags soundly).
+        let (la, ra) = if lr == i64r && rr == i64r {
+            (ll, rl)
+        } else {
+            (self.coerce(ll, lr, Repr::Tagged)?, self.coerce(rl, rr, Repr::Tagged)?)
+        };
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
         self.emit(MirInst::Compare {
             dst,
@@ -507,6 +587,17 @@ impl<'a> FnLower<'a> {
     }
 }
 
+/// The representation of a HIR local. Almost always `repr_of(ty)`; the one
+/// exception is the proof-gated Phase-3c override, where a range-proven `int`
+/// slot is stored unboxed as `Raw(I64)` (typeck has confirmed `ty == Int`).
+fn local_repr(l: &HirLocal) -> Repr {
+    if l.raw_int_ok && l.ty == SemTy::Int {
+        Repr::Raw(RawKind::I64)
+    } else {
+        repr_of(&l.ty)
+    }
+}
+
 /// Pick the `PrintKind` and required operand `Repr` from an argument's `SemTy`.
 /// `None` means the kind takes no operand.
 fn print_dispatch(ty: &SemTy) -> (PrintKind, Option<Repr>) {
@@ -561,3 +652,6 @@ fn map_cmpop(op: HCmpOp) -> MCmpOp {
 fn cg_illegal(from: &Repr, to: &Repr) -> CompilerError {
     CompilerError::codegen_error(format!("illegal coercion {from:?} -> {to:?}"), None)
 }
+
+#[cfg(test)]
+mod tests;

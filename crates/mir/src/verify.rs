@@ -10,8 +10,8 @@
 //! `Call` reprs are checked against the callee signature (ABI = f(param Repr)).
 
 use crate::{
-    classify_coercion, is_heap_str, Const, MirFunction, MirInst, MirTerminator, Operand, PrintKind,
-    UnaryOp,
+    classify_coercion, is_heap_str, BinOp, Const, MirFunction, MirInst, MirTerminator, Operand,
+    PrintKind, UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -34,6 +34,10 @@ pub enum VerifyError {
     PrintMissingArg { kind: PrintKind },
     /// `Branch.cond` is not `Raw(I8)`.
     BranchCondNotI8 { got: Repr },
+    /// A `BinOp` runs on a representation that does not support it (e.g. a raw
+    /// `Add`/`Sub`/`Mul` is fine on `Raw(F64)`/`Raw(I64)`, but `Div`/`//`/`%`/`**`
+    /// and bitwise/shift must stay on the tagged baseline).
+    BadBinOpRepr { op: BinOp, repr: Repr },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -69,6 +73,9 @@ impl std::fmt::Display for VerifyError {
             }
             VerifyError::BranchCondNotI8 { got } => {
                 write!(f, "Branch.cond must be Raw(I8), got {got:?}")
+            }
+            VerifyError::BadBinOpRepr { op, repr } => {
+                write!(f, "BinOp {op:?} is not legal on representation {repr:?}")
             }
         }
     }
@@ -199,11 +206,22 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 return Err(VerifyError::IllegalCoercion { from: from.clone(), to: to.clone() });
             }
         }
-        MirInst::BinOp { dst, l, r, .. } => {
-            // Every binary op runs on the tagged baseline (bignum-safe).
-            want(f, l, &TAGGED, "BinOp.l")?;
-            want(f, r, &TAGGED, "BinOp.r")?;
-            want_local(f, *dst, &TAGGED, "BinOp.dst")?;
+        MirInst::BinOp { dst, op, l, r } => {
+            // Repr-consistent: operands and dst share one representation `R`, and
+            // `R` must support `op`. `Tagged` handles every op via tag dispatch
+            // (`rt_obj_*`, bignum-safe); the unboxed `Raw(F64)` / `Raw(I64)` fast
+            // paths carry only `Add`/`Sub`/`Mul`, which lowering proves safe (both
+            // operands statically float, or a no-overflow range proof for int).
+            check_operand(f, l)?;
+            let lhs = f.operand_repr(l).clone();
+            want(f, r, &lhs, "BinOp.r")?;
+            want_local(f, *dst, &lhs, "BinOp.dst")?;
+            let raw_ok = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul);
+            match lhs {
+                Repr::Tagged => {}
+                Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) if raw_ok => {}
+                other => return Err(VerifyError::BadBinOpRepr { op: *op, repr: other }),
+            }
         }
         MirInst::Unary { dst, op, operand } => {
             want(f, operand, &TAGGED, "Unary.operand")?;
@@ -211,8 +229,22 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             want_local(f, *dst, dst_want, "Unary.dst")?;
         }
         MirInst::Compare { dst, l, r, .. } => {
-            want(f, l, &TAGGED, "Compare.l")?;
-            want(f, r, &TAGGED, "Compare.r")?;
+            // Operands share one repr `R`; the result is the `Raw(I8)` boolean.
+            // `R = Tagged` dispatches via `rt_obj_*`; `R = Raw(I64)` is a machine
+            // `icmp` on range-proven cursors. Float comparison is not specialized.
+            check_operand(f, l)?;
+            let lhs = f.operand_repr(l).clone();
+            match lhs {
+                Repr::Tagged | Repr::Raw(RawKind::I64) => {}
+                other => {
+                    return Err(VerifyError::ReprMismatch {
+                        ctx: "Compare operand repr (Tagged or Raw(I64))",
+                        expected: TAGGED,
+                        actual: other,
+                    })
+                }
+            }
+            want(f, r, &lhs, "Compare.r")?;
             want_local(f, *dst, &RAW_I8, "Compare.dst")?;
         }
         MirInst::Truthy { dst, operand } => {
@@ -357,7 +389,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_arithmetic_on_raw() {
+    fn rejects_mismatched_binop_operands() {
+        // l=Raw(F64), r/dst=Tagged: operands must share one repr.
         let f = single_block(
             vec![Repr::Raw(RawKind::F64), Repr::Tagged, Repr::Tagged],
             vec![MirInst::BinOp {
@@ -369,6 +402,46 @@ mod tests {
             MirTerminator::Return(None),
         );
         assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    /// A single repr-uniform `BinOp` over three locals of `repr`.
+    fn binop_block(repr: Repr, op: BinOp) -> MirFunction {
+        single_block(
+            vec![repr.clone(), repr.clone(), repr],
+            vec![MirInst::BinOp {
+                dst: LocalId::new(2),
+                op,
+                l: Operand::Local(LocalId::new(0)),
+                r: Operand::Local(LocalId::new(1)),
+            }],
+            MirTerminator::Return(None),
+        )
+    }
+
+    #[test]
+    fn accepts_repr_consistent_binops() {
+        // Tagged supports every op; Raw(F64)/Raw(I64) support Add/Sub/Mul.
+        assert_eq!(verify(&binop_block(Repr::Tagged, BinOp::Div), &[]), Ok(()));
+        assert_eq!(verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Add), &[]), Ok(()));
+        assert_eq!(verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Mul), &[]), Ok(()));
+        assert_eq!(verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Sub), &[]), Ok(()));
+    }
+
+    #[test]
+    fn rejects_unsupported_raw_binops() {
+        // Div / Mod / bitwise must stay tagged — never on a Raw fast path.
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Div), &[]),
+            Err(VerifyError::BadBinOpRepr { .. })
+        ));
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Mod), &[]),
+            Err(VerifyError::BadBinOpRepr { .. })
+        ));
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::BitAnd), &[]),
+            Err(VerifyError::BadBinOpRepr { .. })
+        ));
     }
 
     #[test]

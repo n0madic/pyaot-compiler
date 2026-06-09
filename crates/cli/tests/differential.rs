@@ -20,6 +20,7 @@ const PHASE_CORPUS: &[&str] = &[
     "p2_funcs.py",
     "test_main.py",
     "p2_bignum.py",
+    "p3_numeric.py",
 ];
 
 #[test]

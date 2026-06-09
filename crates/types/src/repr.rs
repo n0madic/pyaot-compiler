@@ -24,6 +24,16 @@ pub enum RawKind {
     I32,
 }
 
+/// The conservative magnitude bound for the proof-gated `int → Raw(I64)`
+/// narrowing (Phase 3c). A value provably in `[-BOUND, BOUND]` cannot promote to
+/// a heap `BigInt` and leaves ample headroom so that a raw `Add`/`Sub` of two
+/// such values never overflows i64 *and* its result is still a valid tagged
+/// fixnum (so re-tagging into a tagged slot round-trips). `2^48` covers any
+/// realistic literal-bounded loop while staying far below the `i64::MAX >> 3`
+/// fixnum ceiling (~`2^60`). Soundness over completeness: when in doubt, the
+/// slot stays `Tagged` (PITFALLS A6).
+pub const RAW_I64_NARROW_BOUND: i64 = 1 << 48;
+
 /// Shape of a typed heap pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeapShape {
