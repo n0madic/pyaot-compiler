@@ -10,8 +10,8 @@
 //! `Call` reprs are checked against the callee signature (ABI = f(param Repr)).
 
 use crate::{
-    classify_coercion, is_heap_str, BinOp, Const, MirFunction, MirInst, MirTerminator, Operand,
-    PrintKind, UnaryOp,
+    classify_coercion, is_heap_str, BinOp, Const, ContainerArg, ContainerOp, ContainerResult,
+    MirFunction, MirInst, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -38,6 +38,13 @@ pub enum VerifyError {
     /// `Add`/`Sub`/`Mul` is fine on `Raw(F64)`/`Raw(I64)`, but `Div`/`//`/`%`/`**`
     /// and bitwise/shift must stay on the tagged baseline).
     BadBinOpRepr { op: BinOp, repr: Repr },
+    /// A `CallContainer` arity disagrees with the op's argument signature.
+    ContainerArity { op: ContainerOp, expected: usize, actual: usize },
+    /// A `CallContainer` carries a `dst` for a mutating op, or omits it for a
+    /// value-producing op.
+    ContainerDst { op: ContainerOp, want_dst: bool },
+    /// A `CallContainer` result local has the wrong representation for the op.
+    ContainerResultRepr { op: ContainerOp, actual: Repr },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -76,6 +83,19 @@ impl std::fmt::Display for VerifyError {
             }
             VerifyError::BadBinOpRepr { op, repr } => {
                 write!(f, "BinOp {op:?} is not legal on representation {repr:?}")
+            }
+            VerifyError::ContainerArity { op, expected, actual } => {
+                write!(f, "CallContainer {op:?}: expected {expected} args, got {actual}")
+            }
+            VerifyError::ContainerDst { op, want_dst } => {
+                if *want_dst {
+                    write!(f, "CallContainer {op:?} requires a dst but none was supplied")
+                } else {
+                    write!(f, "CallContainer {op:?} is a mutating op and must not have a dst")
+                }
+            }
+            VerifyError::ContainerResultRepr { op, actual } => {
+                write!(f, "CallContainer {op:?}: dst has the wrong representation {actual:?}")
             }
         }
     }
@@ -172,6 +192,10 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             let repr = f.local_repr(*dst);
             let (ok, expected) = match val {
                 Const::Str(_) => (is_heap_str(repr), Repr::Heap(HeapShape::Str)),
+                Const::Bytes(_) => (
+                    matches!(repr, Repr::Heap(HeapShape::Bytes)),
+                    Repr::Heap(HeapShape::Bytes),
+                ),
                 Const::BigIntStr(_) => (
                     matches!(repr, Repr::Heap(HeapShape::BigInt)),
                     Repr::Heap(HeapShape::BigInt),
@@ -278,6 +302,7 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 want_local(f, *d, &TAGGED, "CallBuiltin.dst")?;
             }
         }
+        MirInst::CallContainer { dst, op, args } => verify_call_container(f, *op, dst, args)?,
         MirInst::AssertFail => {}
         MirInst::Print { kind, arg } => match kind {
             PrintKind::Newline | PrintKind::Sep | PrintKind::None_ => {
@@ -302,6 +327,56 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 want(f, op, &RAW_I64, "Print(Int).arg")?;
             }
         },
+    }
+    Ok(())
+}
+
+/// Verify a `CallContainer` against its op's argument/result signature. This is
+/// the structural form of PITFALLS A5: every `Val` argument position is required
+/// to be `Tagged`, so a non-tagged element can never reach container storage; only
+/// `Idx` positions (indices, counts, sizes) are `Raw(I64)`.
+fn verify_call_container(
+    f: &MirFunction,
+    op: ContainerOp,
+    dst: &Option<LocalId>,
+    args: &[Operand],
+) -> Result<(), VerifyError> {
+    let kinds = op.arg_kinds();
+    if args.len() != kinds.len() {
+        return Err(VerifyError::ContainerArity {
+            op,
+            expected: kinds.len(),
+            actual: args.len(),
+        });
+    }
+    for (arg, kind) in args.iter().zip(kinds) {
+        let want_repr = match kind {
+            ContainerArg::Val => TAGGED,
+            ContainerArg::Idx => RAW_I64,
+        };
+        want(f, arg, &want_repr, "CallContainer.arg")?;
+    }
+    match op.result() {
+        ContainerResult::None => {
+            if dst.is_some() {
+                return Err(VerifyError::ContainerDst { op, want_dst: false });
+            }
+        }
+        result => {
+            let d = dst.ok_or(VerifyError::ContainerDst { op, want_dst: true })?;
+            check_local(f, d)?;
+            let got = f.local_repr(d);
+            let ok = match result {
+                ContainerResult::Value => *got == TAGGED,
+                ContainerResult::Int => *got == RAW_I64,
+                ContainerResult::Bool => *got == RAW_I8,
+                ContainerResult::Heap => matches!(got, Repr::Heap(_)),
+                ContainerResult::None => unreachable!(),
+            };
+            if !ok {
+                return Err(VerifyError::ContainerResultRepr { op, actual: got.clone() });
+            }
+        }
     }
     Ok(())
 }
@@ -445,14 +520,84 @@ mod tests {
     }
 
     #[test]
-    fn rejects_illegal_coercion() {
+    fn accepts_well_formed_call_container() {
+        // ListPush(list: Tagged, elem: Tagged) → no dst.
         let f = single_block(
-            vec![Repr::Tagged, Repr::Heap(HeapShape::Str)],
+            vec![Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))), Repr::Tagged],
+            vec![MirInst::CallContainer {
+                dst: None,
+                op: ContainerOp::ListPush,
+                args: vec![Operand::Local(LocalId::new(0)), Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        // Note: arg0 is Heap(List) which the verifier requires to be Tagged — so
+        // this must actually be coerced first. Use a Tagged list operand instead.
+        let f2 = single_block(
+            vec![Repr::Tagged, Repr::Tagged],
+            vec![MirInst::CallContainer {
+                dst: None,
+                op: ContainerOp::ListPush,
+                args: vec![Operand::Local(LocalId::new(0)), Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(verify(&f, &[]).is_err(), "Heap element arg must be rejected");
+        assert_eq!(verify(&f2, &[]), Ok(()));
+    }
+
+    #[test]
+    fn rejects_non_tagged_container_element_arg() {
+        // PITFALLS A5: a non-Tagged element argument to ListPush is structurally
+        // rejected (the element must be coerced to Tagged before storage).
+        let f = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
+            vec![MirInst::CallContainer {
+                dst: None,
+                op: ContainerOp::ListPush,
+                args: vec![Operand::Local(LocalId::new(0)), Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn container_index_arg_must_be_raw_i64() {
+        // ListGet(list: Tagged, index: Raw(I64)) → Tagged. A tagged index is
+        // rejected (the index position is `Idx`).
+        let bad = single_block(
+            vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
+            vec![MirInst::CallContainer {
+                dst: Some(LocalId::new(2)),
+                op: ContainerOp::ListGet,
+                args: vec![Operand::Local(LocalId::new(0)), Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&bad, &[]), Err(VerifyError::ReprMismatch { .. })));
+        let good = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::I64), Repr::Tagged],
+            vec![MirInst::CallContainer {
+                dst: Some(LocalId::new(2)),
+                op: ContainerOp::ListGet,
+                args: vec![Operand::Local(LocalId::new(0)), Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&good, &[]), Ok(()));
+    }
+
+    #[test]
+    fn rejects_illegal_coercion() {
+        // A raw float ↔ raw int reinterpretation is not in the legality table.
+        let f = single_block(
+            vec![Repr::Raw(RawKind::F64), Repr::Raw(RawKind::I64)],
             vec![MirInst::Coerce {
                 dst: LocalId::new(1),
                 src: Operand::Local(LocalId::new(0)),
-                from: Repr::Tagged,
-                to: Repr::Heap(HeapShape::Str),
+                from: Repr::Raw(RawKind::F64),
+                to: Repr::Raw(RawKind::I64),
             }],
             MirTerminator::Return(None),
         );

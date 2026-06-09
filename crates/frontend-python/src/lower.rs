@@ -12,16 +12,16 @@ use std::collections::HashMap;
 
 use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
-    BoolOp as PyBoolOp, CmpOp as PyCmpOp, Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall,
-    ExprCompare, ExprIfExp, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt,
-    UnaryOp as PyUnaryOp,
+    BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
+    ExprCall, ExprCompare, ExprDictComp, ExprIfExp, ExprListComp, ExprSetComp, ExprSubscript,
+    ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt, UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, CmpOp, HirBlock, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam,
-    HirStmt, HirTerminator, SymbolRef, UnaryOp,
+    BinOp, CmpOp, ContainerMethod, ContainerOp, HirBlock, HirExpr, HirExprKind, HirFunction,
+    HirLocal, HirModule, HirParam, HirStmt, HirTerminator, SymbolRef, UnaryOp,
 };
 use pyaot_types::SemTy;
 use pyaot_utils::{FuncId, InternedString, LocalId, Span, StringInterner};
@@ -84,6 +84,22 @@ struct LoopCtx {
     break_to: Idx<HirBlock>,
 }
 
+/// The element action of a comprehension: append to a list/set, or insert into a
+/// dict. Carries the result container local plus the borrowed element expressions.
+enum CompKind<'a> {
+    List { result: LocalId, elt: &'a Expr },
+    Set { result: LocalId, elt: &'a Expr },
+    Dict { result: LocalId, key: &'a Expr, val: &'a Expr },
+}
+
+/// A simple iterator loop opened by `begin_iter_loop`: the header to jump back to,
+/// the exit block to continue at, and the per-iteration element local.
+struct IterLoop {
+    header: Idx<HirBlock>,
+    exit: Idx<HirBlock>,
+    elem: LocalId,
+}
+
 pub(crate) struct FnLowerer<'a> {
     interner: &'a mut StringInterner,
     name: InternedString,
@@ -125,7 +141,7 @@ impl<'a> FnLowerer<'a> {
     fn add_param(&mut self, name: InternedString, ty: SemTy) {
         let id = LocalId::new(self.locals.len() as u32);
         self.params.push(HirParam { name, ty: ty.clone() });
-        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false, pin_tagged: false });
         self.scope.insert(name, id);
     }
 
@@ -260,22 +276,123 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// `a = b = value` — evaluate `value` once, assign to each (Name) target.
+    /// `a = b = value` — evaluate `value` once, assign to each target (a `Name` or
+    /// a subscript `base[index]`).
     fn lower_assign(&mut self, a: &rustpython_parser::ast::StmtAssign) -> Result<()> {
+        // Tuple/list unpacking target: `a, b = …` / `a, b = c, d`.
+        if a.targets.len() == 1 {
+            if let Some(targets) = seq_target_elts(&a.targets[0]) {
+                let span = to_span(a.range());
+                // A literal sequence RHS unpacks element-wise with a static arity
+                // check and no intermediate tuple; anything else stages a tuple and
+                // reads it back positionally.
+                if let Some(values) = seq_target_elts(a.value.as_ref()) {
+                    if targets.len() != values.len() {
+                        return Err(parse_error(
+                            format!(
+                                "cannot unpack: expected {} value(s), got {}",
+                                targets.len(),
+                                values.len()
+                            ),
+                            span,
+                        ));
+                    }
+                    return self.lower_unpack_literal(targets, values, span);
+                }
+                let value = self.lower_expr(a.value.as_ref())?;
+                return self.lower_unpack_subscript(targets, value, span);
+            }
+        }
         let value = self.lower_expr(a.value.as_ref())?;
         if a.targets.len() == 1 {
-            let lid = self.assign_target(&a.targets[0])?;
-            self.push_stmt(HirStmt::Assign { target: lid, value });
-            return Ok(());
+            return self.assign_to_target(&a.targets[0], value);
         }
         // Multiple targets: stage the value once, then fan out.
         let span = to_span(a.value.range());
         let tmp = self.fresh_local(SemTy::Dyn);
         self.push_stmt(HirStmt::Assign { target: tmp, value });
         for target in &a.targets {
-            let lid = self.assign_target(target)?;
             let v = self.local_ref(tmp, span);
-            self.push_stmt(HirStmt::Assign { target: lid, value: v });
+            self.assign_to_target(target, v)?;
+        }
+        Ok(())
+    }
+
+    /// Bind `value` to one assignment target: a simple name (`x = …`) or a
+    /// subscript write (`a[i] = …` → [`HirStmt::SetItem`]).
+    fn assign_to_target(&mut self, target: &Expr, value: Idx<HirExpr>) -> Result<()> {
+        match target {
+            Expr::Name(_) => {
+                let lid = self.assign_target(target)?;
+                self.push_stmt(HirStmt::Assign { target: lid, value });
+                Ok(())
+            }
+            Expr::Subscript(s) => {
+                let span = to_span(s.range());
+                if matches!(s.slice.as_ref(), Expr::Slice(_)) {
+                    return Err(parse_error("slice assignment is not yet supported", span));
+                }
+                let base = self.lower_expr(s.value.as_ref())?;
+                let index = self.lower_expr(s.slice.as_ref())?;
+                self.push_stmt(HirStmt::SetItem { base, index, value });
+                Ok(())
+            }
+            Expr::Tuple(_) | Expr::List(_) => Err(parse_error(
+                "tuple/list unpacking assignment is not yet supported",
+                to_span(target.range()),
+            )),
+            other => Err(parse_error(
+                "unsupported assignment target",
+                to_span(other.range()),
+            )),
+        }
+    }
+
+    /// Unpack a literal-sequence RHS (`a, b = e0, e1`): stage every RHS value
+    /// first (so `a, b = b, a` swaps correctly), then bind each target — no
+    /// intermediate tuple allocation.
+    fn lower_unpack_literal(
+        &mut self,
+        targets: &[Expr],
+        values: &[Expr],
+        span: Span,
+    ) -> Result<()> {
+        reject_starred(targets, span)?;
+        let mut staged = Vec::with_capacity(values.len());
+        for v in values {
+            let vv = self.lower_expr(v)?;
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value: vv });
+            staged.push(tmp);
+        }
+        for (target, tmp) in targets.iter().zip(staged) {
+            let v = self.local_ref(tmp, span);
+            self.assign_to_target(target, v)?;
+        }
+        Ok(())
+    }
+
+    /// Unpack an arbitrary iterable RHS (`a, b = expr`, `for k, v in pairs`): stage
+    /// the value once, then bind `target_i = tmp[i]` via positional subscripts.
+    /// Arity beyond the pattern is a runtime `IndexError` (no static shape here).
+    fn lower_unpack_subscript(
+        &mut self,
+        targets: &[Expr],
+        value: Idx<HirExpr>,
+        span: Span,
+    ) -> Result<()> {
+        reject_starred(targets, span)?;
+        let tmp = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: tmp, value });
+        for (i, target) in targets.iter().enumerate() {
+            let tmp_ref = self.local_ref(tmp, span);
+            let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+            let sub = self.alloc(
+                HirExprKind::Subscript { base: tmp_ref, index: idx },
+                SemTy::Dyn,
+                span,
+            );
+            self.assign_to_target(target, sub)?;
         }
         Ok(())
     }
@@ -325,7 +442,7 @@ impl<'a> FnLowerer<'a> {
             return lid;
         }
         let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false, pin_tagged: false });
         self.scope.insert(name, id);
         id
     }
@@ -378,6 +495,96 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_for(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
+        // The `range(...)` fast path (Phase 3c raw-i64 cursors) is preserved
+        // verbatim; any other iterable takes the general iterator-protocol path.
+        if is_range_call(s.iter.as_ref()) {
+            self.lower_for_range(s)
+        } else {
+            self.lower_for_iter(s)
+        }
+    }
+
+    /// General `for target in <iterable>`: drive the runtime iterator protocol
+    /// (`iter` → `next` → `is_exhausted`), binding the target (a name or a tuple
+    /// pattern) each iteration. `for`-else / `break` / `continue` reuse the loop
+    /// stack exactly as the `while`/range paths do.
+    fn lower_for_iter(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
+        let span = to_span(s.range());
+
+        // it = iter(iterable)  — a Heap(Iterator) local, live across the loop.
+        let iterable = self.lower_expr(s.iter.as_ref())?;
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+
+        // elem = next(it)   then   done = is_exhausted(it)  (this call order is the
+        // runtime contract: `next` advances and sets the exhausted flag).
+        let elem = self.fresh_local_tagged();
+        let it_ref1 = self.local_ref(it, span);
+        let next_expr = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: elem, value: next_expr });
+        let it_ref2 = self.local_ref(it, span);
+        let done = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            SemTy::Bool,
+            span,
+        );
+
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        let else_b = if s.orelse.is_empty() { exit } else { self.new_block() };
+        // done == true → exit (or the for-else); else run the body.
+        self.seal(HirTerminator::Branch { cond: done, then: else_b, else_: body_b });
+
+        self.switch(body_b);
+        let elem_ref = self.local_ref(elem, span);
+        self.bind_for_target(s.target.as_ref(), elem_ref, span)?;
+        self.loop_stack.push(LoopCtx { continue_to: header, break_to: exit });
+        self.lower_body(&s.body)?;
+        self.loop_stack.pop();
+        self.seal(HirTerminator::Jump(header));
+
+        if !s.orelse.is_empty() {
+            self.switch(else_b);
+            self.lower_body(&s.orelse)?;
+            self.seal(HirTerminator::Jump(exit));
+        }
+
+        self.switch(exit);
+        Ok(false)
+    }
+
+    /// Bind a `for`-loop target: a simple name, or a tuple/list pattern unpacked
+    /// element-wise (`for k, v in pairs`).
+    fn bind_for_target(&mut self, target: &Expr, value: Idx<HirExpr>, span: Span) -> Result<()> {
+        match target {
+            Expr::Name(n) => {
+                let name = self.intern(n.id.as_str());
+                let lid = self.declare_local(name, SemTy::Dyn);
+                self.push_stmt(HirStmt::Assign { target: lid, value });
+                Ok(())
+            }
+            _ => match seq_target_elts(target) {
+                Some(elts) => self.lower_unpack_subscript(elts, value, span),
+                None => Err(parse_error("unsupported for-loop target", span)),
+            },
+        }
+    }
+
+    /// The preserved Phase-3 `range(...)` loop with proof-gated raw-i64 cursors.
+    fn lower_for_range(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
         let span = to_span(s.range());
         let (start, stop, step) = parse_range(s.iter.as_ref(), span)?;
         if step == 0 {
@@ -540,6 +747,35 @@ impl<'a> FnLowerer<'a> {
             Expr::BoolOp(b) => self.lower_boolop(b),
             Expr::IfExp(e) => self.lower_ifexp(e),
             Expr::Call(c) => self.lower_call_expr(c, span),
+            // ── containers (Phase 4) ──
+            Expr::List(l) => {
+                let elems = self.lower_expr_list(&l.elts)?;
+                Ok(self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span))
+            }
+            Expr::Tuple(t) => {
+                let elems = self.lower_expr_list(&t.elts)?;
+                Ok(self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span))
+            }
+            Expr::Set(s) => {
+                let elems = self.lower_expr_list(&s.elts)?;
+                Ok(self.alloc(HirExprKind::SetLit { elems }, SemTy::Dyn, span))
+            }
+            Expr::Dict(d) => {
+                let mut pairs = Vec::with_capacity(d.values.len());
+                for (k, v) in d.keys.iter().zip(d.values.iter()) {
+                    let Some(k) = k else {
+                        return Err(parse_error("dict unpacking (`**`) is out of scope", span));
+                    };
+                    let kk = self.lower_expr(k)?;
+                    let vv = self.lower_expr(v)?;
+                    pairs.push((kk, vv));
+                }
+                Ok(self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span))
+            }
+            Expr::Subscript(s) => self.lower_subscript_expr(s, span),
+            Expr::ListComp(c) => self.lower_listcomp(c, span),
+            Expr::SetComp(c) => self.lower_setcomp(c, span),
+            Expr::DictComp(c) => self.lower_dictcomp(c, span),
             other => Err(parse_error(
                 "unsupported expression for this milestone",
                 to_span(other.range()),
@@ -547,12 +783,305 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Lower a list of expressions (literal elements).
+    fn lower_expr_list(&mut self, exprs: &[Expr]) -> Result<Vec<Idx<HirExpr>>> {
+        exprs.iter().map(|e| self.lower_expr(e)).collect()
+    }
+
+    /// Lower a subscript read `value[index]`. Slicing is deferred.
+    fn lower_subscript_expr(&mut self, s: &ExprSubscript, span: Span) -> Result<Idx<HirExpr>> {
+        if matches!(s.slice.as_ref(), Expr::Slice(_)) {
+            return Err(parse_error("slicing is not yet supported", span));
+        }
+        let base = self.lower_expr(s.value.as_ref())?;
+        let index = self.lower_expr(s.slice.as_ref())?;
+        Ok(self.alloc(HirExprKind::Subscript { base, index }, SemTy::Dyn, span))
+    }
+
+    // ── comprehensions (Phase 4C) ──────────────────────────────────────────────
+
+    /// `[elt for … if …]` → an empty list built by nesting an iterator loop per
+    /// `for` clause; each `if` clause branches past the element push.
+    fn lower_listcomp(&mut self, c: &ExprListComp, span: Span) -> Result<Idx<HirExpr>> {
+        let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        let kind = CompKind::List { result, elt: c.elt.as_ref() };
+        self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
+        Ok(self.local_ref(result, span))
+    }
+
+    /// `{elt for … if …}` → an empty set filled the same way.
+    fn lower_setcomp(&mut self, c: &ExprSetComp, span: Span) -> Result<Idx<HirExpr>> {
+        let result = self.fresh_local(SemTy::set_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        let kind = CompKind::Set { result, elt: c.elt.as_ref() };
+        self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
+        Ok(self.local_ref(result, span))
+    }
+
+    /// `{k: v for … if …}` → an empty dict filled key/value-wise.
+    fn lower_dictcomp(&mut self, c: &ExprDictComp, span: Span) -> Result<Idx<HirExpr>> {
+        let result = self.fresh_local(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        let kind = CompKind::Dict { result, key: c.key.as_ref(), val: c.value.as_ref() };
+        self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
+        Ok(self.local_ref(result, span))
+    }
+
+    /// Nest the comprehension's `for`/`if` clauses (one iterator loop per `for`),
+    /// emitting the element action at the innermost point.
+    fn lower_comp_clauses(
+        &mut self,
+        generators: &[Comprehension],
+        idx: usize,
+        kind: &CompKind,
+        span: Span,
+    ) -> Result<()> {
+        if idx == generators.len() {
+            return self.emit_comp_elem(kind, span);
+        }
+        let gen = &generators[idx];
+        if gen.is_async {
+            return Err(parse_error("async comprehensions are out of scope", span));
+        }
+
+        // it = iter(gen.iter)
+        let iterable = self.lower_expr(&gen.iter)?;
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let elem = self.fresh_local_tagged();
+        let it_ref1 = self.local_ref(it, span);
+        let next = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        let it_ref2 = self.local_ref(it, span);
+        let done = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            SemTy::Bool,
+            span,
+        );
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+
+        self.switch(body_b);
+        let elem_ref = self.local_ref(elem, span);
+        self.bind_for_target(&gen.target, elem_ref, span)?;
+        // Filters: a false `if` skips to the next element (jump back to header).
+        for cond_expr in &gen.ifs {
+            let cond = self.lower_expr(cond_expr)?;
+            let cont = self.new_block();
+            self.seal(HirTerminator::Branch { cond, then: cont, else_: header });
+            self.switch(cont);
+        }
+        // Recurse into the next clause (or emit the element at the innermost).
+        self.lower_comp_clauses(generators, idx + 1, kind, span)?;
+        self.seal(HirTerminator::Jump(header));
+        self.switch(exit);
+        Ok(())
+    }
+
+    // ── reduce/loop builtins: sum / min / max / set (Phase 4C) ─────────────────
+
+    /// Emit the iterator-protocol prologue for a simple loop over an
+    /// already-lowered iterable, switching to the loop body and returning the
+    /// per-iteration element local plus the header/exit blocks. Pair with
+    /// [`Self::end_iter_loop`]. (Used by `sum`/`min`/`max`/`set` — no target
+    /// binding, filters, or `break`/`continue`, unlike the `for`/comprehension
+    /// paths.)
+    fn begin_iter_loop(&mut self, iterable: Idx<HirExpr>, span: Span) -> Result<IterLoop> {
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let elem = self.fresh_local_tagged();
+        let it_ref1 = self.local_ref(it, span);
+        let next = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        let it_ref2 = self.local_ref(it, span);
+        let done = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            SemTy::Bool,
+            span,
+        );
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+        self.switch(body_b);
+        Ok(IterLoop { header, exit, elem })
+    }
+
+    /// Close a [`Self::begin_iter_loop`] loop: jump back to the header and switch
+    /// to the exit block.
+    fn end_iter_loop(&mut self, lp: IterLoop) {
+        self.seal(HirTerminator::Jump(lp.header));
+        self.switch(lp.exit);
+    }
+
+    /// `sum(iterable[, start])` → `acc = start; for x in iterable: acc = acc + x`.
+    fn lower_sum(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.is_empty() || args.len() > 2 {
+            return Err(parse_error("sum() takes 1 or 2 arguments", span));
+        }
+        let acc = self.fresh_local(SemTy::Dyn);
+        let start = match args.get(1) {
+            Some(s) => self.lower_expr(s)?,
+            None => self.alloc(HirExprKind::IntLit(0), SemTy::Int, span),
+        };
+        self.push_stmt(HirStmt::Assign { target: acc, value: start });
+        let iterable = self.lower_expr(&args[0])?;
+        let lp = self.begin_iter_loop(iterable, span)?;
+        let acc_ref = self.local_ref(acc, span);
+        let elem_ref = self.local_ref(lp.elem, span);
+        let add = self.alloc(
+            HirExprKind::BinOp { op: BinOp::Add, l: acc_ref, r: elem_ref },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: acc, value: add });
+        self.end_iter_loop(lp);
+        Ok(self.local_ref(acc, span))
+    }
+
+    /// `min`/`max` over a single iterable, or over 2+ positional args (wrapped in a
+    /// synthetic list). Compares with the tagged baseline (`rt_obj_cmp`), so heap
+    /// elements order by value, not pointer (PITFALLS B13). Empty input yields
+    /// `None` (CPython raises `ValueError`; that path is out of scope).
+    fn lower_minmax(&mut self, args: &[Expr], span: Span, is_min: bool) -> Result<Idx<HirExpr>> {
+        if args.is_empty() {
+            return Err(parse_error("min()/max() require at least one argument", span));
+        }
+        // 1 arg → iterate it; 2+ args → iterate a synthetic list of the args.
+        let iterable = if args.len() == 1 {
+            self.lower_expr(&args[0])?
+        } else {
+            let elems = self.lower_expr_list(args)?;
+            self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span)
+        };
+
+        let acc = self.fresh_local(SemTy::Dyn);
+        let have = self.fresh_local(SemTy::Bool);
+        let init_have = self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span);
+        self.push_stmt(HirStmt::Assign { target: have, value: init_have });
+        let init_acc = self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span);
+        self.push_stmt(HirStmt::Assign { target: acc, value: init_acc });
+
+        let lp = self.begin_iter_loop(iterable, span)?;
+        // if not have: first element; else compare and maybe replace.
+        let have_ref = self.local_ref(have, span);
+        let first_b = self.new_block();
+        let cmp_b = self.new_block();
+        let cont = self.new_block();
+        self.seal(HirTerminator::Branch { cond: have_ref, then: cmp_b, else_: first_b });
+
+        // first_b: acc = elem; have = True
+        self.switch(first_b);
+        let e1 = self.local_ref(lp.elem, span);
+        self.push_stmt(HirStmt::Assign { target: acc, value: e1 });
+        let t = self.alloc(HirExprKind::BoolLit(true), SemTy::Bool, span);
+        self.push_stmt(HirStmt::Assign { target: have, value: t });
+        self.seal(HirTerminator::Jump(cont));
+
+        // cmp_b: if elem </> acc: acc = elem
+        self.switch(cmp_b);
+        let e2 = self.local_ref(lp.elem, span);
+        let acc_ref = self.local_ref(acc, span);
+        let op = if is_min { CmpOp::Lt } else { CmpOp::Gt };
+        let cmp = self.alloc(HirExprKind::Compare { op, l: e2, r: acc_ref }, SemTy::Bool, span);
+        let upd = self.new_block();
+        self.seal(HirTerminator::Branch { cond: cmp, then: upd, else_: cont });
+        self.switch(upd);
+        let e3 = self.local_ref(lp.elem, span);
+        self.push_stmt(HirStmt::Assign { target: acc, value: e3 });
+        self.seal(HirTerminator::Jump(cont));
+
+        self.switch(cont);
+        self.end_iter_loop(lp);
+        Ok(self.local_ref(acc, span))
+    }
+
+    /// `set()` → empty set; `set(iterable)` → fill an empty set from the iterable.
+    fn lower_set_call(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.is_empty() {
+            return Ok(self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span));
+        }
+        if args.len() != 1 {
+            return Err(parse_error("set() takes at most 1 argument", span));
+        }
+        let result = self.fresh_local(SemTy::set_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        let iterable = self.lower_expr(&args[0])?;
+        let lp = self.begin_iter_loop(iterable, span)?;
+        let elem_ref = self.local_ref(lp.elem, span);
+        self.push_stmt(HirStmt::ContainerPush { container: result, value: elem_ref });
+        self.end_iter_loop(lp);
+        Ok(self.local_ref(result, span))
+    }
+
+    /// Emit the innermost comprehension element action (push / insert).
+    fn emit_comp_elem(&mut self, kind: &CompKind, span: Span) -> Result<()> {
+        match kind {
+            CompKind::List { result, elt } | CompKind::Set { result, elt } => {
+                let v = self.lower_expr(elt)?;
+                self.push_stmt(HirStmt::ContainerPush { container: *result, value: v });
+            }
+            CompKind::Dict { result, key, val } => {
+                let k = self.lower_expr(key)?;
+                let v = self.lower_expr(val)?;
+                self.push_stmt(HirStmt::ContainerInsert { container: *result, key: k, value: v });
+            }
+        }
+        let _ = span;
+        Ok(())
+    }
+
     /// Allocate a fresh synthetic local (unnamed; never referenced by a source
     /// name) for desugared result/operand slots.
     fn fresh_local(&mut self, ty: SemTy) -> LocalId {
         let name = self.interner.intern("");
         let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal { name, ty, raw_int_ok: false });
+        self.locals.push(HirLocal { name, ty, raw_int_ok: false, pin_tagged: false });
+        id
+    }
+
+    /// A fresh synthetic local pinned to the `Tagged` representation — for the slot
+    /// that receives an `iter_next` result (null on exhaustion, so it must never be
+    /// inferred to an unboxed `Raw(F64)`/`Raw(I8)` that would deref the null).
+    fn fresh_local_tagged(&mut self) -> LocalId {
+        let name = self.interner.intern("");
+        let id = LocalId::new(self.locals.len() as u32);
+        self.locals.push(HirLocal {
+            name,
+            ty: SemTy::Dyn,
+            raw_int_ok: false,
+            pin_tagged: true,
+        });
         id
     }
 
@@ -630,6 +1159,28 @@ impl<'a> FnLowerer<'a> {
         }
         // Single comparison: a plain `Compare` value node.
         if c.ops.len() == 1 {
+            // `x in y` / `x not in y` → a container membership op (`Contains` reads
+            // `container, elem`, so the operand order flips). `not in` negates it.
+            if matches!(c.ops[0], PyCmpOp::In | PyCmpOp::NotIn) {
+                let container = self.lower_expr(&c.comparators[0])?;
+                let elem = self.lower_expr(c.left.as_ref())?;
+                let contains = self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::Contains,
+                        args: vec![container, elem],
+                    },
+                    SemTy::Bool,
+                    span,
+                );
+                if matches!(c.ops[0], PyCmpOp::NotIn) {
+                    return Ok(self.alloc(
+                        HirExprKind::Unary { op: UnaryOp::Not, operand: contains },
+                        SemTy::Bool,
+                        span,
+                    ));
+                }
+                return Ok(contains);
+            }
             let op = self.map_cmp(&c.ops[0], span)?;
             let l = self.lower_expr(c.left.as_ref())?;
             let r = self.lower_expr(&c.comparators[0])?;
@@ -740,6 +1291,28 @@ impl<'a> FnLowerer<'a> {
         if !c.keywords.is_empty() {
             return Err(parse_error("keyword arguments are not supported in calls", span));
         }
+        // `recv.method(args)` → a bounded container method call (Phase 4D). A bare
+        // attribute outside call position, or a non-container method name, stays
+        // rejected (Phase 5).
+        if let Expr::Attribute(attr) = c.func.as_ref() {
+            let method = ContainerMethod::from_name(attr.attr.as_str()).ok_or_else(|| {
+                parse_error(format!("unsupported method `.{}()`", attr.attr.as_str()), span)
+            })?;
+            let recv = self.lower_expr(attr.value.as_ref())?;
+            let args = self.lower_expr_list(&c.args)?;
+            return Ok(self.alloc(HirExprKind::MethodCall { recv, method, args }, SemTy::Dyn, span));
+        }
+        // Builtins that desugar to reduce / iterator loops are recognized by name
+        // (like `print`/`range`; shadowing these names is not supported).
+        if let Expr::Name(n) = c.func.as_ref() {
+            match n.id.as_str() {
+                "sum" => return self.lower_sum(&c.args, span),
+                "min" => return self.lower_minmax(&c.args, span, true),
+                "max" => return self.lower_minmax(&c.args, span, false),
+                "set" => return self.lower_set_call(&c.args, span),
+                _ => {}
+            }
+        }
         let callee = self.lower_expr(c.func.as_ref())?;
         let mut args = Vec::with_capacity(c.args.len());
         for a in &c.args {
@@ -755,6 +1328,14 @@ impl<'a> FnLowerer<'a> {
             Constant::Float(f) => (HirExprKind::FloatLit(*f), SemTy::Float),
             Constant::Bool(b) => (HirExprKind::BoolLit(*b), SemTy::Bool),
             Constant::None => (HirExprKind::NoneLit, SemTy::NoneTy),
+            Constant::Bytes(b) => {
+                // The bytes are interned through the string table (codegen reads
+                // them back as raw bytes). Non-UTF-8 byte literals are out of scope.
+                let s = std::str::from_utf8(b).map_err(|_| {
+                    parse_error("non-UTF-8 bytes literals are out of scope", span)
+                })?;
+                (HirExprKind::BytesLit(self.intern(s)), SemTy::Bytes)
+            }
             _ => {
                 return Err(parse_error(
                     "unsupported literal kind for this milestone",
@@ -790,6 +1371,30 @@ impl<'a> FnLowerer<'a> {
 enum RangeArg<'a> {
     Zero,
     Expr(&'a Expr),
+}
+
+/// True iff `iter` is a direct `range(...)` call — selects the Phase-3 fast path.
+fn is_range_call(iter: &Expr) -> bool {
+    matches!(iter, Expr::Call(c)
+        if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "range"))
+}
+
+/// The element expressions of a tuple/list target or literal-sequence value, used
+/// for unpacking (`a, b = …`). `None` for any other expression.
+fn seq_target_elts(e: &Expr) -> Option<&[Expr]> {
+    match e {
+        Expr::Tuple(t) => Some(&t.elts),
+        Expr::List(l) => Some(&l.elts),
+        _ => None,
+    }
+}
+
+/// Reject starred unpacking targets (`a, *rest = …`) — deferred to Phase 6.
+fn reject_starred(targets: &[Expr], span: Span) -> Result<()> {
+    if targets.iter().any(|t| matches!(t, Expr::Starred(_))) {
+        return Err(parse_error("starred unpacking targets are out of scope", span));
+    }
+    Ok(())
 }
 
 /// Parse `range(...)` from a `for` iterable into `(start, stop, step)`. `step`
@@ -879,7 +1484,11 @@ fn binop_from_ast(op: &PyOperator, span: Span) -> Result<BinOp> {
     })
 }
 
-/// Map a type annotation to a `SemTy` (primitives drive `Repr`; else `Dyn`).
+/// Map a type annotation to a `SemTy` (primitives and built-in containers drive
+/// `Repr`; everything else is `Dyn`). A bare container name (`list`) defaults its
+/// element types to `Dyn`; a subscripted one (`list[int]`, `dict[str, int]`,
+/// `tuple[int, ...]`) carries them — this is what lets the empty-literal bootstrap
+/// seed `x: list[int] = []` (PITFALLS B4).
 fn annotation_to_semty(ann: &Expr) -> SemTy {
     match ann {
         Expr::Name(n) => match n.id.as_str() {
@@ -887,12 +1496,49 @@ fn annotation_to_semty(ann: &Expr) -> SemTy {
             "float" => SemTy::Float,
             "bool" => SemTy::Bool,
             "str" => SemTy::Str,
+            "bytes" => SemTy::Bytes,
             "None" | "NoneType" => SemTy::NoneTy,
+            "list" | "List" => SemTy::list_of(SemTy::Dyn),
+            "dict" | "Dict" => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+            "set" | "Set" | "frozenset" => SemTy::set_of(SemTy::Dyn),
+            "tuple" | "Tuple" => SemTy::tuple_var_of(SemTy::Dyn),
             _ => SemTy::Dyn,
         },
+        Expr::Subscript(s) => annotation_subscript(s.value.as_ref(), s.slice.as_ref()),
         Expr::Constant(c) if matches!(c.value, Constant::None) => SemTy::NoneTy,
         _ => SemTy::Dyn,
     }
+}
+
+/// Map a subscripted generic annotation (`list[int]`, `dict[K, V]`, …) to a
+/// `SemTy`. Unknown bases fall back to `Dyn`.
+fn annotation_subscript(base: &Expr, slice: &Expr) -> SemTy {
+    let Expr::Name(n) = base else { return SemTy::Dyn };
+    match n.id.as_str() {
+        "list" | "List" => SemTy::list_of(annotation_to_semty(slice)),
+        "set" | "Set" | "frozenset" => SemTy::set_of(annotation_to_semty(slice)),
+        "dict" | "Dict" => match slice {
+            Expr::Tuple(t) if t.elts.len() == 2 => {
+                SemTy::dict_of(annotation_to_semty(&t.elts[0]), annotation_to_semty(&t.elts[1]))
+            }
+            _ => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+        },
+        "tuple" | "Tuple" => match slice {
+            // `tuple[T, ...]` is the homogeneous variable-length tuple.
+            Expr::Tuple(t) if t.elts.len() == 2 && is_ellipsis(&t.elts[1]) => {
+                SemTy::tuple_var_of(annotation_to_semty(&t.elts[0]))
+            }
+            Expr::Tuple(t) => SemTy::tuple_of(t.elts.iter().map(annotation_to_semty).collect()),
+            single => SemTy::tuple_of(vec![annotation_to_semty(single)]),
+        },
+        "Optional" => SemTy::optional(annotation_to_semty(slice)),
+        _ => SemTy::Dyn,
+    }
+}
+
+/// True iff `e` is the `...` (Ellipsis) literal — the `tuple[T, ...]` marker.
+fn is_ellipsis(e: &Expr) -> bool {
+    matches!(e, Expr::Constant(c) if matches!(c.value, Constant::Ellipsis))
 }
 
 /// Lower a top-level `def` into an [`HirFunction`]. Parameters and return type

@@ -33,6 +33,10 @@ pub use verify::{verify, VerifyError};
 
 // Re-exported so consumers (`lowering`, `codegen`) can name builtin kinds.
 pub use pyaot_core_defs::BuiltinFunctionKind;
+// Re-exported so consumers can name container ops without a direct `hir` dep.
+// `ContainerCmpOp` is the HIR comparison operator carried by `ContainerOp`'s
+// ordering variants (aliased to avoid clashing with this crate's own `CmpOp`).
+pub use pyaot_hir::{ContainerArg, ContainerOp, ContainerResult, CmpOp as ContainerCmpOp};
 
 // ============================================================================
 // Program / function structure
@@ -147,6 +151,18 @@ pub enum MirInst {
         kind: BuiltinFunctionKind,
         args: Vec<Operand>,
     },
+    /// Call a container / iterator runtime op (Phase 4). Parallels `CallBuiltin`
+    /// but with a per-op argument/result representation signature
+    /// ([`ContainerOp::arg_kinds`] / [`ContainerOp::result`]) the verifier
+    /// enforces. Element/key/value args are `Tagged` (uniform tagged storage,
+    /// PITFALLS A5); index/count/size args are `Raw(I64)`; the `dst` repr is the
+    /// op's result category. The concrete `rt_*` to call is selected at codegen
+    /// from `op` plus the receiver representation, exactly as the verifier sees it.
+    CallContainer {
+        dst: Option<LocalId>,
+        op: ContainerOp,
+        args: Vec<Operand>,
+    },
     /// Raise `AssertionError` (no message in Phase 2). Followed by `Unreachable`.
     AssertFail,
     /// A parameterized print op — one variant covers every print form rather
@@ -210,6 +226,9 @@ pub enum PrintKind {
 pub enum Const {
     /// A string literal; the bytes live in [`MirProgram::str_pool`].
     Str(InternedString),
+    /// A `bytes` literal `b"…"`; the raw bytes live in [`MirProgram::str_pool`].
+    /// Codegen materializes it via `rt_make_bytes` into a `Heap(Bytes)`.
+    Bytes(InternedString),
     /// A fixnum integer literal (tagged at codegen).
     Int(i64),
     /// A big integer literal; decimal text lives in [`MirProgram::str_pool`].
@@ -280,6 +299,15 @@ pub enum Coercion {
     /// A typed heap pointer reinterpreted as the universal tagged value — free
     /// in this runtime's ABI (heap pointers *are* tagged `Value`s).
     HeapToTagged,
+    /// The sound reverse: a tagged value re-typed as a heap pointer. Bit-identical
+    /// (a heap pointer *is* a tagged value), so it is a zero-instruction Noop in
+    /// codegen — unlike `UnboxFloat`/`UntagBool`, it does **not** reinterpret bits
+    /// by an assumed primitive type, so a value of the wrong dynamic type is not
+    /// immediately mis-read. It is emitted only when `typeck` has typed the slot as
+    /// that container/iterator (e.g. a uniform-tagged `rt_*_get` result feeding a
+    /// `list[list[int]]` element local, or `iter_next` into a typed loop variable),
+    /// so the narrowing is proven sound.
+    TaggedToHeap,
     BoxFloat,
     UnboxFloat,
     TagInt,
@@ -295,8 +323,17 @@ pub fn classify_coercion(from: &Repr, to: &Repr) -> Option<Coercion> {
         return Some(Coercion::Noop);
     }
     match (from, to) {
-        // A typed heap pointer is bit-identical to a tagged `Value`.
+        // Two heap shapes of the same container *family* (same constructor; same
+        // arity for fixed tuples) are physically identical — element/key/value
+        // representation is compile-time metadata only, since every slot is stored
+        // as a tagged `Value`. So re-typing one as the other (a `list[Never]`
+        // comprehension result into an annotated `list[int]`, a `list[int]` into a
+        // `list[Dyn]`, …) is a zero-instruction Noop. Different families
+        // (`list` → `dict`) stay illegal: that would mis-dispatch the runtime.
+        (Repr::Heap(a), Repr::Heap(b)) if same_container_family(a, b) => Some(Coercion::Noop),
+        // A typed heap pointer is bit-identical to a tagged `Value` (both ways).
         (Repr::Heap(_), Repr::Tagged) => Some(Coercion::Noop),
+        (Repr::Tagged, Repr::Heap(_)) => Some(Coercion::TaggedToHeap),
         (Repr::Raw(RawKind::F64), Repr::Tagged) => Some(Coercion::BoxFloat),
         (Repr::Tagged, Repr::Raw(RawKind::F64)) => Some(Coercion::UnboxFloat),
         (Repr::Raw(RawKind::I8), Repr::Tagged) => Some(Coercion::TagBool),
@@ -310,6 +347,24 @@ pub fn classify_coercion(from: &Repr, to: &Repr) -> Option<Coercion> {
 /// True iff `to` is the universal heap-string representation.
 pub(crate) fn is_heap_str(repr: &Repr) -> bool {
     matches!(repr, Repr::Heap(HeapShape::Str))
+}
+
+/// True iff two heap shapes are the same container *family* — the same physical
+/// object kind, differing only in compile-time element/key/value metadata (which
+/// is irrelevant because every container slot is a tagged `Value`). Fixed tuples
+/// must additionally share arity. Non-container heap shapes match only themselves
+/// (handled by the `from == to` fast path, so they are not listed here).
+fn same_container_family(a: &HeapShape, b: &HeapShape) -> bool {
+    use HeapShape::{Dict, Iterator, List, Set, Tuple, TupleVar};
+    match (a, b) {
+        (List(_), List(_)) => true,
+        (Dict(..), Dict(..)) => true,
+        (Set(_), Set(_)) => true,
+        (TupleVar(_), TupleVar(_)) => true,
+        (Tuple(x), Tuple(y)) => x.len() == y.len(),
+        (Iterator(_), Iterator(_)) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -342,10 +397,11 @@ mod tests {
             classify_coercion(&Repr::Tagged, &Repr::Raw(RawKind::I8)),
             Some(Coercion::UntagBool)
         );
-        // Narrowing Tagged to a typed pointer is still not a coercion.
+        // Tagged → a typed heap pointer is the sound, bit-identical reverse Noop
+        // (emitted only where typeck has proven the slot's container type).
         assert_eq!(
             classify_coercion(&Repr::Tagged, &Repr::Heap(HeapShape::Str)),
-            None
+            Some(Coercion::TaggedToHeap)
         );
     }
 }

@@ -36,8 +36,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
-    classify_coercion, BinOp, CmpOp, Coercion, Const, LocalDecl, MirFunction, MirInst, MirProgram,
-    MirTerminator, Operand, PrintKind, UnaryOp,
+    classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, LocalDecl,
+    MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId};
@@ -102,6 +102,73 @@ struct RuntimeFns {
     print_newline: FuncId,
     gc_push: FuncId,
     gc_pop: FuncId,
+    // ── containers (Phase 4) ──
+    make_list: FuncId,
+    make_dict: FuncId,
+    make_set: FuncId,
+    make_tuple: FuncId,
+    make_bytes: FuncId,
+    list_push: FuncId,
+    list_set: FuncId,
+    dict_set: FuncId,
+    set_add: FuncId,
+    tuple_set: FuncId,
+    list_get: FuncId,
+    dict_get: FuncId,
+    tuple_get: FuncId,
+    bytes_get: FuncId,
+    str_get: FuncId,
+    any_getitem: FuncId,
+    obj_len: FuncId,
+    obj_contains: FuncId,
+    list_concat: FuncId,
+    list_repeat: FuncId,
+    tuple_concat: FuncId,
+    bytes_concat: FuncId,
+    bytes_repeat: FuncId,
+    list_cmp: FuncId,
+    tuple_cmp: FuncId,
+    // ── iterator protocol (Phase 4B) ──
+    iter_value: FuncId,
+    iter_next_no_exc: FuncId,
+    iter_is_exhausted: FuncId,
+    // ── iteration builtins (Phase 4C) ──
+    iter_enumerate: FuncId,
+    zip_new: FuncId,
+    list_from_iter: FuncId,
+    tuple_from_iter: FuncId,
+    dict_from_pairs: FuncId,
+    make_bytes_from_list: FuncId,
+    sorted: FuncId,
+    iter_reversed_list: FuncId,
+    iter_range: FuncId,
+    // ── container methods (Phase 4D) ──
+    list_pop: FuncId,
+    list_insert: FuncId,
+    list_extend: FuncId,
+    list_index: FuncId,
+    list_count: FuncId,
+    list_clear: FuncId,
+    list_copy: FuncId,
+    list_reverse: FuncId,
+    list_sort: FuncId,
+    dict_get_default: FuncId,
+    dict_keys: FuncId,
+    dict_values: FuncId,
+    dict_items: FuncId,
+    dict_pop: FuncId,
+    dict_setdefault: FuncId,
+    dict_update: FuncId,
+    dict_clear: FuncId,
+    dict_copy: FuncId,
+    set_remove: FuncId,
+    set_discard: FuncId,
+    set_update: FuncId,
+    set_union: FuncId,
+    set_intersection: FuncId,
+    set_difference: FuncId,
+    set_copy: FuncId,
+    set_clear: FuncId,
 }
 
 impl RuntimeFns {
@@ -159,6 +226,70 @@ impl RuntimeFns {
             print_newline: d("rt_print_newline", &[], &[])?,
             gc_push: d("gc_push", &[ptr], &[])?,
             gc_pop: d("gc_pop", &[], &[])?,
+            // Containers (all take/return tagged `Value` = i64 unless noted).
+            make_list: d("rt_make_list", &[ti], &[ti])?,
+            make_dict: d("rt_make_dict", &[ti], &[ti])?,
+            make_set: d("rt_make_set", &[ti], &[ti])?,
+            make_tuple: d("rt_make_tuple", &[ti], &[ti])?,
+            make_bytes: d("rt_make_bytes", &[ptr, ptr], &[ti])?,
+            list_push: d("rt_list_push", &[ti, ti], &[])?,
+            list_set: d("rt_list_set", &[ti, ti, ti], &[])?,
+            dict_set: d("rt_dict_set", &[ti, ti, ti], &[])?,
+            set_add: d("rt_set_add", &[ti, ti], &[])?,
+            tuple_set: d("rt_tuple_set", &[ti, ti, ti], &[])?,
+            list_get: d("rt_list_get", &[ti, ti], &[ti])?,
+            dict_get: d("rt_dict_get", &[ti, ti], &[ti])?,
+            tuple_get: d("rt_tuple_get", &[ti, ti], &[ti])?,
+            bytes_get: d("rt_bytes_get", &[ti, ti], &[ti])?,
+            str_get: d("rt_str_subscript", &[ti, ti], &[ti])?,
+            any_getitem: d("rt_any_getitem", &[ti, ti], &[ti])?,
+            obj_len: d("rt_obj_len", &[ti], &[ti])?,
+            obj_contains: d("rt_obj_contains", &[ti, ti], &[t8])?,
+            list_concat: d("rt_list_concat", &[ti, ti], &[ti])?,
+            list_repeat: d("rt_list_repeat", &[ti, ti], &[ti])?,
+            tuple_concat: d("rt_tuple_concat", &[ti, ti], &[ti])?,
+            bytes_concat: d("rt_bytes_concat", &[ti, ti], &[ti])?,
+            bytes_repeat: d("rt_bytes_repeat", &[ti, ti], &[ti])?,
+            list_cmp: d("rt_list_cmp", &[ti, ti, t8], &[t8])?,
+            tuple_cmp: d("rt_tuple_cmp", &[ti, ti, t8], &[t8])?,
+            iter_value: d("rt_iter_value", &[ti], &[ti])?,
+            iter_next_no_exc: d("rt_iter_next_no_exc", &[ti], &[ti])?,
+            iter_is_exhausted: d("rt_iter_is_exhausted", &[ti], &[t8])?,
+            iter_enumerate: d("rt_iter_enumerate", &[ti, ti], &[ti])?,
+            zip_new: d("rt_zip_new", &[ti, ti], &[ti])?,
+            list_from_iter: d("rt_list_from_iter", &[ti], &[ti])?,
+            tuple_from_iter: d("rt_tuple_from_iter", &[ti], &[ti])?,
+            dict_from_pairs: d("rt_dict_from_pairs", &[ti], &[ti])?,
+            make_bytes_from_list: d("rt_make_bytes_from_list", &[ti], &[ti])?,
+            sorted: d("rt_sorted", &[ti, ti, t8], &[ti])?,
+            iter_reversed_list: d("rt_iter_reversed_list", &[ti], &[ti])?,
+            iter_range: d("rt_iter_range", &[ti, ti, ti], &[ti])?,
+            list_pop: d("rt_list_pop", &[ti, ti], &[ti])?,
+            list_insert: d("rt_list_insert", &[ti, ti, ti], &[])?,
+            list_extend: d("rt_list_extend", &[ti, ti], &[])?,
+            list_index: d("rt_list_index", &[ti, ti], &[ti])?,
+            list_count: d("rt_list_count", &[ti, ti], &[ti])?,
+            list_clear: d("rt_list_clear", &[ti], &[])?,
+            list_copy: d("rt_list_copy", &[ti], &[ti])?,
+            list_reverse: d("rt_list_reverse", &[ti], &[])?,
+            list_sort: d("rt_list_sort", &[ti, t8], &[])?,
+            dict_get_default: d("rt_dict_get_default", &[ti, ti, ti], &[ti])?,
+            dict_keys: d("rt_dict_keys", &[ti], &[ti])?,
+            dict_values: d("rt_dict_values", &[ti], &[ti])?,
+            dict_items: d("rt_dict_items", &[ti], &[ti])?,
+            dict_pop: d("rt_dict_pop", &[ti, ti], &[ti])?,
+            dict_setdefault: d("rt_dict_setdefault", &[ti, ti, ti], &[ti])?,
+            dict_update: d("rt_dict_update", &[ti, ti], &[])?,
+            dict_clear: d("rt_dict_clear", &[ti], &[])?,
+            dict_copy: d("rt_dict_copy", &[ti], &[ti])?,
+            set_remove: d("rt_set_remove", &[ti, ti], &[])?,
+            set_discard: d("rt_set_discard", &[ti, ti], &[])?,
+            set_update: d("rt_set_update", &[ti, ti], &[])?,
+            set_union: d("rt_set_union", &[ti, ti], &[ti])?,
+            set_intersection: d("rt_set_intersection", &[ti, ti], &[ti])?,
+            set_difference: d("rt_set_difference", &[ti, ti], &[ti])?,
+            set_copy: d("rt_set_copy", &[ti], &[ti])?,
+            set_clear: d("rt_set_clear", &[ti], &[])?,
         })
     }
 }
@@ -241,6 +372,7 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
     }
 
     emit_main(&mut module, func_ids[program.entry.index()], &rt, ptr_ty, call_conv)?;
+    emit_generator_resume_stub(&mut module, ptr_ty, call_conv)?;
 
     let product = module.finish();
     let bytes = product
@@ -248,6 +380,37 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
         .map_err(|e| cg_error(format!("object emit: {e}")))?;
     std::fs::write(out_obj, bytes)
         .map_err(|e| cg_error(format!("write {}: {e}", out_obj.display())))?;
+    Ok(())
+}
+
+/// Emit a trapping stub for `__pyaot_generator_resume`. The runtime's iterator
+/// factory (reachable from `rt_iter_value`) links against this compiler-provided
+/// symbol — it is the entry point real generators (Phase 6) compile to. Until
+/// then no generator object is ever created, so the stub is never *called*; it
+/// exists solely to satisfy the static linker (PITFALLS B9-adjacent).
+fn emit_generator_resume_stub(module: &mut ObjectModule, ptr_ty: Type, cc: CallConv) -> Result<()> {
+    let mut sig = Signature::new(cc);
+    sig.params.push(AbiParam::new(ptr_ty));
+    sig.returns.push(AbiParam::new(ptr_ty));
+    let id = module
+        .declare_function("__pyaot_generator_resume", Linkage::Export, &sig)
+        .map_err(|e| cg_error(format!("declare generator stub: {e}")))?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        builder.ins().trap(TrapCode::unwrap_user(2));
+        builder.finalize();
+    }
+    module
+        .define_function(id, &mut ctx)
+        .map_err(|e| cg_error(format!("define generator stub: {e}")))?;
+    module.clear_context(&mut ctx);
     Ok(())
 }
 
@@ -523,6 +686,7 @@ impl FnGen<'_, '_> {
                 }
                 Ok(())
             }
+            MirInst::CallContainer { dst, op, args } => self.lower_call_container(dst, *op, args),
             MirInst::AssertFail => {
                 let null = self.builder.ins().iconst(self.ptr_ty, 0);
                 self.call(self.rt.assert_fail, &[null]);
@@ -556,6 +720,10 @@ impl FnGen<'_, '_> {
                 let (ptr, len) = self.str_data(*id)?;
                 self.call(self.rt.bigint_from_str, &[ptr, len]).unwrap()
             }
+            Const::Bytes(id) => {
+                let (ptr, len) = self.str_data(*id)?;
+                self.call(self.rt.make_bytes, &[ptr, len]).unwrap()
+            }
         };
         self.def_local(dst, v);
         Ok(())
@@ -578,7 +746,7 @@ impl FnGen<'_, '_> {
             .ok_or_else(|| cg_error(format!("illegal coercion {from:?} -> {to:?}")))?;
         let s = self.use_operand(src);
         let v = match kind {
-            Coercion::Noop | Coercion::HeapToTagged => s,
+            Coercion::Noop | Coercion::HeapToTagged | Coercion::TaggedToHeap => s,
             Coercion::BoxFloat => self.call(self.rt.box_float, &[s]).unwrap(),
             Coercion::UnboxFloat => {
                 self.builder
@@ -699,6 +867,110 @@ impl FnGen<'_, '_> {
         Ok(())
     }
 
+    /// Lower a `CallContainer`: select the runtime function from the op and emit
+    /// the call. `ListCmp`/`TupleCmp` append the runtime `op_tag` immediate. The
+    /// `Value`-typed return is stored directly into `dst` (heap pointers are
+    /// bit-identical to tagged values).
+    fn lower_call_container(
+        &mut self,
+        dst: &Option<LocalId>,
+        op: ContainerOp,
+        args: &[Operand],
+    ) -> Result<()> {
+        let mut vals: Vec<Value> = args.iter().map(|a| self.use_operand(a)).collect();
+        let fid = match op {
+            ContainerOp::ListNew => self.rt.make_list,
+            ContainerOp::DictNew => self.rt.make_dict,
+            ContainerOp::SetNew => self.rt.make_set,
+            ContainerOp::TupleNew => self.rt.make_tuple,
+            ContainerOp::ListPush => self.rt.list_push,
+            ContainerOp::ListSet => self.rt.list_set,
+            ContainerOp::DictSet => self.rt.dict_set,
+            ContainerOp::SetAdd => self.rt.set_add,
+            ContainerOp::TupleSet => self.rt.tuple_set,
+            ContainerOp::ListGet => self.rt.list_get,
+            ContainerOp::DictGet => self.rt.dict_get,
+            ContainerOp::TupleGet => self.rt.tuple_get,
+            ContainerOp::BytesGet => self.rt.bytes_get,
+            ContainerOp::StrGet => self.rt.str_get,
+            ContainerOp::AnyGetItem => self.rt.any_getitem,
+            ContainerOp::Len => self.rt.obj_len,
+            ContainerOp::Contains => self.rt.obj_contains,
+            ContainerOp::ListConcat => self.rt.list_concat,
+            ContainerOp::ListRepeat => self.rt.list_repeat,
+            ContainerOp::TupleConcat => self.rt.tuple_concat,
+            ContainerOp::BytesConcat => self.rt.bytes_concat,
+            ContainerOp::BytesRepeat => self.rt.bytes_repeat,
+            ContainerOp::ListCmp(c) => {
+                let tag = self.builder.ins().iconst(types::I8, cmp_op_tag(c));
+                vals.push(tag);
+                self.rt.list_cmp
+            }
+            ContainerOp::TupleCmp(c) => {
+                let tag = self.builder.ins().iconst(types::I8, cmp_op_tag(c));
+                vals.push(tag);
+                self.rt.tuple_cmp
+            }
+            ContainerOp::Iter => self.rt.iter_value,
+            ContainerOp::IterNext => self.rt.iter_next_no_exc,
+            ContainerOp::IterExhausted => self.rt.iter_is_exhausted,
+            ContainerOp::Enumerate => self.rt.iter_enumerate,
+            ContainerOp::Zip => self.rt.zip_new,
+            ContainerOp::ListFromIter => self.rt.list_from_iter,
+            ContainerOp::TupleFromIter => self.rt.tuple_from_iter,
+            ContainerOp::DictFromPairs => self.rt.dict_from_pairs,
+            ContainerOp::BytesFromList => self.rt.make_bytes_from_list,
+            ContainerOp::Reversed => self.rt.iter_reversed_list,
+            ContainerOp::RangeIter => self.rt.iter_range,
+            ContainerOp::Sorted => {
+                // rt_sorted(list, reverse=0, container_tag=0=List). The input is
+                // pre-materialized to a list, so the tag is always List.
+                let reverse = self.builder.ins().iconst(types::I64, 0);
+                let tag = self.builder.ins().iconst(types::I8, 0);
+                vals.push(reverse);
+                vals.push(tag);
+                self.rt.sorted
+            }
+            // ── container methods (Phase 4D) ──
+            ContainerOp::ListPop => self.rt.list_pop,
+            ContainerOp::ListInsert => self.rt.list_insert,
+            ContainerOp::ListExtend => self.rt.list_extend,
+            ContainerOp::ListIndexOf => self.rt.list_index,
+            ContainerOp::ListCount => self.rt.list_count,
+            ContainerOp::ListClear => self.rt.list_clear,
+            ContainerOp::ListCopy => self.rt.list_copy,
+            ContainerOp::ListReverse => self.rt.list_reverse,
+            ContainerOp::ListSortMut => {
+                // rt_list_sort(list, reverse=0) — `.sort()` with no key/reverse.
+                let reverse = self.builder.ins().iconst(types::I8, 0);
+                vals.push(reverse);
+                self.rt.list_sort
+            }
+            ContainerOp::DictGetDefault => self.rt.dict_get_default,
+            ContainerOp::DictKeys => self.rt.dict_keys,
+            ContainerOp::DictValues => self.rt.dict_values,
+            ContainerOp::DictItems => self.rt.dict_items,
+            ContainerOp::DictPopM => self.rt.dict_pop,
+            ContainerOp::DictSetdefault => self.rt.dict_setdefault,
+            ContainerOp::DictUpdate => self.rt.dict_update,
+            ContainerOp::DictClear => self.rt.dict_clear,
+            ContainerOp::DictCopy => self.rt.dict_copy,
+            ContainerOp::SetRemove => self.rt.set_remove,
+            ContainerOp::SetDiscard => self.rt.set_discard,
+            ContainerOp::SetUpdate => self.rt.set_update,
+            ContainerOp::SetUnion => self.rt.set_union,
+            ContainerOp::SetIntersection => self.rt.set_intersection,
+            ContainerOp::SetDifference => self.rt.set_difference,
+            ContainerOp::SetCopy => self.rt.set_copy,
+            ContainerOp::SetClear => self.rt.set_clear,
+        };
+        let res = self.call(fid, &vals);
+        if let (Some(d), Some(v)) = (dst, res) {
+            self.def_local(*d, v);
+        }
+        Ok(())
+    }
+
     fn builtin_fn(&self, kind: pyaot_mir::BuiltinFunctionKind) -> Result<FuncId> {
         use pyaot_mir::BuiltinFunctionKind as K;
         Ok(match kind {
@@ -793,4 +1065,17 @@ impl FnGen<'_, '_> {
 
 fn cg_error(msg: impl Into<String>) -> CompilerError {
     CompilerError::codegen_error(msg.into(), None)
+}
+
+/// The runtime `op_tag` for a container ordering comparison (`0=Lt, 1=Lte,
+/// 2=Gt, 3=Gte`, matching `rt_obj_cmp`/`rt_list_cmp`). Equality never reaches the
+/// typed comparator (it rides the tagged `rt_obj_eq` baseline), so it maps to 0.
+fn cmp_op_tag(op: ContainerCmpOp) -> i64 {
+    match op {
+        ContainerCmpOp::Lt => 0,
+        ContainerCmpOp::LtE => 1,
+        ContainerCmpOp::Gt => 2,
+        ContainerCmpOp::GtE => 3,
+        ContainerCmpOp::Eq | ContainerCmpOp::NotEq => 0,
+    }
 }

@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{BuiltinFunctionKind, HirExprKind, HirModule, ResolveResult, Symbol, SymbolRef};
+use pyaot_hir::{
+    BuiltinFunctionKind, ContainerOp, HirExprKind, HirModule, ResolveResult, Symbol, SymbolRef,
+};
 use pyaot_utils::{FuncId, InternedString, LocalId, Span, StringInterner, SymbolId};
 
 /// Resolve every name in `module`, mutating each [`SymbolRef`] in place.
@@ -77,7 +79,13 @@ fn resolve_name(
         "print" => Ok(Symbol::BuiltinPrint),
         "range" => Ok(Symbol::BuiltinRange),
         _ => {
-            if let Some(kind) = BuiltinFunctionKind::from_name(text) {
+            // Container / iteration builtins are checked before the frozen
+            // first-class builtins so `len` routes through the shared container
+            // read path (the frozen `BuiltinFunctionKind::Len` then goes unused) —
+            // but *after* local / function scope, so user shadowing still wins.
+            if let Some(op) = ContainerOp::from_name(text) {
+                Ok(Symbol::Container(op))
+            } else if let Some(kind) = BuiltinFunctionKind::from_name(text) {
                 Ok(Symbol::Builtin(kind))
             } else {
                 Err(CompilerError::name_error(text, span))

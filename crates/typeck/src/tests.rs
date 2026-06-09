@@ -163,6 +163,164 @@ fn rejects_int_returned_as_float() {
     assert!(try_infer("def f() -> float:\n    return 5\n\n\nprint(f())\n").is_err());
 }
 
+// ── typed-heap boundary checks (Phase 4: `TaggedToHeap` is reinterpret-by-type
+//    too, so a concrete non-container into a container/str slot is rejected
+//    loudly — symmetric with the float/bool contract — while `Dyn` passes) ──
+
+#[test]
+fn rejects_concrete_nonmatch_into_typed_heap_slot() {
+    // `f(5)` for a `list[int]` param SIGSEGVs without this guard (CPython raises a
+    // clean TypeError); reject it at compile time instead.
+    assert!(try_infer("def f(a: list[int]) -> int:\n    return len(a)\n\n\nprint(f(5))\n").is_err());
+    // Annotated local / return / str slots get the same contract.
+    assert!(try_infer("x: list[int] = 5\nprint(x)\n").is_err());
+    assert!(try_infer("s: str = 42\nprint(s)\n").is_err());
+    assert!(try_infer("def h() -> dict:\n    return 7\n\n\nprint(h())\n").is_err());
+}
+
+#[test]
+fn accepts_matching_and_gradual_into_typed_heap_slot() {
+    // A matching container value, the empty-literal bootstrap, and a gradual `Dyn`
+    // value (a future runtime guard) all compile.
+    assert!(try_infer("x: list[int] = [1, 2, 3]\nprint(x)\n").is_ok());
+    assert!(try_infer("x: list[int] = []\nprint(len(x))\n").is_ok());
+    assert!(try_infer(
+        "def pick(flag):\n    if flag:\n        return [1]\n    return [2]\n\n\nx: list = pick(True)\nprint(x)\n"
+    )
+    .is_ok());
+}
+
+// ── containers (Phase 4) ──
+
+#[test]
+fn infers_list_literal_element_type() {
+    let (m, i) = typed("xs = [1, 2, 3]\nprint(xs)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "xs"), SemTy::list_of(SemTy::Int));
+}
+
+#[test]
+fn list_literal_joins_heterogeneous_elements() {
+    // `[1, 2.0]` joins int ⊔ float = float per the numeric tower.
+    let (m, i) = typed("xs = [1, 2.0]\nprint(xs)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "xs"), SemTy::list_of(SemTy::Float));
+}
+
+#[test]
+fn infers_dict_and_tuple_literal_types() {
+    let (m, i) = typed("d = {\"a\": 1}\nt = (1, \"two\")\nprint(d)\nprint(t)\n");
+    let f = main_fn(&m);
+    assert_eq!(local_ty(f, &i, "d"), SemTy::dict_of(SemTy::Str, SemTy::Int));
+    assert_eq!(local_ty(f, &i, "t"), SemTy::tuple_of(vec![SemTy::Int, SemTy::Str]));
+}
+
+#[test]
+fn subscript_read_takes_element_type() {
+    let (m, i) = typed("xs = [10, 20]\ny = xs[0]\nprint(y)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "y"), SemTy::Int);
+}
+
+#[test]
+fn len_and_membership_result_types() {
+    let (m, i) = typed("xs = [1, 2]\nn = len(xs)\nf = 1 in xs\nprint(n)\nprint(f)\n");
+    let f = main_fn(&m);
+    assert_eq!(local_ty(f, &i, "n"), SemTy::Int);
+    assert_eq!(local_ty(f, &i, "f"), SemTy::Bool);
+}
+
+#[test]
+fn empty_literal_bootstrap_seeds_element_type() {
+    // PITFALLS B4: `x: list[int] = []` must materialize the empty literal's type
+    // as the annotated container type (so lowering picks tagged element slots),
+    // not the `list[Never]` it solves to in isolation.
+    let (m, i) = typed("x: list[int] = []\nprint(x)\n");
+    let f = main_fn(&m);
+    assert_eq!(local_ty(f, &i, "x"), SemTy::list_of(SemTy::Int));
+    // The `[]` literal expr itself now carries the seeded type.
+    let empty = f
+        .exprs
+        .iter()
+        .find(|(_, e)| matches!(e.kind, HirExprKind::ListLit { ref elems } if elems.is_empty()))
+        .expect("empty list literal");
+    assert_eq!(empty.1.ty, SemTy::list_of(SemTy::Int));
+}
+
+#[test]
+fn comprehension_and_builtins_result_types() {
+    let (m, i) = typed(
+        "a = [x for x in range(3)]\nb = sorted([3, 1])\nc = sum([1, 2])\nprint(a)\nprint(b)\nprint(c)\n",
+    );
+    let f = main_fn(&m);
+    // Comprehension / sorted produce lists; sum of ints is int.
+    assert!(local_ty(f, &i, "a").list_elem().is_some());
+    assert!(local_ty(f, &i, "b").list_elem().is_some());
+    assert_eq!(local_ty(f, &i, "c"), SemTy::Int);
+}
+
+#[test]
+fn enumerate_and_zip_yield_tuple_iterators() {
+    let (m, i) = typed("e = enumerate([1, 2])\nz = zip([1], [2])\nprint(e)\nprint(z)\n");
+    let f = main_fn(&m);
+    assert!(matches!(local_ty(f, &i, "e"), SemTy::Iterator(_)));
+    assert!(matches!(local_ty(f, &i, "z"), SemTy::Iterator(_)));
+}
+
+#[test]
+fn container_method_result_types() {
+    let (m, i) = typed(
+        "xs = [1, 2, 3]\np = xs.pop()\nn = xs.count(2)\nc = xs.copy()\nprint(p)\nprint(n)\nprint(c)\n",
+    );
+    let f = main_fn(&m);
+    assert_eq!(local_ty(f, &i, "p"), SemTy::Int); // list[int].pop() → int
+    assert_eq!(local_ty(f, &i, "n"), SemTy::Int); // .count() → int
+    assert!(local_ty(f, &i, "c").list_elem().is_some()); // .copy() → list
+}
+
+#[test]
+fn dict_view_method_result_types() {
+    let (m, i) = typed("d = {\"a\": 1}\nk = d.keys()\nv = d.values()\nprint(k)\nprint(v)\n");
+    let f = main_fn(&m);
+    assert!(local_ty(f, &i, "k").list_elem().is_some());
+    assert!(local_ty(f, &i, "v").list_elem().is_some());
+}
+
+#[test]
+fn rejects_unknown_method() {
+    let parses = |src: &str| {
+        let mut interner = StringInterner::new();
+        pyaot_frontend_python::parse(src, &mut interner).is_ok()
+    };
+    // A non-container method name is rejected at parse time (Phase 5).
+    assert!(!parses("xs = [1]\nxs.frobnicate()\nprint(xs)\n"));
+}
+
+#[test]
+fn general_for_infers_element_type() {
+    // Iterating a `list[int]` makes the loop variable `int` (via the iterator
+    // element type flowing through `Iter` → `IterNext`).
+    let (m, i) = typed("for x in [10, 20, 30]:\n    print(x)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Int);
+}
+
+#[test]
+fn rejects_unpack_arity_mismatch() {
+    // A literal-sequence unpack with the wrong arity is a parse-time error.
+    let parses = |src: &str| {
+        let mut interner = StringInterner::new();
+        pyaot_frontend_python::parse(src, &mut interner).is_ok()
+    };
+    assert!(!parses("a, b = 1, 2, 3\nprint(a)\n"));
+    assert!(!parses("a, b, c = [1, 2]\nprint(a)\n"));
+    // A correctly-sized unpack still compiles.
+    assert!(parses("a, b = 1, 2\nprint(a)\nprint(b)\n"));
+}
+
+#[test]
+fn unannotated_empty_literal_stays_never_element() {
+    // No annotation → `list[Never]` (→ tagged elements at lowering). Still correct.
+    let (m, i) = typed("x = []\nprint(x)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::list_of(SemTy::Never));
+}
+
 #[test]
 fn accepts_tagged_float_value_into_float_local() {
     // A float-*typed* value that lowers to a tagged boxed float (true division,

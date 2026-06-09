@@ -21,6 +21,21 @@ const PHASE_CORPUS: &[&str] = &[
     "test_main.py",
     "p2_bignum.py",
     "p3_numeric.py",
+    // Phase 4A — container literals, indexed read/write, len/in, operators.
+    "p4_literals.py",
+    "p4_subscript.py",
+    "p4_operators.py",
+    // Phase 4B — general for-loop + iterator protocol + tuple unpacking.
+    "p4_for_iter.py",
+    "p4_unpack.py",
+    // Phase 4C — comprehensions + iteration builtins.
+    "p4_comprehensions.py",
+    "p4_iter_builtins.py",
+    // Phase 4D — focused container methods.
+    "p4_methods.py",
+    // Phase 4 — cross-feature integration + GC soak (B5/B15).
+    "p4_integration.py",
+    "p4_gc_stress.py",
 ];
 
 #[test]

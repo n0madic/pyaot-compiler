@@ -41,8 +41,8 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, BuiltinFunctionKind, HirExpr, HirExprKind, HirFunction, HirModule, HirStmt,
-    HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
+    BinOp, BuiltinFunctionKind, ContainerMethod, ContainerOp, HirExpr, HirExprKind, HirFunction,
+    HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
 use pyaot_types::{repr_of, RawKind, Repr, SemTy, TypeLattice};
 
@@ -67,46 +67,67 @@ pub fn infer(module: &mut HirModule, resolve: &ResolveResult) -> Result<()> {
     Ok(())
 }
 
-/// True for the strongly-typed unboxed representations whose tagged→raw coercion
-/// *reinterprets the bits by assumed type* (`UnboxFloat` reads a heap-float
-/// pointer; `UntagBool` reads the bool payload). Feeding such a slot a value of
-/// the wrong type silently misreads it — a SIGSEGV for `Raw(F64)` on a fixnum, a
-/// wrong value for `Raw(I8)`. `Raw(I64)` is excluded: it is only ever produced by
-/// the proof-gated 3c narrowing, never at an annotation boundary.
-fn reinterprets_by_type(ty: &SemTy) -> bool {
-    matches!(repr_of(ty), Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8))
+/// How a slot's representation *reinterprets a tagged value by its assumed type*
+/// when a value is coerced into it — the family of coercions a contract violation
+/// can turn into a crash. Every such coercion must be guarded here (the discipline
+/// PITFALLS A2 / Phase 3 established for `Raw`, extended to `Heap` in Phase 4).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReinterpretKind {
+    /// `UnboxFloat`/`UntagBool` (`Raw(F64)`/`Raw(I8)`): reads the assumed-typed bits
+    /// *immediately* — a fixnum read as an f64 SIGSEGVs at the unbox itself. So even
+    /// a gradual `Dyn` value is unsafe: rejected unless a proven subtype.
+    Strict,
+    /// `TaggedToHeap` (`Heap(_)`): re-types a tagged value as a heap pointer of the
+    /// assumed shape. Bit-identical, so a wrong value does not misread immediately —
+    /// it crashes *later* at a container op (CPython would `TypeError` there). A
+    /// concrete non-matching type (`int` into a `list[int]` slot) is still rejected
+    /// loudly; a gradual `Dyn` value is admitted (a future runtime guard, exactly as
+    /// uniform-tagged iteration elements legitimately produce `Dyn → Heap` bindings).
+    Gradual,
 }
 
-/// Reject a value whose static type cannot be soundly stored in a typed unboxed
-/// slot (an annotated `float`/`bool` parameter, local, or return).
+/// The reinterpret family of a slot's representation, or `None` if storing into it
+/// is always sound (`Tagged`, the proof-gated `Raw(I64)`, function pointers).
+fn reinterpret_kind(ty: &SemTy) -> Option<ReinterpretKind> {
+    match repr_of(ty) {
+        Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8) => Some(ReinterpretKind::Strict),
+        Repr::Heap(_) => Some(ReinterpretKind::Gradual),
+        _ => None,
+    }
+}
+
+/// Reject a value whose static type cannot be soundly stored in a typed slot whose
+/// representation reinterprets by assumed type (an annotated `float`/`bool` →
+/// `Raw`, or a `list`/`dict`/`set`/`str`/… → typed `Heap`).
 ///
 /// In CPython a type annotation is not enforced — `poly(3)` for `def poly(a:
-/// float)` just runs with `a == 3`. This compiler, however, *unboxes* annotated
-/// `float`/`bool` slots into `Raw(F64)`/`Raw(I8)` (the headline Phase-3 ABI), so a
-/// mismatched value would be misread (PITFALLS A2). Rather than accept-then-crash,
-/// we treat the annotation as a contract and reject the violation loudly and
-/// soundly. (A future whole-program pass could instead demote such a parameter to
-/// `Tagged` when a call site proves it polymorphic — PITFALLS B10, deferred.)
+/// float)` just runs with `a == 3`. This compiler, however, lowers annotated slots
+/// to a representation that *reinterprets the bits by the annotated type*, so a
+/// mismatched value would be misread (PITFALLS A2) — a SIGSEGV for the `Raw`
+/// unbox, a deferred container-op crash for the `Heap` re-type. Rather than
+/// accept-then-crash, we treat the annotation as a contract and reject the
+/// violation loudly. (A future whole-program pass could instead demote such a slot
+/// to `Tagged` when a call site proves it polymorphic — PITFALLS B10, deferred.)
 fn check_repr_boundaries(module: &HirModule, resolve: &ResolveResult) -> Result<()> {
     for func in &module.functions {
-        // Assignments into an annotated `float`/`bool` local slot.
         for (_b, block) in func.blocks.iter() {
+            // Assignments into an annotated unboxed / typed-heap local slot.
             for stmt in &block.stmts {
                 if let HirStmt::Assign { target, value } = stmt {
                     let target_ty = &func.locals[target.index()].ty;
-                    if reinterprets_by_type(target_ty) {
-                        check_assignable(&func.exprs[*value], target_ty, "assigned to")?;
+                    if let Some(kind) = reinterpret_kind(target_ty) {
+                        check_reinterpret(&func.exprs[*value], target_ty, kind, "assigned to")?;
                     }
                 }
             }
-            // Return value into an annotated `float`/`bool` return slot.
+            // Return value into an annotated return slot.
             if let HirTerminator::Return(Some(v)) = &block.term {
-                if reinterprets_by_type(&func.ret_ty) {
-                    check_assignable(&func.exprs[*v], &func.ret_ty, "returned from")?;
+                if let Some(kind) = reinterpret_kind(&func.ret_ty) {
+                    check_reinterpret(&func.exprs[*v], &func.ret_ty, kind, "returned from")?;
                 }
             }
         }
-        // Call arguments into annotated `float`/`bool` parameters.
+        // Call arguments into annotated parameters.
         for (_idx, expr) in func.exprs.iter() {
             let HirExprKind::Call { callee, args } = &expr.kind else { continue };
             let HirExprKind::Name(SymbolRef::Resolved(id)) = func.exprs[*callee].kind else {
@@ -115,8 +136,8 @@ fn check_repr_boundaries(module: &HirModule, resolve: &ResolveResult) -> Result<
             let Symbol::Function(fid) = resolve.symbol(id) else { continue };
             let callee_fn = &module.functions[fid.index()];
             for (arg, param) in args.iter().zip(&callee_fn.params) {
-                if reinterprets_by_type(&param.ty) {
-                    check_assignable(&func.exprs[*arg], &param.ty, "passed to")?;
+                if let Some(kind) = reinterpret_kind(&param.ty) {
+                    check_reinterpret(&func.exprs[*arg], &param.ty, kind, "passed to")?;
                 }
             }
         }
@@ -124,18 +145,34 @@ fn check_repr_boundaries(module: &HirModule, resolve: &ResolveResult) -> Result<
     Ok(())
 }
 
-/// Error unless `value`'s type may be soundly stored in a `target`-typed unboxed
-/// slot. `Never` (unreachable) values are accepted.
-fn check_assignable(value: &HirExpr, target: &SemTy, verb: &str) -> Result<()> {
-    if value.ty == SemTy::Never || value.ty.is_subtype_of(target) {
+/// Error unless `value`'s type may be soundly stored in a `target`-typed
+/// reinterpret slot. `Never` (unreachable) is always accepted; a [`ReinterpretKind::Gradual`]
+/// slot additionally accepts `Dyn` (gradual typing, deferred to a runtime guard).
+fn check_reinterpret(
+    value: &HirExpr,
+    target: &SemTy,
+    kind: ReinterpretKind,
+    verb: &str,
+) -> Result<()> {
+    let ok = value.ty == SemTy::Never
+        || value.ty.is_subtype_of(target)
+        || (kind == ReinterpretKind::Gradual && value.ty == SemTy::Dyn);
+    if ok {
         return Ok(());
     }
+    let detail = match kind {
+        ReinterpretKind::Strict =>
+            "this compiler unboxes annotated `float`/`bool` slots, so a mismatched \
+             value would be misread. Pass a matching type, e.g. `3.0` instead of `3`.",
+        ReinterpretKind::Gradual =>
+            "this compiler stores annotated container/`str`/`bytes` slots as typed \
+             heap pointers, so a mismatched value would be reinterpreted as one and \
+             crash at the first operation on it. Pass a matching type.",
+    };
     Err(CompilerError::type_error(
         format!(
-            "a value of type `{}` cannot be {verb} a `{}` slot: a type annotation \
-             is a contract here, not a coercion (this compiler unboxes annotated \
-             `float`/`bool` slots, so a mismatched value would be misread). Pass a \
-             matching type, e.g. `3.0` instead of `3`.",
+            "a value of type `{}` cannot be {verb} a `{}` slot: a type annotation is \
+             a contract here, not a coercion ({detail})",
             type_name(&value.ty),
             type_name(target),
         ),
@@ -153,6 +190,11 @@ fn type_name(ty: &SemTy) -> &'static str {
         SemTy::Bytes => "bytes",
         SemTy::NoneTy => "None",
         SemTy::Dyn => "Any",
+        SemTy::Iterator(_) => "iterator",
+        _ if ty.list_elem().is_some() => "list",
+        _ if ty.dict_kv().is_some() => "dict",
+        _ if ty.set_elem().is_some() => "set",
+        _ if ty.tuple_elems().is_some() || ty.tuple_var_elem().is_some() => "tuple",
         _ => "<other>",
     }
 }
@@ -295,6 +337,104 @@ impl<'a> Solver<'a> {
             HirExprKind::Unary { op, operand } => self.unary_ty(*op, self.ety(*operand)),
             HirExprKind::BinOp { op, l, r } => self.binop_ty(*op, self.ety(*l), self.ety(*r)),
             HirExprKind::Call { callee, args } => self.call_ty(*callee, args),
+            // ── containers (Phase 4) ──
+            HirExprKind::ListLit { elems } => SemTy::list_of(self.join_all(elems)),
+            HirExprKind::SetLit { elems } => SemTy::set_of(self.join_all(elems)),
+            HirExprKind::TupleLit { elems } => {
+                SemTy::tuple_of(elems.iter().map(|e| self.ety(*e)).collect())
+            }
+            HirExprKind::DictLit { pairs } => {
+                let k = pairs.iter().fold(SemTy::Never, |acc, (k, _)| acc.join(&self.ety(*k)));
+                let v = pairs.iter().fold(SemTy::Never, |acc, (_, v)| acc.join(&self.ety(*v)));
+                SemTy::dict_of(k, v)
+            }
+            HirExprKind::BytesLit(_) => SemTy::Bytes,
+            HirExprKind::Subscript { base, index } => self.subscript_ty(*base, *index),
+            HirExprKind::ContainerExpr { op, args } => self.container_op_ty(*op, args),
+            HirExprKind::MethodCall { recv, method, .. } => {
+                method_ty(&self.ety(*recv), *method)
+            }
+        }
+    }
+
+    /// Join the types of every expr in `elems` (the lattice bottom for empty).
+    fn join_all(&self, elems: &[Idx<HirExpr>]) -> SemTy {
+        elems.iter().fold(SemTy::Never, |acc, e| acc.join(&self.ety(*e)))
+    }
+
+    /// Result type of a subscript read `base[index]`, from the base's container
+    /// shape. A fixed-tuple indexed by an integer literal yields that slot's type.
+    fn subscript_ty(&self, base: Idx<HirExpr>, index: Idx<HirExpr>) -> SemTy {
+        let bt = self.ety(base);
+        if let Some(elem) = bt.list_elem() {
+            return elem.clone();
+        }
+        if let Some((_, v)) = bt.dict_kv() {
+            return v.clone();
+        }
+        if let Some(elems) = bt.tuple_elems() {
+            // A literal index selects the exact slot; otherwise join all slots.
+            if let HirExprKind::IntLit(i) = self.func.exprs[index].kind {
+                let n = elems.len() as i64;
+                let idx = if i < 0 { n + i } else { i };
+                if idx >= 0 && (idx as usize) < elems.len() {
+                    return elems[idx as usize].clone();
+                }
+            }
+            return elems.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+        }
+        if let Some(e) = bt.tuple_var_elem() {
+            return e.clone();
+        }
+        match bt {
+            SemTy::Str => SemTy::Str,
+            SemTy::Bytes => SemTy::Int,
+            SemTy::Never => SemTy::Never,
+            _ => SemTy::Dyn,
+        }
+    }
+
+    /// Result type of a container / iterator op (the `ContainerExpr` and
+    /// `Symbol::Container` paths share this).
+    fn container_op_ty(&self, op: ContainerOp, args: &[Idx<HirExpr>]) -> SemTy {
+        use ContainerOp as C;
+        let arg0 = || args.first().map(|a| self.ety(*a)).unwrap_or(SemTy::Dyn);
+        match op {
+            C::Len => SemTy::Int,
+            C::Contains | C::ListCmp(_) | C::TupleCmp(_) | C::IterExhausted => SemTy::Bool,
+            C::Iter => SemTy::Iterator(Box::new(iter_elem_ty(&arg0()))),
+            C::IterNext => match arg0() {
+                SemTy::Iterator(elem) => *elem,
+                // `Never` is the in-progress bottom (the iterator's type is not yet
+                // solved this sweep) — stay `Never`, never jump to a spurious `Dyn`
+                // that would absorb and poison the consuming accumulator (PITFALLS
+                // A2/B6, the same early-Dyn trap the worklist guards against).
+                SemTy::Never => SemTy::Never,
+                _ => SemTy::Dyn,
+            },
+            // ── iteration builtins (the arg is the *iterable*; lowering wraps it) ──
+            C::Enumerate => SemTy::Iterator(Box::new(SemTy::tuple_of(vec![
+                SemTy::Int,
+                iter_elem_ty(&arg0()),
+            ]))),
+            C::Zip => {
+                let a = iter_elem_ty(&arg0());
+                let b = args.get(1).map(|x| iter_elem_ty(&self.ety(*x))).unwrap_or(SemTy::Dyn);
+                SemTy::Iterator(Box::new(SemTy::tuple_of(vec![a, b])))
+            }
+            C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0())),
+            C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0())),
+            C::DictFromPairs => match iter_elem_ty(&arg0()).tuple_elems() {
+                // `dict([(k, v), …])` — the element is a 2-tuple of (key, value).
+                Some(kv) if kv.len() == 2 => SemTy::dict_of(kv[0].clone(), kv[1].clone()),
+                _ => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+            },
+            C::BytesFromList => SemTy::Bytes,
+            C::Sorted => SemTy::list_of(iter_elem_ty(&arg0())),
+            C::Reversed => SemTy::Iterator(Box::new(iter_elem_ty(&arg0()))),
+            // Remaining ops are emitted only by lowering (literals / subscript /
+            // operators), never typed through this path.
+            _ => SemTy::Dyn,
         }
     }
 
@@ -338,9 +478,21 @@ impl<'a> Solver<'a> {
             // same-type stays; mixed non-numerics → a tagged union). `**` is also
             // joined: `int ** int` is usually `int` (and its tagged repr prints a
             // bignum or a promoted float correctly either way — Principle 2).
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-                l.join(&r)
+            // `*` repeats a sequence by an int (`[0] * 3`, `(1,) * n`, `b"x" * 4`),
+            // preserving the sequence type; otherwise it is numeric (joined).
+            BinOp::Mul => {
+                if is_sequence(&l) && is_int_like(&r) {
+                    l
+                } else if is_int_like(&l) && is_sequence(&r) {
+                    r
+                } else {
+                    l.join(&r)
+                }
             }
+            // `+` over two same-base containers already joins to that container
+            // (covariant lattice join), so list/tuple/bytes concatenation types
+            // correctly without a special case.
+            BinOp::Add | BinOp::Sub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => l.join(&r),
             // Python 3 true division always yields `float` for numeric operands
             // (`7 / 2 == 3.5`).
             BinOp::Div => {
@@ -376,6 +528,9 @@ impl<'a> Solver<'a> {
         match self.resolve.symbol(id) {
             Symbol::Function(fid) => self.ret_tys[fid.index()].clone(),
             Symbol::Builtin(kind) => self.builtin_ty(kind, args),
+            Symbol::Container(op) => self.container_op_ty(op, args),
+            // `range(...)` used as a value is an iterable of ints.
+            Symbol::BuiltinRange => SemTy::Iterator(Box::new(SemTy::Int)),
             _ => SemTy::Dyn,
         }
     }
@@ -409,6 +564,99 @@ fn is_numeric(t: &SemTy) -> bool {
     matches!(t, SemTy::Bool | SemTy::Int | SemTy::Float)
 }
 
+/// True for the repeatable sequence types (`list` / `tuple` / `bytes` / `str`).
+fn is_sequence(t: &SemTy) -> bool {
+    matches!(t, SemTy::Bytes | SemTy::Str)
+        || t.list_elem().is_some()
+        || t.tuple_elems().is_some()
+        || t.tuple_var_elem().is_some()
+}
+
+/// Result type of a container method call from the receiver type and method (the
+/// concrete dispatch is by receiver in lowering; here we just produce the Python
+/// result type). Unknown (receiver, method) pairs fall back to `Dyn` — the
+/// always-correct tagged baseline.
+fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
+    use ContainerMethod as M;
+    let none = SemTy::NoneTy;
+    // List receiver.
+    if let Some(elem) = recv.list_elem() {
+        return match method {
+            M::Append | M::Insert | M::Extend | M::Clear | M::Reverse | M::Sort => none,
+            M::Pop => elem.clone(),
+            M::Index | M::Count => SemTy::Int,
+            M::Copy => recv.clone(),
+            _ => SemTy::Dyn,
+        };
+    }
+    // Dict receiver.
+    if let Some((k, v)) = recv.dict_kv() {
+        return match method {
+            M::Get | M::Pop | M::Setdefault => v.clone(),
+            M::Keys => SemTy::list_of(k.clone()),
+            M::Values => SemTy::list_of(v.clone()),
+            M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
+            M::Update | M::Clear => none,
+            M::Copy => recv.clone(),
+            _ => SemTy::Dyn,
+        };
+    }
+    // Set receiver.
+    if recv.set_elem().is_some() {
+        return match method {
+            M::Add | M::Remove | M::Discard | M::Update | M::Clear => none,
+            M::Union | M::Intersection | M::Difference | M::Copy => recv.clone(),
+            _ => SemTy::Dyn,
+        };
+    }
+    SemTy::Dyn
+}
+
+/// The element type produced by iterating `t` (for `iter()` / `for`-loops). A
+/// `str` iterates to single-char `str`; `bytes` to `int`; an unknown iterable to
+/// `Dyn` (the always-correct tagged baseline).
+///
+/// The iterable being the lattice bottom (`Never`, an in-progress type this sweep)
+/// yields `Never` so it stays the join identity and never poisons a consumer. But
+/// a *recognized container* whose element is `Never` (an unrefined empty literal
+/// — `f = []` then `f.append(...)` keeps `list[Never]`) yields **`Dyn`**, since at
+/// runtime it holds tagged values of unknown type, not a bottom that would wrongly
+/// type a `min`/`max` result as `None` (and print "None" without reading it).
+fn iter_elem_ty(t: &SemTy) -> SemTy {
+    let elem = iter_elem_raw(t);
+    if elem == SemTy::Never && *t != SemTy::Never {
+        SemTy::Dyn
+    } else {
+        elem
+    }
+}
+
+fn iter_elem_raw(t: &SemTy) -> SemTy {
+    if let Some(e) = t.list_elem() {
+        return e.clone();
+    }
+    if let Some(e) = t.set_elem() {
+        return e.clone();
+    }
+    if let Some(e) = t.tuple_var_elem() {
+        return e.clone();
+    }
+    if let Some(elems) = t.tuple_elems() {
+        return elems.iter().fold(SemTy::Never, |acc, x| acc.join(x));
+    }
+    if let Some((k, _)) = t.dict_kv() {
+        // Iterating a dict yields its keys.
+        return k.clone();
+    }
+    match t {
+        SemTy::Str => SemTy::Str,
+        SemTy::Bytes => SemTy::Int,
+        SemTy::Iterator(e) => (**e).clone(),
+        SemTy::Never => SemTy::Never,
+        _ => SemTy::Dyn,
+    }
+}
+
 /// **materialize** — write solved types back. Expr nodes that solved to `Never`
 /// (genuinely unconstrained / unreachable) keep their frontend type rather than
 /// taking the bottom representation.
@@ -431,6 +679,53 @@ fn materialize(func: &mut HirFunction, solution: &Solution) {
                 expr.ty = ty.clone();
             }
         }
+    }
+    bootstrap_empty_containers(func);
+}
+
+/// **Empty-container element-type bootstrap (PITFALLS B4).** A terminal, forward
+/// materialize-time rule (no feedback, so it does not reopen the A3 fixpoint):
+/// for an `Assign { target, value }` whose `target` is an authoritative container
+/// local (`x: list[int]`) and whose `value` is an empty literal solved to
+/// `…_of(Never)`, overwrite the literal's type with the target's container type.
+///
+/// Without this, `x: list[int] = []` lowers the literal to `Heap(List(Never))`
+/// while `x` is `Heap(List(Tagged))`, and the assignment coercion is illegal —
+/// the literal must carry the element type *before any store*. A non-annotated
+/// `x = []` keeps `…_of(Never)` → `Tagged` element slots (correct, just slower).
+fn bootstrap_empty_containers(func: &mut HirFunction) {
+    // Collect (value-expr, target-type) overwrites first to avoid borrowing
+    // `func.exprs` mutably while reading `func.locals` / `func.blocks`.
+    let mut overwrites: Vec<(Idx<HirExpr>, SemTy)> = Vec::new();
+    for (_b, block) in func.blocks.iter() {
+        for stmt in &block.stmts {
+            let HirStmt::Assign { target, value } = stmt else { continue };
+            let target_ty = func.locals[target.index()].ty.clone();
+            if !is_growable_container(&target_ty) {
+                continue;
+            }
+            if is_empty_container_literal(&func.exprs[*value]) {
+                overwrites.push((*value, target_ty));
+            }
+        }
+    }
+    for (value, ty) in overwrites {
+        func.exprs[value].ty = ty;
+    }
+}
+
+/// True for the growable built-in containers seeded by an empty literal.
+fn is_growable_container(t: &SemTy) -> bool {
+    t.list_elem().is_some() || t.dict_kv().is_some() || t.set_elem().is_some()
+}
+
+/// True iff `expr` is an empty container literal (`[]` / `{}` / `set()`-shaped)
+/// whose solved element type is the lattice bottom.
+fn is_empty_container_literal(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::ListLit { elems } | HirExprKind::SetLit { elems } => elems.is_empty(),
+        HirExprKind::DictLit { pairs } => pairs.is_empty(),
+        _ => false,
     }
 }
 
