@@ -1,0 +1,14 @@
+[package]
+name = "pyaot-typeck"
+version.workspace = true
+edition.workspace = true
+description = "Constraint-based type inference + bidirectional checking (replaces type_planning/)"
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-hir = { path = "../hir" }
+pyaot-types = { path = "../types" }
+pyaot-diagnostics = { path = "../diagnostics" }
+
+[lints.rust]
+unsafe_code = "forbid"

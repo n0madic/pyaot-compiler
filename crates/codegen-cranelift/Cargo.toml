@@ -1,0 +1,17 @@
+[package]
+name = "pyaot-codegen-cranelift"
+version.workspace = true
+edition.workspace = true
+description = "Typed MIR → Cranelift → object file"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-mir = { path = "../mir" }
+# External deps to wire when implementing (deferred to keep the skeleton build light):
+#   cranelift-codegen, cranelift-frontend, cranelift-module, cranelift-object,
+#   target-lexicon, gimli, object  (all already in [workspace.dependencies])
+
+[lints.rust]
+unsafe_code = "forbid"

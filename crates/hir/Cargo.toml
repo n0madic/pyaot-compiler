@@ -1,0 +1,14 @@
+[package]
+name = "pyaot-hir"
+version.workspace = true
+edition.workspace = true
+description = "High-level IR — CFG-only, carries SemTy"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+
+[lints.rust]
+unsafe_code = "forbid"

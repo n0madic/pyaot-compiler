@@ -1,0 +1,27 @@
+[package]
+name = "pyaot-cli"
+version.workspace = true
+edition.workspace = true
+description = "Compiler entry point — orchestrates the pipeline"
+
+[[bin]]
+name = "pyaot"
+path = "src/main.rs"
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-diagnostics = { path = "../diagnostics" }
+pyaot-frontend-python = { path = "../frontend-python" }
+pyaot-hir = { path = "../hir" }
+pyaot-semantics = { path = "../semantics" }
+pyaot-typeck = { path = "../typeck" }
+pyaot-mir = { path = "../mir" }
+pyaot-lowering = { path = "../lowering" }
+pyaot-optimizer = { path = "../optimizer" }
+pyaot-codegen-cranelift = { path = "../codegen-cranelift" }
+pyaot-linker = { path = "../linker" }
+# External deps to wire when implementing: clap, anyhow, tracing
+
+[lints.rust]
+unsafe_code = "forbid"

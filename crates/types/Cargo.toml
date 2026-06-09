@@ -1,0 +1,13 @@
+[package]
+name = "pyaot-types"
+version.workspace = true
+edition.workspace = true
+description = "Two-layer type system: SemTy (semantic/Python-level) + Repr (physical representation)"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+
+[lints.rust]
+unsafe_code = "forbid"

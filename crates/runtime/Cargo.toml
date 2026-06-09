@@ -1,0 +1,35 @@
+[package]
+name = "pyaot-runtime"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gc_stress_test)'] }
+
+[features]
+default = ["stdlib-full"]
+# Include all stdlib modules with external dependencies
+stdlib-full = ["stdlib-json", "stdlib-regex", "stdlib-crypto", "stdlib-base64", "stdlib-network"]
+# Individual stdlib features
+stdlib-json = ["dep:serde_json"]
+stdlib-regex = ["dep:regex-lite"]
+stdlib-crypto = ["dep:sha2", "dep:md-5", "dep:sha1"]
+stdlib-base64 = ["dep:base64"]
+stdlib-network = ["dep:ureq", "stdlib-json"]
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-format-shared = { path = "../format-shared" }
+libc = "0.2"
+
+# Optional stdlib dependencies
+regex-lite = { version = "0.1", optional = true }
+serde_json = { version = "1", optional = true }
+ureq = { version = "3", optional = true, features = ["platform-verifier"] }
+sha2 = { version = "0.10", optional = true }
+sha1 = { version = "0.10", optional = true }
+md-5 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }

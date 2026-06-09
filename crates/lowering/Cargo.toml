@@ -1,0 +1,18 @@
+[package]
+name = "pyaot-lowering"
+version.workspace = true
+edition.workspace = true
+description = "Mechanical HIR→MIR lowering + single representation-legalization point"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-hir = { path = "../hir" }
+pyaot-mir = { path = "../mir" }
+pyaot-typeck = { path = "../typeck" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-diagnostics = { path = "../diagnostics" }
+
+[lints.rust]
+unsafe_code = "forbid"

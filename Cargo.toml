@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    # ── Frozen substrate + contract (copied verbatim from python-compiler-rust) ──
+    "crates/core-defs",
+    "crates/format-shared",
+    "crates/utils",
+    "crates/diagnostics",
+    "crates/linker",
+    "crates/stdlib-defs",
+    "crates/runtime",
+
+    # ── New compiler front-half (correct-by-construction; no dual type system) ──
+    "crates/types",            # SemTy (semantic) + Repr (physical) — the two-layer split
+    "crates/hir",              # CFG-only HIR, carries SemTy
+    "crates/semantics",        # name resolution, scopes, MRO linearization
+    "crates/typeck",           # ONE constraint-based inference (replaces type_planning/)
+    "crates/mir",              # typed MIR, Repr MANDATORY (no Option), + verifier
+    "crates/lowering",         # mechanical HIR→MIR + single repr-legalization point
+    "crates/optimizer",        # passes over typed MIR (read Repr, never sentinels)
+    "crates/codegen-cranelift",# typed MIR → Cranelift → object
+    "crates/frontend-python",  # parser (rustpython) + desugaring → HIR
+    "crates/cli",              # entry point, pipeline orchestration (binary `pyaot`)
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["n0madic", "claude"]
+license = "MIT"
+
+[workspace.dependencies]
+# Parser
+rustpython-parser = "0.4"
+
+# Cranelift backend
+cranelift-codegen = "0.127"
+cranelift-frontend = "0.127"
+cranelift-module = "0.127"
+cranelift-object = "0.127"
+target-lexicon = "0.13"
+
+# Debug info
+gimli = { version = "0.33", default-features = false, features = ["write", "std"] }
+object = { version = "0.37", default-features = false, features = ["write", "std", "elf", "macho"] }
+
+# Diagnostics
+miette = { version = "7", features = ["fancy"] }
+thiserror = "1.0"
+
+# Data structures
+indexmap = "2.0"
+hashbrown = "0.14"
+smallvec = "1.11"
+la-arena = "0.3"
+slotmap = "1.0"
+
+# Graphs
+petgraph = "0.6"
+
+# Utilities
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Serialization (for IR dump)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

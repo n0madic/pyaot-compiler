@@ -1,0 +1,14 @@
+[package]
+name = "pyaot-stdlib-defs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Standard library definitions for the Python AOT compiler"
+
+[dependencies]
+# core-defs is a leaf crate too, so this is fine
+pyaot-core-defs = { path = "../core-defs" }
+
+[lints.rust]
+unsafe_code = "forbid"

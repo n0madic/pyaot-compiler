@@ -1,0 +1,18 @@
+[package]
+name = "pyaot-frontend-python"
+version.workspace = true
+edition.workspace = true
+description = "Python parsing + desugaring → HIR"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-hir = { path = "../hir" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-diagnostics = { path = "../diagnostics" }
+# External deps to wire when implementing:
+#   rustpython-parser  (already in [workspace.dependencies])
+
+[lints.rust]
+unsafe_code = "forbid"

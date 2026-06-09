@@ -1,0 +1,13 @@
+[package]
+name = "pyaot-mir"
+version.workspace = true
+edition.workspace = true
+description = "Mid-level IR (CFG), Repr-typed, with a mandatory verifier"
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,6 @@
+[package]
+name = "pyaot-format-shared"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,12 @@
+[package]
+name = "pyaot-diagnostics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+miette = { workspace = true }
+thiserror = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

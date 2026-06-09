@@ -1,0 +1,120 @@
+//! Set comparison operations: issubset, issuperset, isdisjoint
+
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
+use crate::hash_table_utils::hash_hashable_obj;
+use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use pyaot_core_defs::Value;
+
+use super::core::find_set_slot;
+
+/// Check if all elements of a are in b (subset test)
+/// Returns: 1 if a is subset of b, 0 otherwise
+pub fn rt_set_issubset(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_issubset");
+        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_issubset");
+
+        let a_obj = a as *mut SetObj;
+        let b_obj = b as *mut SetObj;
+
+        // Iterate through a, check each element is in b
+        let a_capacity = (*a_obj).capacity;
+        for i in 0..a_capacity {
+            let entry = (*a_obj).entries.add(i);
+            let elem = (*entry).elem;
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
+                if slot < 0 {
+                    return 0; // Found element in a that is not in b
+                }
+            }
+        }
+
+        1 // All elements of a are in b
+    }
+}
+#[export_name = "rt_set_issubset"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_issubset_abi(a: Value, b: Value) -> i8 {
+    rt_set_issubset(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
+/// Check if all elements of b are in a (superset test)
+/// Returns: 1 if a is superset of b, 0 otherwise
+pub fn rt_set_issuperset(a: *mut Obj, b: *mut Obj) -> i8 {
+    // a is superset of b if b is subset of a
+    rt_set_issubset(b, a)
+}
+#[export_name = "rt_set_issuperset"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_issuperset_abi(a: Value, b: Value) -> i8 {
+    rt_set_issuperset(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
+/// Check if sets have no elements in common (disjoint test)
+/// Returns: 1 if sets are disjoint, 0 otherwise
+pub fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a.is_null() || b.is_null() {
+        return 1;
+    }
+
+    unsafe {
+        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_isdisjoint");
+        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_isdisjoint");
+
+        let a_obj = a as *mut SetObj;
+        let b_obj = b as *mut SetObj;
+
+        // Iterate through a, check if any element is in b
+        let a_capacity = (*a_obj).capacity;
+        for i in 0..a_capacity {
+            let entry = (*a_obj).entries.add(i);
+            let elem = (*entry).elem;
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
+                if slot >= 0 {
+                    return 0; // Found element in both sets
+                }
+            }
+        }
+
+        1 // No elements in common
+    }
+}
+#[export_name = "rt_set_isdisjoint"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_isdisjoint_abi(a: Value, b: Value) -> i8 {
+    rt_set_isdisjoint(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
+/// Compare two sets for structural equality (Python `==`).
+///
+/// Two sets are equal iff they have the same length and every element of
+/// `a` is contained in `b`. Equal length combined with `a ⊆ b` implies
+/// `a == b`. Returns 1 if equal, 0 otherwise.
+pub fn rt_set_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a.is_null() && b.is_null() {
+        return 1;
+    }
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    if crate::set::rt_set_len(a) != crate::set::rt_set_len(b) {
+        return 0;
+    }
+    rt_set_issubset(a, b)
+}
+#[export_name = "rt_set_eq"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_eq_abi(a: Value, b: Value) -> i8 {
+    rt_set_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}

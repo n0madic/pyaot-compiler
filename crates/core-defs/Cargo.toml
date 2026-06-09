@@ -1,0 +1,13 @@
+[package]
+name = "pyaot-core-defs"
+version.workspace = true
+edition.workspace = true
+description = "Shared type definitions for pyaot compiler and runtime"
+
+# This is a leaf crate with NO dependencies on other pyaot crates
+# to avoid circular dependency issues between compiler and runtime.
+[dependencies]
+# No dependencies
+
+[lints.rust]
+unsafe_code = "forbid"
