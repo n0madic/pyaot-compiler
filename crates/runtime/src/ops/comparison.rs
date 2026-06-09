@@ -37,6 +37,20 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     let va = Value(a as u64);
     let vb = Value(b as u64);
 
+    // Bignum-aware: when a heap BigInt is involved, compare as numbers
+    // (int/bignum exact, float via f64). Only entered when a BigInt is present,
+    // so non-bignum behavior is unchanged.
+    unsafe {
+        let a_big = va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::BigInt;
+        let b_big = vb.is_ptr() && !b.is_null() && (*b).type_tag() == TypeTagKind::BigInt;
+        if a_big || b_big {
+            return match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+                (Some(x), Some(y)) => crate::bigint::num_eq(&x, &y) as i8,
+                _ => 0, // BigInt vs non-number → not equal
+            };
+        }
+    }
+
     // Both tagged primitives: compare by type + value.
     if !va.is_ptr() && !vb.is_ptr() {
         // Same tagged kind → bit-for-bit comparison covers Int==Int and Bool==Bool.
@@ -384,6 +398,28 @@ unsafe fn involves_nan(a: *mut Obj, b: *mut Obj) -> bool {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
     unsafe {
+        // Bignum-aware ordering when a heap BigInt is involved.
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        let a_big = va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::BigInt;
+        let b_big = vb.is_ptr() && !b.is_null() && (*b).type_tag() == TypeTagKind::BigInt;
+        if a_big || b_big {
+            if let (Some(x), Some(y)) = (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+                return match crate::bigint::num_cmp(&x, &y) {
+                    Some(ord) => {
+                        let r = match op_tag {
+                            0 => ord == std::cmp::Ordering::Less,
+                            1 => ord != std::cmp::Ordering::Greater,
+                            2 => ord == std::cmp::Ordering::Greater,
+                            3 => ord != std::cmp::Ordering::Less,
+                            _ => false,
+                        };
+                        r as i8
+                    }
+                    None => 0, // NaN
+                };
+            }
+        }
         // NaN comparisons always return False in Python
         if involves_nan(a, b) {
             return 0;

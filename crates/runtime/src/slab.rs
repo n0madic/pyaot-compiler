@@ -373,6 +373,11 @@ unsafe fn finalize_object_by_tag(obj_ptr: *mut Obj, tag: TypeTagKind) {
         TypeTagKind::BytesIO => {
             crate::stringio::bytesio_finalize(obj_ptr);
         }
+        TypeTagKind::BigInt => {
+            // Drop the owned `BigInt` (its digit `Vec`) before the slot is freed
+            // (precedent: List/Dict own Rust allocations finalized here).
+            std::ptr::drop_in_place(&mut (*(obj_ptr as *mut crate::object::BigIntObj)).value);
+        }
         TypeTagKind::Instance => {
             // Call __del__ if registered for this class.
             // Use catch_unwind to prevent panics from corrupting the slab free list.

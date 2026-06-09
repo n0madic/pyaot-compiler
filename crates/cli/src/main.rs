@@ -63,7 +63,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     #[cfg(debug_assertions)]
     {
         for func in &mir.funcs {
-            pyaot_mir::verify(func).map_err(verify_to_error)?;
+            pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
         }
     }
 

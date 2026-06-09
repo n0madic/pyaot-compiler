@@ -25,6 +25,11 @@ pyaot-core-defs = { path = "../core-defs" }
 pyaot-format-shared = { path = "../format-shared" }
 libc = "0.2"
 
+# Arbitrary-precision integers — the one sanctioned runtime extension (PITFALLS A6).
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+
 # Optional stdlib dependencies
 regex-lite = { version = "0.1", optional = true }
 serde_json = { version = "1", optional = true }

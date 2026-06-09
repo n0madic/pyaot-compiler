@@ -65,7 +65,7 @@ impl PassManager {
 #[cfg(debug_assertions)]
 fn verify_all(program: &MirProgram) -> Result<(), VerifyError> {
     for func in &program.funcs {
-        verify(func)?;
+        verify(func, &program.funcs)?;
     }
     Ok(())
 }

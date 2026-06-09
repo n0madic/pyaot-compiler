@@ -176,6 +176,9 @@ define_tag_kinds! {
     Deque = 26 => "Deque" => "<class 'collections.deque'>" => "collections.deque",
     Request = 27 => "Request" => "<class 'urllib.request.Request'>" => "urllib.request.Request",
     NotImplemented = 28 => "NotImplemented" => "<class 'NotImplementedType'>" => "NotImplementedType",
+    // Arbitrary-precision integer (heap). It is still a Python `int`, so its
+    // type_class/type_name match `int`. The one sanctioned substrate extension.
+    BigInt = 29 => "BigInt" => "<class 'int'>" => "int",
 }
 
 #[cfg(test)]
@@ -236,7 +239,8 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(26), Some(TypeTagKind::Deque));
         assert_eq!(TypeTagKind::from_tag(27), Some(TypeTagKind::Request));
         assert_eq!(TypeTagKind::from_tag(28), Some(TypeTagKind::NotImplemented));
-        assert_eq!(TypeTagKind::from_tag(29), None);
+        assert_eq!(TypeTagKind::from_tag(29), Some(TypeTagKind::BigInt));
+        assert_eq!(TypeTagKind::from_tag(30), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

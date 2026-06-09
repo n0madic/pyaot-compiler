@@ -8,13 +8,10 @@
 //! The model is **locals-with-a-Repr-table, not SSA**: the runtime's GC roots
 //! are frame slots, so a locals model maps 1:1 to rootable slots. (SSA would
 //! need a separate spill pass — exactly the side-table the invariants forbid.)
-//! SSA, if ever needed, stays an optimizer-internal detail.
 //!
 //! ## What lives here
 //!
-//! * the IR shapes ([`MirProgram`] / [`MirFunction`] / [`MirInst`] / …) with
-//!   parameterized "kind" enums ([`PrintKind`]) so runtime ops don't explode
-//!   into one variant each;
+//! * the IR shapes ([`MirProgram`] / [`MirFunction`] / [`MirInst`] / …);
 //! * the **coercion legality table** ([`classify_coercion`] / [`Coercion`]).
 //!   It lives here, not in `lowering`, because the verifier must enforce it and
 //!   `mir` cannot depend on `lowering`. `lowering::legalize` is still the *only*
@@ -23,22 +20,19 @@
 //! * [`verify`] — mandatory from commit #1, run in debug at *every* pass
 //!   boundary; rejects any instruction whose operand/result `Repr`s violate its
 //!   typed signature.
-//!
-//! ## Phase 1 scope
-//!
-//! Only the instructions needed for `print("hello")` are interpreted by
-//! [`verify`]. [`PrintKind`] and [`Coercion`] already carry their full variant
-//! set so later phases grow without reshaping the enums.
 
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 
-use pyaot_types::{HeapShape, Repr};
+use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, FuncId, InternedString, LocalId};
 
 pub mod verify;
 pub use verify::{verify, VerifyError};
+
+// Re-exported so consumers (`lowering`, `codegen`) can name builtin kinds.
+pub use pyaot_core_defs::BuiltinFunctionKind;
 
 // ============================================================================
 // Program / function structure
@@ -55,6 +49,7 @@ pub struct MirProgram {
 }
 
 /// A function. `locals` is the Repr table; every [`LocalId`] indexes it.
+/// `params.len()` leading locals are the parameters (ABI = f(param Repr)).
 #[derive(Debug)]
 pub struct MirFunction {
     pub name: InternedString,
@@ -111,9 +106,86 @@ pub enum MirInst {
         from: Repr,
         to: Repr,
     },
+    /// A binary op on the tagged baseline. ALL ops (arithmetic *and* bitwise /
+    /// shift) take and produce `Tagged` and dispatch on the tag in the runtime
+    /// (`rt_obj_*`), so they are bignum-safe: an `int` operand may dynamically be
+    /// a heap `BigInt`, and unboxing it to a raw `i64` would be a silent
+    /// miscompile (Invariant 2). A range-proven raw fast path for bitwise/shift
+    /// is a Phase-3 optimization, not the correct default.
+    BinOp {
+        dst: LocalId,
+        op: BinOp,
+        l: Operand,
+        r: Operand,
+    },
+    /// Unary `Neg`/`Pos`/`Invert` on the tagged baseline; `Not` is truthiness
+    /// negation (tagged operand → `Raw(I8)` result).
+    Unary {
+        dst: LocalId,
+        op: UnaryOp,
+        operand: Operand,
+    },
+    /// A single comparison (tagged operands → `Raw(I8)` result).
+    Compare {
+        dst: LocalId,
+        op: CmpOp,
+        l: Operand,
+        r: Operand,
+    },
+    /// Truthiness test (tagged operand → `Raw(I8)` result).
+    Truthy { dst: LocalId, operand: Operand },
+    /// Call a compiled function. Args coerced to the callee's param `Repr`s.
+    Call {
+        dst: Option<LocalId>,
+        func: FuncId,
+        args: Vec<Operand>,
+    },
+    /// Call a runtime builtin (`abs`/`len`/`int`/`float`/`str`/`bool`/…). The
+    /// runtime shims take and return tagged `Value`s.
+    CallBuiltin {
+        dst: Option<LocalId>,
+        kind: BuiltinFunctionKind,
+        args: Vec<Operand>,
+    },
+    /// Raise `AssertionError` (no message in Phase 2). Followed by `Unreachable`.
+    AssertFail,
     /// A parameterized print op — one variant covers every print form rather
     /// than one runtime-call variant per symbol.
     Print { kind: PrintKind, arg: Option<Operand> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+    Pos,
+    Invert,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtE,
+    Gt,
+    GtE,
 }
 
 /// The flavor of a print operation. Parameterized so the runtime print surface
@@ -126,7 +198,7 @@ pub enum PrintKind {
     Float,
     Bool,
     None_,
-    /// Generic tagged-value print (`repr()`-ish dispatch).
+    /// Generic tagged-value print (tag-dispatched; bignum-safe for ints).
     Obj,
     /// The default `' '` separator between arguments.
     Sep,
@@ -138,28 +210,38 @@ pub enum PrintKind {
 pub enum Const {
     /// A string literal; the bytes live in [`MirProgram::str_pool`].
     Str(InternedString),
-    // Reserved: Int(..), Float(f64), Bool(bool), None, ...
+    /// A fixnum integer literal (tagged at codegen).
+    Int(i64),
+    /// A big integer literal; decimal text lives in [`MirProgram::str_pool`].
+    BigIntStr(InternedString),
+    Float(f64),
+    Bool(bool),
+    None,
 }
 
 #[derive(Debug, Clone)]
 pub enum MirTerminator {
     Return(Option<Operand>),
-    // Reserved: Branch { cond, then, else_ }, Jump(BlockId), Unreachable, ...
+    Jump(BlockId),
+    Branch {
+        cond: Operand,
+        then: BlockId,
+        else_: BlockId,
+    },
+    Unreachable,
 }
 
 #[derive(Debug, Clone)]
 pub enum Operand {
     Local(LocalId),
-    // Reserved: immediate constants once they bypass a local slot.
 }
 
 // ============================================================================
 // String pool
 // ============================================================================
 
-/// Maps each string literal's [`InternedString`] to its raw bytes. Lowering
-/// fills it (resolving through the frontend's interner); codegen reads it to
-/// emit one data object per distinct literal.
+/// Maps each interned string (literal bytes or big-int decimal text) to its raw
+/// bytes. Lowering fills it; codegen reads it to emit one data object per id.
 #[derive(Debug, Default)]
 pub struct StrPool {
     bytes: HashMap<InternedString, Vec<u8>>,
@@ -190,46 +272,42 @@ impl StrPool {
 // Coercion legality (the shared predicate the verifier enforces)
 // ============================================================================
 
-/// The kind of bridging a [`MirInst::Coerce`] performs. Phase 1 only ever
-/// produces [`Coercion::Noop`]; the rest are reserved for Phase 2/3 numeric and
-/// boxing coercions so the enum need not be reshaped later.
+/// The kind of bridging a [`MirInst::Coerce`] performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coercion {
     /// Zero machine instructions: the bits are already valid at `to`.
     Noop,
-    /// A typed heap pointer reinterpreted as the universal tagged value. Free at
-    /// runtime in this runtime's ABI (heap pointers *are* tagged `Value`s), so
-    /// Phase 1 classifies that case as [`Coercion::Noop`]; this variant is
-    /// reserved for any future representation where the widen is not free.
+    /// A typed heap pointer reinterpreted as the universal tagged value — free
+    /// in this runtime's ABI (heap pointers *are* tagged `Value`s).
     HeapToTagged,
     BoxFloat,
     UnboxFloat,
     TagInt,
     UntagInt,
+    TagBool,
+    UntagBool,
 }
 
 /// **The single coercion legality table.** Returns `Some(kind)` if a value at
 /// representation `from` may be legally bridged to `to`, else `None`.
-///
-/// `lowering::legalize::coerce` is a thin wrapper over this; the verifier calls
-/// it directly. Keeping the predicate here (not in `lowering`) is what lets the
-/// verifier enforce "every `Coerce` is a legal coercion" without `mir` depending
-/// on `lowering`.
 pub fn classify_coercion(from: &Repr, to: &Repr) -> Option<Coercion> {
     if from == to {
         return Some(Coercion::Noop);
     }
     match (from, to) {
-        // A typed heap pointer is bit-identical to a tagged `Value` (rt_* return
-        // `Value`), so widening it to the universal tagged repr costs nothing.
+        // A typed heap pointer is bit-identical to a tagged `Value`.
         (Repr::Heap(_), Repr::Tagged) => Some(Coercion::Noop),
-        // Phase 2/3: numeric box/unbox/tag/untag land here.
+        (Repr::Raw(RawKind::F64), Repr::Tagged) => Some(Coercion::BoxFloat),
+        (Repr::Tagged, Repr::Raw(RawKind::F64)) => Some(Coercion::UnboxFloat),
+        (Repr::Raw(RawKind::I8), Repr::Tagged) => Some(Coercion::TagBool),
+        (Repr::Tagged, Repr::Raw(RawKind::I8)) => Some(Coercion::UntagBool),
+        (Repr::Raw(RawKind::I64), Repr::Tagged) => Some(Coercion::TagInt),
+        (Repr::Tagged, Repr::Raw(RawKind::I64)) => Some(Coercion::UntagInt),
         _ => None,
     }
 }
 
-/// True iff `to` is the universal heap-string representation. Small helper so
-/// the verifier reads declaratively.
+/// True iff `to` is the universal heap-string representation.
 pub(crate) fn is_heap_str(repr: &Repr) -> bool {
     matches!(repr, Repr::Heap(HeapShape::Str))
 }
@@ -237,26 +315,34 @@ pub(crate) fn is_heap_str(repr: &Repr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyaot_types::RawKind;
 
     #[test]
-    fn coercion_table_phase1() {
-        // Identity is a no-op.
+    fn coercion_table_phase2() {
         assert_eq!(
             classify_coercion(&Repr::Tagged, &Repr::Tagged),
             Some(Coercion::Noop)
         );
-        // A typed heap pointer widens to Tagged for free.
         assert_eq!(
             classify_coercion(&Repr::Heap(HeapShape::Str), &Repr::Tagged),
             Some(Coercion::Noop)
         );
-        // Numeric box/unbox is not yet in the table (Phase 2/3).
         assert_eq!(
             classify_coercion(&Repr::Raw(RawKind::F64), &Repr::Tagged),
-            None
+            Some(Coercion::BoxFloat)
         );
-        // Narrowing Tagged back to a typed pointer is not a Phase-1 coercion.
+        assert_eq!(
+            classify_coercion(&Repr::Tagged, &Repr::Raw(RawKind::F64)),
+            Some(Coercion::UnboxFloat)
+        );
+        assert_eq!(
+            classify_coercion(&Repr::Raw(RawKind::I8), &Repr::Tagged),
+            Some(Coercion::TagBool)
+        );
+        assert_eq!(
+            classify_coercion(&Repr::Tagged, &Repr::Raw(RawKind::I8)),
+            Some(Coercion::UntagBool)
+        );
+        // Narrowing Tagged to a typed pointer is still not a coercion.
         assert_eq!(
             classify_coercion(&Repr::Tagged, &Repr::Heap(HeapShape::Str)),
             None

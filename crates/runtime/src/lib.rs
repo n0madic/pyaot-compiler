@@ -98,6 +98,7 @@ pub mod traceback;
 pub mod value;
 
 // Type operations
+pub mod bigint;
 pub mod boxing;
 pub mod conversions;
 pub mod hash;

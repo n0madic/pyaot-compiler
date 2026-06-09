@@ -203,6 +203,24 @@ local survives an allocating call; keep the `nroots == 0` fast-path strictly for
 functions that provably have none. Do not let "it worked in Phase 1" justify
 skipping the frame in Phase 2.
 
+### B16. Bitwise / shift unboxing a possibly-bignum int
+**Trap:** `&`/`|`/`^`/`<<`/`>>` look like pure machine-word ops, so it is tempting
+to lower their operands as `Raw(I64)` (`UntagInt` → `band`/`bor`/`bxor`/shift →
+`TagInt`). For a fixnum that is fine; but an `int` slot is `Tagged` and may
+*dynamically* hold a heap `BigInt` pointer. `UntagInt` (`sshr 3`) on that pointer
+yields garbage — and it is **silent**: `Tagged → Raw(I64)` is a legal coercion the
+verifier accepts (it cannot know the runtime value is a bignum), so `x = 2**100;
+x & 1` neither errors nor computes correctly. This is exactly the
+"silent-wrong-via-premature-unboxing" Invariant 2 exists to prevent (cf. A2).
+**Why it bites:** the literal form `2**100 & 1` *does* fail to compile
+(`Heap(BigInt) → Raw(I64)` is absent from the coercion table), so the gap reads as
+"only edge cases" — but a tagged variable holding the same bignum slips straight
+through. **Avoided by:** routing bitwise/shift through the tagged-`Value`
+baseline like arithmetic — `rt_obj_bitand`/`bitor`/`bitxor`/`lshift`/`rshift`
+dispatch on the tag (fixnum fast path + `num-bigint`, demote on fit). A range-proven
+`Raw(I64)` fast path is a deliberate Phase-3 optimization gated on a proof that the
+operands cannot be bignum — never the default.
+
 ---
 
 ## How to use this file

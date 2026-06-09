@@ -1,7 +1,7 @@
 //! Print operations for Python runtime
 
 use crate::object::{
-    DequeObj, DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind,
+    BigIntObj, DequeObj, DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind,
 };
 use crate::print::{rt_print_bytes_obj, rt_print_str_obj};
 use pyaot_core_defs::Value;
@@ -117,6 +117,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
             let float_obj = obj as *mut FloatObj;
             print!("{}", crate::utils::format_float_python((*float_obj).value));
         }
+        TypeTagKind::BigInt => print!("{}", (*(obj as *mut BigIntObj)).value),
         TypeTagKind::Str => {
             // In repr mode, strings get single quotes with proper escaping
             let str_obj = obj as *mut StrObj;
@@ -359,6 +360,7 @@ pub fn rt_print_obj(obj: *mut Obj) {
                 let float_obj = obj as *mut FloatObj;
                 print!("{}", crate::utils::format_float_python((*float_obj).value));
             }
+            TypeTagKind::BigInt => print!("{}", (*(obj as *mut BigIntObj)).value),
             TypeTagKind::Str => rt_print_str_obj(obj),
             TypeTagKind::Bytes => rt_print_bytes_obj(obj),
             TypeTagKind::None => print!("None"),

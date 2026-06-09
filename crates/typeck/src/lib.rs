@@ -6,22 +6,21 @@
 //! 1. **collect** — a walk over HIR emits [`Constraint`]s.
 //! 2. **solve** — fold the constraints over [`pyaot_types::TypeLattice`].
 //! 3. **materialize** — write the solved [`SemTy`] back onto each HIR node,
-//!    defaulting any node left unconstrained to [`SemTy::Dyn`].
+//!    *preserving* any concrete type already present (frontend-assigned literal
+//!    types) and defaulting only genuinely-unconstrained nodes to `Dyn`.
 //!
 //! Inference finishes BEFORE lowering and does not leak into it. Representation
-//! is NOT decided here — that is `repr_of` at the lowering boundary. Because the
-//! tagged baseline is always correct, inference precision is a performance lever,
-//! not a correctness requirement: an underpowered solver yields slower code, not
-//! wrong code.
+//! is decided by `repr_of` at the lowering boundary. Because the tagged baseline
+//! is always correct, inference precision is a performance lever, not a
+//! correctness requirement: a node left `Dyn` (→ `Tagged` → `rt_*` dispatch)
+//! still compiles correctly, just to slower code.
 //!
-//! ## Phase 1 scope
+//! ## Scope
 //!
-//! `collect` emits a single equality `Eq(expr, Str)` for each string literal;
-//! `solve` joins duplicate constraints over the lattice; `materialize` defaults
-//! everything else to `Dyn`. This is the decoupling proof in microcosm: even if
-//! `"hello"` were left `Dyn` (→ `Tagged` → `rt_print_obj`), the program would
-//! still be correct, just slower. Subtype/consistency constraints, parameter and
-//! return-flow constraints, and the union-find core are reserved for Phase 3.
+//! Phase 2 emits equalities for literals and the structurally-determined results
+//! (`Compare`/`not` → `Bool`). Arithmetic and call result types are left `Dyn`:
+//! they flow through the tagged baseline (`rt_obj_*` / `rt_print_obj`), which is
+//! correct for every operand mix. Sharpening them is a later optimization.
 
 #![forbid(unsafe_code)]
 
@@ -30,10 +29,10 @@ use std::collections::HashMap;
 use la_arena::Idx;
 
 use pyaot_diagnostics::Result;
-use pyaot_hir::{HirExpr, HirExprKind, HirFunction, HirModule, ResolveResult};
+use pyaot_hir::{HirExpr, HirExprKind, HirFunction, HirModule, ResolveResult, UnaryOp};
 use pyaot_types::{SemTy, TypeLattice};
 
-/// A single typing constraint. Phase 1 emits only equalities of an expression
+/// A single typing constraint. Phase 2 emits only equalities of an expression
 /// node to a concrete type; subtype (`≤`) and gradual `consistent` constraints
 /// are reserved for the real solver.
 enum Constraint {
@@ -50,23 +49,29 @@ pub fn infer(module: &mut HirModule, _resolve: &ResolveResult) -> Result<()> {
     Ok(())
 }
 
-/// Phase 1: a string literal node is constrained equal to `Str`.
+/// Emit an equality for every node whose type is structurally determined.
 fn collect(func: &HirFunction) -> Vec<Constraint> {
     let mut constraints = Vec::new();
     for (idx, expr) in func.exprs.iter() {
-        if let HirExprKind::StrLit(_) = expr.kind {
-            constraints.push(Constraint::Eq {
-                expr: idx,
-                ty: SemTy::Str,
-            });
+        let ty = match &expr.kind {
+            HirExprKind::StrLit(_) => Some(SemTy::Str),
+            HirExprKind::IntLit(_) | HirExprKind::BigIntLit(_) => Some(SemTy::Int),
+            HirExprKind::FloatLit(_) => Some(SemTy::Float),
+            HirExprKind::BoolLit(_) => Some(SemTy::Bool),
+            HirExprKind::NoneLit => Some(SemTy::NoneTy),
+            HirExprKind::Compare { .. } => Some(SemTy::Bool),
+            HirExprKind::Unary { op: UnaryOp::Not, .. } => Some(SemTy::Bool),
+            _ => None,
+        };
+        if let Some(ty) = ty {
+            constraints.push(Constraint::Eq { expr: idx, ty });
         }
     }
     constraints
 }
 
 /// Fold constraints into a per-node solution. Multiple equalities on one node
-/// are reconciled with the lattice `join` (least upper bound), which is the
-/// shape the real worklist solver keeps.
+/// are reconciled with the lattice `join` (least upper bound).
 fn solve(constraints: Vec<Constraint>) -> HashMap<Idx<HirExpr>, SemTy> {
     let mut solution: HashMap<Idx<HirExpr>, SemTy> = HashMap::new();
     for Constraint::Eq { expr, ty } in constraints {
@@ -78,10 +83,13 @@ fn solve(constraints: Vec<Constraint>) -> HashMap<Idx<HirExpr>, SemTy> {
     solution
 }
 
-/// Write solved types back; unconstrained nodes default to the always-correct
-/// `Dyn` (→ `Tagged`).
+/// Write solved types back; nodes without a solution keep their existing type
+/// (frontend-assigned for literals), so this never clobbers a concrete type
+/// down to `Dyn`.
 fn materialize(func: &mut HirFunction, solution: &HashMap<Idx<HirExpr>, SemTy>) {
     for (idx, expr) in func.exprs.iter_mut() {
-        expr.ty = solution.get(&idx).cloned().unwrap_or(SemTy::Dyn);
+        if let Some(ty) = solution.get(&idx) {
+            expr.ty = ty.clone();
+        }
     }
 }

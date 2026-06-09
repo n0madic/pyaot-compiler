@@ -5,53 +5,61 @@
 //! every pass boundary (see `pyaot-optimizer`); it is the executable form of the
 //! invariant that representation never silently drifts.
 //!
-//! Phase 1 interprets the `print("hello")` instruction set: [`Const::Str`],
-//! [`MirInst::Coerce`], and [`MirInst::Print`]. Reserved instruction/operand
-//! kinds are bounds-checked but otherwise accepted, so later phases extend the
-//! checks without reshaping this function.
+//! Each instruction has a typed `Repr` signature (e.g. arithmetic operands are
+//! `Tagged`, `Branch.cond` is `Raw(I8)`); the verifier rejects any violation.
+//! `Call` reprs are checked against the callee signature (ABI = f(param Repr)).
 
 use crate::{
     classify_coercion, is_heap_str, Const, MirFunction, MirInst, MirTerminator, Operand, PrintKind,
+    UnaryOp,
 };
-use pyaot_types::Repr;
-use pyaot_utils::LocalId;
+use pyaot_types::{HeapShape, RawKind, Repr};
+use pyaot_utils::{BlockId, LocalId};
 
 /// A representation-consistency violation found by [`verify`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
-    /// A function has no blocks (no entry to verify).
     EmptyFunction,
-    /// An operand or destination names a local outside the Repr table.
+    BadEntry { entry: usize, count: usize },
     LocalOutOfRange { local: usize, count: usize },
-    /// `Const::Str` must produce a `Heap(Str)` value.
-    ConstStrReprMismatch { dst: usize, got: Repr },
-    /// `Print { StrObj }` requires a `Tagged` operand (everything reaches print
-    /// through the uniform tagged repr — see `lowering::legalize`).
-    PrintStrObjNotTagged { got: Repr },
-    /// A print kind that takes no argument (`Newline` / `Sep`) was given one.
-    PrintUnexpectedArg { kind: PrintKind },
-    /// A print kind that needs an argument was given none.
-    PrintMissingArg { kind: PrintKind },
-    /// `Coerce.from` disagrees with the source operand's actual representation.
-    CoerceFromMismatch { expected: Repr, actual: Repr },
-    /// `Coerce.to` disagrees with the destination local's declared representation.
-    CoerceToMismatch { expected: Repr, actual: Repr },
-    /// `(from, to)` is not an accepted coercion (`classify_coercion` rejected it).
+    BlockOutOfRange { block: usize, count: usize },
+    FuncOutOfRange { func: usize, count: usize },
+    /// An instruction operand/result repr disagrees with its typed signature.
+    ReprMismatch { ctx: &'static str, expected: Repr, actual: Repr },
+    /// `Call` arity disagrees with the callee signature.
+    CallArity { func: usize, expected: usize, actual: usize },
+    /// `(from, to)` is not an accepted coercion.
     IllegalCoercion { from: Repr, to: Repr },
+    PrintUnexpectedArg { kind: PrintKind },
+    PrintMissingArg { kind: PrintKind },
+    /// `Branch.cond` is not `Raw(I8)`.
+    BranchCondNotI8 { got: Repr },
 }
 
 impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VerifyError::EmptyFunction => write!(f, "MIR function has no blocks"),
+            VerifyError::BadEntry { entry, count } => {
+                write!(f, "entry block {entry} out of range ({count} blocks)")
+            }
             VerifyError::LocalOutOfRange { local, count } => {
-                write!(f, "local {local} out of range (function has {count} locals)")
+                write!(f, "local {local} out of range ({count} locals)")
             }
-            VerifyError::ConstStrReprMismatch { dst, got } => {
-                write!(f, "Const::Str into local {dst} must be Heap(Str), got {got:?}")
+            VerifyError::BlockOutOfRange { block, count } => {
+                write!(f, "block {block} out of range ({count} blocks)")
             }
-            VerifyError::PrintStrObjNotTagged { got } => {
-                write!(f, "Print(StrObj) operand must be Tagged, got {got:?}")
+            VerifyError::FuncOutOfRange { func, count } => {
+                write!(f, "func {func} out of range ({count} funcs)")
+            }
+            VerifyError::ReprMismatch { ctx, expected, actual } => {
+                write!(f, "{ctx}: expected {expected:?}, got {actual:?}")
+            }
+            VerifyError::CallArity { func, expected, actual } => {
+                write!(f, "call to func {func}: expected {expected} args, got {actual}")
+            }
+            VerifyError::IllegalCoercion { from, to } => {
+                write!(f, "illegal coercion {from:?} -> {to:?} (not in the legality table)")
             }
             VerifyError::PrintUnexpectedArg { kind } => {
                 write!(f, "Print({kind:?}) takes no argument but one was supplied")
@@ -59,14 +67,8 @@ impl std::fmt::Display for VerifyError {
             VerifyError::PrintMissingArg { kind } => {
                 write!(f, "Print({kind:?}) requires an argument but none was supplied")
             }
-            VerifyError::CoerceFromMismatch { expected, actual } => {
-                write!(f, "Coerce.from is {expected:?} but the source operand is {actual:?}")
-            }
-            VerifyError::CoerceToMismatch { expected, actual } => {
-                write!(f, "Coerce.to is {expected:?} but the destination local is {actual:?}")
-            }
-            VerifyError::IllegalCoercion { from, to } => {
-                write!(f, "illegal coercion {from:?} -> {to:?} (not in the legality table)")
+            VerifyError::BranchCondNotI8 { got } => {
+                write!(f, "Branch.cond must be Raw(I8), got {got:?}")
             }
         }
     }
@@ -74,110 +76,208 @@ impl std::fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
-/// Verify a single MIR function's representation consistency.
-///
-/// "Every block ends in exactly one terminator" is enforced structurally:
-/// [`crate::MirBlock`] holds exactly one `term` field, so it cannot end in zero
-/// or two terminators by construction.
-pub fn verify(f: &MirFunction) -> Result<(), VerifyError> {
+const TAGGED: Repr = Repr::Tagged;
+const RAW_I8: Repr = Repr::Raw(RawKind::I8);
+const RAW_I64: Repr = Repr::Raw(RawKind::I64);
+const RAW_F64: Repr = Repr::Raw(RawKind::F64);
+
+fn check_local(f: &MirFunction, id: LocalId) -> Result<(), VerifyError> {
+    if id.index() >= f.locals.len() {
+        Err(VerifyError::LocalOutOfRange { local: id.index(), count: f.locals.len() })
+    } else {
+        Ok(())
+    }
+}
+
+fn check_operand(f: &MirFunction, op: &Operand) -> Result<(), VerifyError> {
+    match op {
+        Operand::Local(id) => check_local(f, *id),
+    }
+}
+
+fn check_block(f: &MirFunction, id: BlockId) -> Result<(), VerifyError> {
+    if id.index() >= f.blocks.len() {
+        Err(VerifyError::BlockOutOfRange { block: id.index(), count: f.blocks.len() })
+    } else {
+        Ok(())
+    }
+}
+
+/// Require an operand's repr to equal `w`.
+fn want(f: &MirFunction, op: &Operand, w: &Repr, ctx: &'static str) -> Result<(), VerifyError> {
+    check_operand(f, op)?;
+    let got = f.operand_repr(op);
+    if got != w {
+        return Err(VerifyError::ReprMismatch { ctx, expected: w.clone(), actual: got.clone() });
+    }
+    Ok(())
+}
+
+/// Require a destination local's declared repr to equal `w`.
+fn want_local(f: &MirFunction, id: LocalId, w: &Repr, ctx: &'static str) -> Result<(), VerifyError> {
+    check_local(f, id)?;
+    let got = f.local_repr(id);
+    if got != w {
+        return Err(VerifyError::ReprMismatch { ctx, expected: w.clone(), actual: got.clone() });
+    }
+    Ok(())
+}
+
+/// Verify a single MIR function's representation consistency. `funcs` is the
+/// whole program's function table, used to check `Call` signatures.
+pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError> {
     if f.blocks.is_empty() {
         return Err(VerifyError::EmptyFunction);
     }
-
-    let count = f.locals.len();
-    let check_local = |id: LocalId| -> Result<(), VerifyError> {
-        if id.index() >= count {
-            Err(VerifyError::LocalOutOfRange { local: id.index(), count })
-        } else {
-            Ok(())
-        }
-    };
-    let check_operand = |op: &Operand| -> Result<(), VerifyError> {
-        match op {
-            Operand::Local(id) => check_local(*id),
-        }
-    };
+    let nblocks = f.blocks.len();
+    if f.entry.index() >= nblocks {
+        return Err(VerifyError::BadEntry { entry: f.entry.index(), count: nblocks });
+    }
 
     for block in &f.blocks {
         for inst in &block.insts {
-            match inst {
-                MirInst::Const { dst, val } => {
-                    check_local(*dst)?;
-                    match val {
-                        Const::Str(_) => {
-                            let repr = f.local_repr(*dst);
-                            if !is_heap_str(repr) {
-                                return Err(VerifyError::ConstStrReprMismatch {
-                                    dst: dst.index(),
-                                    got: repr.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-                MirInst::Coerce { dst, src, from, to } => {
-                    check_local(*dst)?;
-                    check_operand(src)?;
-                    let src_repr = f.operand_repr(src);
-                    if src_repr != from {
-                        return Err(VerifyError::CoerceFromMismatch {
-                            expected: from.clone(),
-                            actual: src_repr.clone(),
-                        });
-                    }
-                    let dst_repr = f.local_repr(*dst);
-                    if dst_repr != to {
-                        return Err(VerifyError::CoerceToMismatch {
-                            expected: to.clone(),
-                            actual: dst_repr.clone(),
-                        });
-                    }
-                    if classify_coercion(from, to).is_none() {
-                        return Err(VerifyError::IllegalCoercion {
-                            from: from.clone(),
-                            to: to.clone(),
-                        });
-                    }
-                }
-                MirInst::Print { kind, arg } => match kind {
-                    PrintKind::Newline | PrintKind::Sep => {
-                        if arg.is_some() {
-                            return Err(VerifyError::PrintUnexpectedArg { kind: *kind });
-                        }
-                    }
-                    PrintKind::StrObj => {
-                        let op = arg
-                            .as_ref()
-                            .ok_or(VerifyError::PrintMissingArg { kind: *kind })?;
-                        check_operand(op)?;
-                        let repr = f.operand_repr(op);
-                        if *repr != Repr::Tagged {
-                            return Err(VerifyError::PrintStrObjNotTagged { got: repr.clone() });
-                        }
-                    }
-                    // Int / Float / Bool / None_ / Obj are not produced in Phase 1.
-                    // Bounds-check any operand and defer richer checks to Phase 2+.
-                    _ => {
-                        if let Some(op) = arg {
-                            check_operand(op)?;
-                        }
-                    }
-                },
-            }
+            verify_inst(f, funcs, inst)?;
         }
-
-        if let MirTerminator::Return(Some(op)) = &block.term {
-            check_operand(op)?;
+        match &block.term {
+            MirTerminator::Return(Some(op)) => check_operand(f, op)?,
+            MirTerminator::Return(None) => {}
+            MirTerminator::Jump(target) => check_block(f, *target)?,
+            MirTerminator::Branch { cond, then, else_ } => {
+                check_operand(f, cond)?;
+                let got = f.operand_repr(cond);
+                if *got != RAW_I8 {
+                    return Err(VerifyError::BranchCondNotI8 { got: got.clone() });
+                }
+                check_block(f, *then)?;
+                check_block(f, *else_)?;
+            }
+            MirTerminator::Unreachable => {}
         }
     }
 
     Ok(())
 }
 
+fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result<(), VerifyError> {
+    match inst {
+        MirInst::Const { dst, val } => {
+            check_local(f, *dst)?;
+            let repr = f.local_repr(*dst);
+            let (ok, expected) = match val {
+                Const::Str(_) => (is_heap_str(repr), Repr::Heap(HeapShape::Str)),
+                Const::BigIntStr(_) => (
+                    matches!(repr, Repr::Heap(HeapShape::BigInt)),
+                    Repr::Heap(HeapShape::BigInt),
+                ),
+                Const::Int(_) | Const::Bool(_) | Const::None => (*repr == TAGGED, TAGGED),
+                Const::Float(_) => (*repr == RAW_F64, RAW_F64),
+            };
+            if !ok {
+                return Err(VerifyError::ReprMismatch { ctx: "Const dst", expected, actual: repr.clone() });
+            }
+        }
+        MirInst::Coerce { dst, src, from, to } => {
+            check_local(f, *dst)?;
+            check_operand(f, src)?;
+            let src_repr = f.operand_repr(src);
+            if src_repr != from {
+                return Err(VerifyError::ReprMismatch {
+                    ctx: "Coerce.from",
+                    expected: from.clone(),
+                    actual: src_repr.clone(),
+                });
+            }
+            let dst_repr = f.local_repr(*dst);
+            if dst_repr != to {
+                return Err(VerifyError::ReprMismatch {
+                    ctx: "Coerce.to",
+                    expected: to.clone(),
+                    actual: dst_repr.clone(),
+                });
+            }
+            if classify_coercion(from, to).is_none() {
+                return Err(VerifyError::IllegalCoercion { from: from.clone(), to: to.clone() });
+            }
+        }
+        MirInst::BinOp { dst, l, r, .. } => {
+            // Every binary op runs on the tagged baseline (bignum-safe).
+            want(f, l, &TAGGED, "BinOp.l")?;
+            want(f, r, &TAGGED, "BinOp.r")?;
+            want_local(f, *dst, &TAGGED, "BinOp.dst")?;
+        }
+        MirInst::Unary { dst, op, operand } => {
+            want(f, operand, &TAGGED, "Unary.operand")?;
+            let dst_want = if *op == UnaryOp::Not { &RAW_I8 } else { &TAGGED };
+            want_local(f, *dst, dst_want, "Unary.dst")?;
+        }
+        MirInst::Compare { dst, l, r, .. } => {
+            want(f, l, &TAGGED, "Compare.l")?;
+            want(f, r, &TAGGED, "Compare.r")?;
+            want_local(f, *dst, &RAW_I8, "Compare.dst")?;
+        }
+        MirInst::Truthy { dst, operand } => {
+            want(f, operand, &TAGGED, "Truthy.operand")?;
+            want_local(f, *dst, &RAW_I8, "Truthy.dst")?;
+        }
+        MirInst::Call { dst, func, args } => {
+            if func.index() >= funcs.len() {
+                return Err(VerifyError::FuncOutOfRange { func: func.index(), count: funcs.len() });
+            }
+            let callee = &funcs[func.index()];
+            if args.len() != callee.params.len() {
+                return Err(VerifyError::CallArity {
+                    func: func.index(),
+                    expected: callee.params.len(),
+                    actual: args.len(),
+                });
+            }
+            for (arg, prepr) in args.iter().zip(&callee.params) {
+                want(f, arg, prepr, "Call.arg")?;
+            }
+            if let Some(d) = dst {
+                want_local(f, *d, &callee.ret, "Call.dst")?;
+            }
+        }
+        MirInst::CallBuiltin { dst, args, .. } => {
+            for arg in args {
+                want(f, arg, &TAGGED, "CallBuiltin.arg")?;
+            }
+            if let Some(d) = dst {
+                want_local(f, *d, &TAGGED, "CallBuiltin.dst")?;
+            }
+        }
+        MirInst::AssertFail => {}
+        MirInst::Print { kind, arg } => match kind {
+            PrintKind::Newline | PrintKind::Sep | PrintKind::None_ => {
+                if arg.is_some() {
+                    return Err(VerifyError::PrintUnexpectedArg { kind: *kind });
+                }
+            }
+            PrintKind::StrObj | PrintKind::Obj => {
+                let op = arg.as_ref().ok_or(VerifyError::PrintMissingArg { kind: *kind })?;
+                want(f, op, &TAGGED, "Print(Obj/StrObj).arg")?;
+            }
+            PrintKind::Float => {
+                let op = arg.as_ref().ok_or(VerifyError::PrintMissingArg { kind: *kind })?;
+                want(f, op, &RAW_F64, "Print(Float).arg")?;
+            }
+            PrintKind::Bool => {
+                let op = arg.as_ref().ok_or(VerifyError::PrintMissingArg { kind: *kind })?;
+                want(f, op, &RAW_I8, "Print(Bool).arg")?;
+            }
+            PrintKind::Int => {
+                let op = arg.as_ref().ok_or(VerifyError::PrintMissingArg { kind: *kind })?;
+                want(f, op, &RAW_I64, "Print(Int).arg")?;
+            }
+        },
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Const, LocalDecl, MirBlock, MirFunction};
+    use crate::{BinOp, CmpOp, Const, LocalDecl, MirBlock, MirFunction, Operand};
     use pyaot_types::HeapShape;
     use pyaot_utils::{BlockId, InternedString, StringInterner};
 
@@ -196,29 +296,19 @@ mod tests {
         }
     }
 
-    /// The exact shape `lowering` produces for `print("hello")`.
     fn well_formed_print() -> MirFunction {
         single_block(
             vec![Repr::Heap(HeapShape::Str), Repr::Tagged],
             vec![
-                MirInst::Const {
-                    dst: LocalId::new(0),
-                    val: Const::Str(interned("hello")),
-                },
+                MirInst::Const { dst: LocalId::new(0), val: Const::Str(interned("hello")) },
                 MirInst::Coerce {
                     dst: LocalId::new(1),
                     src: Operand::Local(LocalId::new(0)),
                     from: Repr::Heap(HeapShape::Str),
                     to: Repr::Tagged,
                 },
-                MirInst::Print {
-                    kind: PrintKind::StrObj,
-                    arg: Some(Operand::Local(LocalId::new(1))),
-                },
-                MirInst::Print {
-                    kind: PrintKind::Newline,
-                    arg: None,
-                },
+                MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(LocalId::new(1))) },
+                MirInst::Print { kind: PrintKind::Newline, arg: None },
             ],
             MirTerminator::Return(None),
         )
@@ -226,55 +316,63 @@ mod tests {
 
     #[test]
     fn accepts_well_formed_print() {
-        assert_eq!(verify(&well_formed_print()), Ok(()));
+        let f = well_formed_print();
+        assert_eq!(verify(&f, std::slice::from_ref(&f)), Ok(()));
     }
 
     #[test]
     fn rejects_const_str_into_non_heap_str() {
         let mut f = well_formed_print();
-        f.locals[0].repr = Repr::Tagged; // Const::Str must land in Heap(Str).
-        assert!(matches!(
-            verify(&f),
-            Err(VerifyError::ConstStrReprMismatch { .. })
-        ));
+        f.locals[0].repr = Repr::Tagged;
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
     }
 
     #[test]
-    fn rejects_print_strobj_non_tagged_operand() {
-        // Print(StrObj) directly off a Heap(Str) local — never coerced to Tagged.
-        let f = single_block(
-            vec![Repr::Heap(HeapShape::Str)],
-            vec![MirInst::Print {
-                kind: PrintKind::StrObj,
-                arg: Some(Operand::Local(LocalId::new(0))),
-            }],
-            MirTerminator::Return(None),
-        );
-        assert!(matches!(
-            verify(&f),
-            Err(VerifyError::PrintStrObjNotTagged { .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_newline_with_argument() {
+    fn rejects_branch_cond_non_i8() {
         let f = single_block(
             vec![Repr::Tagged],
-            vec![MirInst::Print {
-                kind: PrintKind::Newline,
-                arg: Some(Operand::Local(LocalId::new(0))),
+            vec![],
+            MirTerminator::Branch {
+                cond: Operand::Local(LocalId::new(0)),
+                then: BlockId::new(0),
+                else_: BlockId::new(0),
+            },
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::BranchCondNotI8 { .. })));
+    }
+
+    #[test]
+    fn accepts_compare_into_i8() {
+        let f = single_block(
+            vec![Repr::Tagged, Repr::Tagged, Repr::Raw(RawKind::I8)],
+            vec![MirInst::Compare {
+                dst: LocalId::new(2),
+                op: CmpOp::Lt,
+                l: Operand::Local(LocalId::new(0)),
+                r: Operand::Local(LocalId::new(1)),
             }],
             MirTerminator::Return(None),
         );
-        assert!(matches!(
-            verify(&f),
-            Err(VerifyError::PrintUnexpectedArg { .. })
-        ));
+        assert_eq!(verify(&f, &[]), Ok(()));
+    }
+
+    #[test]
+    fn rejects_arithmetic_on_raw() {
+        let f = single_block(
+            vec![Repr::Raw(RawKind::F64), Repr::Tagged, Repr::Tagged],
+            vec![MirInst::BinOp {
+                dst: LocalId::new(2),
+                op: BinOp::Add,
+                l: Operand::Local(LocalId::new(0)),
+                r: Operand::Local(LocalId::new(1)),
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
     }
 
     #[test]
     fn rejects_illegal_coercion() {
-        // Tagged -> Heap(Str) is not in the legality table.
         let f = single_block(
             vec![Repr::Tagged, Repr::Heap(HeapShape::Str)],
             vec![MirInst::Coerce {
@@ -285,22 +383,6 @@ mod tests {
             }],
             MirTerminator::Return(None),
         );
-        assert!(matches!(verify(&f), Err(VerifyError::IllegalCoercion { .. })));
-    }
-
-    #[test]
-    fn rejects_operand_out_of_range() {
-        let f = single_block(
-            vec![Repr::Tagged],
-            vec![MirInst::Print {
-                kind: PrintKind::StrObj,
-                arg: Some(Operand::Local(LocalId::new(5))),
-            }],
-            MirTerminator::Return(None),
-        );
-        assert!(matches!(
-            verify(&f),
-            Err(VerifyError::LocalOutOfRange { .. })
-        ));
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::IllegalCoercion { .. })));
     }
 }

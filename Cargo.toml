@@ -73,6 +73,23 @@ serde_json = "1.0"
 opt-level = 0
 debug = true
 
+# The runtime's `rt_*_abi` shims reinterpret tagged `Value`s as pointers via
+# `Value::unwrap_ptr`, whose `debug_assert!(is_ptr())` is only correct under the
+# release-like assumption the frozen ABI is designed for (a tagged fixnum is a
+# legal `rt_obj_add` / `rt_print_obj` argument). Build the runtime — and
+# `core-defs`, where the `#[inline]` `Value` shims and their `debug_assert!`s
+# live — without debug-assertions in dev too, so the linked staticlib honors
+# that contract. The front-half crates keep their assertions (incl. `mir::verify`),
+# and `cargo test -p pyaot-core-defs` (test profile) still exercises the
+# `#[cfg(debug_assertions)]` Value tests.
+[profile.dev.package.pyaot-runtime]
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.pyaot-core-defs]
+debug-assertions = false
+overflow-checks = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"

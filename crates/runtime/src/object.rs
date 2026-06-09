@@ -115,6 +115,17 @@ const _: () = assert!(
     "FloatObj value offset does not match layout::FLOAT_OBJ_VALUE_OFFSET"
 );
 
+/// Arbitrary-precision integer object. `int` promotes to this on overflow
+/// (PITFALLS A6). It owns a Rust `BigInt` (a heap `Vec` of digits), so — like
+/// `ListObj`/`DictObj` — it must be finalized (the `BigInt` dropped) before its
+/// backing memory is freed (see `slab::finalize_object_by_tag`). It has no
+/// `Value` children, so the GC does not trace into it.
+#[repr(C)]
+pub struct BigIntObj {
+    pub header: ObjHeader,
+    pub value: num_bigint::BigInt,
+}
+
 /// String object
 #[repr(C)]
 pub struct StrObj {

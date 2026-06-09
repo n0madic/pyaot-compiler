@@ -17,28 +17,29 @@
 //!   function's identity survives unchanged across the lowering boundary into
 //!   MIR (HIR `FuncId` == MIR `FuncId`).
 //!
+//! ## Locals
+//!
+//! Each function owns a flat [`HirLocal`] table; a [`pyaot_utils::LocalId`] is an
+//! index into it. Parameters occupy the first `params.len()` slots, so HIR
+//! `LocalId` maps 1:1 onto the MIR `LocalId` Repr table. The frontend allocates
+//! every named local up front and refers to them by `Symbol::Local`; `typeck`
+//! refines each [`HirLocal::ty`] (so `repr_of` can pick `Raw` for float/bool
+//! locals) but the always-correct tagged baseline holds even if it does not.
+//!
 //! ## Name-resolution vocabulary
 //!
 //! [`SymbolRef`], [`Symbol`], and [`ResolveResult`] are the *shapes* of name
 //! resolution and live here because [`SymbolRef`] is embedded directly in
 //! [`HirExprKind::Name`]. The `pyaot-semantics` crate owns the *algorithm* that
 //! fills them (`resolve`), while `pyaot-typeck` and `pyaot-lowering` consume the
-//! result — all three already depend on this crate, so the vocabulary lives at
-//! the shared root rather than forcing extra cross-crate dependencies.
-//!
-//! ## Phase 1 scope
-//!
-//! Only the seam shapes needed to push `print("hello")` through the pipeline
-//! exist. Reserved for later phases (intentionally absent, not forgotten):
-//! `try_scopes`, branch/loop terminator variants, a unified `BindingTarget`,
-//! and the bulk of [`HirExprKind`] / [`HirStmt`] variants.
+//! result.
 
 #![forbid(unsafe_code)]
 
 use la_arena::{Arena, Idx};
 
 use pyaot_types::SemTy;
-use pyaot_utils::{FuncId, InternedString, Span, SymbolId};
+use pyaot_utils::{FuncId, InternedString, LocalId, Span, SymbolId};
 
 // Re-exported so the resolution-vocabulary consumers (`semantics`) can name
 // `Symbol::Builtin`'s payload without each taking a direct `core-defs` dep.
@@ -69,22 +70,37 @@ impl HirModule {
     }
 }
 
-/// A function parameter. (Phase 1 emits none; reserved for Phase 2 functions.)
+/// A function parameter. The annotation drives the parameter's `Repr` (and hence
+/// the ABI). Parameters are also mirrored as the first locals.
 #[derive(Debug, Clone)]
 pub struct HirParam {
     pub name: InternedString,
     pub ty: SemTy,
 }
 
-/// A single function: a flat `exprs` arena plus a CFG of `blocks`.
+/// A local slot. Index into [`HirFunction::locals`] is the [`LocalId`].
+#[derive(Debug, Clone)]
+pub struct HirLocal {
+    pub name: InternedString,
+    pub ty: SemTy,
+}
+
+/// A function: a flat `exprs` arena, a `locals` table, and a CFG of `blocks`.
 #[derive(Debug)]
 pub struct HirFunction {
     pub name: InternedString,
     pub params: Vec<HirParam>,
     pub ret_ty: SemTy,
+    pub locals: Vec<HirLocal>,
     pub blocks: Arena<HirBlock>,
     pub entry: Idx<HirBlock>,
     pub exprs: Arena<HirExpr>,
+}
+
+impl HirFunction {
+    pub fn local_ty(&self, id: LocalId) -> &SemTy {
+        &self.locals[id.index()].ty
+    }
 }
 
 /// A basic block: a straight-line list of statements ending in exactly one
@@ -100,8 +116,8 @@ pub struct HirBlock {
 // ============================================================================
 
 /// An expression node. Carries its [`SemTy`] (semantic type **only**) and source
-/// [`Span`]. The literal's type is set at parse time; everything else is left
-/// `SemTy::Dyn` for `pyaot-typeck` to refine.
+/// [`Span`]. Literal types are set at parse time; everything else starts
+/// `SemTy::Dyn` and is refined by `pyaot-typeck`.
 #[derive(Debug, Clone)]
 pub struct HirExpr {
     pub kind: HirExprKind,
@@ -113,14 +129,87 @@ pub struct HirExpr {
 pub enum HirExprKind {
     /// A string literal; bytes are interned.
     StrLit(InternedString),
+    /// An integer literal that fits a tagged fixnum (`i64`, the codegen tags it).
+    IntLit(i64),
+    /// An integer literal too large for `i64`; carries the decimal text for
+    /// `rt_bigint_from_str`.
+    BigIntLit(InternedString),
+    FloatLit(f64),
+    BoolLit(bool),
+    NoneLit,
+    /// A name reference, resolved by `pyaot-semantics`.
+    Name(SymbolRef),
+    /// A direct reference to a local slot. The frontend emits this for reads it
+    /// can resolve from its own scope (named locals it has allocated, and the
+    /// synthetic result locals produced by desugaring short-circuit `and`/`or`,
+    /// ternaries, and chained comparisons). Already resolved, so `semantics`
+    /// leaves it untouched.
+    Local(LocalId),
+    /// A binary arithmetic / bitwise / shift operator (never short-circuiting).
+    BinOp {
+        op: BinOp,
+        l: Idx<HirExpr>,
+        r: Idx<HirExpr>,
+    },
+    /// A unary operator.
+    Unary {
+        op: UnaryOp,
+        operand: Idx<HirExpr>,
+    },
+    /// A single comparison `l <op> r`. Chained comparisons are desugared by the
+    /// frontend into short-circuit branch CFG with single-eval operands.
+    Compare {
+        op: CmpOp,
+        l: Idx<HirExpr>,
+        r: Idx<HirExpr>,
+    },
     /// A call `callee(args...)`. Callee and args index this function's `exprs`.
     Call {
         callee: Idx<HirExpr>,
         args: Vec<Idx<HirExpr>>,
     },
-    /// A name reference, resolved by `pyaot-semantics`.
-    Name(SymbolRef),
-    // Reserved: NumLit, BoolLit, NoneLit, BinOp, Attribute, Subscript, ...
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+    Pos,
+    Invert,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtE,
+    Gt,
+    GtE,
+}
+
+/// Short-circuit boolean operators. Used by the frontend's CFG desugaring; not a
+/// standalone expression node (the desugaring produces a result local instead).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolOp {
+    And,
+    Or,
 }
 
 // ============================================================================
@@ -131,14 +220,40 @@ pub enum HirExprKind {
 pub enum HirStmt {
     /// An expression evaluated for its side effects.
     Expr(Idx<HirExpr>),
-    // Reserved: Assign, Return-as-stmt is modelled by the terminator instead, ...
+    /// Assign `value` into a local. Augmented and multiple assignment desugar to
+    /// a sequence of these in the frontend.
+    Assign {
+        target: LocalId,
+        value: Idx<HirExpr>,
+    },
+    /// `assert cond` — the message expression (Phase 7) is dropped here.
+    Assert { cond: Idx<HirExpr> },
+    /// `print(args, sep=…, end=…)`. `print` is *the* special builtin: `sep`/`end`
+    /// are string-literal options that a generic `Call` (no keywords field)
+    /// cannot carry, so it gets a dedicated statement. `sep`/`end` are `None` for
+    /// the defaults (`' '` between args, `'\n'` trailing); `Some` carries an
+    /// interned literal (possibly empty). `typeck` infers each arg's type, and
+    /// `lowering` expands this into the `MirInst::Print` sequence with per-arg
+    /// `PrintKind` dispatch.
+    Print {
+        args: Vec<Idx<HirExpr>>,
+        sep: Option<InternedString>,
+        end: Option<InternedString>,
+    },
 }
 
-/// How a block ends. Phase 1 only needs `Return`.
+/// How a block ends.
 #[derive(Debug, Clone)]
 pub enum HirTerminator {
     Return(Option<Idx<HirExpr>>),
-    // Reserved: Branch { cond, then, else_ }, Jump(BlockId), Unreachable, ...
+    Jump(Idx<HirBlock>),
+    Branch {
+        cond: Idx<HirExpr>,
+        then: Idx<HirBlock>,
+        else_: Idx<HirBlock>,
+    },
+    /// Provably unreachable (e.g. the fall-through of an `assert` fail block).
+    Unreachable,
 }
 
 // ============================================================================
@@ -155,14 +270,16 @@ pub enum SymbolRef {
 
 /// A resolved symbol.
 ///
-/// `print` is **not** a first-class builtin (`BuiltinFunctionKind::from_name`
-/// returns `None` for it), so it gets its own variant — this is the honest home
-/// for the `print` special-case.
+/// `print` / `range` are **not** first-class builtins
+/// (`BuiltinFunctionKind::from_name` returns `None`), so they get their own
+/// variants — the honest home for their special-casing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Symbol {
     BuiltinPrint,
+    BuiltinRange,
     Builtin(BuiltinFunctionKind),
-    // Reserved: Local(LocalId), Global(..), Function(FuncId), Class(ClassId), ...
+    Local(LocalId),
+    Function(FuncId),
 }
 
 /// The output of name resolution: a table of [`Symbol`]s indexed by

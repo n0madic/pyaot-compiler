@@ -9,11 +9,21 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The Phase-1 spec entries. Grows one feature at a time in later phases.
-const PHASE1_CORPUS: &[&str] = &["test_hello.py"];
+/// The phase spec entries — an explicit allowlist that grows one feature at a
+/// time. Each file's compiled stdout must match CPython byte-for-byte.
+const PHASE_CORPUS: &[&str] = &[
+    "test_hello.py",
+    "p2_scalars_print.py",
+    "p2_expr.py",
+    "p2_control.py",
+    "p2_gc_stress.py",
+    "p2_funcs.py",
+    "test_main.py",
+    "p2_bignum.py",
+];
 
 #[test]
-fn phase1_corpus_matches_cpython() {
+fn phase_corpus_matches_cpython() {
     let pyaot = PathBuf::from(env!("CARGO_BIN_EXE_pyaot"));
     let target_dir = pyaot
         .parent()
@@ -24,7 +34,7 @@ fn phase1_corpus_matches_cpython() {
     let out_dir = std::env::temp_dir().join("pyaot_phase1");
     std::fs::create_dir_all(&out_dir).expect("create temp out dir");
 
-    for entry in PHASE1_CORPUS {
+    for entry in PHASE_CORPUS {
         let source = corpus_dir.join(entry);
         assert!(
             source.exists(),

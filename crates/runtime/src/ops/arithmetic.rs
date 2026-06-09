@@ -6,8 +6,18 @@ use super::dunder_dispatch::{
     FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB, FNV_TRUEDIV,
 };
 use crate::exceptions::ExceptionType;
-use crate::object::{FloatObj, Obj, TypeTagKind};
+use crate::object::{Obj, TypeTagKind};
 use pyaot_core_defs::Value;
+
+/// The runtime type tag of a value (reading the header for heap pointers).
+#[inline]
+unsafe fn tag_of(v: Value, p: *mut Obj) -> TypeTagKind {
+    if v.is_ptr() {
+        (*p).type_tag()
+    } else {
+        v.primitive_type().unwrap()
+    }
+}
 
 // ==================== Primitive int arithmetic ====================
 
@@ -113,56 +123,9 @@ pub extern "C" fn rt_div_float(a: f64, b: f64) -> f64 {
 }
 
 // ==================== Union Arithmetic Operations ====================
-// Runtime dispatch for arithmetic on boxed Union values.
-// Returns a boxed result (*mut Obj).
-
-/// Extract numeric values from two boxed objects, promoting int→float if mixed.
-/// Returns (left_f64, right_f64, both_int, left_int, right_int)
-#[inline]
-pub(super) unsafe fn extract_numeric_pair(a: *mut Obj, b: *mut Obj) -> (f64, f64, bool, i64, i64) {
-    let va = Value(a as u64);
-    let vb = Value(b as u64);
-    let tag_a = if va.is_ptr() {
-        (*a).type_tag()
-    } else {
-        va.primitive_type().unwrap()
-    };
-    let tag_b = if vb.is_ptr() {
-        (*b).type_tag()
-    } else {
-        vb.primitive_type().unwrap()
-    };
-    let va_int = if tag_a == TypeTagKind::Int {
-        if va.is_int() {
-            va.unwrap_int()
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-    let vb_int = if tag_b == TypeTagKind::Int {
-        if vb.is_int() {
-            vb.unwrap_int()
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-    let va_f = if tag_a == TypeTagKind::Float {
-        (*(a as *mut FloatObj)).value
-    } else {
-        va_int as f64
-    };
-    let vb_f = if tag_b == TypeTagKind::Float {
-        (*(b as *mut FloatObj)).value
-    } else {
-        vb_int as f64
-    };
-    let both_int = tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Int;
-    (va_f, vb_f, both_int, va_int, vb_int)
-}
+// Runtime dispatch for arithmetic on boxed Union values. The numeric tower
+// (fixnum / bignum / float, with overflow promotion) lives in `crate::bigint`;
+// these ops add the dunder / str-concat / str-repeat handling around it.
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -182,8 +145,6 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va_f, vb_f, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        // Reconstruct type tags using Value so tagged primitives are handled correctly.
         let va = Value(a as u64);
         let vb = Value(b as u64);
         let tag_a = if va.is_ptr() {
@@ -200,24 +161,14 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Str {
             return crate::string::rt_str_concat(a, b);
         }
-        if both_int {
-            match vai.checked_add(vbi) {
-                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
-                None => {
-                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
-                }
-            }
-        } else if (tag_a == TypeTagKind::Int || tag_a == TypeTagKind::Float)
-            && (tag_b == TypeTagKind::Int || tag_b == TypeTagKind::Float)
-        {
-            crate::boxing::rt_box_float(va_f + vb_f)
-        } else {
-            crate::raise_exc!(
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_add(x, y),
+            _ => raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for +: '{}' and '{}'",
                 super::comparison::type_name(tag_a),
                 super::comparison::type_name(tag_b)
-            );
+            ),
         }
     }
 }
@@ -240,16 +191,16 @@ pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        if both_int {
-            match vai.checked_sub(vbi) {
-                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
-                None => {
-                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
-                }
-            }
-        } else {
-            crate::boxing::rt_box_float(va - vb)
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_sub(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for -: '{}' and '{}'",
+                super::comparison::type_name(tag_of(va, a)),
+                super::comparison::type_name(tag_of(vb, b))
+            ),
         }
     }
 }
@@ -301,16 +252,14 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             };
             return crate::string::rt_str_mul(b, count);
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        if both_int {
-            match vai.checked_mul(vbi) {
-                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
-                None => {
-                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
-                }
-            }
-        } else {
-            crate::boxing::rt_box_float(va * vb)
+        match (crate::bigint::classify_num(va_tagged), crate::bigint::classify_num(vb_tagged)) {
+            (Some(x), Some(y)) => crate::bigint::num_mul(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for *: '{}' and '{}'",
+                super::comparison::type_name(tag_a),
+                super::comparison::type_name(tag_b)
+            ),
         }
     }
 }
@@ -333,11 +282,17 @@ pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va, vb, _, _, _) = extract_numeric_pair(a, b);
-        if vb == 0.0 {
-            raise_exc!(ExceptionType::ZeroDivisionError, "division by zero");
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_truediv(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for /: '{}' and '{}'",
+                super::comparison::type_name(tag_of(va, a)),
+                super::comparison::type_name(tag_of(vb, b))
+            ),
         }
-        crate::boxing::rt_box_float(va / vb) // Python 3: true division always float
     }
 }
 #[export_name = "rt_obj_div"]
@@ -359,29 +314,16 @@ pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        if both_int {
-            if vbi == 0 {
-                raise_exc!(
-                    ExceptionType::ZeroDivisionError,
-                    "integer division or modulo by zero"
-                );
-            }
-            if vai == i64::MIN && vbi == -1 {
-                raise_exc!(ExceptionType::OverflowError, "integer overflow");
-            }
-            let d = vai / vbi;
-            let r = vai % vbi;
-            let result = if r != 0 && (r ^ vbi) < 0 { d - 1 } else { d };
-            Value::from_int(result).0 as *mut crate::object::Obj
-        } else {
-            if vb == 0.0 {
-                raise_exc!(
-                    ExceptionType::ZeroDivisionError,
-                    "integer division or modulo by zero"
-                );
-            }
-            crate::boxing::rt_box_float((va / vb).floor())
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_floordiv(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for //: '{}' and '{}'",
+                super::comparison::type_name(tag_of(va, a)),
+                super::comparison::type_name(tag_of(vb, b))
+            ),
         }
     }
 }
@@ -404,28 +346,16 @@ pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        if both_int {
-            if vbi == 0 {
-                raise_exc!(
-                    ExceptionType::ZeroDivisionError,
-                    "integer division or modulo by zero"
-                );
-            }
-            if vai == i64::MIN && vbi == -1 {
-                raise_exc!(ExceptionType::OverflowError, "integer overflow");
-            }
-            let r = vai % vbi;
-            let result = if r != 0 && (r ^ vbi) < 0 { r + vbi } else { r };
-            Value::from_int(result).0 as *mut crate::object::Obj
-        } else {
-            if vb == 0.0 {
-                raise_exc!(
-                    ExceptionType::ZeroDivisionError,
-                    "integer division or modulo by zero"
-                );
-            }
-            crate::boxing::rt_box_float(va % vb)
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_mod(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for %: '{}' and '{}'",
+                super::comparison::type_name(tag_of(va, a)),
+                super::comparison::type_name(tag_of(vb, b))
+            ),
         }
     }
 }
@@ -448,40 +378,16 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 super::comparison::type_name((*b).type_tag())
             );
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
-        if both_int && vbi >= 0 {
-            let exp = vbi as u32;
-            let mut result: i64 = 1;
-            let mut base = vai;
-            let mut e = exp;
-            let mut overflow = false;
-            while e > 0 {
-                if e & 1 == 1 {
-                    match result.checked_mul(base) {
-                        Some(v) => result = v,
-                        None => {
-                            overflow = true;
-                            break;
-                        }
-                    }
-                }
-                e >>= 1;
-                if e > 0 {
-                    match base.checked_mul(base) {
-                        Some(v) => base = v,
-                        None => {
-                            overflow = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if overflow {
-                raise_exc!(ExceptionType::OverflowError, "integer overflow");
-            }
-            Value::from_int(result).0 as *mut crate::object::Obj
-        } else {
-            crate::boxing::rt_box_float(va.powf(vb))
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            (Some(x), Some(y)) => crate::bigint::num_pow(x, y),
+            _ => raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for **: '{}' and '{}'",
+                super::comparison::type_name(tag_of(va, a)),
+                super::comparison::type_name(tag_of(vb, b))
+            ),
         }
     }
 }
@@ -489,6 +395,43 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_pow(a.unwrap_ptr(), b.unwrap_ptr()))
 }
+
+// ==================== Bitwise / shift (bignum-aware, Tagged baseline) ==========
+//
+// `& | ^ << >>` route through here (not a raw `i64` op) because an `int` operand
+// may dynamically be a heap `BigInt` — unboxing it to raw bits would be a silent
+// miscompile. A range-proven raw fast path is a future optimization.
+
+macro_rules! bitwise_op {
+    ($name:ident, $abi:ident, $export:literal, $num:ident) => {
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        pub fn $name(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+            unsafe {
+                let va = Value(a as u64);
+                let vb = Value(b as u64);
+                match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+                    (Some(x), Some(y)) => crate::bigint::$num(x, y),
+                    _ => raise_exc!(
+                        ExceptionType::TypeError,
+                        "unsupported operand type(s): '{}' and '{}'",
+                        super::comparison::type_name(tag_of(va, a)),
+                        super::comparison::type_name(tag_of(vb, b))
+                    ),
+                }
+            }
+        }
+        #[export_name = $export]
+        pub extern "C" fn $abi(a: Value, b: Value) -> Value {
+            Value::from_ptr($name(a.unwrap_ptr(), b.unwrap_ptr()))
+        }
+    };
+}
+
+bitwise_op!(rt_obj_bitand, rt_obj_bitand_abi, "rt_obj_bitand", num_bitand);
+bitwise_op!(rt_obj_bitor, rt_obj_bitor_abi, "rt_obj_bitor", num_bitor);
+bitwise_op!(rt_obj_bitxor, rt_obj_bitxor_abi, "rt_obj_bitxor", num_bitxor);
+bitwise_op!(rt_obj_lshift, rt_obj_lshift_abi, "rt_obj_lshift", num_shl);
+bitwise_op!(rt_obj_rshift, rt_obj_rshift_abi, "rt_obj_rshift", num_shr);
 
 // ==================== Unary obj operations (Union dispatch) ====================
 //
@@ -519,31 +462,12 @@ pub fn rt_obj_neg(a: *mut Obj) -> *mut Obj {
         if let Some(result) = try_class_unary_dunder(a, FNV_NEG) {
             return result;
         }
-        let tag = classify_unary(a);
-        match tag {
-            TypeTagKind::Int => {
-                let v = Value(a as u64).unwrap_int();
-                match v.checked_neg() {
-                    Some(neg) => Value::from_int(neg).0 as *mut Obj,
-                    None => raise_exc!(ExceptionType::OverflowError, "integer overflow"),
-                }
-            }
-            TypeTagKind::Bool => {
-                let v = if Value(a as u64).unwrap_bool() {
-                    1i64
-                } else {
-                    0i64
-                };
-                Value::from_int(-v).0 as *mut Obj
-            }
-            TypeTagKind::Float => {
-                let f = (*(a as *mut FloatObj)).value;
-                crate::boxing::rt_box_float(-f)
-            }
-            other => raise_exc!(
+        match crate::bigint::classify_num(Value(a as u64)) {
+            Some(n) => crate::bigint::num_neg(n),
+            None => raise_exc!(
                 ExceptionType::TypeError,
                 "bad operand type for unary -: '{}'",
-                super::comparison::type_name(other)
+                super::comparison::type_name(classify_unary(a))
             ),
         }
     }
@@ -561,7 +485,7 @@ pub fn rt_obj_pos(a: *mut Obj) -> *mut Obj {
         }
         let tag = classify_unary(a);
         match tag {
-            TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::Float => a,
+            TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::Float | TypeTagKind::BigInt => a,
             other => raise_exc!(
                 ExceptionType::TypeError,
                 "bad operand type for unary +: '{}'",
@@ -581,24 +505,12 @@ pub fn rt_obj_invert(a: *mut Obj) -> *mut Obj {
         if let Some(result) = try_class_unary_dunder(a, FNV_INVERT) {
             return result;
         }
-        let tag = classify_unary(a);
-        match tag {
-            TypeTagKind::Int => {
-                let v = Value(a as u64).unwrap_int();
-                Value::from_int(!v).0 as *mut Obj
-            }
-            TypeTagKind::Bool => {
-                let v = if Value(a as u64).unwrap_bool() {
-                    1i64
-                } else {
-                    0i64
-                };
-                Value::from_int(!v).0 as *mut Obj
-            }
-            other => raise_exc!(
+        match crate::bigint::classify_num(Value(a as u64)) {
+            Some(n) => crate::bigint::num_invert(n),
+            None => raise_exc!(
                 ExceptionType::TypeError,
                 "bad operand type for unary ~: '{}'",
-                super::comparison::type_name(other)
+                super::comparison::type_name(classify_unary(a))
             ),
         }
     }

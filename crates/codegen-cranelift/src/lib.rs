@@ -1,57 +1,50 @@
 //! # codegen-cranelift — typed MIR → native code
 //!
-//! Lowers typed MIR to Cranelift IR and emits an object file. The runtime
-//! provides **no** C `main`, so this backend emits `main(argc, argv)` that calls
-//! `rt_init` → the module body → `rt_shutdown` → `return 0`.
+//! Lowers typed MIR to Cranelift IR and emits an object file. Each
+//! [`MirFunction`] becomes a Cranelift function; the runtime provides **no** C
+//! `main`, so this backend emits `main(argc, argv)` that calls `rt_init` → the
+//! module-body function (`__main__`) → `rt_shutdown` → `return 0`.
 //!
 //! ## The ABI is one function
 //!
 //! [`clif_ty`] maps [`pyaot_types::Repr`] → a Cranelift `Type`. It *is* the ABI:
-//! there is no second logical-type mapper and no per-function ABI flags. Every
-//! place that needs a value's machine type asks `clif_ty`.
+//! there is no second logical-type mapper and no per-function ABI flags.
 //!
-//! ## Phase 1 scope
+//! ## Locals are Cranelift `Variable`s
 //!
-//! `print(<str>)`: declare the `rt_*` imports, materialize each string literal
-//! as a local data object, and inline `__main__`'s single block into C `main`.
-//!
-//! **GC shadow-stack:** Phase 1 emits the `nroots == 0` leaf path — no shadow
-//! frame. *Safety:* a collection only fires inside `gc_alloc` past a 1 MiB
-//! threshold and never re-entrantly; the single small `rt_make_str` cannot
-//! collect itself, and nothing allocates between create and use
-//! (`rt_print_str_obj` / `rt_print_newline` allocate nothing, `rt_shutdown` runs
-//! after). So the StrObj is alive for its whole window with no root registration.
-//!
-//! `// PHASE-2-TODO:` emit a `ShadowFrame` + `gc_push`/`gc_pop` and store
-//! `is_gc_root()` locals into `frame.roots` the moment a GC-root local is live
-//! across an allocating call. The root set derives from
-//! `locals[i].repr.is_gc_root()`, never a stored flag.
+//! Each MIR local is a Cranelift `Variable` (typed by `clif_ty`), so values flow
+//! naturally across blocks (loop counters, branch joins) via Cranelift's SSA
+//! construction. GC shadow frames (milestone 2c) store rooted locals into a
+//! frame roots array on definition; the root set derives from
+//! `Repr::is_gc_root()`, never a stored flag.
 
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Signature, Type, Value};
+use cranelift_codegen::ir::{
+    types, AbiParam, InstBuilder, MemFlags, Signature, StackSlot, StackSlotData, StackSlotKind,
+    TrapCode, Type, Value,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
+use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
-    classify_coercion, Coercion, Const, MirFunction, MirInst, MirProgram, MirTerminator, Operand,
-    PrintKind,
+    classify_coercion, BinOp, CmpOp, Coercion, Const, MirFunction, MirInst, MirProgram,
+    MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
-use pyaot_utils::InternedString;
+use pyaot_utils::{InternedString, LocalId};
+
+const FLOAT_VALUE_OFFSET: i32 = pyaot_core_defs::layout::FLOAT_OBJ_VALUE_OFFSET;
 
 /// **The single `Repr` → Cranelift `Type` mapping — this is the ABI.**
-///
-/// Unboxed `Raw` maps to its matching machine type; everything that flows as a
-/// 64-bit word (`Tagged`, any typed `Heap` pointer, function pointers, closures)
-/// maps to `I64`. `Never` has no machine representation.
 fn clif_ty(repr: &Repr) -> Type {
     match repr {
         Repr::Raw(RawKind::I64) => types::I64,
@@ -59,36 +52,103 @@ fn clif_ty(repr: &Repr) -> Type {
         Repr::Raw(RawKind::I8) => types::I8,
         Repr::Raw(RawKind::I32) => types::I32,
         Repr::Tagged | Repr::Heap(_) | Repr::FuncPtr(_) | Repr::Closure(_) => types::I64,
-        Repr::Never => unreachable!("Never has no machine representation"),
+        Repr::Never => types::I64,
     }
 }
 
-/// The imported runtime functions Phase 1 needs.
+/// The imported runtime functions. Declaring an import that is never *used*
+/// emits no relocation, so this can cover the whole Phase-2 surface up front.
 struct RuntimeFns {
     init: FuncId,
     shutdown: FuncId,
     make_str: FuncId,
+    bigint_from_str: FuncId,
+    box_float: FuncId,
+    obj_add: FuncId,
+    obj_sub: FuncId,
+    obj_mul: FuncId,
+    obj_div: FuncId,
+    obj_floordiv: FuncId,
+    obj_mod: FuncId,
+    obj_pow: FuncId,
+    obj_neg: FuncId,
+    obj_pos: FuncId,
+    obj_invert: FuncId,
+    obj_eq: FuncId,
+    obj_cmp: FuncId,
+    is_truthy: FuncId,
+    obj_bitand: FuncId,
+    obj_bitor: FuncId,
+    obj_bitxor: FuncId,
+    obj_lshift: FuncId,
+    obj_rshift: FuncId,
+    builtin_abs: FuncId,
+    builtin_int: FuncId,
+    builtin_float: FuncId,
+    builtin_str: FuncId,
+    builtin_bool: FuncId,
+    builtin_len: FuncId,
+    assert_fail: FuncId,
+    print_int: FuncId,
+    print_float: FuncId,
+    print_bool: FuncId,
+    print_none: FuncId,
     print_str_obj: FuncId,
-    print_newline: FuncId,
-    #[allow(dead_code)] // declared per the seam; Phase 1 single-arg print never emits Sep.
+    print_obj: FuncId,
     print_sep: FuncId,
+    print_newline: FuncId,
+    gc_push: FuncId,
+    gc_pop: FuncId,
 }
 
 impl RuntimeFns {
-    fn declare(module: &mut ObjectModule, cc: CallConv, ptr_ty: Type) -> Result<Self> {
+    fn declare(m: &mut ObjectModule, cc: CallConv, ptr: Type) -> Result<Self> {
+        let ti = types::I64;
+        let t8 = types::I8;
+        let t32 = types::I32;
+        let tf = types::F64;
+        let mut d = |name: &str, p: &[Type], r: &[Type]| declare_import(m, cc, name, p, r);
         Ok(Self {
-            // rt_init(argc: i32, argv: *const *const i8)
-            init: declare_import(module, cc, "rt_init", &[types::I32, ptr_ty], &[])?,
-            // rt_shutdown()
-            shutdown: declare_import(module, cc, "rt_shutdown", &[], &[])?,
-            // rt_make_str(data: *const u8, len: usize) -> Value
-            make_str: declare_import(module, cc, "rt_make_str", &[ptr_ty, types::I64], &[types::I64])?,
-            // rt_print_str_obj(Value)
-            print_str_obj: declare_import(module, cc, "rt_print_str_obj", &[types::I64], &[])?,
-            // rt_print_newline()
-            print_newline: declare_import(module, cc, "rt_print_newline", &[], &[])?,
-            // rt_print_sep()
-            print_sep: declare_import(module, cc, "rt_print_sep", &[], &[])?,
+            init: d("rt_init", &[t32, ptr], &[])?,
+            shutdown: d("rt_shutdown", &[], &[])?,
+            make_str: d("rt_make_str", &[ptr, ti], &[ti])?,
+            bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
+            box_float: d("rt_box_float", &[tf], &[ti])?,
+            obj_add: d("rt_obj_add", &[ti, ti], &[ti])?,
+            obj_sub: d("rt_obj_sub", &[ti, ti], &[ti])?,
+            obj_mul: d("rt_obj_mul", &[ti, ti], &[ti])?,
+            obj_div: d("rt_obj_div", &[ti, ti], &[ti])?,
+            obj_floordiv: d("rt_obj_floordiv", &[ti, ti], &[ti])?,
+            obj_mod: d("rt_obj_mod", &[ti, ti], &[ti])?,
+            obj_pow: d("rt_obj_pow", &[ti, ti], &[ti])?,
+            obj_neg: d("rt_obj_neg", &[ti], &[ti])?,
+            obj_pos: d("rt_obj_pos", &[ti], &[ti])?,
+            obj_invert: d("rt_obj_invert", &[ti], &[ti])?,
+            obj_eq: d("rt_obj_eq", &[ti, ti], &[t8])?,
+            obj_cmp: d("rt_obj_cmp", &[ti, ti, t8], &[t8])?,
+            is_truthy: d("rt_is_truthy", &[ti], &[t8])?,
+            obj_bitand: d("rt_obj_bitand", &[ti, ti], &[ti])?,
+            obj_bitor: d("rt_obj_bitor", &[ti, ti], &[ti])?,
+            obj_bitxor: d("rt_obj_bitxor", &[ti, ti], &[ti])?,
+            obj_lshift: d("rt_obj_lshift", &[ti, ti], &[ti])?,
+            obj_rshift: d("rt_obj_rshift", &[ti, ti], &[ti])?,
+            builtin_abs: d("rt_builtin_abs", &[ti], &[ti])?,
+            builtin_int: d("rt_builtin_int", &[ti], &[ti])?,
+            builtin_float: d("rt_builtin_float", &[ti], &[ti])?,
+            builtin_str: d("rt_builtin_str", &[ti], &[ti])?,
+            builtin_bool: d("rt_builtin_bool", &[ti], &[ti])?,
+            builtin_len: d("rt_builtin_len", &[ti], &[ti])?,
+            assert_fail: d("rt_assert_fail", &[ptr], &[])?,
+            print_int: d("rt_print_int_value", &[ti], &[])?,
+            print_float: d("rt_print_float_value", &[tf], &[])?,
+            print_bool: d("rt_print_bool_value", &[t8], &[])?,
+            print_none: d("rt_print_none_value", &[], &[])?,
+            print_str_obj: d("rt_print_str_obj", &[ti], &[])?,
+            print_obj: d("rt_print_obj", &[ti], &[])?,
+            print_sep: d("rt_print_sep", &[], &[])?,
+            print_newline: d("rt_print_newline", &[], &[])?,
+            gc_push: d("gc_push", &[ptr], &[])?,
+            gc_pop: d("gc_pop", &[], &[])?,
         })
     }
 }
@@ -110,10 +170,6 @@ fn declare_import(
 
 /// Compile a [`MirProgram`] to a native object file at `out_obj`.
 pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
-    // ── Host ISA. PIC + non-colocated libcalls so the string data relocation
-    // and the imported `rt_*` symbols link in a macOS arm64 PIE. These flags are
-    // validated on macOS arm64 only; Linux/x86-64 linking is unverified and may
-    // need different settings (revisit with the linker work / CI). ──
     let mut flag_builder = settings::builder();
     flag_builder
         .set("is_pic", "true")
@@ -138,8 +194,9 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
 
     let rt = RuntimeFns::declare(&mut module, call_conv, ptr_ty)?;
 
-    // ── Declare + define one local data object per distinct string literal. ──
-    let mut data_ids: HashMap<InternedString, DataId> = HashMap::new();
+    // One data object per interned string (literal bytes or big-int decimals).
+    // Store the byte length alongside the id (Cranelift does not expose it back).
+    let mut data_ids: HashMap<InternedString, (DataId, u32)> = HashMap::new();
     for (interned, bytes) in program.str_pool.iter() {
         let name = format!("pyaot_str_{}", interned.index());
         let data_id = module
@@ -150,10 +207,30 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
         module
             .define_data(data_id, &desc)
             .map_err(|e| cg_error(format!("define data `{name}`: {e}")))?;
-        data_ids.insert(interned, data_id);
+        data_ids.insert(interned, (data_id, bytes.len() as u32));
     }
 
-    emit_main(&mut module, program, &rt, &data_ids, ptr_ty, call_conv)?;
+    // Declare every MIR function (so calls can reference forward / recursively).
+    let mut func_ids: Vec<FuncId> = Vec::with_capacity(program.funcs.len());
+    for (i, mf) in program.funcs.iter().enumerate() {
+        let mut sig = Signature::new(call_conv);
+        for p in &mf.params {
+            sig.params.push(AbiParam::new(clif_ty(p)));
+        }
+        sig.returns.push(AbiParam::new(clif_ty(&mf.ret)));
+        let name = format!("pyaot_fn_{i}");
+        let id = module
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| cg_error(format!("declare `{name}`: {e}")))?;
+        func_ids.push(id);
+    }
+
+    // Define each function body.
+    for (i, mf) in program.funcs.iter().enumerate() {
+        define_function(&mut module, mf, func_ids[i], &func_ids, &rt, &data_ids, ptr_ty, call_conv)?;
+    }
+
+    emit_main(&mut module, func_ids[program.entry.index()], &rt, ptr_ty, call_conv)?;
 
     let product = module.finish();
     let bytes = product
@@ -164,19 +241,18 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `main(argc, argv)` → rt_init → call `__main__` → rt_shutdown → return 0.
 fn emit_main(
     module: &mut ObjectModule,
-    program: &MirProgram,
+    entry_fn: FuncId,
     rt: &RuntimeFns,
-    data_ids: &HashMap<InternedString, DataId>,
     ptr_ty: Type,
     cc: CallConv,
 ) -> Result<()> {
-    // main(argc: i32, argv: i64) -> i32 — matches `int main(int, char**)`.
     let mut sig = Signature::new(cc);
-    sig.params.push(AbiParam::new(types::I32)); // argc
-    sig.params.push(AbiParam::new(ptr_ty)); // argv
-    sig.returns.push(AbiParam::new(types::I32)); // exit code
+    sig.params.push(AbiParam::new(types::I32));
+    sig.params.push(AbiParam::new(ptr_ty));
+    sig.returns.push(AbiParam::new(types::I32));
     let main_id = module
         .declare_function("main", Linkage::Export, &sig)
         .map_err(|e| cg_error(format!("declare main: {e}")))?;
@@ -184,7 +260,6 @@ fn emit_main(
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     let mut fctx = FunctionBuilderContext::new();
-
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
         let entry = builder.create_block();
@@ -195,25 +270,19 @@ fn emit_main(
         let argc = builder.block_params(entry)[0];
         let argv = builder.block_params(entry)[1];
 
-        // rt_init(argc, argv)
-        let init_ref = module.declare_func_in_func(rt.init, builder.func);
-        builder.ins().call(init_ref, &[argc, argv]);
+        let init = module.declare_func_in_func(rt.init, builder.func);
+        builder.ins().call(init, &[argc, argv]);
 
-        // Inline the synthetic __main__ body.
-        let entry_func = &program.funcs[program.entry.index()];
-        emit_function_body(module, &mut builder, entry_func, program, rt, data_ids, ptr_ty)?;
+        let entry_ref = module.declare_func_in_func(entry_fn, builder.func);
+        builder.ins().call(entry_ref, &[]);
 
-        // rt_shutdown()
-        let shutdown_ref = module.declare_func_in_func(rt.shutdown, builder.func);
-        builder.ins().call(shutdown_ref, &[]);
+        let shutdown = module.declare_func_in_func(rt.shutdown, builder.func);
+        builder.ins().call(shutdown, &[]);
 
-        // return 0
         let zero = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[zero]);
-
         builder.finalize();
     }
-
     module
         .define_function(main_id, &mut ctx)
         .map_err(|e| cg_error(format!("define main: {e}")))?;
@@ -221,100 +290,451 @@ fn emit_main(
     Ok(())
 }
 
-fn emit_function_body(
+#[allow(clippy::too_many_arguments)]
+fn define_function(
     module: &mut ObjectModule,
-    builder: &mut FunctionBuilder,
-    func: &MirFunction,
-    program: &MirProgram,
+    mf: &MirFunction,
+    cl_func_id: FuncId,
+    func_ids: &[FuncId],
     rt: &RuntimeFns,
-    data_ids: &HashMap<InternedString, DataId>,
+    data_ids: &HashMap<InternedString, (DataId, u32)>,
     ptr_ty: Type,
+    cc: CallConv,
 ) -> Result<()> {
-    // Locals map 1:1 to SSA values for Phase 1 (single block, single assignment).
-    let mut locals: Vec<Option<Value>> = vec![None; func.locals.len()];
+    let mut sig = Signature::new(cc);
+    for p in &mf.params {
+        sig.params.push(AbiParam::new(clif_ty(p)));
+    }
+    sig.returns.push(AbiParam::new(clif_ty(&mf.ret)));
 
-    let block = &func.blocks[func.entry.index()];
-    for inst in &block.insts {
-        match inst {
-            MirInst::Const {
-                dst,
-                val: Const::Str(interned),
-            } => {
-                let data_id = *data_ids
-                    .get(interned)
-                    .ok_or_else(|| cg_error("missing data object for string literal"))?;
-                let gv = module.declare_data_in_func(data_id, builder.func);
-                let ptr = builder.ins().global_value(ptr_ty, gv);
-                let len = program.str_pool.bytes(*interned).map_or(0, <[u8]>::len) as i64;
-                let len_val = builder.ins().iconst(types::I64, len);
-                let make_str_ref = module.declare_func_in_func(rt.make_str, builder.func);
-                let call = builder.ins().call(make_str_ref, &[ptr, len_val]);
-                let result = builder.inst_results(call)[0];
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
 
-                // The ABI contract, enforced: the materialized value's machine
-                // type must equal `clif_ty` of the destination local's `Repr`.
-                #[cfg(debug_assertions)]
-                {
-                    let actual = builder.func.dfg.value_type(result);
-                    let expected = clif_ty(&func.locals[dst.index()].repr);
-                    debug_assert_eq!(
-                        actual, expected,
-                        "Const::Str local {} machine type {actual:?} != clif_ty {expected:?}",
-                        dst.index()
-                    );
-                }
-                locals[dst.index()] = Some(result);
+        // One Cranelift block per MIR block.
+        let cl_blocks: Vec<_> = mf.blocks.iter().map(|_| builder.create_block()).collect();
+
+        // Declare a Variable per MIR local. Cranelift assigns indices 0..n in
+        // declaration order, so Variable index == LocalId.
+        for local in &mf.locals {
+            builder.declare_var(clif_ty(&local.repr));
+        }
+
+        // GC root set (PITFALLS B15): every local whose `Repr::is_gc_root()` gets
+        // a slot in a frame roots array. Over-approximate — root each such local
+        // for the whole function (store-on-def). The GC is non-moving, so the
+        // Variable copy stays valid; the roots array only keeps the value marked.
+        let mut root_slot_of = vec![None; mf.locals.len()];
+        let mut nroots: u32 = 0;
+        for (i, local) in mf.locals.iter().enumerate() {
+            if local.repr.is_gc_root() {
+                root_slot_of[i] = Some(nroots);
+                nroots += 1;
             }
-            MirInst::Coerce { dst, src, from, to } => match classify_coercion(from, to) {
-                Some(Coercion::Noop) => {
-                    // Zero machine instructions: alias the source SSA value.
-                    locals[dst.index()] = Some(operand_value(&locals, src)?);
-                }
-                other => {
-                    return Err(cg_error(format!(
-                        "coercion {from:?} -> {to:?} ({other:?}) not implemented in Phase 1"
-                    )))
-                }
-            },
-            MirInst::Print { kind, arg } => match kind {
-                PrintKind::StrObj => {
-                    let op = arg
-                        .as_ref()
-                        .ok_or_else(|| cg_error("Print(StrObj) missing argument"))?;
-                    let v = operand_value(&locals, op)?;
-                    let r = module.declare_func_in_func(rt.print_str_obj, builder.func);
-                    builder.ins().call(r, &[v]);
-                }
-                PrintKind::Newline => {
-                    let r = module.declare_func_in_func(rt.print_newline, builder.func);
-                    builder.ins().call(r, &[]);
-                }
-                PrintKind::Sep => {
-                    let r = module.declare_func_in_func(rt.print_sep, builder.func);
-                    builder.ins().call(r, &[]);
-                }
-                other => {
-                    return Err(cg_error(format!(
-                        "Print kind {other:?} not implemented in Phase 1"
-                    )))
-                }
-            },
         }
-    }
+        let (roots_slot, frame_slot) = if nroots > 0 {
+            let roots = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                nroots * 8,
+                3,
+            ));
+            let frame = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                pyaot_core_defs::layout::SHADOW_FRAME_SIZE,
+                3,
+            ));
+            (Some(roots), Some(frame))
+        } else {
+            (None, None)
+        };
 
-    match &block.term {
-        // __main__'s implicit `return None` is realized by `emit_main` as
-        // rt_shutdown + `return 0`; nothing to emit for the operand itself.
-        MirTerminator::Return(None) => Ok(()),
-        MirTerminator::Return(Some(_)) => {
-            Err(cg_error("non-None return is not supported in Phase 1"))
+        let entry_idx = mf.entry.index();
+        builder.append_block_params_for_function_params(cl_blocks[entry_idx]);
+
+        let mut fb = FnGen {
+            module,
+            builder: &mut builder,
+            cl_blocks: &cl_blocks,
+            func_ids,
+            rt,
+            data_ids,
+            program_ret: clif_ty(&mf.ret),
+            ptr_ty,
+            root_slot_of,
+            nroots,
+            roots_slot,
+            frame_slot,
+        };
+
+        for (bi, mblock) in mf.blocks.iter().enumerate() {
+            fb.builder.switch_to_block(cl_blocks[bi]);
+            if bi == entry_idx {
+                // GC frame setup must precede any rooted store (incl. params).
+                fb.emit_gc_prologue();
+                // Prologue: define parameter variables from block params.
+                let params: Vec<Value> = fb.builder.block_params(cl_blocks[bi]).to_vec();
+                for (i, pv) in params.iter().enumerate() {
+                    fb.def_local(LocalId::from(i), *pv);
+                }
+            }
+            for inst in &mblock.insts {
+                fb.lower_inst(inst)?;
+            }
+            fb.lower_terminator(&mblock.term)?;
         }
+
+        builder.seal_all_blocks();
+        builder.finalize();
     }
+    module
+        .define_function(cl_func_id, &mut ctx)
+        .map_err(|e| cg_error(format!("define function: {e}")))?;
+    module.clear_context(&mut ctx);
+    Ok(())
 }
 
-fn operand_value(locals: &[Option<Value>], op: &Operand) -> Result<Value> {
-    match op {
-        Operand::Local(id) => locals[id.index()].ok_or_else(|| cg_error("use of undefined local")),
+/// Per-function codegen context.
+struct FnGen<'a, 'b> {
+    module: &'a mut ObjectModule,
+    builder: &'a mut FunctionBuilder<'b>,
+    cl_blocks: &'a [cranelift_codegen::ir::Block],
+    func_ids: &'a [FuncId],
+    rt: &'a RuntimeFns,
+    data_ids: &'a HashMap<InternedString, (DataId, u32)>,
+    program_ret: Type,
+    ptr_ty: Type,
+    /// Per-local GC roots-array index (`Some` iff the local is a GC root).
+    root_slot_of: Vec<Option<u32>>,
+    nroots: u32,
+    roots_slot: Option<StackSlot>,
+    frame_slot: Option<StackSlot>,
+}
+
+impl FnGen<'_, '_> {
+    fn use_local(&mut self, id: LocalId) -> Value {
+        self.builder.use_var(Variable::from_u32(id.index() as u32))
+    }
+
+    fn use_operand(&mut self, op: &Operand) -> Value {
+        match op {
+            Operand::Local(id) => self.use_local(*id),
+        }
+    }
+
+    /// Define a local. If it is a GC root, mirror the value into the frame roots
+    /// array (store-on-def) so the collector can find it (PITFALLS B15).
+    fn def_local(&mut self, id: LocalId, val: Value) {
+        self.builder.def_var(Variable::from_u32(id.index() as u32), val);
+        if let Some(slot_idx) = self.root_slot_of[id.index()] {
+            let rs = self.roots_slot.expect("rooted local needs a roots slot");
+            self.builder.ins().stack_store(val, rs, (slot_idx * 8) as i32);
+        }
+    }
+
+    /// Emit the GC frame prologue: zero the roots array, fill the `ShadowFrame`,
+    /// and `gc_push` it. No-op for leaf functions (`nroots == 0`).
+    fn emit_gc_prologue(&mut self) {
+        if self.nroots == 0 {
+            return;
+        }
+        use pyaot_core_defs::layout::{SHADOW_FRAME_NROOTS_OFFSET, SHADOW_FRAME_ROOTS_OFFSET};
+        let roots = self.roots_slot.unwrap();
+        let frame = self.frame_slot.unwrap();
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        for i in 0..self.nroots {
+            self.builder.ins().stack_store(zero, roots, (i * 8) as i32);
+        }
+        let nroots_v = self.builder.ins().iconst(types::I64, self.nroots as i64);
+        self.builder.ins().stack_store(nroots_v, frame, SHADOW_FRAME_NROOTS_OFFSET);
+        let roots_addr = self.builder.ins().stack_addr(self.ptr_ty, roots, 0);
+        self.builder.ins().stack_store(roots_addr, frame, SHADOW_FRAME_ROOTS_OFFSET);
+        let frame_addr = self.builder.ins().stack_addr(self.ptr_ty, frame, 0);
+        self.call(self.rt.gc_push, &[frame_addr]);
+    }
+
+    /// `gc_pop` before a return (paired with the prologue's `gc_push`).
+    fn emit_gc_epilogue(&mut self) {
+        if self.nroots > 0 {
+            self.call(self.rt.gc_pop, &[]);
+        }
+    }
+
+    /// Call a runtime/user function, returning its single result (if any).
+    fn call(&mut self, fid: FuncId, args: &[Value]) -> Option<Value> {
+        let fref = self.module.declare_func_in_func(fid, self.builder.func);
+        let inst = self.builder.ins().call(fref, args);
+        let results = self.builder.inst_results(inst);
+        results.first().copied()
+    }
+
+    fn lower_inst(&mut self, inst: &MirInst) -> Result<()> {
+        match inst {
+            MirInst::Const { dst, val } => self.lower_const(*dst, val),
+            MirInst::Coerce { dst, src, from, to } => self.lower_coerce(*dst, src, from, to),
+            MirInst::BinOp { dst, op, l, r } => self.lower_binop(*dst, *op, l, r),
+            MirInst::Unary { dst, op, operand } => self.lower_unary(*dst, *op, operand),
+            MirInst::Compare { dst, op, l, r } => self.lower_compare(*dst, *op, l, r),
+            MirInst::Truthy { dst, operand } => {
+                let v = self.use_operand(operand);
+                let r = self.call(self.rt.is_truthy, &[v]).unwrap();
+                self.def_local(*dst, r);
+                Ok(())
+            }
+            MirInst::Call { dst, func, args } => {
+                let vals: Vec<Value> = args.iter().map(|a| self.use_operand(a)).collect();
+                let fid = self.func_ids[func.index()];
+                let res = self.call(fid, &vals);
+                if let (Some(d), Some(v)) = (dst, res) {
+                    self.def_local(*d, v);
+                }
+                Ok(())
+            }
+            MirInst::CallBuiltin { dst, kind, args } => {
+                let vals: Vec<Value> = args.iter().map(|a| self.use_operand(a)).collect();
+                let fid = self.builtin_fn(*kind)?;
+                let res = self.call(fid, &vals);
+                if let (Some(d), Some(v)) = (dst, res) {
+                    self.def_local(*d, v);
+                }
+                Ok(())
+            }
+            MirInst::AssertFail => {
+                let null = self.builder.ins().iconst(self.ptr_ty, 0);
+                self.call(self.rt.assert_fail, &[null]);
+                Ok(())
+            }
+            MirInst::Print { kind, arg } => self.lower_print(*kind, arg),
+        }
+    }
+
+    fn lower_const(&mut self, dst: LocalId, val: &Const) -> Result<()> {
+        let v = match val {
+            Const::Int(i) => {
+                let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
+                self.builder.ins().iconst(types::I64, tagged)
+            }
+            Const::Bool(b) => {
+                let tagged = if *b {
+                    ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
+                } else {
+                    tag::BOOL_TAG as i64
+                };
+                self.builder.ins().iconst(types::I64, tagged)
+            }
+            Const::None => self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
+            Const::Float(f) => self.builder.ins().f64const(*f),
+            Const::Str(id) => {
+                let (ptr, len) = self.str_data(*id)?;
+                self.call(self.rt.make_str, &[ptr, len]).unwrap()
+            }
+            Const::BigIntStr(id) => {
+                let (ptr, len) = self.str_data(*id)?;
+                self.call(self.rt.bigint_from_str, &[ptr, len]).unwrap()
+            }
+        };
+        self.def_local(dst, v);
+        Ok(())
+    }
+
+    /// Materialize a string-pool data object's pointer + byte length.
+    fn str_data(&mut self, id: InternedString) -> Result<(Value, Value)> {
+        let (data_id, len) = *self
+            .data_ids
+            .get(&id)
+            .ok_or_else(|| cg_error("missing data object for interned string"))?;
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let ptr = self.builder.ins().global_value(self.ptr_ty, gv);
+        let len_val = self.builder.ins().iconst(types::I64, len as i64);
+        Ok((ptr, len_val))
+    }
+
+    fn lower_coerce(&mut self, dst: LocalId, src: &Operand, from: &Repr, to: &Repr) -> Result<()> {
+        let kind = classify_coercion(from, to)
+            .ok_or_else(|| cg_error(format!("illegal coercion {from:?} -> {to:?}")))?;
+        let s = self.use_operand(src);
+        let v = match kind {
+            Coercion::Noop | Coercion::HeapToTagged => s,
+            Coercion::BoxFloat => self.call(self.rt.box_float, &[s]).unwrap(),
+            Coercion::UnboxFloat => {
+                self.builder
+                    .ins()
+                    .load(types::F64, MemFlags::trusted(), s, FLOAT_VALUE_OFFSET)
+            }
+            Coercion::TagInt => {
+                let shifted = self.builder.ins().ishl_imm(s, tag::INT_SHIFT as i64);
+                self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64)
+            }
+            Coercion::UntagInt => self.builder.ins().sshr_imm(s, tag::INT_SHIFT as i64),
+            Coercion::TagBool => {
+                let wide = self.builder.ins().uextend(types::I64, s);
+                let shifted = self.builder.ins().ishl_imm(wide, tag::BOOL_SHIFT as i64);
+                self.builder.ins().bor_imm(shifted, tag::BOOL_TAG as i64)
+            }
+            Coercion::UntagBool => {
+                let shifted = self.builder.ins().ushr_imm(s, tag::BOOL_SHIFT as i64);
+                let bit = self.builder.ins().band_imm(shifted, 1);
+                self.builder.ins().ireduce(types::I8, bit)
+            }
+        };
+        self.def_local(dst, v);
+        Ok(())
+    }
+
+    fn lower_binop(&mut self, dst: LocalId, op: BinOp, l: &Operand, r: &Operand) -> Result<()> {
+        let a = self.use_operand(l);
+        let b = self.use_operand(r);
+        let v = match op {
+            BinOp::Add => self.call(self.rt.obj_add, &[a, b]).unwrap(),
+            BinOp::Sub => self.call(self.rt.obj_sub, &[a, b]).unwrap(),
+            BinOp::Mul => self.call(self.rt.obj_mul, &[a, b]).unwrap(),
+            BinOp::Div => self.call(self.rt.obj_div, &[a, b]).unwrap(),
+            BinOp::FloorDiv => self.call(self.rt.obj_floordiv, &[a, b]).unwrap(),
+            BinOp::Mod => self.call(self.rt.obj_mod, &[a, b]).unwrap(),
+            BinOp::Pow => self.call(self.rt.obj_pow, &[a, b]).unwrap(),
+            // Bitwise/shift dispatch on the tag in the runtime (bignum-safe);
+            // operands are Tagged, never raw-unboxed (Invariant 2).
+            BinOp::BitAnd => self.call(self.rt.obj_bitand, &[a, b]).unwrap(),
+            BinOp::BitOr => self.call(self.rt.obj_bitor, &[a, b]).unwrap(),
+            BinOp::BitXor => self.call(self.rt.obj_bitxor, &[a, b]).unwrap(),
+            BinOp::Shl => self.call(self.rt.obj_lshift, &[a, b]).unwrap(),
+            BinOp::Shr => self.call(self.rt.obj_rshift, &[a, b]).unwrap(),
+        };
+        self.def_local(dst, v);
+        Ok(())
+    }
+
+    fn lower_unary(&mut self, dst: LocalId, op: UnaryOp, operand: &Operand) -> Result<()> {
+        let a = self.use_operand(operand);
+        let v = match op {
+            UnaryOp::Neg => self.call(self.rt.obj_neg, &[a]).unwrap(),
+            UnaryOp::Pos => self.call(self.rt.obj_pos, &[a]).unwrap(),
+            UnaryOp::Invert => self.call(self.rt.obj_invert, &[a]).unwrap(),
+            UnaryOp::Not => {
+                // `not x` = logical-negate truthiness → Raw(I8).
+                let t = self.call(self.rt.is_truthy, &[a]).unwrap();
+                self.builder.ins().bxor_imm(t, 1)
+            }
+        };
+        self.def_local(dst, v);
+        Ok(())
+    }
+
+    fn lower_compare(&mut self, dst: LocalId, op: CmpOp, l: &Operand, r: &Operand) -> Result<()> {
+        let a = self.use_operand(l);
+        let b = self.use_operand(r);
+        let v = match op {
+            CmpOp::Eq => self.call(self.rt.obj_eq, &[a, b]).unwrap(),
+            CmpOp::NotEq => {
+                let eq = self.call(self.rt.obj_eq, &[a, b]).unwrap();
+                self.builder.ins().bxor_imm(eq, 1)
+            }
+            CmpOp::Lt | CmpOp::LtE | CmpOp::Gt | CmpOp::GtE => {
+                let op_tag = match op {
+                    CmpOp::Lt => 0i64,
+                    CmpOp::LtE => 1,
+                    CmpOp::Gt => 2,
+                    CmpOp::GtE => 3,
+                    _ => unreachable!(),
+                };
+                let tag_v = self.builder.ins().iconst(types::I8, op_tag);
+                self.call(self.rt.obj_cmp, &[a, b, tag_v]).unwrap()
+            }
+        };
+        self.def_local(dst, v);
+        Ok(())
+    }
+
+    fn builtin_fn(&self, kind: pyaot_mir::BuiltinFunctionKind) -> Result<FuncId> {
+        use pyaot_mir::BuiltinFunctionKind as K;
+        Ok(match kind {
+            K::Abs => self.rt.builtin_abs,
+            K::Int => self.rt.builtin_int,
+            K::Float => self.rt.builtin_float,
+            K::Str => self.rt.builtin_str,
+            K::Bool => self.rt.builtin_bool,
+            K::Len => self.rt.builtin_len,
+            other => return Err(cg_error(format!("builtin {other:?} not supported in Phase 2"))),
+        })
+    }
+
+    fn lower_print(&mut self, kind: PrintKind, arg: &Option<Operand>) -> Result<()> {
+        match kind {
+            PrintKind::Sep => {
+                self.call(self.rt.print_sep, &[]);
+            }
+            PrintKind::Newline => {
+                self.call(self.rt.print_newline, &[]);
+            }
+            PrintKind::None_ => {
+                self.call(self.rt.print_none, &[]);
+            }
+            PrintKind::StrObj => {
+                let v = self.use_operand(arg.as_ref().unwrap());
+                self.call(self.rt.print_str_obj, &[v]);
+            }
+            PrintKind::Obj => {
+                let v = self.use_operand(arg.as_ref().unwrap());
+                self.call(self.rt.print_obj, &[v]);
+            }
+            PrintKind::Float => {
+                let v = self.use_operand(arg.as_ref().unwrap());
+                self.call(self.rt.print_float, &[v]);
+            }
+            PrintKind::Bool => {
+                let v = self.use_operand(arg.as_ref().unwrap());
+                self.call(self.rt.print_bool, &[v]);
+            }
+            PrintKind::Int => {
+                let v = self.use_operand(arg.as_ref().unwrap());
+                self.call(self.rt.print_int, &[v]);
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_terminator(&mut self, term: &MirTerminator) -> Result<()> {
+        match term {
+            MirTerminator::Return(None) => {
+                let v = self.default_ret();
+                self.emit_gc_epilogue();
+                self.builder.ins().return_(&[v]);
+            }
+            MirTerminator::Return(Some(op)) => {
+                let v = self.use_operand(op);
+                self.emit_gc_epilogue();
+                self.builder.ins().return_(&[v]);
+            }
+            MirTerminator::Jump(target) => {
+                let blk = self.cl_blocks[target.index()];
+                self.builder.ins().jump(blk, &[]);
+            }
+            MirTerminator::Branch { cond, then, else_ } => {
+                let c = self.use_operand(cond);
+                let t = self.cl_blocks[then.index()];
+                let e = self.cl_blocks[else_.index()];
+                self.builder.ins().brif(c, t, &[], e, &[]);
+            }
+            MirTerminator::Unreachable => {
+                self.builder.ins().trap(TrapCode::unwrap_user(1));
+            }
+        }
+        Ok(())
+    }
+
+    /// A value of the function's return type for `Return(None)` (None-returning
+    /// functions have a `Tagged` return → the tagged `None` singleton).
+    fn default_ret(&mut self) -> Value {
+        if self.program_ret == types::F64 {
+            self.builder.ins().f64const(0.0)
+        } else if self.program_ret == types::I8 {
+            self.builder.ins().iconst(types::I8, 0)
+        } else if self.program_ret == types::I32 {
+            self.builder.ins().iconst(types::I32, 0)
+        } else {
+            self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64)
+        }
     }
 }
 
