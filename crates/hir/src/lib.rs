@@ -286,6 +286,20 @@ pub enum HirExprKind {
     /// `rt_dict_get` / generic `rt_any_getitem`) is selected at lowering from the
     /// `base` representation. Subscript *writes* are [`HirStmt::SetItem`].
     Subscript { base: Idx<HirExpr>, index: Idx<HirExpr> },
+    /// Slice read `base[start:end:step]` (Phase 8E). Each bound is optional; an
+    /// absent bound takes the runtime's `i64::MIN`/`i64::MAX`/`1` default. The
+    /// result has the same kind as `base` (list→list, str→str, …); a `Dyn` base
+    /// routes to the runtime-dispatched `rt_obj_slice`.
+    Slice {
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
+    },
+    /// An f-string field with a (static) format spec — `f"{x:.4f}"` (Phase 8E).
+    /// Lowers to `rt_format(value, spec)`; the result is always a `str`. Any
+    /// `!s`/`!r` conversion is already applied to `value` by the frontend.
+    FormatValue { value: Idx<HirExpr>, spec: InternedString },
     /// A frontend-synthesized container operation (`x in y` → `Contains`; the
     /// for-loop iterator protocol → `Iter`/`IterNext`/`IterExhausted`). Container
     /// *builtins* called by name (`len`/`enumerate`/`zip`/…) instead flow through
@@ -317,6 +331,10 @@ pub enum HirExprKind {
     /// statically at lowering from `value`'s inferred `SemTy` — a `Dyn` value is
     /// a loud compile error (a runtime tag check is out of scope).
     IsInstanceBuiltin { value: Idx<HirExpr>, target: SemTy },
+    /// `value is None` (Phase 8D) → `Bool`, via `rt_is_none` — the identity test
+    /// that recognizes both the immediate `None` tag and a heap `None` object
+    /// (which `==` does not). `value is not None` is `Unary{Not, IsNone}`.
+    IsNone { value: Idx<HirExpr> },
     /// A call to a frozen-runtime stdlib function/attr/field through its
     /// declarative descriptor (Phase 8B). `args` is positionally aligned with
     /// the descriptor's params: the frontend's call adaptation fills optional
@@ -451,7 +469,12 @@ pub fn semty_from_typespec(spec: &pyaot_stdlib_defs::TypeSpec) -> SemTy {
         TypeSpec::None => SemTy::NoneTy,
         TypeSpec::List(elem) => SemTy::list_of(semty_from_typespec(elem)),
         TypeSpec::Set(elem) => SemTy::set_of(semty_from_typespec(elem)),
-        TypeSpec::Tuple(elem) => SemTy::tuple_var_of(semty_from_typespec(elem)),
+        // A stdlib `Tuple(T)` is homogeneous but of gradual length (`os.path.
+        // split` is a 2-tuple, `Match.span` a 2-tuple, `urlretrieve` a 2-tuple),
+        // so it stays gradual (`Dyn`) — this lets a precise fixed-arity
+        // annotation (`tuple[str, str]`) accept it through the gradual contract
+        // exemption rather than tripping the var-vs-fixed tuple shape check.
+        TypeSpec::Tuple(_) => SemTy::Dyn,
         TypeSpec::Dict(k, v) => SemTy::dict_of(semty_from_typespec(k), semty_from_typespec(v)),
         TypeSpec::Iterator(elem) => SemTy::Iterator(Box::new(semty_from_typespec(elem))),
         // `Optional[T]` narrows to `T` for static dispatch (Phase 8C): a stdlib
@@ -531,6 +554,12 @@ pub enum HirRaise {
     /// the instance (running `__init__` when the class has one; a single arg
     /// becomes the message operand otherwise so `str(e)` works).
     Custom { class_id: ClassId, args: Vec<Idx<HirExpr>> },
+    /// `raise HTTPError(args…)` for a stdlib exception (Phase 8D). `exc_type_tag`
+    /// is the builtin parent (`OSError`) so `except OSError` matches by tag;
+    /// `class_id` is the reserved stdlib id so `except HTTPError` matches by id.
+    /// `msg` is the first positional arg (its message); remaining args are
+    /// ignored (the corpus never inspects the message).
+    Stdlib { class_id: u8, exc_type_tag: u8, msg: Option<Idx<HirExpr>> },
     /// `raise e` — re-raise a caught exception instance value.
     Instance { value: Idx<HirExpr> },
     /// Bare `raise` — re-raise the exception being handled.
@@ -1231,6 +1260,10 @@ pub enum ClassAttrInit {
     Str(InternedString),
     Bytes(InternedString),
     None,
+    /// The empty tuple `()` — only valid as a parameter default (Phase 8E),
+    /// where it is materialized as a fresh empty `TupleLit` at each direct call
+    /// site. Not supported as a class-level attribute (no empty-tuple `Const`).
+    EmptyTuple,
 }
 
 /// One instance field's resolved layout entry: its name, best-effort static type

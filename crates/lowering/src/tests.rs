@@ -925,3 +925,179 @@ print(acc)
     let calls = runtime_calls(&p);
     assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_readlines"));
 }
+
+// ── Phase 8D: os/subprocess/urllib + stdlib exceptions ──────────────────────
+
+#[test]
+fn stdlib_is_none_uses_rt_is_none() {
+    // `x is None` lowers through `rt_is_none` (recognizes heap + immediate
+    // None), not `==`; `is not None` negates it.
+    let src = "\
+import os
+v = os.getenv(\"X\")
+print(v is None)
+print(v is not None)
+";
+    let p = lowered(src);
+    let n = runtime_calls(&p).iter().filter(|(s, _, _)| *s == "rt_is_none").count();
+    assert_eq!(n, 2, "two None identity checks");
+}
+
+#[test]
+fn stdlib_os_path_join_collects_variadic_list() {
+    // `os.path.join(a, b, c)` (a `variadic_to_list` descriptor reached through
+    // the `import os` submodule chain) passes ONE list to `rt_os_path_join`.
+    let src = "\
+import os
+p: str = os.path.join(\"a\", \"b\", \"c\")
+print(p)
+";
+    let pr = lowered(src);
+    let join = runtime_calls(&pr)
+        .into_iter()
+        .find(|(s, _, _)| *s == "rt_os_path_join")
+        .expect("join call");
+    assert_eq!(join.1.len(), 1, "one list arg");
+    assert_eq!(join.1[0], Repr::Tagged, "the collected list rides Tagged");
+}
+
+#[test]
+fn stdlib_exception_raise_is_mir_stdlib() {
+    // `raise HTTPError(...)` lowers to `MirRaise::Stdlib` carrying the reserved
+    // class id and the builtin parent tag (OSError = 24).
+    let src = "\
+from urllib.error import HTTPError
+try:
+    raise HTTPError(\"u\", 500, \"m\", {}, None)
+except HTTPError:
+    pass
+print(1)
+";
+    let p = lowered(src);
+    let found = p.funcs.iter().any(|f| {
+        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(
+                i,
+                MirInst::Raise(pyaot_mir::MirRaise::Stdlib { class_id, exc_type_tag, .. })
+                    if *class_id == 30 && *exc_type_tag == 24
+            )
+        })
+    });
+    assert!(found, "HTTPError → MirRaise::Stdlib{{class_id:30, parent:OSError(24)}}");
+}
+
+// ── slicing (Phase 8E) ──
+
+#[test]
+fn list_slice_passes_raw_i64_bounds() {
+    // `xs[1:3]` → rt_list_slice(list, start, stop) with a Tagged receiver and
+    // RAW i64 bounds (the descriptor's SLICE_TERNARY semantics; the generic
+    // ptr_ternary Tagged default would corrupt the i64::MIN/MAX sentinels).
+    let p = lowered("xs: list[int] = [0, 1, 2, 3]\nys = xs[1:3]\nprint(len(ys))\n");
+    let calls = runtime_calls(&p);
+    let slice = calls.iter().find(|(s, _, _)| *s == "rt_list_slice").expect("list slice call");
+    assert_eq!(
+        slice.1,
+        vec![Repr::Tagged, Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)],
+        "receiver Tagged, bounds Raw(I64)"
+    );
+}
+
+#[test]
+fn open_ended_slice_uses_step_descriptor_when_stepped() {
+    // `xs[::-1]` → rt_list_slice_step with four args (receiver + 3 raw bounds);
+    // absent start/stop ride the i64::MIN/MAX sentinels emitted directly into
+    // Raw(I64) slots (never via the tagging round-trip).
+    let p = lowered("xs: list[int] = [0, 1, 2]\nys = xs[::-1]\nprint(len(ys))\n");
+    let calls = runtime_calls(&p);
+    let slice =
+        calls.iter().find(|(s, _, _)| *s == "rt_list_slice_step").expect("stepped slice call");
+    assert_eq!(
+        slice.1,
+        vec![
+            Repr::Tagged,
+            Repr::Raw(RawKind::I64),
+            Repr::Raw(RawKind::I64),
+            Repr::Raw(RawKind::I64)
+        ],
+    );
+}
+
+#[test]
+fn str_slice_dispatches_to_str_slicer() {
+    let p = lowered("s = \"abcdef\"\nt = s[2:4]\nprint(t)\n");
+    let calls = runtime_calls(&p);
+    assert!(
+        calls.iter().any(|(s, _, _)| *s == "rt_str_slice"),
+        "a str receiver selects rt_str_slice"
+    );
+}
+
+// ── f-string format specs (Phase 8E) ──
+
+#[test]
+fn fstring_format_spec_is_rt_format() {
+    // `f"{x:.2f}"` → rt_format(value, spec) with both args Tagged.
+    let p = lowered("x = 3.14159\nprint(f\"{x:.2f}\")\n");
+    let calls = runtime_calls(&p);
+    let fmt = calls.iter().find(|(s, _, _)| *s == "rt_format").expect("rt_format call");
+    assert_eq!(fmt.1, vec![Repr::Tagged, Repr::Tagged], "value + spec both Tagged");
+}
+
+// ── return-type inference (Phase 8E) ──
+
+#[test]
+fn inferred_method_return_types_a_dunder_chain() {
+    // With no return annotations, `(a - b).double()` must type `a - b` as the
+    // user class so the `.double()` method resolves to a direct devirtualized
+    // Call (not a hard "statically-known instance" error). Inference lifts each
+    // dunder/method return from its `return Value(...)` body.
+    let src = "\
+class V:
+    def __init__(self, d):
+        self.d = d
+    def __sub__(self, o):
+        return V(self.d - o)
+    def double(self):
+        return V(self.d * 2)
+a = V(5)
+r = (a - 1).double()
+print(r.d)
+";
+    let p = lowered(src);
+    // The `.double()` on the inferred-`V` dunder result lowers to a direct Call.
+    assert!(
+        p.funcs.iter().any(|f| f
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, MirInst::Call { .. }))),
+        "method on an inferred-class dunder result devirtualizes to a Call"
+    );
+}
+
+#[test]
+fn str_of_instance_routes_to_user_dunder() {
+    // `str(p)` on a class with `__str__` must call the user dunder directly, not
+    // the generic `rt_builtin_str` (which renders the default object repr). The
+    // `CallBuiltin{Str}` must NOT appear for the instance argument (Phase 8E).
+    let src = "\
+class P:
+    def __init__(self, n: int):
+        self.n = n
+    def __str__(self) -> str:
+        return \"P\"
+p = P(1)
+print(str(p))
+";
+    let p = lowered(src);
+    let has_builtin_str = p.funcs.iter().any(|f| {
+        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(
+                i,
+                MirInst::CallBuiltin { kind: pyaot_mir::BuiltinFunctionKind::Str, .. }
+            )
+        })
+    });
+    assert!(!has_builtin_str, "str(instance) must route to __str__, not CallBuiltin{{Str}}");
+}

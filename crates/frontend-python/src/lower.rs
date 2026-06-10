@@ -117,6 +117,10 @@ pub(crate) struct StdlibBindings {
     /// Stdlib class name in annotation position (`time.struct_time`) → its
     /// semantic type (`RuntimeObject(tag)`).
     classes: HashMap<String, SemTy>,
+    /// Stdlib exception name (`HTTPError`) → `(reserved class_id, builtin parent
+    /// tag)`. `except HTTPError:` matches by class id; the parent tag makes
+    /// `except OSError:` / `except Exception:` match too (Phase 8D).
+    exceptions: HashMap<String, (u8, u8)>,
 }
 
 /// A decorated module-level function's runtime facts (Phase 6D): the promoted
@@ -899,33 +903,51 @@ static OPEN_DEF: pyaot_stdlib_defs::StdlibFunctionDef = pyaot_stdlib_defs::Stdli
     codegen: pyaot_core_defs::RuntimeFuncDef::ptr_ternary("rt_file_open"),
 };
 
-/// Register `import M [as A]` against a stdlib module (Phase 8B): every
-/// function / constant / attr / class of `M` becomes reachable as a qualified
-/// `"A.name"` key. Submodule chains (`os.path.join`) are Phase 8D.
+/// Register `import M [as A]` against a stdlib module (Phase 8B/8D): every
+/// function / constant / attr / class becomes reachable as a qualified
+/// `"A.name"` key, recursing into submodules so `import os` also exposes
+/// `os.path.join(...)` under `"os.path.join"` (Phase 8D).
 fn register_stdlib_alias(
     alias: &str,
     module: &'static pyaot_stdlib_defs::StdlibModuleDef,
     stdlib: &mut StdlibBindings,
 ) {
     stdlib.aliases.insert(alias.to_string());
+    register_stdlib_items(alias, module, stdlib);
+}
+
+/// Register a module's items under `prefix` and recurse into its submodules,
+/// rewriting each submodule's real dotted name's leading module-name segment
+/// to the (possibly aliased) `prefix` — so `import os as o` exposes
+/// `"o.path.join"`.
+fn register_stdlib_items(
+    prefix: &str,
+    module: &'static pyaot_stdlib_defs::StdlibModuleDef,
+    stdlib: &mut StdlibBindings,
+) {
     for f in module.functions {
-        stdlib.funcs.insert(format!("{alias}.{}", f.name), f);
+        stdlib.funcs.insert(format!("{prefix}.{}", f.name), f);
     }
     for c in module.constants {
-        stdlib.consts.insert(format!("{alias}.{}", c.name), c);
+        stdlib.consts.insert(format!("{prefix}.{}", c.name), c);
     }
     for a in module.attrs {
-        stdlib.attrs.insert(format!("{alias}.{}", a.name), a);
+        stdlib.attrs.insert(format!("{prefix}.{}", a.name), a);
     }
     for cls in module.classes {
         if let Some(spec) = &cls.type_spec {
             stdlib
                 .classes
-                .insert(format!("{alias}.{}", cls.name), pyaot_hir::semty_from_typespec(spec));
+                .insert(format!("{prefix}.{}", cls.name), pyaot_hir::semty_from_typespec(spec));
         }
     }
-    // TODO(phase8D): walk `module.submodules` so `import os` exposes
-    // `os.path.join(...)` chains.
+    for sub in module.submodules {
+        // `sub.name` is the full dotted name (e.g. "os.path"); the segment after
+        // the parent's name (".path") appends to the alias prefix.
+        let suffix = sub.name.strip_prefix(module.name).unwrap_or(sub.name);
+        let sub_prefix = format!("{prefix}{suffix}");
+        register_stdlib_items(&sub_prefix, sub, stdlib);
+    }
 }
 
 /// Bind one `from M import name [as bind]` stdlib item (Phase 8B).
@@ -947,6 +969,11 @@ fn bind_stdlib_item(
         module.classes.iter().find(|c| c.name == name).and_then(|c| c.type_spec.as_ref())
     {
         stdlib.classes.insert(bind.to_string(), pyaot_hir::semty_from_typespec(spec));
+    } else if let Some(exc) = module.exceptions.iter().find(|e| e.name == name) {
+        // A stdlib exception class (`from urllib.error import HTTPError`,
+        // Phase 8D): record its reserved id + builtin parent tag for
+        // `except`/`raise` resolution.
+        stdlib.exceptions.insert(bind.to_string(), (exc.class_id, exc.parent.tag()));
     } else {
         return Err(parse_error(
             format!("cannot import name `{name}` from `{module_dotted}`"),
@@ -2407,6 +2434,11 @@ impl<'a> FnLowerer<'a> {
         };
         let q = if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
             ExcQuery::MatchesClass(cid)
+        } else if let Some((class_id, _)) = self.ctx.stdlib.exceptions.get(n.id.as_str()).copied() {
+            // A stdlib exception (`except HTTPError:`, Phase 8D): match by its
+            // reserved class id (the runtime self-matches the raised
+            // `custom_class_id`).
+            ExcQuery::MatchesClass(ClassId::new(class_id as u32))
         } else if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
             ExcQuery::MatchesBuiltin(tag)
         } else {
@@ -2484,10 +2516,20 @@ impl<'a> FnLowerer<'a> {
         if let Some((cid, iname)) = self.ctx.class_map.get(n.id.as_str()).copied() {
             return SemTy::Class { class_id: cid, name: iname };
         }
-        match pyaot_core_defs::BuiltinExceptionKind::from_name(n.id.as_str()) {
-            Some(kind) => SemTy::BuiltinException(kind),
-            None => SemTy::Dyn,
+        if let Some(kind) = pyaot_core_defs::BuiltinExceptionKind::from_name(n.id.as_str()) {
+            return SemTy::BuiltinException(kind);
         }
+        // A stdlib exception (`HTTPError`/`URLError`, …) caught by its own name:
+        // model the bound `e` as its builtin PARENT so `print(e)` / `str(e)` route
+        // through the deterministic exception-message path. Otherwise `e` is `Dyn`
+        // and renders the default object repr — a non-deterministic heap ADDRESS in
+        // stdout (Phase 8 follow-up; matches the `except <parent>` behaviour).
+        if let Some((_cid, parent_tag)) = self.ctx.stdlib.exceptions.get(n.id.as_str()).copied() {
+            if let Some(parent) = pyaot_core_defs::BuiltinExceptionKind::from_tag(parent_tag) {
+                return SemTy::BuiltinException(parent);
+            }
+        }
+        SemTy::Dyn
     }
 
     /// Bind an `except … as e` name to a FRESH typed local, shadowing any
@@ -2560,6 +2602,25 @@ impl<'a> FnLowerer<'a> {
                         let args = self.lower_expr_list(&c.args)?;
                         return Ok(HirRaise::Custom { class_id: cid, args });
                     }
+                    if let Some((class_id, parent_tag)) =
+                        self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
+                    {
+                        // `raise HTTPError(url, code, ...)` (Phase 8D): the first
+                        // positional arg is the message; the rest are ignored
+                        // (the corpus never inspects them, and they are
+                        // side-effect-free literals).
+                        if cause.is_some() {
+                            return Err(parse_error(
+                                "`raise StdlibError(...) from ...` is out of scope",
+                                span,
+                            ));
+                        }
+                        let msg = match c.args.first() {
+                            Some(a) => Some(self.lower_expr(a)?),
+                            None => None,
+                        };
+                        return Ok(HirRaise::Stdlib { class_id, exc_type_tag: parent_tag, msg });
+                    }
                     if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
                         if c.args.len() > 1 {
                             return Err(parse_error(
@@ -2597,6 +2658,17 @@ impl<'a> FnLowerer<'a> {
                     ));
                 }
                 return Ok(HirRaise::Custom { class_id: cid, args: vec![] });
+            }
+            if let Some((class_id, parent_tag)) =
+                self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
+            {
+                if cause.is_some() {
+                    return Err(parse_error(
+                        "`raise StdlibError from ...` is out of scope",
+                        span,
+                    ));
+                }
+                return Ok(HirRaise::Stdlib { class_id, exc_type_tag: parent_tag, msg: None });
             }
             if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
                 return self.attach_cause(tag, None, cause, span);
@@ -3306,10 +3378,22 @@ impl<'a> FnLowerer<'a> {
         exprs.iter().map(|e| self.lower_expr(e)).collect()
     }
 
-    /// Lower a subscript read `value[index]`. Slicing is deferred.
+    /// Lower a subscript read `value[index]`, or a slice `value[a:b:c]`
+    /// (Phase 8E) when the index is a slice expression.
     fn lower_subscript_expr(&mut self, s: &ExprSubscript, span: Span) -> Result<Idx<HirExpr>> {
-        if matches!(s.slice.as_ref(), Expr::Slice(_)) {
-            return Err(parse_error("slicing is not yet supported", span));
+        if let Expr::Slice(sl) = s.slice.as_ref() {
+            let base = self.lower_expr(s.value.as_ref())?;
+            let lower_opt = |this: &mut Self, e: &Option<Box<Expr>>| -> Result<Option<Idx<HirExpr>>> {
+                match e {
+                    Some(x) => Ok(Some(this.lower_expr(x.as_ref())?)),
+                    None => Ok(None),
+                }
+            };
+            let start = lower_opt(self, &sl.lower)?;
+            let end = lower_opt(self, &sl.upper)?;
+            let step = lower_opt(self, &sl.step)?;
+            // The result kind mirrors the base's static type; typeck assigns it.
+            return Ok(self.alloc(HirExprKind::Slice { base, start, end, step }, SemTy::Dyn, span));
         }
         let base = self.lower_expr(s.value.as_ref())?;
         let index = self.lower_expr(s.slice.as_ref())?;
@@ -3340,37 +3424,69 @@ impl<'a> FnLowerer<'a> {
                     parts.push(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
                 }
                 Expr::FormattedValue(fv) => {
-                    if fv.format_spec.is_some() {
+                    use rustpython_parser::ast::ConversionFlag;
+                    // `!a` (ascii) has no builtin in our subset.
+                    if matches!(fv.conversion, ConversionFlag::Ascii) {
                         return Err(parse_error(
-                            "f-string format specs (`:.4f`) are out of scope (Phase 8E)",
+                            "f-string `!a` (ascii) conversion is out of scope (Phase 8E)",
                             span,
                         ));
                     }
-                    // `{x}` / `{x!s}` → `str(x)`; `{x!r}` → `repr(x)`. `!a`
-                    // (ascii) has no builtin in our subset (Phase 8E).
-                    let builtin = match fv.conversion {
-                        rustpython_parser::ast::ConversionFlag::None
-                        | rustpython_parser::ast::ConversionFlag::Str => "str",
-                        rustpython_parser::ast::ConversionFlag::Repr => "repr",
-                        rustpython_parser::ast::ConversionFlag::Ascii => {
-                            return Err(parse_error(
-                                "f-string `!a` (ascii) conversion is out of scope (Phase 8E)",
-                                span,
-                            ));
-                        }
+                    let raw = self.lower_expr(fv.value.as_ref())?;
+                    // Apply the `!s`/`!r` conversion first (CPython order), wrapping
+                    // the value in `str(...)` / `repr(...)`.
+                    let conv_builtin = match fv.conversion {
+                        ConversionFlag::Str => Some("str"),
+                        ConversionFlag::Repr => Some("repr"),
+                        ConversionFlag::None | ConversionFlag::Ascii => None,
                     };
-                    let v = self.lower_expr(fv.value.as_ref())?;
-                    let fn_name = self.intern(builtin);
-                    let callee = self.alloc(
-                        HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
-                        SemTy::Dyn,
-                        span,
-                    );
-                    parts.push(self.alloc(
-                        HirExprKind::Call { callee, args: vec![v] },
-                        SemTy::Dyn,
-                        span,
-                    ));
+                    let converted = match conv_builtin {
+                        Some(b) => {
+                            let fn_name = self.intern(b);
+                            let callee = self.alloc(
+                                HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
+                                SemTy::Dyn,
+                                span,
+                            );
+                            self.alloc(
+                                HirExprKind::Call { callee, args: vec![raw] },
+                                SemTy::Str,
+                                span,
+                            )
+                        }
+                        None => raw,
+                    };
+                    let part = match &fv.format_spec {
+                        // `{x:.4f}` → `rt_format(converted, spec)` (Phase 8E). The
+                        // spec must be a static string (no nested interpolation).
+                        Some(spec_expr) => {
+                            let spec = static_format_spec(spec_expr.as_ref(), span)?;
+                            let spec_id = self.intern(&spec);
+                            self.alloc(
+                                HirExprKind::FormatValue { value: converted, spec: spec_id },
+                                SemTy::Str,
+                                span,
+                            )
+                        }
+                        // No spec: `{x}`/`{x!s}` → `str(x)`; `{x!r}` → `repr(x)`.
+                        None => match conv_builtin {
+                            Some(_) => converted,
+                            None => {
+                                let fn_name = self.intern("str");
+                                let callee = self.alloc(
+                                    HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
+                                    SemTy::Dyn,
+                                    span,
+                                );
+                                self.alloc(
+                                    HirExprKind::Call { callee, args: vec![raw] },
+                                    SemTy::Str,
+                                    span,
+                                )
+                            }
+                        },
+                    };
+                    parts.push(part);
                 }
                 _ => return Err(parse_error("unsupported f-string part", span)),
             }
@@ -3427,6 +3543,32 @@ impl<'a> FnLowerer<'a> {
         if idx == generators.len() {
             return self.emit_comp_elem(kind, span);
         }
+        // Comprehension loop variables are scoped to the comprehension (CPython 3
+        // runs each comprehension in its own function). List/set/dict comps lower
+        // inline here, so shadow every target name with a fresh local for the
+        // duration and restore the outer binding afterward — otherwise
+        // `[x for x in xs]` would clobber an enclosing `x` (genexprs already get
+        // their own nested-function scope, so they need no shadowing). Pre-inserting
+        // a fresh `Direct` binding (rather than removing the outer one) keeps writes
+        // off a promoted global slot too.
+        let saved_targets: Vec<(InternedString, Option<Binding>)> = if idx == 0 {
+            let mut saved = Vec::new();
+            let mut raw_names = Vec::new();
+            for g in generators {
+                collect_target_names(&g.target, &mut raw_names);
+            }
+            for raw in raw_names {
+                let name = self.intern(raw);
+                let prev = self.scope.get(&name).copied();
+                let fresh = self.fresh_local(SemTy::Dyn);
+                self.scope.insert(name, Binding::Direct(fresh));
+                saved.push((name, prev));
+            }
+            saved
+        } else {
+            Vec::new()
+        };
+
         let gen = &generators[idx];
         if gen.is_async {
             return Err(parse_error("async comprehensions are out of scope", span));
@@ -3477,6 +3619,17 @@ impl<'a> FnLowerer<'a> {
         self.lower_comp_clauses(generators, idx + 1, kind, span)?;
         self.seal(HirTerminator::Jump(header));
         self.switch(exit);
+        // Restore the outer bindings the comprehension's loop variables shadowed.
+        for (name, prev) in saved_targets {
+            match prev {
+                Some(b) => {
+                    self.scope.insert(name, b);
+                }
+                None => {
+                    self.scope.remove(&name);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -4081,6 +4234,32 @@ impl<'a> FnLowerer<'a> {
                 }
                 return Ok(contains);
             }
+            // `x is None` / `x is not None` (Phase 8D): only the `None` identity
+            // form is supported, lowered through equality (`==`/`!=`). General
+            // object identity (`a is b`) is out of scope — and for `None`, a
+            // custom `__eq__` returning True for None would diverge (not in the
+            // corpus). `in`/`not in` were handled above.
+            if matches!(c.ops[0], PyCmpOp::Is | PyCmpOp::IsNot) {
+                let l_none = is_none_lit(c.left.as_ref());
+                let r_none = is_none_lit(&c.comparators[0]);
+                if !l_none && !r_none {
+                    return Err(parse_error(
+                        "`is` / `is not` is only supported against `None`",
+                        span,
+                    ));
+                }
+                let operand = if r_none { c.left.as_ref() } else { &c.comparators[0] };
+                let v = self.lower_expr(operand)?;
+                let is_none = self.alloc(HirExprKind::IsNone { value: v }, SemTy::Bool, span);
+                if matches!(c.ops[0], PyCmpOp::IsNot) {
+                    return Ok(self.alloc(
+                        HirExprKind::Unary { op: UnaryOp::Not, operand: is_none },
+                        SemTy::Bool,
+                        span,
+                    ));
+                }
+                return Ok(is_none);
+            }
             let op = self.map_cmp(&c.ops[0], span)?;
             let l = self.lower_expr(c.left.as_ref())?;
             let r = self.lower_expr(&c.comparators[0])?;
@@ -4260,8 +4439,24 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // `M.f(args)` / `M.Cls(args)` through an `import M` alias (Phase 8): a
-        // qualified module access folds to an ordinary direct call / class
+        // `M.f(...)` / `M.sub.f(...)` through an `import M` stdlib alias (Phase
+        // 8B/8D): flatten the (possibly multi-level) attribute chain to a dotted
+        // key and dispatch to the runtime descriptor — `os.getcwd()` and
+        // `os.path.join(...)` alike. The leftmost name must be a stdlib alias
+        // and unshadowed.
+        if let Some((leftmost, dotted)) = flatten_attr_chain(c.func.as_ref()) {
+            let lname = self.intern(leftmost);
+            if self.ctx.stdlib.aliases.contains(leftmost) && !self.scope.contains_key(&lname) {
+                if let Some(def) = self.ctx.stdlib.funcs.get(&dotted).copied() {
+                    return self.lower_stdlib_call(def, c, span);
+                }
+                // Not a stdlib function — fall through to the normal method-call
+                // path. E.g. `sys.path.append(...)` is a list method on the
+                // `sys.path` attr, not a module function.
+            }
+        }
+        // `M.f(args)` / `M.Cls(args)` through an `import M` user-module alias
+        // (Phase 8): a qualified access folds to an ordinary direct call / class
         // construction (the imported FuncId/ClassId lives under the `"M.name"`
         // key in `top_defs` / `class_map`). Handled before the method-call path
         // so the alias receiver is never mistaken for an object receiver.
@@ -4284,23 +4479,6 @@ impl<'a> FnLowerer<'a> {
                     }
                     return Err(parse_error(
                         format!("module `{}` has no callable attribute `{}`", m.id.as_str(), attr.attr.as_str()),
-                        span,
-                    ));
-                }
-                // `M.f(args)` through an `import M` stdlib alias (Phase 8B).
-                if self.ctx.stdlib.aliases.contains(m.id.as_str())
-                    && !self.scope.contains_key(&mname)
-                {
-                    let qual = format!("{}.{}", m.id.as_str(), attr.attr.as_str());
-                    if let Some(def) = self.ctx.stdlib.funcs.get(&qual).copied() {
-                        return self.lower_stdlib_call(def, c, span);
-                    }
-                    return Err(parse_error(
-                        format!(
-                            "stdlib module `{}` has no callable attribute `{}`",
-                            m.id.as_str(),
-                            attr.attr.as_str()
-                        ),
                         span,
                     ));
                 }
@@ -4815,14 +4993,42 @@ impl<'a> FnLowerer<'a> {
         c: &ExprCall,
         span: Span,
     ) -> Result<Idx<HirExpr>> {
-        if def.hints.variadic_to_list {
-            return Err(parse_error(
-                format!("TODO: variadic stdlib function `{}` is not yet supported", def.name),
-                span,
-            ));
-        }
         if c.args.iter().any(|a| matches!(a, Expr::Starred(_))) {
             return Err(parse_error("`*` spreading into a stdlib call is out of scope", span));
+        }
+        // A `variadic_to_list` descriptor (`os.path.join(*paths)`) collects all
+        // positional args into one list passed as the single runtime arg
+        // (Phase 8D). These descriptors are pure-variadic (no leading fixed
+        // params) and take no keywords.
+        if def.hints.variadic_to_list {
+            if !c.keywords.is_empty() {
+                return Err(parse_error(
+                    format!("`{}()` does not take keyword arguments", def.name),
+                    span,
+                ));
+            }
+            let provided = c.args.len();
+            if provided < def.min_args {
+                return Err(parse_error(
+                    format!("`{}()` takes at least {} argument(s)", def.name, def.min_args),
+                    span,
+                ));
+            }
+            let elem_spec = &def.params[0].ty;
+            let mut elems = Vec::with_capacity(c.args.len());
+            for a in &c.args {
+                elems.push(self.lower_stdlib_arg(a, elem_spec)?);
+            }
+            let list = self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span);
+            return Ok(self.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(def),
+                    args: vec![Some(list)],
+                    provided: provided as u32,
+                },
+                SemTy::Dyn,
+                span,
+            ));
         }
         let provided = c.args.len() + c.keywords.len();
         if provided < def.min_args || (def.max_args != usize::MAX && provided > def.max_args) {
@@ -4845,9 +5051,9 @@ impl<'a> FnLowerer<'a> {
         let mut slots: Vec<Option<Idx<HirExpr>>> = Vec::with_capacity(def.params.len());
         for (i, p) in def.params.iter().enumerate() {
             let v = if i < c.args.len() {
-                Some(self.lower_stdlib_arg(&c.args[i], &p.ty)?)
+                self.stdlib_arg_slot(&c.args[i], &p.ty, p.optional)?
             } else if let Some(kv) = take_keyword(&mut keywords, p.name) {
-                Some(self.lower_stdlib_arg(kv, &p.ty)?)
+                self.stdlib_arg_slot(kv, &p.ty, p.optional)?
             } else if let Some(cv) = &p.default {
                 Some(self.lower_stdlib_const(cv, span))
             } else if p.optional {
@@ -4875,6 +5081,25 @@ impl<'a> FnLowerer<'a> {
             SemTy::Dyn,
             span,
         ))
+    }
+
+    /// Fill one stdlib-call argument slot. An explicit `None` passed to an
+    /// optional OBJECT param (`urlopen(url, None, …)`, `Request(url, data=None)`)
+    /// becomes an absent slot → the null-pointer sentinel the runtime expects
+    /// (`Value::NONE` would be `unwrap_ptr`-ed into a wild pointer). Raw
+    /// primitive params (`Float`/`Int`/`Bool`) keep the literal. Phase 8D.
+    fn stdlib_arg_slot(
+        &mut self,
+        arg: &Expr,
+        spec: &pyaot_stdlib_defs::TypeSpec,
+        optional: bool,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        use pyaot_stdlib_defs::TypeSpec;
+        let is_object = !matches!(spec, TypeSpec::Float | TypeSpec::Int | TypeSpec::Bool);
+        if optional && is_object && is_none_lit(arg) {
+            return Ok(None);
+        }
+        Ok(Some(self.lower_stdlib_arg(arg, spec)?))
     }
 
     /// Lower one stdlib-call argument. An integer literal headed for a `Float`
@@ -5110,6 +5335,9 @@ impl<'a> FnLowerer<'a> {
             ClassAttrInit::Str(s) => (HirExprKind::StrLit(*s), SemTy::Str),
             ClassAttrInit::Bytes(s) => (HirExprKind::BytesLit(*s), SemTy::Bytes),
             ClassAttrInit::None => (HirExprKind::NoneLit, SemTy::NoneTy),
+            // `()` default → a fresh empty tuple (immutable, so per-call freshness
+            // matches CPython's shared singleton observably).
+            ClassAttrInit::EmptyTuple => (HirExprKind::TupleLit { elems: vec![] }, SemTy::Dyn),
         };
         self.alloc(kind, ty, span)
     }
@@ -5194,6 +5422,36 @@ enum RangeArg<'a> {
 fn is_range_call(iter: &Expr) -> bool {
     matches!(iter, Expr::Call(c)
         if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "range"))
+}
+
+/// Flatten an attribute chain `a.b.c` rooted at a `Name` into its leftmost name
+/// (`"a"`) and full dotted path (`"a.b.c"`), or `None` if the base is not a bare
+/// name. Used to fold stdlib qualified calls of any depth (Phase 8D).
+fn flatten_attr_chain(e: &Expr) -> Option<(&str, String)> {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Attribute(a) => {
+                parts.push(a.attr.as_str());
+                cur = a.value.as_ref();
+            }
+            Expr::Name(n) => {
+                parts.push(n.id.as_str());
+                break;
+            }
+            _ => return None,
+        }
+    }
+    parts.reverse();
+    let leftmost = parts[0];
+    Some((leftmost, parts.join(".")))
+}
+
+/// True if `e` is the `None` literal (the only RHS supported for `is`/`is not`,
+/// Phase 8D).
+fn is_none_lit(e: &Expr) -> bool {
+    matches!(e, Expr::Constant(c) if matches!(c.value, Constant::None))
 }
 
 /// True if `e` is a syntactic `open(...)` call — the File-iteration desugar
@@ -6049,6 +6307,7 @@ fn lower_class(
                 match &a.value {
                     Some(v) => {
                         let init = class_attr_init(interner, v.as_ref())?;
+                        reject_tuple_class_attr(&init, to_span(a.range()))?;
                         class_attrs.push(HirClassAttr { name: fname, ty, init });
                     }
                     None => field_annotations.push((fname, ty)),
@@ -6068,8 +6327,15 @@ fn lower_class(
                         to_span(a.range()),
                     ));
                 };
+                // `__slots__` is a CPython memory optimization with no observable
+                // semantics in our uniform-tagged object model — silently ignore
+                // it (Phase 8E).
+                if n.id.as_str() == "__slots__" {
+                    continue;
+                }
                 let fname = interner.intern(n.id.as_str());
                 let init = class_attr_init(interner, a.value.as_ref())?;
+                reject_tuple_class_attr(&init, to_span(a.range()))?;
                 let ty = class_attr_init_ty(&init);
                 class_attrs.push(HirClassAttr { name: fname, ty, init });
             }
@@ -6195,11 +6461,84 @@ fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassA
             }
             _ => Err(parse_error("unsupported class-attribute literal", span)),
         },
+        // The empty tuple `()` — accepted only as a parameter default (Phase 8E,
+        // e.g. `children=()`); materialized as a fresh empty tuple at each call
+        // site. A non-empty tuple default stays out of scope.
+        Expr::Tuple(t) if t.elts.is_empty() => Ok(ClassAttrInit::EmptyTuple),
         _ => Err(parse_error(
             "class-attribute initializers must be constant literals (Phase 5D)",
             span,
         )),
     }
+}
+
+/// Collect the simple `Name` identifiers bound by a `for`-target (Phase 8E),
+/// descending into tuple / list unpacking. Used to shadow comprehension loop
+/// variables so they do not leak into the enclosing scope.
+fn collect_target_names<'a>(target: &'a Expr, out: &mut Vec<&'a str>) {
+    match target {
+        Expr::Name(n) => out.push(n.id.as_str()),
+        Expr::Tuple(t) => {
+            for e in &t.elts {
+                collect_target_names(e, out);
+            }
+        }
+        Expr::List(l) => {
+            for e in &l.elts {
+                collect_target_names(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a *static* f-string format spec (`:.4f`, `:4d`) as a plain string.
+/// rustpython models the spec as a `JoinedStr` of literal parts; a spec with a
+/// nested `{}` interpolation (`{x:{width}}`) is out of scope (Phase 8E).
+fn static_format_spec(spec: &Expr, span: Span) -> Result<String> {
+    let mut out = String::new();
+    match spec {
+        Expr::JoinedStr(j) => {
+            for part in &j.values {
+                match part {
+                    Expr::Constant(c) => match &c.value {
+                        Constant::Str(s) => out.push_str(s),
+                        _ => return Err(parse_error("unsupported f-string format spec", span)),
+                    },
+                    _ => {
+                        return Err(parse_error(
+                            "dynamic f-string format specs (`{x:{w}}`) are out of scope (Phase 8E)",
+                            span,
+                        ))
+                    }
+                }
+            }
+        }
+        Expr::Constant(c) => match &c.value {
+            Constant::Str(s) => out.push_str(s),
+            _ => return Err(parse_error("unsupported f-string format spec", span)),
+        },
+        _ => {
+            return Err(parse_error(
+                "dynamic f-string format specs (`{x:{w}}`) are out of scope (Phase 8E)",
+                span,
+            ))
+        }
+    }
+    Ok(out)
+}
+
+/// Reject the empty-tuple initializer as a *class attribute* (it is only valid
+/// as a parameter default, where it materializes as a fresh `TupleLit`). A class
+/// attribute lowers to a MIR `Const`, which has no empty-tuple form.
+fn reject_tuple_class_attr(init: &ClassAttrInit, span: Span) -> Result<()> {
+    if matches!(init, ClassAttrInit::EmptyTuple) {
+        return Err(parse_error(
+            "a tuple `()` class attribute is out of scope (only valid as a parameter default)",
+            span,
+        ));
+    }
+    Ok(())
 }
 
 /// Build an int/bignum class-attr initializer from decimal text + sign.
@@ -6224,6 +6563,7 @@ fn class_attr_init_ty(init: &ClassAttrInit) -> SemTy {
         ClassAttrInit::Str(_) => SemTy::Str,
         ClassAttrInit::Bytes(_) => SemTy::Bytes,
         ClassAttrInit::None => SemTy::NoneTy,
+        ClassAttrInit::EmptyTuple => SemTy::Dyn,
     }
 }
 

@@ -596,6 +596,7 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                     tagged(msg, "Raise.msg")?;
                     want(f, instance, &TAGGED, "Raise.instance")?;
                 }
+                MirRaise::Stdlib { msg, .. } => tagged(msg, "Raise.msg")?,
                 MirRaise::Instance { value } => want(f, value, &TAGGED, "Raise.value")?,
                 MirRaise::Reraise => {}
             }

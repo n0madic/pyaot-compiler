@@ -356,6 +356,10 @@ pub enum MirRaise {
         msg: Option<Operand>,
         instance: Operand,
     },
+    /// `rt_exc_raise_stdlib(exc_type_tag, class_id, msg, len)` — a stdlib
+    /// exception with a builtin parent tag plus its own reserved class id
+    /// (Phase 8D).
+    Stdlib { class_id: u8, exc_type_tag: u8, msg: Option<Operand> },
     /// `rt_exc_raise_instance(value)` — re-raise a caught instance (`raise e`).
     Instance { value: Operand },
     /// `rt_exc_reraise()` — bare `raise`.

@@ -694,6 +694,50 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
     dispatch_to_handler(exc_obj)
 }
 
+/// Raise a stdlib exception (Phase 8D): one whose builtin PARENT is
+/// `exc_type_tag` (e.g. `HTTPError`/`URLError` → `OSError`). Sets BOTH
+/// `exc_type` (so `except OSError` / `except Exception` match by tag) and
+/// `custom_class_id` (so `except HTTPError` matches by its own class id). This
+/// is the seam `rt_exc_raise_custom` cannot serve — that one hardcodes
+/// `exc_type = Exception`, which a bare `except OSError` would miss.
+///
+/// # Safety
+/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_raise_stdlib(
+    exc_type_tag: u8,
+    class_id: u8,
+    message: *const u8,
+    len: usize,
+) -> ! {
+    // Register this stdlib exception's parent in the class registry so the
+    // hierarchy walker (`rt_class_inherits_from`, used by `except OSError:` /
+    // `except Exception:`) resolves `class_id → parent → … → Exception`. The
+    // builtin chain (`OSError → Exception → BaseException`) is already wired by
+    // `rt_init_builtin_exception_classes`. Idempotent.
+    crate::vtable::rt_register_class(class_id, exc_type_tag);
+
+    let exc_type = exception_type_from_tag(exc_type_tag);
+    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
+    let context = with_exception_state(|state| state.handling_exception.take());
+    let traceback = Some(crate::traceback::capture_traceback());
+
+    let exc_obj = Box::new(ExceptionObject {
+        exc_type,
+        custom_class_id: class_id,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: msg_capacity,
+        cause: None,
+        context,
+        suppress_context: false,
+        traceback,
+        instance: std::ptr::null_mut(),
+    });
+
+    dispatch_to_handler(exc_obj)
+}
+
 /// Raise a custom exception with a pre-created instance.
 /// The instance was allocated and __init__ called at the raise site.
 /// This function stores the instance pointer in the ExceptionObject so that

@@ -19,18 +19,20 @@ pub fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
         let len = (*list_obj).len;
         let data = (*list_obj).data;
 
-        if data.is_null() {
-            return -1;
-        }
-
-        for i in 0..len {
-            let slot = *data.add(i);
-            if eq_hashable_obj(slot.0 as *mut Obj, value) {
-                return i as i64;
+        if !data.is_null() {
+            for i in 0..len {
+                let slot = *data.add(i);
+                if eq_hashable_obj(slot.0 as *mut Obj, value) {
+                    return i as i64;
+                }
             }
         }
 
-        -1
+        // `list.index(x)` raises `ValueError` when `x` is absent — CPython
+        // semantics. Returning a `-1` sentinel (the old behaviour) silently
+        // produced a wrong index downstream. This is `rt_list_index`'s only
+        // caller (`lst.index`), so raising is unambiguously correct here.
+        crate::raise_exc!(ExceptionType::ValueError, "list.index(x): x not in list");
     }
 }
 #[export_name = "rt_list_index"]

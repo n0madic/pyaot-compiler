@@ -59,9 +59,21 @@ pub fn infer(
     classes: &ClassTable,
     interner: &StringInterner,
 ) -> Result<()> {
-    // Snapshot each function's declared return type so `Call` results can be typed
-    // without holding a second borrow of `module` while we mutate a function.
-    let ret_tys: Vec<SemTy> = module.functions.iter().map(|f| f.ret_ty.clone()).collect();
+    // Inferred return types (Phase 8E). An annotated function (`ret_ty != Dyn`)
+    // keeps its declared return; an unannotated one starts at `Never` (bottom)
+    // and climbs to the join of its `return` expression types over an outer
+    // fixpoint below. This refines how *callers* type a call result — so a
+    // `v.method()` / dunder result is usable as its real class instead of `Dyn`
+    // — WITHOUT changing any function's ABI: `func.ret_ty` (hence the lowered
+    // signature) is untouched, and the precise type rides the tagged return,
+    // reinterpreted at the use site (`Tagged → Heap(Class)`).
+    let ret_annotated: Vec<bool> =
+        module.functions.iter().map(|f| f.ret_ty != SemTy::Dyn).collect();
+    let mut ret_tys: Vec<SemTy> = module
+        .functions
+        .iter()
+        .map(|f| if f.ret_ty != SemTy::Dyn { f.ret_ty.clone() } else { SemTy::Never })
+        .collect();
     // The visible Callable signature of each function when used as a closure
     // target (Phase 6A): declared params MINUS the env param 0 (every
     // `MakeClosure` target carries one), plus the 6C varargs/kwargs flags.
@@ -125,9 +137,22 @@ pub fn infer(
     let mut order: Vec<usize> = Vec::with_capacity(module.functions.len());
     order.push(main_idx);
     order.extend((0..module.functions.len()).filter(|i| *i != main_idx));
-    for idx in order {
-        let solution = {
-            let solver = Solver::collect(
+
+    // Outer fixpoint over inferred return types (Phase 8E). Each pass solves every
+    // function with the current `ret_tys` / `global_tys`, then lifts each
+    // unannotated function's return type to the join of its `return` expression
+    // types. Both moves are monotone in the lattice (bounded above by `Dyn`), so
+    // the loop converges; nodes are materialized only once, from the converged
+    // solutions, so re-solves always see the original frontend annotations (never
+    // a materialized type frozen as authoritative). The pass cap is a backstop.
+    let n_funcs = module.functions.len();
+    let global_base = global_tys.clone();
+    let mut solutions: Vec<Solution> = Vec::new();
+    for _pass in 0..(n_funcs.saturating_mul(2) + 4) {
+        global_tys.clone_from(&global_base);
+        let mut by_idx: Vec<Option<Solution>> = (0..n_funcs).map(|_| None).collect();
+        for &idx in &order {
+            let solution = Solver::collect(
                 &module.functions[idx],
                 resolve,
                 &ret_tys,
@@ -138,19 +163,38 @@ pub fn infer(
                 &demoted,
                 &global_authoritative,
                 n_globals,
-            );
-            solver.solve()
-        };
-        if idx == main_idx {
-            seed_global_tys(
-                &module.functions[idx],
-                &solution,
-                &demoted,
-                &global_authoritative,
-                &mut global_tys,
-            );
+            )
+            .solve();
+            if idx == main_idx {
+                seed_global_tys(
+                    &module.functions[idx],
+                    &solution,
+                    &demoted,
+                    &global_authoritative,
+                    &mut global_tys,
+                );
+            }
+            by_idx[idx] = Some(solution);
         }
-        materialize(&mut module.functions[idx], &solution);
+        let mut changed = false;
+        for (i, annotated) in ret_annotated.iter().enumerate() {
+            if *annotated {
+                continue;
+            }
+            let sol = by_idx[i].as_ref().expect("every function is solved each pass");
+            let lifted = ret_tys[i].join(&inferred_return_ty(&module.functions[i], sol));
+            if lifted != ret_tys[i] {
+                ret_tys[i] = lifted;
+                changed = true;
+            }
+        }
+        solutions = by_idx.into_iter().map(|s| s.expect("solved")).collect();
+        if !changed {
+            break;
+        }
+    }
+    for (idx, solution) in solutions.iter().enumerate() {
+        materialize(&mut module.functions[idx], solution);
     }
     // Types are now materialized on every node; validate the unboxed-slot
     // boundaries before lowering can emit an unsound coercion.
@@ -203,6 +247,26 @@ fn seed_global_tys(
         }
         global_tys[vid] = joined;
     }
+}
+
+/// The inferred return type of a function (Phase 8E): the join of every
+/// `return <v>` expression's solved type, with a value-less `return` / fall-off
+/// (`Return(None)`) contributing `NoneTy`. `Never` (no contributors yet) means
+/// "not known", and `join` treats it as the identity, so it never poisons a
+/// caller — the outer fixpoint lifts it as the body's expr types settle.
+fn inferred_return_ty(func: &HirFunction, solution: &Solution) -> SemTy {
+    let mut joined = SemTy::Never;
+    for (_b, block) in func.blocks.iter() {
+        match &block.term {
+            HirTerminator::Return(Some(v)) => {
+                let t = erase_vars(&solution.expr_ty.get(v).cloned().unwrap_or(SemTy::Never));
+                joined = joined.join(&t);
+            }
+            HirTerminator::Return(None) => joined = joined.join(&SemTy::NoneTy),
+            _ => {}
+        }
+    }
+    joined
 }
 
 /// How a slot's representation *reinterprets a tagged value by its assumed type*
@@ -438,6 +502,9 @@ fn check_call_runtime_args(
 ) -> Result<()> {
     use pyaot_stdlib_defs::TypeSpec;
     let params: &[pyaot_stdlib_defs::ParamDef] = match target {
+        // A `variadic_to_list` call (`os.path.join`) passes ONE compiler-built
+        // list (not per-element values), so element typing does not apply.
+        pyaot_hir::RuntimeCallTarget::Func(f) if f.hints.variadic_to_list => return Ok(()),
         pyaot_hir::RuntimeCallTarget::Func(f) => f.params,
         // Attr getters take no Python-level args; Field receivers are checked
         // by the attribute-typing path that produced them.
@@ -932,6 +999,8 @@ impl<'a> Solver<'a> {
             }
             HirExprKind::BytesLit(_) => SemTy::Bytes,
             HirExprKind::Subscript { base, index } => self.subscript_ty(*base, *index),
+            HirExprKind::Slice { base, .. } => self.slice_ty(*base),
+            HirExprKind::FormatValue { .. } => SemTy::Str,
             HirExprKind::ContainerExpr { op, args } => self.container_op_ty(*op, args),
             HirExprKind::MethodCall { recv, method_name, .. } => {
                 // `super().m()` resolves against the enclosing class's MRO; a
@@ -975,6 +1044,7 @@ impl<'a> Solver<'a> {
                 .unwrap_or(SemTy::Dyn),
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
+            HirExprKind::IsNone { .. } => SemTy::Bool,
             // A stdlib runtime call types as its descriptor's declared return
             // `TypeSpec` (Phase 8B); arg/param compatibility is enforced in
             // `check_repr_boundaries` (the contract seam, like calls).
@@ -1132,6 +1202,10 @@ impl<'a> Solver<'a> {
                 _ => {}
             }
         }
+        // `bytes.decode([encoding])` → `str` (Phase 8D).
+        if matches!(recv, SemTy::Bytes) && self.interner.resolve(method_name) == "decode" {
+            return SemTy::Str;
+        }
         // A stdlib runtime object's method (`m.group()`, Phase 8C): typed from
         // its `StdlibMethodDef` in the object-type registry.
         if let SemTy::RuntimeObject(tag) = &recv {
@@ -1242,6 +1316,30 @@ impl<'a> Solver<'a> {
         match bt {
             SemTy::Str => SemTy::Str,
             SemTy::Bytes => SemTy::Int,
+            SemTy::Never => SemTy::Never,
+            _ => SemTy::Dyn,
+        }
+    }
+
+    /// The type of a slice `base[a:b:c]` (Phase 8E): the same kind as `base`. A
+    /// `list[T]` slices to `list[T]`; a tuple slices to a homogeneous tuple of
+    /// the joined element type; `str`/`bytes` preserve; anything else is `Dyn`
+    /// (the runtime-dispatched `rt_obj_slice`).
+    fn slice_ty(&self, base: Idx<HirExpr>) -> SemTy {
+        let bt = self.ety(base);
+        if bt.list_elem().is_some() {
+            return bt;
+        }
+        if let Some(e) = bt.tuple_var_elem() {
+            return SemTy::tuple_var_of(e.clone());
+        }
+        if let Some(elems) = bt.tuple_elems() {
+            let joined = elems.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+            return SemTy::tuple_var_of(joined);
+        }
+        match bt {
+            SemTy::Str => SemTy::Str,
+            SemTy::Bytes => SemTy::Bytes,
             SemTy::Never => SemTy::Never,
             _ => SemTy::Dyn,
         }
@@ -1522,7 +1620,13 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
     // Dict receiver.
     if let Some((k, v)) = recv.dict_kv() {
         return match method {
-            M::Get | M::Pop | M::Setdefault => v.clone(),
+            // `dict.get(k)` returns the value OR `None` on a miss — type it
+            // `Optional[V]` so the result rides `Tagged` (a `None` is then a safe
+            // tagged sentinel, not misread as a heap `V` pointer → SEGV, the bug
+            // that hit `os.environ.get(missing)` whose value type is `str`).
+            M::Get => SemTy::optional(v.clone()),
+            // `pop` raises `KeyError` on a miss (no `None`), `setdefault` inserts.
+            M::Pop | M::Setdefault => v.clone(),
             M::Keys => SemTy::list_of(k.clone()),
             M::Values => SemTy::list_of(v.clone()),
             M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),

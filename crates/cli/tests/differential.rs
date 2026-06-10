@@ -13,7 +13,8 @@ use std::process::Command;
 /// timestamps), compared in self-checking mode instead of byte-diff: both
 /// runs must exit 0 and end with the same final line — the file's own
 /// "…passed!" marker, which only prints when every internal assert held.
-const SELF_CHECKING: &[&str] = &["test_stdlib_time.py", "test_file_io_core.py"];
+const SELF_CHECKING: &[&str] =
+    &["test_stdlib_time.py", "test_file_io_core.py", "test_stdlib_subprocess.py"];
 
 /// The phase spec entries — an explicit allowlist that grows one feature at a
 /// time. Each file's compiled stdout must match CPython byte-for-byte
@@ -116,7 +117,40 @@ const PHASE_CORPUS: &[&str] = &[
     "test_stdlib_re.py",
     "test_stdlib_json.py",
     "test_file_io_core.py",
+    // Phase 8D — os / os.path (submodule-chain folding + variadic join), the
+    // `os.environ` dict attr, subprocess.run (CompletedProcess fields;
+    // self-checking — subprocess stdout is bytes in CPython, str here), and
+    // urllib (parse + ParseResult/Request fields, plus the urllib.error
+    // exception hierarchy raised/caught by id and by builtin parent). The
+    // network urlopen/urlretrieve sections are excluded (non-deterministic).
+    "test_stdlib_os.py",
+    "test_stdlib_subprocess.py",
+    "test_stdlib_urllib_core.py",
+    // Phase 8E — language gaps for real scripts: f-string format specs, slicing
+    // (list/str/tuple, negative/stepped/open-ended), str.join / list.index, the
+    // tuple `()` parameter default + `__slots__`, and the cross-function
+    // return-type inference that keeps unannotated dunder/method results typed.
+    "p8e_language.py",
+    // Phase 8F — the capstone: Karpathy's microgpt (autograd `Value` with 12
+    // dunders, multi-head attention, Adam training, temperature sampling) on real
+    // stdlib (math.log/exp, random.gauss/shuffle/choices — MT19937 + libm match
+    // CPython bit-for-bit). A small model config keeps it byte-exact yet fast
+    // under the debug runtime. Exercises nearly every front-half feature at once.
+    "microgpt.py",
+    // Phase 8 seam-safety regressions: the stdlib/container seam used to pass a
+    // mismatched heap shape (str/tuple/generator to `join`, a heap-valued
+    // `dict.get` miss, a str-keyed `json.loads` subscript) or a bare None to the
+    // frozen runtime, which dereferenced it without a guard — SEGVs + silent
+    // wrong values. Also `list.index(missing)` now raises `ValueError`.
+    "p8g_seam_safety.py",
 ];
+
+/// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
+/// set — `test_stdlib_urllib.py` exercises the live `urlopen`/`urlretrieve` paths
+/// its `_core` sibling excludes. It is offline-safe: every network section is
+/// wrapped in `try/except IOError`, so a connection failure skips to the same
+/// final "All urllib tests passed!" line on both pyaot and CPython.
+const NET_TESTS: &[&str] = &["test_stdlib_urllib.py"];
 
 #[test]
 fn phase_corpus_matches_cpython() {
@@ -130,7 +164,14 @@ fn phase_corpus_matches_cpython() {
     let out_dir = std::env::temp_dir().join("pyaot_phase1");
     std::fs::create_dir_all(&out_dir).expect("create temp out dir");
 
-    for entry in PHASE_CORPUS {
+    // The default gate is PHASE_CORPUS; `PYAOT_NET_TESTS` adds the live-network
+    // entries (self-checking).
+    let mut entries: Vec<&str> = PHASE_CORPUS.to_vec();
+    if std::env::var_os("PYAOT_NET_TESTS").is_some() {
+        entries.extend_from_slice(NET_TESTS);
+    }
+
+    for entry in &entries {
         let source = corpus_dir.join(entry);
         assert!(
             source.exists(),
@@ -183,7 +224,7 @@ fn phase_corpus_matches_cpython() {
 
         // ── Compare stdout: byte-for-byte, or final-line for self-checking
         // entries (both already exited 0 above). ──
-        if SELF_CHECKING.contains(entry) {
+        if SELF_CHECKING.contains(entry) || NET_TESTS.contains(entry) {
             let last = |out: &[u8]| -> String {
                 String::from_utf8_lossy(out)
                     .lines()

@@ -214,6 +214,7 @@ struct RuntimeFns {
     exc_raise: FuncId,
     exc_raise_from: FuncId,
     exc_raise_from_none: FuncId,
+    exc_raise_stdlib: FuncId,
     exc_raise_custom_with_instance: FuncId,
     exc_raise_instance: FuncId,
     exc_reraise: FuncId,
@@ -399,6 +400,7 @@ impl RuntimeFns {
             exc_raise: d("rt_exc_raise", &[t8, ptr, ti], &[])?,
             exc_raise_from: d("rt_exc_raise_from", &[t8, ptr, ti, t8, ptr, ti], &[])?,
             exc_raise_from_none: d("rt_exc_raise_from_none", &[t8, ptr, ti], &[])?,
+            exc_raise_stdlib: d("rt_exc_raise_stdlib", &[t8, t8, ptr, ti], &[])?,
             exc_raise_custom_with_instance: d(
                 "rt_exc_raise_custom_with_instance",
                 &[t8, ptr, ti, ti],
@@ -1387,6 +1389,12 @@ impl FnGen<'_, '_> {
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let inst = self.use_operand(instance);
                 self.call(self.rt.exc_raise_custom_with_instance, &[cid, ptr, len, inst]);
+            }
+            R::Stdlib { class_id, exc_type_tag, msg } => {
+                let (ptr, len) = self.msg_ptr_len(msg);
+                let t = self.builder.ins().iconst(types::I8, *exc_type_tag as i64);
+                let cid = self.builder.ins().iconst(types::I8, *class_id as i64);
+                self.call(self.rt.exc_raise_stdlib, &[t, cid, ptr, len]);
             }
             R::Instance { value } => {
                 let v = self.use_operand(value);

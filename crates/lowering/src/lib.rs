@@ -69,6 +69,7 @@ pub fn lower(
         .enumerate()
         .map(|(i, f)| FnSig {
             params: f.params.iter().map(|p| repr_of(&p.ty)).collect(),
+            defaults: f.params.iter().map(|p| p.default.clone()).collect(),
             ret: if dunder_funcs.contains(&FuncId::new(i as u32)) {
                 Repr::Tagged
             } else {
@@ -160,6 +161,11 @@ fn build_mir_classes(
 /// method-call sites can pack excess args (Phase 7D: `__exit__(self, *a)`).
 struct FnSig {
     params: Vec<Repr>,
+    /// Per-param constant default (parallel to `params`; `None` for `self` and
+    /// for params without a default). Lets constructor calls fill missing
+    /// trailing args (Phase 8E) the way direct function calls already do in the
+    /// frontend.
+    defaults: Vec<Option<pyaot_hir::ClassAttrInit>>,
     ret: Repr,
     varargs: bool,
     kwargs: bool,
@@ -524,6 +530,14 @@ impl<'a> FnLower<'a> {
                     }));
                 }
             }
+            H::Stdlib { class_id, exc_type_tag, msg } => {
+                let msg = self.lower_exc_msg(*msg)?;
+                self.emit(MirInst::Raise(MirRaise::Stdlib {
+                    class_id: *class_id,
+                    exc_type_tag: *exc_type_tag,
+                    msg,
+                }));
+            }
             H::Instance { value } => {
                 let (vl, vr) = self.lower_expr(*value)?;
                 let vt = self.coerce(vl, vr, Repr::Tagged)?;
@@ -796,6 +810,10 @@ impl<'a> FnLower<'a> {
                 Ok((dst, Repr::Heap(HeapShape::Bytes)))
             }
             HirExprKind::Subscript { base, index } => self.lower_subscript(*base, *index),
+            HirExprKind::Slice { base, start, end, step } => {
+                self.lower_slice(idx, *base, *start, *end, *step)
+            }
+            HirExprKind::FormatValue { value, spec } => self.lower_format_value(idx, *value, *spec),
             HirExprKind::ContainerExpr { op, args } => {
                 self.lower_container_expr(idx, *op, &args.clone())
             }
@@ -806,6 +824,19 @@ impl<'a> FnLower<'a> {
             HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
             HirExprKind::IsInstanceBuiltin { value, target } => {
                 self.lower_isinstance_builtin(*value, target)
+            }
+            HirExprKind::IsNone { value } => {
+                // `value is None` → `rt_is_none(value)` (recognizes both the
+                // immediate None tag and a heap None object). Result is Raw(I8).
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(dst),
+                    def: &pyaot_core_defs::runtime_func_def::RT_IS_NONE,
+                    args: vec![Operand::Local(vt)],
+                });
+                Ok((dst, Repr::Raw(RawKind::I8)))
             }
             HirExprKind::CallRuntime { target, args, provided } => {
                 self.lower_call_runtime(idx, target, args, *provided)
@@ -1277,6 +1308,9 @@ impl<'a> FnLower<'a> {
                 "startswith" => Some((&rf::RT_STR_STARTSWITH, 1, None, TypeSpec::Bool)),
                 "endswith" => Some((&rf::RT_STR_ENDSWITH, 1, None, TypeSpec::Bool)),
                 "find" => Some((&rf::RT_STR_FIND, 1, Some(0), TypeSpec::Int)),
+                // `sep.join(iterable)` → `rt_str_join(sep, list)` (Phase 8E). The
+                // argument is coerced to Tagged (a list/tuple of strings).
+                "join" => Some((&rf::RT_STR_JOIN, 1, None, TypeSpec::Str)),
                 _ => None,
             };
         let Some((def, want_args, op_tag, ret_spec)) = plan else { return Ok(None) };
@@ -1289,7 +1323,16 @@ impl<'a> FnLower<'a> {
         let (rl, rr) = self.lower_expr(recv)?;
         let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
         for a in args {
-            let (al, ar) = self.lower_expr(*a)?;
+            // `sep.join(iterable)` accepts ANY iterable in CPython (str, tuple,
+            // generator, …), but `rt_str_join` reads a `ListObj`. Materialize the
+            // argument into a list first — passing a non-list straight through has
+            // the runtime cast a mismatched heap object and SEGV (the gradual
+            // heap-param exemption does not guard the shape at the seam).
+            let (al, ar) = if name == "join" {
+                self.materialize_list(*a)?
+            } else {
+                self.lower_expr(*a)?
+            };
             ops.push(Operand::Local(self.coerce(al, ar, Repr::Tagged)?));
         }
         if let Some(tag) = op_tag {
@@ -1568,9 +1611,13 @@ impl<'a> FnLower<'a> {
             .map(|m| m.func_id);
         if let Some(fid) = init {
             let params = self.sigs[fid.index()].params.clone();
-            if args.len() + 1 != params.len() {
+            let defaults = self.sigs[fid.index()].defaults.clone();
+            // Provided args fill the leading params; any remaining trailing params
+            // must carry a constant default (Phase 8E — e.g. `Value(x)` with
+            // `children=()`/`local_grads=()`). `self` occupies params[0].
+            if args.len() + 1 > params.len() {
                 return Err(CompilerError::semantic_error(
-                    "wrong number of arguments to constructor".to_string(),
+                    "too many arguments to constructor".to_string(),
                     span,
                 ));
             }
@@ -1578,9 +1625,20 @@ impl<'a> FnLower<'a> {
             // class — cast the fresh instance to the parent's self repr.
             let self_arg = self.coerce(inst, inst_repr.clone(), params[0].clone())?;
             let mut argvals = vec![Operand::Local(self_arg)];
-            for (a, prepr) in args.iter().zip(&params[1..]) {
-                let (al, ar) = self.lower_expr(*a)?;
-                let at = self.coerce(al, ar, prepr.clone())?;
+            for (i, prepr) in params.iter().enumerate().skip(1) {
+                let arg_idx = i - 1;
+                let at = if arg_idx < args.len() {
+                    let (al, ar) = self.lower_expr(args[arg_idx])?;
+                    self.coerce(al, ar, prepr.clone())?
+                } else if let Some(def) = &defaults[i] {
+                    let (dl, dr) = self.materialize_default(def)?;
+                    self.coerce(dl, dr, prepr.clone())?
+                } else {
+                    return Err(CompilerError::semantic_error(
+                        "missing required argument to constructor".to_string(),
+                        span,
+                    ));
+                };
                 argvals.push(Operand::Local(at));
             }
             self.emit(MirInst::Call { dst: None, func: fid, args: argvals });
@@ -1591,6 +1649,67 @@ impl<'a> FnLower<'a> {
             ));
         }
         Ok((inst, inst_repr))
+    }
+
+    /// Materialize a constant parameter default (Phase 8E) as a fresh MIR value,
+    /// mirroring how `lower_expr` lowers the equivalent literal. Used to fill
+    /// missing trailing constructor args. The empty-tuple default builds a fresh
+    /// zero-length tuple (immutable, so per-call freshness is unobservable).
+    fn materialize_default(
+        &mut self,
+        init: &pyaot_hir::ClassAttrInit,
+    ) -> Result<(LocalId, Repr)> {
+        use pyaot_hir::ClassAttrInit as A;
+        Ok(match init {
+            A::Int(v) => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const { dst, val: Const::Int(*v) });
+                (dst, Repr::Tagged)
+            }
+            A::Bool(b) => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const { dst, val: Const::Bool(*b) });
+                (dst, Repr::Tagged)
+            }
+            A::None => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const { dst, val: Const::None });
+                (dst, Repr::Tagged)
+            }
+            A::Float(f) => {
+                let dst = self.alloc_temp(Repr::Raw(RawKind::F64));
+                self.emit(MirInst::Const { dst, val: Const::Float(*f) });
+                (dst, Repr::Raw(RawKind::F64))
+            }
+            A::Str(s) => {
+                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                self.emit(MirInst::Const { dst, val: Const::Str(*s) });
+                (dst, Repr::Heap(HeapShape::Str))
+            }
+            A::Bytes(s) => {
+                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                let dst = self.alloc_temp(Repr::Heap(HeapShape::Bytes));
+                self.emit(MirInst::Const { dst, val: Const::Bytes(*s) });
+                (dst, Repr::Heap(HeapShape::Bytes))
+            }
+            A::BigInt(s) => {
+                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                let dst = self.alloc_temp(Repr::Heap(HeapShape::BigInt));
+                self.emit(MirInst::Const { dst, val: Const::BigIntStr(*s) });
+                (dst, Repr::Heap(HeapShape::BigInt))
+            }
+            A::EmptyTuple => {
+                let tup_repr = Repr::Heap(HeapShape::Tuple(vec![]));
+                let size = self.raw_i64_const(0);
+                let (tup, ret) = self.emit_container(
+                    ContainerOp::TupleNew,
+                    vec![(size, Repr::Raw(RawKind::I64))],
+                    Some(tup_repr),
+                )?;
+                (tup.expect("TupleNew produces a tuple"), ret)
+            }
+        })
     }
 
     /// Dispatch a `recv.method(args)` call by the receiver's static type.
@@ -1656,6 +1775,32 @@ impl<'a> FnLower<'a> {
         // File methods (Phase 8C): a fixed surface mapped to `rt_file_*`.
         if let SemTy::File { binary } = &recv_ty {
             return self.lower_file_method(call_idx, recv, method_name, args, *binary, span);
+        }
+        // `bytes.decode([encoding])` → `rt_bytes_decode(bytes, encoding|null)`
+        // → str (Phase 8D). An absent encoding is the null sentinel (utf-8).
+        if matches!(recv_ty, SemTy::Bytes)
+            && self.interner.resolve(method_name) == "decode"
+            && args.len() <= 1
+        {
+            let (rl, rr) = self.lower_expr(recv)?;
+            let rv = self.coerce(rl, rr, Repr::Tagged)?;
+            let enc = match args.first() {
+                Some(a) => {
+                    let (al, ar) = self.lower_expr(*a)?;
+                    self.coerce(al, ar, Repr::Tagged)?
+                }
+                None => {
+                    let n = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::Const { dst: n, val: Const::NullPtr });
+                    n
+                }
+            };
+            return self.emit_runtime_call(
+                call_idx,
+                &pyaot_core_defs::runtime_func_def::RT_BYTES_DECODE,
+                vec![Operand::Local(rv), Operand::Local(enc)],
+                &pyaot_stdlib_defs::TypeSpec::Str,
+            );
         }
         // Container receiver → the Phase-4D ContainerMethod path.
         let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
@@ -2140,11 +2285,104 @@ impl<'a> FnLower<'a> {
             // Str needs the codepoint-aware getter (handles negative indices); the
             // generic `rt_any_getitem` only does byte indexing.
             SubKind::Str => ContainerOp::StrGet,
-            // Unknown base → the tag-dispatched generic getter.
+            // Unknown base: a statically-`str` key means a MAPPING subscript
+            // (`json.loads(...)["k"]`) — route to the Tagged-key dict getter, since
+            // `rt_any_getitem` takes an i64 INDEX and would coerce the string key to
+            // garbage (the json-subscript-returns-`None` bug). An int / unknown key
+            // stays on the tag-dispatched sequence getter.
+            SubKind::Generic if matches!(self.func.exprs[index].ty, SemTy::Str) => {
+                ContainerOp::DictGet
+            }
             SubKind::Generic => ContainerOp::AnyGetItem,
         };
         let (dst, ret) = self.emit_container(op, vec![(bl, br), (il, ir)], None)?;
         self.normalize_container_result(dst.expect("subscript produces a value"), ret)
+    }
+
+    /// Lower a slice `base[start:end:step]` (Phase 8E) to the runtime slicer
+    /// selected by the base's static type, with `i64::MIN`/`i64::MAX`/`1`
+    /// defaults for absent bounds (the sentinels the runtime reads as "from the
+    /// start / to the end / step 1"). A statically-unknown base routes to the
+    /// tag-dispatched `rt_obj_slice`.
+    fn lower_slice(
+        &mut self,
+        slice_idx: Idx<HirExpr>,
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
+    ) -> Result<(LocalId, Repr)> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let bt = self.func.exprs[base].ty.clone();
+        let stepped = step.is_some();
+        let def: &'static pyaot_core_defs::RuntimeFuncDef = if matches!(bt, SemTy::Str) {
+            if stepped { &rf::RT_STR_SLICE_STEP } else { &rf::RT_STR_SLICE }
+        } else if matches!(bt, SemTy::Bytes) {
+            if stepped { &rf::RT_BYTES_SLICE_STEP } else { &rf::RT_BYTES_SLICE }
+        } else if bt.list_elem().is_some() {
+            if stepped { &rf::RT_LIST_SLICE_STEP } else { &rf::RT_LIST_SLICE }
+        } else if bt.tuple_elems().is_some() || bt.tuple_var_elem().is_some() {
+            if stepped { &rf::RT_TUPLE_SLICE_STEP } else { &rf::RT_TUPLE_SLICE }
+        } else if stepped {
+            &rf::RT_OBJ_SLICE_STEP
+        } else {
+            &rf::RT_OBJ_SLICE
+        };
+        let (bl, br) = self.lower_expr(base)?;
+        let base_op = self.coerce(bl, br, Repr::Tagged)?;
+        let mut ops = vec![
+            Operand::Local(base_op),
+            Operand::Local(self.slice_bound(start, i64::MIN)?),
+            Operand::Local(self.slice_bound(end, i64::MAX)?),
+        ];
+        if stepped {
+            ops.push(Operand::Local(self.slice_bound(step, 1)?));
+        }
+        // Any non-`Int` ret spec yields a `Tagged` descriptor result, which
+        // `emit_runtime_call` then coerces to the slice expr's own repr (the
+        // base kind preserved by `slice_ty`).
+        self.emit_runtime_call(slice_idx, def, ops, &pyaot_stdlib_defs::TypeSpec::Any)
+    }
+
+    /// Lower an f-string formatted field with a static spec (Phase 8E):
+    /// `rt_format(value, spec)` → `str`. The value and the spec string literal
+    /// are both passed Tagged; `!s`/`!r` conversion is already in `value`.
+    fn lower_format_value(
+        &mut self,
+        fmt_idx: Idx<HirExpr>,
+        value: Idx<HirExpr>,
+        spec: InternedString,
+    ) -> Result<(LocalId, Repr)> {
+        let (vl, vr) = self.lower_expr(value)?;
+        let value_op = self.coerce(vl, vr, Repr::Tagged)?;
+        self.str_pool.insert(spec, self.interner.resolve(spec).as_bytes().to_vec());
+        let spec_str = self.alloc_temp(Repr::Heap(HeapShape::Str));
+        self.emit(MirInst::Const { dst: spec_str, val: Const::Str(spec) });
+        let spec_op = self.coerce(spec_str, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+        self.emit_runtime_call(
+            fmt_idx,
+            &pyaot_core_defs::runtime_func_def::RT_FORMAT,
+            vec![Operand::Local(value_op), Operand::Local(spec_op)],
+            &pyaot_stdlib_defs::TypeSpec::Str,
+        )
+    }
+
+    /// A slice bound → `Raw(I64)`: the provided expr untagged to a machine int,
+    /// or the sentinel `default` for an absent bound. The sentinel is emitted
+    /// directly into a `Raw(I64)` slot — `i64::MIN`/`i64::MAX` are outside the
+    /// fixnum range, so the `raw_i64_const` tag round-trip would corrupt them.
+    fn slice_bound(&mut self, bound: Option<Idx<HirExpr>>, default: i64) -> Result<LocalId> {
+        match bound {
+            Some(e) => {
+                let (el, er) = self.lower_expr(e)?;
+                self.coerce_to_i64(el, er)
+            }
+            None => {
+                let t = self.alloc_temp(Repr::Raw(RawKind::I64));
+                self.emit(MirInst::Const { dst: t, val: Const::Int(default) });
+                Ok(t)
+            }
+        }
     }
 
     /// Lower a frontend-synthesized container op (`in`, the iterator protocol).
@@ -2629,6 +2867,28 @@ impl<'a> FnLower<'a> {
         };
         match sym {
             Symbol::Builtin(kind) => {
+                use pyaot_mir::BuiltinFunctionKind as BK;
+                // `str(x)` / `repr(x)` of a concrete class instance route to the
+                // user dunder (CPython precedence: `str` → `__str__` then
+                // `__repr__`; `repr` → `__repr__`), mirroring the print path (5C).
+                // The generic `rt_builtin_str` / `rt_builtin_repr` render the
+                // *default* object repr for instances, so this is the only path
+                // that honours a user `__str__`/`__repr__` (Phase 8E).
+                if args.len() == 1 && matches!(kind, BK::Str | BK::Repr) {
+                    let arg_ty = self.func.exprs[args[0]].ty.clone();
+                    let dunder = if kind == BK::Str {
+                        self.concrete_dunder(&arg_ty, "__str__")
+                            .or_else(|| self.concrete_dunder(&arg_ty, "__repr__"))
+                    } else {
+                        self.concrete_dunder(&arg_ty, "__repr__")
+                    };
+                    if let Some(fid) = dunder {
+                        let (al, ar) = self.lower_expr(args[0])?;
+                        let (res, rrep) = self.emit_dunder_call(fid, vec![(al, ar)])?;
+                        let tagged = self.coerce(res, rrep, Repr::Tagged)?;
+                        return Ok((tagged, Repr::Tagged));
+                    }
+                }
                 // `str(e)` of a caught exception returns its message (Phase 7B);
                 // the generic `rt_builtin_str` would render the object repr.
                 if kind == pyaot_mir::BuiltinFunctionKind::Str && args.len() == 1 {
@@ -3072,6 +3332,10 @@ fn class_attr_const(
             str_pool.insert(*s, interner.resolve(*s).as_bytes().to_vec());
             Const::BigIntStr(*s)
         }
+        // `EmptyTuple` is only ever produced as a parameter default (materialized
+        // as an HIR `TupleLit` at the call site, never reaching here). A tuple as
+        // a class-level attribute is out of scope.
+        A::EmptyTuple => unreachable!("empty-tuple class attribute should be rejected in frontend"),
     }
 }
 

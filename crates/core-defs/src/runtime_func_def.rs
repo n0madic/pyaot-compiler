@@ -139,6 +139,15 @@ const TAGGED_4: &[MirSemantic] = &[
     MirSemantic::Tagged,
     MirSemantic::Tagged,
 ];
+// Slice ABIs (`rt_*_slice[_step]`): a tagged object receiver followed by RAW i64
+// start/stop[/step] bounds. The runtime reads the bounds as machine integers
+// (with `i64::MIN`/`i64::MAX` sentinels for "default start/stop"), so they must
+// be passed Raw — the generic `ptr_ternary`/`ptr_quaternary` Tagged default is
+// wrong here (Phase 8E).
+const SLICE_TERNARY: &[MirSemantic] =
+    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Raw];
+const SLICE_QUATERNARY: &[MirSemantic] =
+    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Raw, MirSemantic::Raw];
 
 impl RuntimeFuncDef {
     /// General constructor (no explicit MIR semantic). Verifier falls back
@@ -291,6 +300,32 @@ impl RuntimeFuncDef {
             gc_roots_result: false,
             mir_param_semantics: Some(TAGGED_2),
             mir_return_semantic: Some(MirSemantic::Raw),
+        }
+    }
+
+    /// Slice ABI `f(obj, start, stop) -> obj`: a tagged receiver and RAW i64
+    /// bounds (Phase 8E). Like `ptr_ternary` but bounds are Raw, not Tagged.
+    pub const fn slice_ternary(symbol: &'static str) -> Self {
+        Self {
+            symbol,
+            params: &[PI64, PI64, PI64],
+            returns: Some(RI64),
+            gc_roots_result: true,
+            mir_param_semantics: Some(SLICE_TERNARY),
+            mir_return_semantic: Some(MirSemantic::Tagged),
+        }
+    }
+
+    /// Slice ABI `f(obj, start, stop, step) -> obj`: a tagged receiver and RAW
+    /// i64 bounds + step (Phase 8E).
+    pub const fn slice_quaternary(symbol: &'static str) -> Self {
+        Self {
+            symbol,
+            params: &[PI64, PI64, PI64, PI64],
+            returns: Some(RI64),
+            gc_roots_result: true,
+            mir_param_semantics: Some(SLICE_QUATERNARY),
+            mir_return_semantic: Some(MirSemantic::Tagged),
         }
     }
 
@@ -478,9 +513,9 @@ pub static RT_ANY_GETITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_any_g
 /// the object's `TypeTagKind`. Used by `lower_slice` when `obj_type` is
 /// `Any` / `HeapAny`, replacing the silent `None`-constant fallback that
 /// produced empty-shape lists for downstream consumers.
-pub static RT_OBJ_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_obj_slice");
+pub static RT_OBJ_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_obj_slice");
 /// rt_obj_slice_step(obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj
-pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_obj_slice_step");
+pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::slice_quaternary("rt_obj_slice_step");
 /// rt_obj_len(obj: *mut Obj) -> i64 — Any/HeapAny runtime-dispatched length.
 /// Routes to the type-specific length helper based on `TypeTagKind`. Used
 /// by `lower_len` when `select_len_func` returns `None` (Any/HeapAny),
@@ -609,10 +644,10 @@ pub static RT_LIST_GET_TYPED: RuntimeFuncDef =
 /// rt_list_len(list: *mut Obj) -> i64
 pub static RT_LIST_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_list_len");
 /// rt_list_slice(list: *mut Obj, start: i64, stop: i64) -> *mut Obj
-pub static RT_LIST_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_list_slice");
+pub static RT_LIST_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_list_slice");
 /// rt_list_slice_step(list: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_LIST_SLICE_STEP: RuntimeFuncDef =
-    RuntimeFuncDef::ptr_quaternary("rt_list_slice_step");
+    RuntimeFuncDef::slice_quaternary("rt_list_slice_step");
 /// rt_list_append(list: *mut Obj, elem: i64) -> void
 pub static RT_LIST_APPEND: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_append", &[PI64, PI64]);
 /// rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj
@@ -689,13 +724,13 @@ pub static RT_TUPLE_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_tuple_g
 /// rt_tuple_len(tuple: *mut Obj) -> i64
 pub static RT_TUPLE_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_tuple_len");
 /// rt_tuple_slice(tuple: *mut Obj, start: i64, stop: i64) -> *mut Obj
-pub static RT_TUPLE_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_tuple_slice");
+pub static RT_TUPLE_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_tuple_slice");
 /// rt_tuple_slice_step(tuple: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_TUPLE_SLICE_STEP: RuntimeFuncDef =
-    RuntimeFuncDef::ptr_quaternary("rt_tuple_slice_step");
+    RuntimeFuncDef::slice_quaternary("rt_tuple_slice_step");
 /// rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, stop: i64) -> *mut Obj
 pub static RT_TUPLE_SLICE_TO_LIST: RuntimeFuncDef =
-    RuntimeFuncDef::ptr_ternary("rt_tuple_slice_to_list");
+    RuntimeFuncDef::slice_ternary("rt_tuple_slice_to_list");
 /// rt_tuple_from_list(list: *mut Obj) -> *mut Obj
 pub static RT_TUPLE_FROM_LIST: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_tuple_from_list");
 /// rt_tuple_from_str(str: *mut Obj) -> *mut Obj
@@ -745,10 +780,10 @@ pub static RT_BYTES_GET: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_byte
 /// rt_bytes_len(bytes: *mut Obj) -> i64
 pub static RT_BYTES_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_bytes_len");
 /// rt_bytes_slice(bytes: *mut Obj, start: i64, stop: i64) -> *mut Obj
-pub static RT_BYTES_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_bytes_slice");
+pub static RT_BYTES_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_bytes_slice");
 /// rt_bytes_slice_step(bytes: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_BYTES_SLICE_STEP: RuntimeFuncDef =
-    RuntimeFuncDef::ptr_quaternary("rt_bytes_slice_step");
+    RuntimeFuncDef::slice_quaternary("rt_bytes_slice_step");
 /// rt_bytes_decode(bytes: *mut Obj, encoding: i64) -> *mut Obj
 pub static RT_BYTES_DECODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_bytes_decode");
 /// rt_bytes_startswith(bytes: *mut Obj, prefix: *mut Obj) -> i8
@@ -997,9 +1032,9 @@ pub static RT_STR_LEN_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_le
 /// rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj
 pub static RT_STR_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_concat");
 /// rt_str_slice(s: *mut Obj, start: i64, stop: i64) -> *mut Obj
-pub static RT_STR_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_slice");
+pub static RT_STR_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_str_slice");
 /// rt_str_slice_step(s: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
-pub static RT_STR_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_str_slice_step");
+pub static RT_STR_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::slice_quaternary("rt_str_slice_step");
 /// rt_str_getchar(s: *mut Obj, byte_index: i64) -> *mut Obj
 pub static RT_STR_GETCHAR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_getchar");
 /// rt_str_subscript(s: *mut Obj, char_index: i64) -> *mut Obj
