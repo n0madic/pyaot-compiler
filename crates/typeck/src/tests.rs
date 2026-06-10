@@ -656,6 +656,171 @@ print(math.sqrt(f(2)))
     assert!(try_infer(src).is_err());
 }
 
+// ── cross-function return / global variables of the constraint system ──
+
+#[test]
+fn call_result_takes_inferred_callee_return() {
+    // An UNANNOTATED callee's return type is a variable of the system: the
+    // caller's `x = a()` must converge to the callee's inferred `Int`.
+    let (m, i) = typed("def a():\n    return 1\n\nx = a()\nprint(x)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Int);
+}
+
+#[test]
+fn recursive_inferred_return_converges() {
+    // Self-recursion: `fact`'s return feeds its own body through `ret_ty`;
+    // the rounds climb Never → Int and settle.
+    let src = "\
+def fact(n: int):
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+
+x = fact(5)
+print(x)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Int);
+}
+
+#[test]
+fn mutually_recursive_inferred_returns_converge() {
+    // Two unannotated functions whose returns depend on each other must still
+    // converge — they are two variables of ONE system, not nested fixpoints.
+    let src = "\
+def is_even(n: int):
+    if n == 0:
+        return True
+    return is_odd(n - 1)
+
+def is_odd(n: int):
+    if n == 0:
+        return False
+    return is_even(n - 1)
+
+x = is_even(4)
+print(x)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Bool);
+}
+
+#[test]
+fn unbounded_recursive_container_return_widens_to_dyn() {
+    // `ret = list[ret]` climbs the lattice's infinite container spine; there is
+    // no iteration cap anymore, so termination relies on the WIDEN_LIMIT
+    // widening cutting the variable to `Dyn`. `infer` must terminate and the
+    // caller's result must be the (correct, tagged) `Dyn`.
+    let src = "\
+def f():
+    return [f()]
+
+x = f()
+print(len(x))
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Dyn);
+}
+
+#[test]
+fn self_referential_container_local_terminates() {
+    // `x = [x]` is the self-recursive constraint `x ⊒ list[x]`: without the
+    // per-expr widening the inner sweep would climb list[list[…]] forever.
+    // Infer must terminate, with the slot cut to the (correct, tagged) `Dyn`.
+    let (m, i) = typed("x = []\nx = [x]\nprint(x)\n");
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Dyn);
+}
+
+#[test]
+fn self_referential_cell_terminates() {
+    // The same unbounded spine through a closure cell: the cell content is
+    // re-joined from `cell_writes` every sweep iteration.
+    let src = "\
+def outer():
+    x = []
+    x = [x]
+    def inner():
+        return x
+    print(inner())
+
+outer()
+";
+    assert!(try_infer(src).is_ok());
+}
+
+#[test]
+fn self_referential_global_terminates() {
+    // The same unbounded spine through a promoted global slot (`__main__`'s
+    // own reads join `global_writes` live inside its sweep).
+    let src = "\
+def reader():
+    return x
+
+x = []
+x = [x]
+print(reader())
+";
+    assert!(try_infer(src).is_ok());
+}
+
+#[test]
+fn ret_chain_propagates_through_dirty_marking() {
+    // a → b → c: each round moves one more return variable, so dirty-marking
+    // must transitively re-solve exactly the readers — b after c moves, a
+    // after b, finally `__main__` — and still converge `x` to Int.
+    let src = "\
+def c():
+    return 1
+
+def b():
+    return c()
+
+def a():
+    return b()
+
+x = a()
+print(x)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Int);
+}
+
+#[test]
+fn rising_global_does_not_poison_float_seam() {
+    // A global fed by an unannotated callee whose return climbs across rounds:
+    // while `k`'s return is still unknown, `g`'s slot must ride bottom
+    // (`Never`), never a transient `Dyn` that sticks and makes
+    // `check_reinterpret` reject the `float`-parameter seam. The from-bottom
+    // re-solve guarantees the converged slot is `Float` and this compiles.
+    let src = "\
+def k():
+    return 2.5
+
+def f(a: float):
+    print(a)
+
+def caller():
+    f(g)
+
+g = k()
+caller()
+";
+    let (m, i) = typed(src);
+    // The promoted slot converged to Float: the GlobalGet feeding the float
+    // parameter is typed Float (not Dyn), in every reader.
+    let caller = m
+        .functions
+        .iter()
+        .find(|f| i.resolve(f.name) == "caller")
+        .expect("caller function");
+    let gget = caller
+        .exprs
+        .iter()
+        .find(|(_, e)| matches!(e.kind, HirExprKind::GlobalGet { .. }))
+        .expect("GlobalGet in caller");
+    assert_eq!(gget.1.ty, SemTy::Float);
+}
+
 #[test]
 fn stdlib_call_types_from_descriptor() {
     // `math.sqrt` types as Float, `math.ceil` as Int — straight from the

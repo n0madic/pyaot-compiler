@@ -1,19 +1,57 @@
 //! # typeck — one constraint-based type inference
 //!
-//! Type inference is ONE algorithm in three phases — never a fixpoint of
-//! mutually recursive monotone passes (PITFALLS A3 / Principle 5):
+//! Type inference is ONE constraint system over ONE lattice — never a fixpoint
+//! of mutually recursive, re-collected passes (PITFALLS A3 / Principle 5). The
+//! variables of the system are
 //!
-//! 1. **collect** — a walk over the HIR builds the per-local assignment table
-//!    and records which locals are *authoritative* (carry a frontend annotation,
-//!    so their type drives `Repr` and inference must not touch them).
-//! 2. **solve** — a single monotone worklist iterates the expr / local types to a
-//!    lattice fixpoint. Local↔expr dependencies are cyclic across loop back-edges
-//!    (`acc = acc + 1.5`); the scalar lattice has finite height, so the monotone
-//!    iteration converges. This is ONE worklist, not a re-run of passes.
-//! 3. **materialize** — write the solved [`SemTy`] back onto each HIR expr **and**
-//!    each inferred [`pyaot_hir::HirLocal`], so `repr_of` can pick `Raw(F64)` for
-//!    float locals / `Raw(I8)` for bool locals. Authoritative (annotated) locals
-//!    keep their declared type.
+//! * the [`SemTy`] of every expression and every inferred local (per function),
+//! * `ret_ty[fid]` — every unannotated function's inferred return type, and
+//! * `global_ty[vid]` — every promoted global slot's type
+//!
+//! ([`ModuleVars`]; annotated returns / annotated or demoted globals are
+//! *constants* of the system, not variables). It runs in three phases:
+//!
+//! 1. **collect** — ONE walk over each function's HIR builds its [`FuncState`]:
+//!    the per-local assignment table, the cell / global write tables, and which
+//!    locals are *authoritative* (carry a frontend annotation, so their type
+//!    drives `Repr` and inference must not touch them). Collect happens exactly
+//!    once; the tables never change across solve rounds.
+//! 2. **solve** — chaotic iteration of the whole system in rounds. Each round
+//!    re-solves every function **from bottom** against the current module
+//!    variables (a per-function monotone Gauss-Seidel worklist,
+//!    [`Sweeper::solve`]; local↔expr dependencies are cyclic across loop
+//!    back-edges, the lattice join makes the sweep converge), then moves the
+//!    module variables: `global_ty` is recomputed from `__main__`'s solved
+//!    writes, `ret_ty` is lifted by joining each function's solved `return`
+//!    types. The loop ends the first round no variable moves. A round only
+//!    re-solves the functions whose dynamic read-set ([`ReadSet`] — the
+//!    `ret_ty` / `global_ty` variables actually read during their last sweep)
+//!    touched a moved variable: a sweep is a deterministic function of the
+//!    variables it reads, so skipping a function whose reads are unchanged
+//!    reproduces its solution (and its read-set) exactly — dirty-marking is a
+//!    pure optimization, never a semantic knob. Re-solving from
+//!    bottom (instead of resuming the previous round's state) is load-bearing:
+//!    `join_writes`'s Raw-uniformity guard is non-monotone, so a transiently
+//!    imprecise variable (a briefly-`Dyn` global feeding a cyclic local) must
+//!    not absorb into a persistent solution — the final state is, by
+//!    construction, each function's from-bottom solution at the converged
+//!    variables.
+//! 3. **materialize** — write the converged [`SemTy`] back onto each HIR expr
+//!    **and** each inferred [`pyaot_hir::HirLocal`], so `repr_of` can pick
+//!    `Raw(F64)` for float locals / `Raw(I8)` for bool locals. Authoritative
+//!    (annotated) locals keep their declared type.
+//!
+//! **Termination** is by widening, not an iteration cap: a module variable
+//! still moving after [`WIDEN_LIMIT`] strict moves is widened to `Dyn` and
+//! pinned. Every round either moves at least one variable or is the last, and
+//! each variable moves at most `WIDEN_LIMIT` times, so the loop runs at most
+//! `(n_funcs + n_globals) · WIDEN_LIMIT + 1` rounds. The same widening bounds
+//! the INNER sweep: an expr whose type keeps moving within one solve (a
+//! self-recursive container constraint like `x = [x]`, re-joined through a
+//! local / cell / global slot every iteration) is cut to `Dyn` and pinned for
+//! the rest of that solve; locals need no counters of their own because a
+//! local is a pure join of expr types. Precision lost to widening is only
+//! performance, never correctness (Principle 2).
 //!
 //! Inference finishes BEFORE lowering and does not leak into it. Representation is
 //! decided by `repr_of` at the lowering boundary. Because the tagged baseline is
@@ -35,7 +73,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use la_arena::Idx;
 
@@ -47,10 +86,23 @@ use pyaot_hir::{
 use pyaot_types::{repr_of, sig_repr, RawKind, Repr, SemTy, Sig, TypeLattice};
 use pyaot_utils::{ClassId, InternedString, StringInterner};
 
+/// Widening bound: how many moves a variable — a module-level `ret_ty` /
+/// `global_ty` across rounds, or an expr type within one sweep — may make
+/// before it is widened to `Dyn` and pinned. This is the standard
+/// abstract-interpretation widening that makes both loops terminate on the
+/// lattice's infinite-height container spine — a recursive constraint like
+/// `def f(): return [f()]` (across rounds) or `x = [x]` (within a sweep)
+/// climbs `list[Never] ⊏ list[list[Never]] ⊏ …` forever otherwise. Any value
+/// is correct — `Dyn` rides the always-sound tagged baseline (Principle 2) —
+/// and real code settles in 1–2 moves; 16 leaves generous headroom for deep
+/// numeric/container towers.
+const WIDEN_LIMIT: usize = 16;
+
 /// Run inference over every function, mutating each node's [`SemTy`] in place.
 ///
-/// Per-function inference: a callee's return type is read from its (annotated or
-/// `Dyn`) signature — return-type inference across functions is not in scope.
+/// One constraint system (see the module docs): per-function expr/local types,
+/// cross-function inferred return types, and promoted-global slot types are
+/// variables of the same lattice, solved by one round loop to convergence.
 /// Class field/method/return types and nominal subtyping are consulted through
 /// the [`ClassTable`] oracle (D4/D8), never baked into the sealed lattice.
 pub fn infer(
@@ -59,17 +111,18 @@ pub fn infer(
     classes: &ClassTable,
     interner: &StringInterner,
 ) -> Result<()> {
-    // Inferred return types (Phase 8E). An annotated function (`ret_ty != Dyn`)
-    // keeps its declared return; an unannotated one starts at `Never` (bottom)
-    // and climbs to the join of its `return` expression types over an outer
-    // fixpoint below. This refines how *callers* type a call result — so a
-    // `v.method()` / dunder result is usable as its real class instead of `Dyn`
-    // — WITHOUT changing any function's ABI: `func.ret_ty` (hence the lowered
-    // signature) is untouched, and the precise type rides the tagged return,
-    // reinterpreted at the use site (`Tagged → Heap(Class)`).
+    let n_funcs = module.functions.len();
+    // The `ret_ty` variables (Phase 8E). An annotated function (`ret_ty != Dyn`)
+    // is a constant of the system; an unannotated one starts at `Never` (bottom)
+    // and climbs to the join of its `return` expression types over the rounds
+    // below. This refines how *callers* type a call result — so a `v.method()`
+    // / dunder result is usable as its real class instead of `Dyn` — WITHOUT
+    // changing any function's ABI: `func.ret_ty` (hence the lowered signature)
+    // is untouched, and the precise type rides the tagged return, reinterpreted
+    // at the use site (`Tagged → Heap(Class)`).
     let ret_annotated: Vec<bool> =
         module.functions.iter().map(|f| f.ret_ty != SemTy::Dyn).collect();
-    let mut ret_tys: Vec<SemTy> = module
+    let ret_ty: Vec<SemTy> = module
         .functions
         .iter()
         .map(|f| if f.ret_ty != SemTy::Dyn { f.ret_ty.clone() } else { SemTy::Never })
@@ -77,6 +130,7 @@ pub fn infer(
     // The visible Callable signature of each function when used as a closure
     // target (Phase 6A): declared params MINUS the env param 0 (every
     // `MakeClosure` target carries one), plus the 6C varargs/kwargs flags.
+    // Built from DECLARED types only — an inferred return never changes an ABI.
     let closure_sigs: Vec<Sig> = module
         .functions
         .iter()
@@ -87,40 +141,55 @@ pub fn infer(
             kwargs: f.kwargs,
         })
         .collect();
-    // ── promoted-global slot typing (Phase 6B) ──
-    // The slot type is the join of `__main__`'s writes (the single storage's
-    // module-level initializers / rebindings); a slot any OTHER function writes
-    // (`global` declaration) is demoted to `Dyn` — that write's type is
-    // invisible to main's solve, so a precise type would be unsound. `__main__`
-    // is therefore solved FIRST; its solution seeds `global_tys` for the rest.
+    // ── promoted-global slot discovery (Phase 6B) ──
+    // A slot any function other than `__main__` writes (`global` declaration)
+    // is demoted to `Dyn` — that write's type is invisible to main's solve, so
+    // a precise type would be unsound. `main_writes` marks the slots whose type
+    // is a genuine variable, recomputed from main's solution each round.
+    fn grow(
+        vid: u32,
+        n_globals: &mut usize,
+        demoted: &mut Vec<bool>,
+        main_writes: &mut Vec<bool>,
+    ) -> usize {
+        let vid = vid as usize;
+        if vid >= *n_globals {
+            *n_globals = vid + 1;
+            demoted.resize(*n_globals, false);
+            main_writes.resize(*n_globals, false);
+        }
+        vid
+    }
     let main_idx = module.main.index();
     let mut n_globals = 0usize;
     let mut demoted: Vec<bool> = Vec::new();
+    let mut main_writes: Vec<bool> = Vec::new();
     for (i, f) in module.functions.iter().enumerate() {
-        let mut grow = |vid: u32, demote: bool, demoted: &mut Vec<bool>| {
-            let vid = vid as usize;
-            if vid >= n_globals {
-                n_globals = vid + 1;
-                demoted.resize(n_globals, false);
-            }
-            if demote {
-                demoted[vid] = true;
-            }
-        };
         for (_b, block) in f.blocks.iter() {
             for stmt in &block.stmts {
                 if let HirStmt::GlobalSet { var_id, .. } = stmt {
-                    grow(*var_id, i != main_idx, &mut demoted);
+                    let vid = grow(*var_id, &mut n_globals, &mut demoted, &mut main_writes);
+                    if i == main_idx {
+                        main_writes[vid] = true;
+                    } else {
+                        demoted[vid] = true;
+                    }
                 }
             }
         }
         for (_e, expr) in f.exprs.iter() {
             if let HirExprKind::GlobalGet { var_id } = expr.kind {
-                grow(var_id, false, &mut demoted);
+                grow(var_id, &mut n_globals, &mut demoted, &mut main_writes);
             }
         }
     }
-    let mut global_tys: Vec<SemTy> = vec![SemTy::Dyn; n_globals];
+    // The `global_ty` variables: bottom (`Never`) for a slot `__main__` writes
+    // — recomputed from main's solved writes each round, and `Never` is the
+    // join identity, so a not-yet-known slot never poisons a reader. A demoted
+    // slot, or one main never writes, is the constant `Dyn`.
+    let mut global_ty: Vec<SemTy> = (0..n_globals)
+        .map(|vid| if main_writes[vid] && !demoted[vid] { SemTy::Never } else { SemTy::Dyn })
+        .collect();
     // Module-level annotated globals are authoritative (Phase 8): their declared
     // type holds even when a function writes the slot (which otherwise demotes
     // inference to `Dyn`). The annotation is a contract; `check_repr_boundaries`
@@ -129,72 +198,113 @@ pub fn infer(
     for (vid, ty) in &module.global_annotations {
         let vid = *vid as usize;
         if vid < n_globals {
-            global_tys[vid] = ty.clone();
+            global_ty[vid] = ty.clone();
             global_authoritative[vid] = true;
         }
     }
+    let mut vars = ModuleVars {
+        ret_ty,
+        global_ty,
+        ret_moves: vec![0; n_funcs],
+        global_moves: vec![0; n_globals],
+        global_pinned: vec![false; n_globals],
+    };
 
-    let mut order: Vec<usize> = Vec::with_capacity(module.functions.len());
+    // `__main__` is solved FIRST each round: its solution defines the global
+    // slot types every other function reads.
+    let mut order: Vec<usize> = Vec::with_capacity(n_funcs);
     order.push(main_idx);
-    order.extend((0..module.functions.len()).filter(|i| *i != main_idx));
+    order.extend((0..n_funcs).filter(|i| *i != main_idx));
 
-    // Outer fixpoint over inferred return types (Phase 8E). Each pass solves every
-    // function with the current `ret_tys` / `global_tys`, then lifts each
-    // unannotated function's return type to the join of its `return` expression
-    // types. Both moves are monotone in the lattice (bounded above by `Dyn`), so
-    // the loop converges; nodes are materialized only once, from the converged
-    // solutions, so re-solves always see the original frontend annotations (never
-    // a materialized type frozen as authoritative). The pass cap is a backstop.
-    let n_funcs = module.functions.len();
-    let global_base = global_tys.clone();
-    let mut solutions: Vec<Solution> = Vec::new();
-    for _pass in 0..(n_funcs.saturating_mul(2) + 4) {
-        global_tys.clone_from(&global_base);
-        let mut by_idx: Vec<Option<Solution>> = (0..n_funcs).map(|_| None).collect();
+    // **collect** — exactly once per function; only the solution (expr / local
+    // types) is recomputed across rounds, never the constraint tables.
+    let mut states: Vec<FuncState> =
+        module.functions.iter().map(|f| FuncState::collect(f, n_globals)).collect();
+
+    // **solve** — chaotic iteration of the module variables (see the module
+    // docs). Each round re-solves every DIRTY function FROM BOTTOM against the
+    // current `vars`, then moves `global_ty` (right after main's sweep, so the
+    // other functions already read this round's slot types) and `ret_ty`. The
+    // loop ends the first round no variable moves; the final state is each
+    // function's from-bottom solution at the converged variables, so transient
+    // imprecision in an earlier round cannot survive into materialize.
+    // Termination is by the WIDEN_LIMIT widening, not an iteration cap.
+    //
+    // Dirty-marking: a sweep is a deterministic function of the module
+    // variables it reads (its `ReadSet`, recorded during the sweep), so a
+    // function none of whose read variables moved would re-solve to the
+    // identical state — skip it. Everything starts dirty.
+    let mut dirty: Vec<bool> = vec![true; n_funcs];
+    loop {
+        let mut moved_rets = vec![false; n_funcs];
+        let mut moved_globals = vec![false; n_globals];
         for &idx in &order {
-            let solution = Solver::collect(
-                &module.functions[idx],
-                resolve,
-                &ret_tys,
-                &closure_sigs,
-                classes,
-                interner,
-                &global_tys,
-                &demoted,
-                &global_authoritative,
-                n_globals,
-            )
-            .solve();
-            if idx == main_idx {
-                seed_global_tys(
-                    &module.functions[idx],
-                    &solution,
-                    &demoted,
-                    &global_authoritative,
-                    &mut global_tys,
-                );
-            }
-            by_idx[idx] = Some(solution);
-        }
-        let mut changed = false;
-        for (i, annotated) in ret_annotated.iter().enumerate() {
-            if *annotated {
+            if !dirty[idx] {
                 continue;
             }
-            let sol = by_idx[i].as_ref().expect("every function is solved each pass");
-            let lifted = ret_tys[i].join(&inferred_return_ty(&module.functions[i], sol));
-            if lifted != ret_tys[i] {
-                ret_tys[i] = lifted;
-                changed = true;
+            states[idx].reset();
+            Sweeper {
+                st: &mut states[idx],
+                func: &module.functions[idx],
+                vars: &vars,
+                resolve,
+                closure_sigs: &closure_sigs,
+                classes,
+                interner,
+                global_demoted: &demoted,
+                global_authoritative: &global_authoritative,
+                reads: RefCell::new(ReadSet::default()),
+            }
+            .solve();
+            if idx == main_idx {
+                move_global_tys(
+                    &states[main_idx],
+                    &demoted,
+                    &global_authoritative,
+                    &main_writes,
+                    &mut vars,
+                    &mut moved_globals,
+                );
             }
         }
-        solutions = by_idx.into_iter().map(|s| s.expect("solved")).collect();
-        if !changed {
+        // Move the `ret_ty` variables: join-with-old keeps the move monotone
+        // even when a from-bottom re-solve transiently reports less. Only a
+        // re-solved function can contribute a new return type.
+        for (i, annotated) in ret_annotated.iter().enumerate() {
+            if *annotated || !dirty[i] {
+                continue;
+            }
+            let lifted =
+                vars.ret_ty[i].join(&inferred_return_ty(&module.functions[i], &states[i]));
+            if lifted != vars.ret_ty[i] {
+                vars.ret_moves[i] += 1;
+                // Widening: a return still climbing after WIDEN_LIMIT strict
+                // moves is on an unbounded spine — go straight to `Dyn` (the
+                // absorbing top, so the variable never moves again).
+                vars.ret_ty[i] =
+                    if vars.ret_moves[i] >= WIDEN_LIMIT { SemTy::Dyn } else { lifted };
+                moved_rets[i] = true;
+            }
+        }
+        if !moved_rets.contains(&true) && !moved_globals.contains(&true) {
             break;
         }
+        // Mark next round's dirty set: exactly the readers of what moved.
+        // Globals move right after `__main__`'s sweep — the FIRST of the round
+        // — so a function solved this round already read the post-move slot
+        // types and needs no global-driven re-solve (`__main__` itself reads
+        // its own variable slots through the live `global_writes` join, never
+        // through `vars`). Returns move after all sweeps, so their readers
+        // re-solve unconditionally.
+        for f in 0..n_funcs {
+            let reads = &states[f].reads;
+            dirty[f] = reads.rets.iter().any(|&r| moved_rets[r])
+                || (!dirty[f] && reads.globals.iter().any(|&g| moved_globals[g]));
+        }
     }
-    for (idx, solution) in solutions.iter().enumerate() {
-        materialize(&mut module.functions[idx], solution);
+
+    for (idx, st) in states.iter().enumerate() {
+        materialize(&mut module.functions[idx], st);
     }
     // Types are now materialized on every node; validate the unboxed-slot
     // boundaries before lowering can emit an unsound coercion.
@@ -202,50 +312,46 @@ pub fn infer(
     Ok(())
 }
 
-/// Compute each global slot's type from `__main__`'s solved writes: the join,
-/// with the same `Raw`-uniformity guard as locals (a mixed-repr join must stay
-/// `Dyn`, never an unbox hint). Demoted or never-written slots stay `Dyn`.
-fn seed_global_tys(
-    main: &HirFunction,
-    solution: &Solution,
+/// Move the `global_ty` variables from `__main__`'s freshly-solved writes: a
+/// DIRECT recompute of each slot — the join of its write types with the same
+/// `Raw`-uniformity guard as locals ([`FuncState::join_writes`]) — never a join
+/// with the old value. The guard is non-monotone (`{Int, Float} → Dyn` but
+/// `{Float, Float} → Float`), so joining with the old value would let a
+/// transient `Dyn` stick forever — and a sticky `Dyn` is not just lost
+/// precision: it flows into `check_reinterpret`'s Strict slots and would reject
+/// programs that compile today. The direct recompute may therefore oscillate;
+/// the per-slot move counter widens a still-moving slot to `Dyn` and PINS it
+/// (excluded from further recomputes), restoring guaranteed termination.
+///
+/// Annotated slots keep their declared type (the Phase-8 contract); demoted
+/// slots stay `Dyn` (Phase 6B) — both are constants, never moved. Each slot
+/// that moved is marked in `moved` (feeding the dirty-marking).
+fn move_global_tys(
+    main_st: &FuncState,
     demoted: &[bool],
     authoritative: &[bool],
-    global_tys: &mut [SemTy],
+    main_writes: &[bool],
+    vars: &mut ModuleVars,
+    moved: &mut [bool],
 ) {
-    let mut writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); global_tys.len()];
-    for (_b, block) in main.blocks.iter() {
-        for stmt in &block.stmts {
-            if let HirStmt::GlobalSet { var_id, value } = stmt {
-                writes[*var_id as usize].push(*value);
-            }
-        }
-    }
-    for (vid, ws) in writes.iter().enumerate() {
-        // An annotated slot keeps its declared type — never overwritten by the
-        // join of main's writes (Phase 8).
-        if demoted[vid] || authoritative[vid] || ws.is_empty() {
+    for vid in 0..vars.global_ty.len() {
+        if vars.global_pinned[vid] || demoted[vid] || authoritative[vid] || !main_writes[vid] {
             continue;
         }
-        let ety = |v: &Idx<HirExpr>| {
-            erase_vars(&solution.expr_ty.get(v).cloned().unwrap_or(SemTy::Never))
-        };
-        let mut joined = SemTy::Never;
-        for v in ws {
-            joined = joined.join(&ety(v));
-        }
+        let joined = erase_vars(&main_st.join_writes(&main_st.global_writes[vid]));
         if joined == SemTy::Never {
-            continue; // stays Dyn
+            continue; // no write evaluated yet — the slot stays at bottom
         }
-        if matches!(repr_of(&joined), Repr::Raw(_)) {
-            let target = repr_of(&joined);
-            if !ws.iter().all(|v| {
-                let t = ety(v);
-                t == SemTy::Never || repr_of(&t) == target
-            }) {
-                continue; // stays Dyn
+        if joined != vars.global_ty[vid] {
+            vars.global_moves[vid] += 1;
+            if vars.global_moves[vid] >= WIDEN_LIMIT {
+                vars.global_ty[vid] = SemTy::Dyn;
+                vars.global_pinned[vid] = true;
+            } else {
+                vars.global_ty[vid] = joined;
             }
+            moved[vid] = true;
         }
-        global_tys[vid] = joined;
     }
 }
 
@@ -253,14 +359,13 @@ fn seed_global_tys(
 /// `return <v>` expression's solved type, with a value-less `return` / fall-off
 /// (`Return(None)`) contributing `NoneTy`. `Never` (no contributors yet) means
 /// "not known", and `join` treats it as the identity, so it never poisons a
-/// caller — the outer fixpoint lifts it as the body's expr types settle.
-fn inferred_return_ty(func: &HirFunction, solution: &Solution) -> SemTy {
+/// caller — the round loop lifts it as the body's expr types settle.
+fn inferred_return_ty(func: &HirFunction, st: &FuncState) -> SemTy {
     let mut joined = SemTy::Never;
     for (_b, block) in func.blocks.iter() {
         match &block.term {
             HirTerminator::Return(Some(v)) => {
-                let t = erase_vars(&solution.expr_ty.get(v).cloned().unwrap_or(SemTy::Never));
-                joined = joined.join(&t);
+                joined = joined.join(&erase_vars(&st.ety(*v)));
             }
             HirTerminator::Return(None) => joined = joined.join(&SemTy::NoneTy),
             _ => {}
@@ -779,62 +884,72 @@ fn type_name(ty: &SemTy) -> &'static str {
     }
 }
 
-/// The solved types: one per HIR expr node and one per local slot.
-struct Solution {
-    expr_ty: HashMap<Idx<HirExpr>, SemTy>,
-    local_ty: Vec<SemTy>,
+/// The module-level variables of the constraint system, shared (read-only) by
+/// every function's sweep: inferred return types and promoted-global slot
+/// types. Annotated returns, annotated (authoritative) globals, and demoted
+/// globals are constants — initialized once in [`infer`] and never moved.
+struct ModuleVars {
+    /// `ret_ty[fid]` — the declared return if annotated, else the climbing
+    /// join of the function's solved `return` types (Phase 8E).
+    ret_ty: Vec<SemTy>,
+    /// `global_ty[vid]` — the slot's annotation (authoritative), `Dyn`
+    /// (demoted / never written by main), or the recomputed join of
+    /// `__main__`'s writes, starting at `Never` (Phase 6B / 8).
+    global_ty: Vec<SemTy>,
+    /// Strict-move counters driving the [`WIDEN_LIMIT`] widening.
+    ret_moves: Vec<usize>,
+    global_moves: Vec<usize>,
+    /// Globals widened to `Dyn` — excluded from further recomputes (the direct
+    /// recompute in [`move_global_tys`] is non-monotone, so without the pin it
+    /// could oscillate forever).
+    global_pinned: Vec<bool>,
 }
 
-/// Per-function worklist solver over the [`TypeLattice`].
-struct Solver<'a> {
-    func: &'a HirFunction,
-    resolve: &'a ResolveResult,
-    ret_tys: &'a [SemTy],
-    /// Each function's visible Callable signature (params minus env) — the
-    /// type a `MakeClosure` over it produces (Phase 6A).
-    closure_sigs: &'a [Sig],
-    classes: &'a ClassTable,
-    interner: &'a StringInterner,
-    /// Current per-expr type (absent = `Never`, the lattice bottom).
-    expr_ty: HashMap<Idx<HirExpr>, SemTy>,
-    /// Current per-local type.
-    local_ty: Vec<SemTy>,
+/// The module variables one sweep actually READ: which `ret_ty[fid]` /
+/// `global_ty[vid]` entries flowed into the solution. A sweep is a
+/// deterministic function of these reads, so a function whose read variables
+/// did not move needs no re-solve — it would reproduce the same solution and
+/// the same read-set. Drives the dirty-marking in [`infer`].
+#[derive(Default)]
+struct ReadSet {
+    rets: HashSet<usize>,
+    globals: HashSet<usize>,
+}
+
+/// Per-function constraint state. Built ONCE by [`FuncState::collect`]; the
+/// constraint tables (`authoritative` / `assignments` / `cell_writes` /
+/// `global_writes`) are immutable afterwards, while the solution (`expr_ty` /
+/// `local_ty`) is [`FuncState::reset`] to bottom and re-solved each round.
+struct FuncState {
     /// `true` for locals whose frontend type is authoritative (a parameter or an
     /// explicit annotation): their type is fixed and never inferred.
     authoritative: Vec<bool>,
+    /// The solution bottom per local: the declared type for authoritative
+    /// locals, `Never` otherwise — what `reset` restores before a re-solve.
+    local_bottom: Vec<SemTy>,
     /// Value expressions assigned to each local, indexed by `LocalId`.
     assignments: Vec<Vec<Idx<HirExpr>>>,
     /// Value expressions written into the cell held by each local (`CellSet`
     /// plus the `MakeCell` init), indexed by the cell local's `LocalId` — the
     /// per-cell constraint of Phase 6A (the B10 field-join shape).
     cell_writes: Vec<Vec<Idx<HirExpr>>>,
-    /// Precomputed global slot types (from `__main__`'s writes; Phase 6B).
-    global_tys: &'a [SemTy],
-    /// Slots written outside `__main__` — always `Dyn` (Phase 6B).
-    global_demoted: &'a [bool],
-    /// Slots with a module-level annotation — their declared type is
-    /// authoritative and overrides demotion (Phase 8).
-    global_authoritative: &'a [bool],
     /// This function's own `GlobalSet` writes per slot — only `__main__` has
-    /// any when the slot is not demoted, making its reads a worklist join.
+    /// any when the slot is not demoted, making its reads a live worklist join
+    /// (and feeding the module-level `global_ty` recompute).
     global_writes: Vec<Vec<Idx<HirExpr>>>,
+    /// Current per-expr type (absent = `Never`, the lattice bottom).
+    expr_ty: HashMap<Idx<HirExpr>, SemTy>,
+    /// Current per-local type.
+    local_ty: Vec<SemTy>,
+    /// The module variables this function's LAST sweep read (its dynamic
+    /// dependency set) — kept across rounds so `infer`'s dirty-marking can
+    /// consult it even on rounds that skip the function.
+    reads: ReadSet,
 }
 
-impl<'a> Solver<'a> {
-    /// **collect** — seed the assignment table and the authoritative-local set.
-    #[allow(clippy::too_many_arguments)]
-    fn collect(
-        func: &'a HirFunction,
-        resolve: &'a ResolveResult,
-        ret_tys: &'a [SemTy],
-        closure_sigs: &'a [Sig],
-        classes: &'a ClassTable,
-        interner: &'a StringInterner,
-        global_tys: &'a [SemTy],
-        global_demoted: &'a [bool],
-        global_authoritative: &'a [bool],
-        n_globals: usize,
-    ) -> Self {
+impl FuncState {
+    /// **collect** — seed the assignment tables and the authoritative-local set.
+    fn collect(func: &HirFunction, n_globals: usize) -> Self {
         let n = func.locals.len();
         // A frontend type other than `Dyn` is authoritative: it comes from a
         // parameter annotation, a `name: T` annotation, or a synthetic local the
@@ -842,7 +957,7 @@ impl<'a> Solver<'a> {
         // results). Plain `x = ...` locals are `Dyn` and get inferred.
         let authoritative: Vec<bool> =
             func.locals.iter().map(|l| l.ty != SemTy::Dyn).collect();
-        let local_ty: Vec<SemTy> = func
+        let local_bottom: Vec<SemTy> = func
             .locals
             .iter()
             .enumerate()
@@ -873,56 +988,25 @@ impl<'a> Solver<'a> {
             }
         }
 
-        Solver {
-            func,
-            resolve,
-            ret_tys,
-            closure_sigs,
-            classes,
-            interner,
-            expr_ty: HashMap::new(),
-            local_ty,
+        let local_ty = local_bottom.clone();
+        FuncState {
             authoritative,
+            local_bottom,
             assignments,
             cell_writes,
-            global_tys,
-            global_demoted,
-            global_authoritative,
             global_writes,
+            expr_ty: HashMap::new(),
+            local_ty,
+            reads: ReadSet::default(),
         }
     }
 
-    /// **solve** — iterate the monotone worklist to a fixpoint, then write back.
-    fn solve(mut self) -> Solution {
-        // Gauss-Seidel sweeps: recompute every expr type, then every inferred
-        // local type, until a full sweep changes nothing. Every recomputation is
-        // monotone-increasing in the lattice and `Dyn` is an absorbing top, so the
-        // iteration terminates.
-        loop {
-            let mut changed = false;
-            let expr_indices: Vec<Idx<HirExpr>> = self.func.exprs.iter().map(|(i, _)| i).collect();
-            for idx in &expr_indices {
-                let new = self.eval_expr(*idx);
-                if self.expr_ty.get(idx) != Some(&new) {
-                    self.expr_ty.insert(*idx, new);
-                    changed = true;
-                }
-            }
-            for i in 0..self.local_ty.len() {
-                if self.authoritative[i] {
-                    continue;
-                }
-                let new = self.recompute_local(i);
-                if self.local_ty[i] != new {
-                    self.local_ty[i] = new;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        Solution { expr_ty: self.expr_ty, local_ty: self.local_ty }
+    /// Reset the solution to bottom for a fresh from-bottom re-solve (the
+    /// constraint tables are untouched — see the module docs for why resuming
+    /// the previous round's state would be unsound).
+    fn reset(&mut self) {
+        self.expr_ty.clear();
+        self.local_ty.clone_from(&self.local_bottom);
     }
 
     /// The current type of an expr (bottom = `Never` if not yet computed).
@@ -930,14 +1014,9 @@ impl<'a> Solver<'a> {
         self.expr_ty.get(&idx).cloned().unwrap_or(SemTy::Never)
     }
 
-    /// Recompute one inferred local's type from its assigned values, applying the
-    /// `Raw`-repr soundness guard (see the module docs).
-    fn recompute_local(&self, i: usize) -> SemTy {
-        self.join_writes(&self.assignments[i])
-    }
-
     /// Join the types of a set of written values with the `Raw`-repr soundness
-    /// guard. Shared by inferred locals and cell contents (Phase 6A).
+    /// guard. Shared by inferred locals, cell contents (Phase 6A), and global
+    /// slots (Phase 6B).
     ///
     /// `Never` is the in-progress bottom: a slot still being computed (or one
     /// only fed by not-yet-evaluated values across a loop back-edge) must stay
@@ -971,6 +1050,104 @@ impl<'a> Solver<'a> {
         }
         joined
     }
+}
+
+/// One per-function monotone worklist sweep over the [`TypeLattice`]: a
+/// borrowed view tying a function's [`FuncState`] to the current (read-only)
+/// [`ModuleVars`] for the duration of one from-bottom re-solve — so the
+/// module variables thread through the eval helpers without widening every
+/// signature.
+struct Sweeper<'a> {
+    st: &'a mut FuncState,
+    func: &'a HirFunction,
+    /// The module-level variables, frozen for this sweep.
+    vars: &'a ModuleVars,
+    resolve: &'a ResolveResult,
+    /// Each function's visible Callable signature (params minus env) — the
+    /// type a `MakeClosure` over it produces (Phase 6A).
+    closure_sigs: &'a [Sig],
+    classes: &'a ClassTable,
+    interner: &'a StringInterner,
+    /// Slots written outside `__main__` — always `Dyn` (Phase 6B).
+    global_demoted: &'a [bool],
+    /// Slots with a module-level annotation — their declared type is
+    /// authoritative and overrides demotion (Phase 8).
+    global_authoritative: &'a [bool],
+    /// Module variables read so far in this sweep (interior mutability — the
+    /// recording happens inside `&self` eval helpers). Moved into
+    /// [`FuncState::reads`] when the sweep finishes.
+    reads: RefCell<ReadSet>,
+}
+
+impl<'a> Sweeper<'a> {
+    /// **solve** — iterate the monotone worklist to a fixpoint in `self.st`.
+    fn solve(self) {
+        // Gauss-Seidel sweeps: recompute every expr type, then every inferred
+        // local type, until a full sweep changes nothing. Recomputations climb
+        // the lattice (`Dyn` is the absorbing top), but the container spine is
+        // infinitely tall, so a self-recursive constraint (`x = [x]`,
+        // re-joined through a local / cell / global slot every iteration)
+        // would climb forever — an expr still moving after WIDEN_LIMIT moves
+        // is widened to `Dyn` and pinned for the rest of this solve. Locals
+        // need no counters of their own: a local is a pure join of expr types
+        // (`join_writes`), so once every expr is stable — converged or pinned
+        // — the locals converge right after, bounding the whole sweep.
+        let expr_indices: Vec<Idx<HirExpr>> = self.func.exprs.iter().map(|(i, _)| i).collect();
+        let mut expr_moves: HashMap<Idx<HirExpr>, usize> = HashMap::new();
+        loop {
+            let mut changed = false;
+            for idx in &expr_indices {
+                let m = expr_moves.get(idx).copied().unwrap_or(0);
+                if m >= WIDEN_LIMIT {
+                    continue; // widened to `Dyn` — pinned for this solve
+                }
+                let new = self.eval_expr(*idx);
+                if self.st.expr_ty.get(idx) != Some(&new) {
+                    let m = m + 1;
+                    expr_moves.insert(*idx, m);
+                    let new = if m >= WIDEN_LIMIT { SemTy::Dyn } else { new };
+                    self.st.expr_ty.insert(*idx, new);
+                    changed = true;
+                }
+            }
+            for i in 0..self.st.local_ty.len() {
+                if self.st.authoritative[i] {
+                    continue;
+                }
+                // Recompute the local from its assigned values, applying the
+                // `Raw`-repr soundness guard (see the module docs).
+                let new = self.st.join_writes(&self.st.assignments[i]);
+                if self.st.local_ty[i] != new {
+                    self.st.local_ty[i] = new;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // Persist this sweep's dynamic dependency set for the dirty-marking.
+        self.st.reads = self.reads.into_inner();
+    }
+
+    /// The current type of an expr (bottom = `Never` if not yet computed).
+    fn ety(&self, idx: Idx<HirExpr>) -> SemTy {
+        self.st.ety(idx)
+    }
+
+    /// A callee's current `ret_ty` module variable, recording the read in the
+    /// sweep's [`ReadSet`].
+    fn callee_ret_ty(&self, fid: pyaot_utils::FuncId) -> SemTy {
+        self.reads.borrow_mut().rets.insert(fid.index());
+        self.vars.ret_ty[fid.index()].clone()
+    }
+
+    /// A global slot's current `global_ty` module variable, recording the read
+    /// in the sweep's [`ReadSet`].
+    fn global_slot_ty(&self, vid: usize) -> SemTy {
+        self.reads.borrow_mut().globals.insert(vid);
+        self.vars.global_ty.get(vid).cloned().unwrap_or(SemTy::Dyn)
+    }
 
     /// The type of an expr node from its kind and its operands' current types.
     fn eval_expr(&self, idx: Idx<HirExpr>) -> SemTy {
@@ -981,7 +1158,7 @@ impl<'a> Solver<'a> {
             HirExprKind::BoolLit(_) => SemTy::Bool,
             HirExprKind::NoneLit => SemTy::NoneTy,
             HirExprKind::Compare { .. } => SemTy::Bool,
-            HirExprKind::Local(lid) => self.local_ty[lid.index()].clone(),
+            HirExprKind::Local(lid) => self.st.local_ty[lid.index()].clone(),
             HirExprKind::Name(symref) => self.name_ty(*symref),
             HirExprKind::Unary { op, operand } => self.unary_ty(*op, self.ety(*operand)),
             HirExprKind::BinOp { op, l, r } => self.binop_ty(*op, self.ety(*l), self.ety(*r)),
@@ -1009,7 +1186,7 @@ impl<'a> Solver<'a> {
                 if let HirExprKind::Super(cid) = self.func.exprs[*recv].kind {
                     self.classes
                         .resolve_super_method(cid, *method_name)
-                        .map(|fid| self.ret_tys[fid.index()].clone())
+                        .map(|fid| self.callee_ret_ty(fid))
                         .unwrap_or(SemTy::Dyn)
                 } else if let Some(cid) = self.name_class_ref(*recv) {
                     self.classes
@@ -1017,7 +1194,7 @@ impl<'a> Solver<'a> {
                         .and_then(|i| {
                             i.static_method(*method_name).or_else(|| i.class_method(*method_name))
                         })
-                        .map(|m| self.ret_tys[m.func_id.index()].clone())
+                        .map(|m| self.callee_ret_ty(m.func_id))
                         .unwrap_or(SemTy::Dyn)
                 } else {
                     self.method_call_ty(self.ety(*recv), *method_name)
@@ -1097,7 +1274,7 @@ impl<'a> Solver<'a> {
                     // frontend (the slot itself is a pin_tagged cell pointer).
                     l.ty.clone()
                 } else {
-                    self.join_writes(&self.cell_writes[cell.index()])
+                    self.st.join_writes(&self.st.cell_writes[cell.index()])
                 }
             }
             // ── generators (Phase 6E) ──
@@ -1113,20 +1290,20 @@ impl<'a> Solver<'a> {
             },
             // Global slots are uniform tagged storage; the slot type is the
             // join of `__main__`'s writes (a live worklist join inside main
-            // itself, the precomputed table elsewhere), `Dyn` once any other
-            // function writes it (Phase 6B).
+            // itself, the `global_ty` module variable elsewhere), `Dyn` once
+            // any other function writes it (Phase 6B).
             HirExprKind::GlobalGet { var_id } => {
                 let vid = *var_id as usize;
                 if self.global_authoritative.get(vid).copied().unwrap_or(false) {
                     // A module-level annotation is the slot's contract type
                     // everywhere — never inferred from writes (Phase 8).
-                    self.global_tys.get(vid).cloned().unwrap_or(SemTy::Dyn)
+                    self.global_slot_ty(vid)
                 } else if self.global_demoted.get(vid).copied().unwrap_or(false) {
                     SemTy::Dyn
-                } else if !self.global_writes[vid].is_empty() {
-                    self.join_writes(&self.global_writes[vid])
+                } else if !self.st.global_writes[vid].is_empty() {
+                    self.st.join_writes(&self.st.global_writes[vid])
                 } else {
-                    self.global_tys.get(vid).cloned().unwrap_or(SemTy::Dyn)
+                    self.global_slot_ty(vid)
                 }
             }
             // ── exceptions (Phase 7) ──
@@ -1185,7 +1362,7 @@ impl<'a> Solver<'a> {
                         .or_else(|| info.static_method(method_name))
                         .or_else(|| info.class_method(method_name))
                 })
-                .map(|m| self.ret_tys[m.func_id.index()].clone());
+                .map(|m| self.callee_ret_ty(m.func_id));
             return match ret {
                 // Substitute the generic type params for a `Stack[int]` receiver.
                 Some(t) => self.apply_subst(&recv, t),
@@ -1282,7 +1459,7 @@ impl<'a> Solver<'a> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
         let m = info.methods.iter().find(|m| self.interner.resolve(m.name) == name)?;
-        Some(self.ret_tys[m.func_id.index()].clone())
+        Some(self.callee_ret_ty(m.func_id))
     }
 
     /// Result type of a subscript read `base[index]`, from the base's container
@@ -1409,7 +1586,7 @@ impl<'a> Solver<'a> {
     fn name_ty(&self, symref: SymbolRef) -> SemTy {
         if let SymbolRef::Resolved(id) = symref {
             if let Symbol::Local(lid) = self.resolve.symbol(id) {
-                return self.local_ty[lid.index()].clone();
+                return self.st.local_ty[lid.index()].clone();
             }
         }
         SemTy::Dyn
@@ -1521,7 +1698,7 @@ impl<'a> Solver<'a> {
     fn call_ty(&self, callee: Idx<HirExpr>, args: &[Idx<HirExpr>]) -> SemTy {
         if let HirExprKind::Name(SymbolRef::Resolved(id)) = &self.func.exprs[callee].kind {
             match self.resolve.symbol(*id) {
-                Symbol::Function(fid) => return self.ret_tys[fid.index()].clone(),
+                Symbol::Function(fid) => return self.callee_ret_ty(fid),
                 Symbol::Builtin(kind) => return self.builtin_ty(kind, args),
                 Symbol::Container(op) => return self.container_op_ty(op, args),
                 // `Cls(args)` constructs an instance of that class.
@@ -1714,9 +1891,9 @@ fn erase_vars(ty: &SemTy) -> SemTy {
     }
 }
 
-fn materialize(func: &mut HirFunction, solution: &Solution) {
+fn materialize(func: &mut HirFunction, st: &FuncState) {
     for (i, local) in func.locals.iter_mut().enumerate() {
-        let ty = erase_vars(&solution.local_ty[i]);
+        let ty = erase_vars(&st.local_ty[i]);
         let ty = &ty;
         if *ty != SemTy::Never {
             local.ty = ty.clone();
@@ -1729,7 +1906,7 @@ fn materialize(func: &mut HirFunction, solution: &Solution) {
         }
     }
     for (idx, expr) in func.exprs.iter_mut() {
-        if let Some(ty) = solution.expr_ty.get(&idx) {
+        if let Some(ty) = st.expr_ty.get(&idx) {
             let ty = erase_vars(ty);
             if ty != SemTy::Never {
                 expr.ty = ty;
