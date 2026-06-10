@@ -246,12 +246,33 @@ dispatch on the tag (fixnum fast path + `num-bigint`, demote on fit). A range-pr
 `Raw(I64)` fast path is a deliberate Phase-3 optimization gated on a proof that the
 operands cannot be bignum — never the default.
 
+### B17. Raising Cranelift `opt_level` re-opens the setjmp soundness argument
+**Trap:** the Phase-7 memory-backing of locals in `has_try` functions is sound
+*today* because codegen runs at `opt_level=none` (the default — no flag is set):
+every read is a `stack_load`, every write a `stack_store`, and nothing is
+scheduled or forwarded across the direct `setjmp` call. Turning on
+`opt_level=speed[_and_size]` (the obvious Phase-9 knob) enables Cranelift's
+e-graph optimizations, and the argument then silently starts depending on
+Cranelift's alias analysis treating *every call* as a memory clobber — if a
+store-to-load forwarding ever ran past the `setjmp` call into the handler edge,
+the handler would observe the pre-`try` value of a local reassigned inside the
+body (the classic setjmp-clobber miscompile, in its memory form). **Why it
+bites:** nothing fails at the moment the flag flips — the divergence appears
+only on the exceptional path of an optimized build, the exact debug-vs-release
+tell B3 warns about. **Avoided by:** treating the clobber assumption as a
+*tested* invariant, not a given: the corpus pins it (`test_exceptions.py`
+variable-preservation section; `p7_raise_tryexcept.py` `preserve()` covers
+Raw-spilled floats and rooted strs/ints), so re-run the differential gate in
+release *with the new opt level* before shipping Phase 9 — and if it breaks,
+the fallbacks are per-frame `volatile`-style loads via `MemFlags` or fencing
+the setjmp block boundary, never "hope the regalloc behaves".
+
 ---
 
 ## How to use this file
 
 When implementing a front-half feature, scan Part B for anything it touches
 (arithmetic → B1/B6; containers → B4/B5/B7; classes → B10/B11; exceptions →
-B2/B3). When tempted to add a flag, side-table, or special case to make a type
+B2/B3/B17). When tempted to add a flag, side-table, or special case to make a type
 "work", stop — that is the smell Part A warns about; fix the representation or the
 constraint instead.

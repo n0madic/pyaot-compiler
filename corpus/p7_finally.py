@@ -143,10 +143,48 @@ except RuntimeError as e2:
     print(str(e2))
     print(e2.__class__.__name__)
 
-# str(e) of a message-less exception is empty
+# str(e) of a message-less exception is empty; its args tuple is ()
 try:
     raise TypeError()
 except TypeError as e3:
     print("empty:[" + str(e3) + "]")
+    print("args-len:", len(e3.args))
+
+# ── tuple-clause `as` binding keeps the exception-message surface ──
+def tuple_clause_msg(kind: int) -> str:
+    try:
+        if kind == 0:
+            raise ValueError("tc-value")
+        raise RuntimeError("tc-runtime")
+    except (ValueError, RuntimeError) as e:
+        print(e)
+        return str(e)
+
+print(tuple_clause_msg(0), tuple_clause_msg(1))
+
+try:
+    raise ValueError("tc-args")
+except (ValueError, RuntimeError) as e4:
+    print(e4.args[0])
+
+# ── min()/max() on empty input raise with the live-oracle message ──
+try:
+    empty_l: list[int] = []
+    bad = min(empty_l)
+except ValueError as e5:
+    print(e5)
+try:
+    empty_l2: list[int] = []
+    bad2 = max(empty_l2)
+except ValueError as e6:
+    print(e6)
+
+# ── min/max with a builtin key function ──
+vals: list[int] = [3, -7, 2, -1]
+print(min(vals, key=abs), max(vals, key=abs))
+
+# ── starred unpacking of a literal RHS ──
+first, *mid, last = [1, 2, 3, 4]
+print(first, mid, last)
 
 print("p7_finally done")

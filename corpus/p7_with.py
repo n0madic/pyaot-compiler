@@ -151,6 +151,22 @@ class Pair:
 with Pair() as (x, y):
     print("pair:", x, y)
 
+# ── forward-reference string annotation on __enter__ ──
+class SelfYield:
+    tag: int
+
+    def __init__(self, tag: int):
+        self.tag = tag
+
+    def __enter__(self) -> "SelfYield":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        return False
+
+with SelfYield(7) as sy:
+    print("selfyield:", sy.tag)
+
 # ── nested with + try around it ──
 def nested() -> str:
     t = SawIt()

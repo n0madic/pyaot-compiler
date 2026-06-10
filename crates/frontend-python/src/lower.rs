@@ -416,6 +416,15 @@ struct IterLoop {
     elem: LocalId,
 }
 
+/// How a `min`/`max` `key=` callable is invoked (Phase 7): staged once into a
+/// local and called indirectly (lambdas, locals), or called directly by name
+/// per element (builtins / top-level functions, which have no value-position
+/// staging requirement).
+enum KeyMode<'e> {
+    Staged(LocalId),
+    ByName(&'e Expr),
+}
+
 /// How a source name in scope maps to storage (Phase 6A): directly to a local
 /// slot, or through a cell held in a local slot (a captured / capturable
 /// variable — the P6-2 rule).
@@ -959,20 +968,24 @@ impl<'a> FnLowerer<'a> {
             if let Some(targets) = seq_target_elts(&a.targets[0]) {
                 let span = to_span(a.range());
                 // A literal sequence RHS unpacks element-wise with a static arity
-                // check and no intermediate tuple; anything else stages a tuple and
-                // reads it back positionally.
-                if let Some(values) = seq_target_elts(a.value.as_ref()) {
-                    if targets.len() != values.len() {
-                        return Err(parse_error(
-                            format!(
-                                "cannot unpack: expected {} value(s), got {}",
-                                targets.len(),
-                                values.len()
-                            ),
-                            span,
-                        ));
+                // check and no intermediate tuple; anything else — including a
+                // starred target over a literal (`a, *rest = [1, 2, 3]`) —
+                // stages a value and reads it back positionally.
+                let has_star = targets.iter().any(|t| matches!(t, Expr::Starred(_)));
+                if !has_star {
+                    if let Some(values) = seq_target_elts(a.value.as_ref()) {
+                        if targets.len() != values.len() {
+                            return Err(parse_error(
+                                format!(
+                                    "cannot unpack: expected {} value(s), got {}",
+                                    targets.len(),
+                                    values.len()
+                                ),
+                                span,
+                            ));
+                        }
+                        return self.lower_unpack_literal(targets, values, span);
                     }
-                    return self.lower_unpack_literal(targets, values, span);
                 }
                 let value = self.lower_expr(a.value.as_ref())?;
                 return self.lower_unpack_subscript(targets, value, span);
@@ -1794,10 +1807,38 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// The static type an `except … as e` binding carries: a single builtin
-    /// name → `BuiltinException`; a single user class → `Class`; a tuple or
-    /// bare clause → `Dyn` (the always-correct tagged baseline).
+    /// name → `BuiltinException`; a single user class → `Class`; a tuple
+    /// clause → the `Union` of its members (NOT `Dyn` — `str(e)`/`print(e)`
+    /// must still route to the exception-message surface, and the generic
+    /// Dyn print renders the object repr; Principle 2 demands the imprecise
+    /// type stays behaviorally correct). A bare clause stays `Dyn`.
     fn exc_clause_semty(&mut self, ty: Option<&Expr>) -> SemTy {
-        let Some(Expr::Name(n)) = ty else { return SemTy::Dyn };
+        match ty {
+            Some(e @ Expr::Name(_)) => self.exc_member_semty(e),
+            Some(Expr::Tuple(t)) => {
+                let mut members: Vec<SemTy> = Vec::new();
+                for e in &t.elts {
+                    let m = self.exc_member_semty(e);
+                    if m == SemTy::Dyn {
+                        return SemTy::Dyn;
+                    }
+                    if !members.contains(&m) {
+                        members.push(m);
+                    }
+                }
+                match members.len() {
+                    0 => SemTy::Dyn,
+                    1 => members.pop().expect("one member"),
+                    _ => SemTy::Union(members),
+                }
+            }
+            _ => SemTy::Dyn,
+        }
+    }
+
+    /// One except-clause member's static type (builtin exception / user class).
+    fn exc_member_semty(&mut self, e: &Expr) -> SemTy {
+        let Expr::Name(n) = e else { return SemTy::Dyn };
         if let Some((cid, iname)) = self.ctx.class_map.get(n.id.as_str()).copied() {
             return SemTy::Class { class_id: cid, name: iname };
         }
@@ -1960,6 +2001,19 @@ impl<'a> FnLowerer<'a> {
                 ))
             }
         };
+        // The PEP-3134 `from <caught variable>` idiom needs an instance-cause
+        // runtime entry point — out of scope for this milestone; say so
+        // clearly instead of "unknown exception type".
+        {
+            let iname = self.intern(cname);
+            if self.scope.contains_key(&iname) {
+                return Err(parse_error(
+                    "`raise ... from <variable>` is out of scope for this milestone \
+                     (use a builtin exception constructor or `from None`)",
+                    span,
+                ));
+            }
+        }
         let Some(cause_tag) = pyaot_core_defs::exception_name_to_tag(cname) else {
             return Err(parse_error(
                 format!("unknown exception type `{cname}` in raise cause"),
@@ -2742,15 +2796,30 @@ impl<'a> FnLowerer<'a> {
             let elems = self.lower_expr_list(args)?;
             self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span)
         };
-        // Stage the key callable once (CPython evaluates it once).
-        let key_l = match key {
+        // The key callable: a bare out-of-scope name (`key=abs`, `key=len`, a
+        // top-level def) is called DIRECTLY per element — builtins have no
+        // value-position thunk, so staging would reject them. Anything else
+        // (lambda, a local) is staged once and called indirectly (CPython
+        // evaluates the key expression once; a bare name re-read is pure).
+        let key_mode: Option<KeyMode> = match key {
+            None => None,
+            Some(k @ Expr::Name(n)) => {
+                let iname = self.intern(n.id.as_str());
+                if self.scope.contains_key(&iname) {
+                    let kv = self.lower_expr(k)?;
+                    let l = self.fresh_local(SemTy::Dyn);
+                    self.push_stmt(HirStmt::Assign { target: l, value: kv });
+                    Some(KeyMode::Staged(l))
+                } else {
+                    Some(KeyMode::ByName(k))
+                }
+            }
             Some(k) => {
                 let kv = self.lower_expr(k)?;
                 let l = self.fresh_local(SemTy::Dyn);
                 self.push_stmt(HirStmt::Assign { target: l, value: kv });
-                Some(l)
+                Some(KeyMode::Staged(l))
             }
-            None => None,
         };
 
         // it = iter(iterable); first probe decides empty-vs-seed.
@@ -2767,10 +2836,10 @@ impl<'a> FnLowerer<'a> {
         let first_b = self.new_block();
         self.seal(HirTerminator::Branch { cond: done0, then: empty_b, else_: first_b });
 
-        // empty: raise ValueError("min() arg is an empty sequence").
+        // empty: raise ValueError — the live-oracle (CPython ≥3.13) wording.
         self.switch(empty_b);
         let what = if is_min { "min" } else { "max" };
-        let msg_id = self.intern(&format!("{what}() arg is an empty sequence"));
+        let msg_id = self.intern(&format!("{what}() iterable argument is empty"));
         let msg = self.alloc(HirExprKind::StrLit(msg_id), SemTy::Str, span);
         self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
             tag: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
@@ -2783,10 +2852,10 @@ impl<'a> FnLowerer<'a> {
         let acc = self.fresh_local(SemTy::Dyn);
         let e0 = self.local_ref(elem0, span);
         self.push_stmt(HirStmt::Assign { target: acc, value: e0 });
-        let acc_key = match key_l {
-            Some(kl) => {
+        let acc_key = match &key_mode {
+            Some(km) => {
                 let l = self.fresh_local(SemTy::Dyn);
-                let v = self.emit_key_call(kl, elem0, span);
+                let v = self.emit_key_call(km, elem0, span)?;
                 self.push_stmt(HirStmt::Assign { target: l, value: v });
                 Some(l)
             }
@@ -2804,10 +2873,10 @@ impl<'a> FnLowerer<'a> {
         self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
 
         self.switch(body_b);
-        let cand_key = match key_l {
-            Some(kl) => {
+        let cand_key = match &key_mode {
+            Some(km) => {
                 let l = self.fresh_local(SemTy::Dyn);
-                let v = self.emit_key_call(kl, elem, span);
+                let v = self.emit_key_call(km, elem, span)?;
                 self.push_stmt(HirStmt::Assign { target: l, value: v });
                 Some(l)
             }
@@ -2859,11 +2928,20 @@ impl<'a> FnLowerer<'a> {
         )
     }
 
-    /// `key(elem)` — an indirect call through the staged key callable.
-    fn emit_key_call(&mut self, key_l: LocalId, elem: LocalId, span: Span) -> Idx<HirExpr> {
-        let callee = self.local_ref(key_l, span);
+    /// `key(elem)` — an indirect call through the staged key callable, or a
+    /// direct by-name call (builtins / top-level functions).
+    fn emit_key_call(
+        &mut self,
+        mode: &KeyMode<'_>,
+        elem: LocalId,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        let callee = match mode {
+            KeyMode::Staged(l) => self.local_ref(*l, span),
+            KeyMode::ByName(expr) => self.lower_callee(expr)?,
+        };
         let arg = self.local_ref(elem, span);
-        self.alloc(HirExprKind::Call { callee, args: vec![arg] }, SemTy::Dyn, span)
+        Ok(self.alloc(HirExprKind::Call { callee, args: vec![arg] }, SemTy::Dyn, span))
     }
 
     /// `set()` → empty set; `set(iterable)` → fill an empty set from the iterable.
@@ -4346,32 +4424,43 @@ fn binop_from_ast(op: &PyOperator, span: Span) -> Result<BinOp> {
 /// seed `x: list[int] = []` (PITFALLS B4).
 fn annotation_to_semty(ann: &Expr, ctx: &AnnCtx) -> SemTy {
     match ann {
-        Expr::Name(n) => match n.id.as_str() {
-            "int" => SemTy::Int,
-            "float" => SemTy::Float,
-            "bool" => SemTy::Bool,
-            "str" => SemTy::Str,
-            "bytes" => SemTy::Bytes,
-            "None" | "NoneType" => SemTy::NoneTy,
-            "list" | "List" => SemTy::list_of(SemTy::Dyn),
-            "dict" | "Dict" => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
-            "set" | "Set" | "frozenset" => SemTy::set_of(SemTy::Dyn),
-            "tuple" | "Tuple" => SemTy::tuple_var_of(SemTy::Dyn),
-            other => {
-                // An in-scope type variable (Phase 5E) → `SemTy::Var`.
-                if let Some(id) = ctx.type_vars.get(other) {
-                    return SemTy::Var(*id);
-                }
-                // A user-defined class name annotates an instance of that class.
-                match ctx.class_map.get(other) {
-                    Some((class_id, name)) => SemTy::Class { class_id: *class_id, name: *name },
-                    None => SemTy::Dyn,
-                }
-            }
-        },
+        Expr::Name(n) => named_annotation(n.id.as_str(), ctx),
         Expr::Subscript(s) => annotation_subscript(s.value.as_ref(), s.slice.as_ref(), ctx),
-        Expr::Constant(c) if matches!(c.value, Constant::None) => SemTy::NoneTy,
+        Expr::Constant(c) => match &c.value {
+            Constant::None => SemTy::NoneTy,
+            // A string annotation is a PEP-484 forward reference: resolve the
+            // quoted name exactly like a bare one (`-> "CM"` ≡ `-> CM`).
+            Constant::Str(s) => named_annotation(s, ctx),
+            _ => SemTy::Dyn,
+        },
         _ => SemTy::Dyn,
+    }
+}
+
+/// Resolve a (possibly forward-referenced) annotation NAME to a `SemTy`.
+fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
+    match name {
+        "int" => SemTy::Int,
+        "float" => SemTy::Float,
+        "bool" => SemTy::Bool,
+        "str" => SemTy::Str,
+        "bytes" => SemTy::Bytes,
+        "None" | "NoneType" => SemTy::NoneTy,
+        "list" | "List" => SemTy::list_of(SemTy::Dyn),
+        "dict" | "Dict" => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+        "set" | "Set" | "frozenset" => SemTy::set_of(SemTy::Dyn),
+        "tuple" | "Tuple" => SemTy::tuple_var_of(SemTy::Dyn),
+        other => {
+            // An in-scope type variable (Phase 5E) → `SemTy::Var`.
+            if let Some(id) = ctx.type_vars.get(other) {
+                return SemTy::Var(*id);
+            }
+            // A user-defined class name annotates an instance of that class.
+            match ctx.class_map.get(other) {
+                Some((class_id, name)) => SemTy::Class { class_id: *class_id, name: *name },
+                None => SemTy::Dyn,
+            }
+        }
     }
 }
 

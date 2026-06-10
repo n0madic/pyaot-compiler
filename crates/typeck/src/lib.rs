@@ -984,11 +984,19 @@ impl<'a> Solver<'a> {
     /// `@property` getter's return, an instance field's best-effort type (D5), or
     /// a class attribute's type; `Dyn` for an unknown receiver/attribute.
     fn attribute_ty(&self, recv: SemTy, name: InternedString) -> SemTy {
-        // `e.args` on a caught builtin exception (Phase 7B): the args tuple.
-        // Typed `Dyn` (not `tuple[Dyn, ...]`) so a user annotation like
-        // `args: tuple[str]` is admitted gradually rather than rejected by the
-        // tuple-arity contract.
-        if matches!(recv, SemTy::BuiltinException(_)) {
+        // `e.args` on a caught builtin exception — or a tuple clause of only
+        // builtins — (Phase 7B): the args tuple. Typed `Dyn` (not
+        // `tuple[Dyn, ...]`) so a user annotation like `args: tuple[str]` is
+        // admitted gradually rather than rejected by the tuple-arity contract.
+        let builtin_exc = match &recv {
+            SemTy::BuiltinException(_) => true,
+            SemTy::Union(members) => {
+                !members.is_empty()
+                    && members.iter().all(|m| matches!(m, SemTy::BuiltinException(_)))
+            }
+            _ => false,
+        };
+        if builtin_exc {
             return SemTy::Dyn;
         }
         let Some(cid) = class_of(&recv, self.classes) else { return SemTy::Dyn };

@@ -619,14 +619,23 @@ impl<'a> FnLower<'a> {
         sep: Option<pyaot_utils::InternedString>,
         end: Option<pyaot_utils::InternedString>,
     ) -> Result<()> {
-        for (i, arg_idx) in args.iter().enumerate() {
+        // Evaluate ALL argument expressions before writing anything (CPython
+        // order: a side-effecting argument's output precedes the whole line).
+        // String conversion still happens per-argument during the write, which
+        // matches CPython's `print` converting as it writes.
+        let mut vals = Vec::with_capacity(args.len());
+        for arg_idx in args {
+            let (loc, repr) = self.lower_expr(*arg_idx)?;
+            vals.push((*arg_idx, loc, repr));
+        }
+        for (i, (arg_idx, loc, repr)) in vals.into_iter().enumerate() {
             if i > 0 {
                 match sep {
                     None => self.emit(MirInst::Print { kind: PrintKind::Sep, arg: None }),
                     Some(id) => self.emit_print_str(id),
                 }
             }
-            self.lower_print_arg(*arg_idx)?;
+            self.lower_print_arg(arg_idx, loc, repr)?;
         }
         match end {
             None => self.emit(MirInst::Print { kind: PrintKind::Newline, arg: None }),
@@ -635,8 +644,9 @@ impl<'a> FnLower<'a> {
         Ok(())
     }
 
-    /// Print one argument with the `PrintKind` selected from its `SemTy`.
-    fn lower_print_arg(&mut self, arg_idx: Idx<HirExpr>) -> Result<()> {
+    /// Print one already-evaluated argument with the `PrintKind` selected from
+    /// its `SemTy`.
+    fn lower_print_arg(&mut self, arg_idx: Idx<HirExpr>, loc: LocalId, repr: Repr) -> Result<()> {
         let ty = self.func.exprs[arg_idx].ty.clone();
         // A concrete class with `__str__`/`__repr__` (CPython print precedence):
         // the runtime's top-level print path renders the *default* repr for
@@ -645,7 +655,6 @@ impl<'a> FnLower<'a> {
             .concrete_dunder(&ty, "__str__")
             .or_else(|| self.concrete_dunder(&ty, "__repr__"))
         {
-            let (loc, repr) = self.lower_expr(arg_idx)?;
             let (res, rrep) = self.emit_dunder_call(fid, vec![(loc, repr)])?;
             let tagged = self.coerce(res, rrep, Repr::Tagged)?;
             self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
@@ -654,7 +663,6 @@ impl<'a> FnLower<'a> {
         // `print(e)` of a caught exception prints its message (Phase 7B) —
         // the generic instance print would render the default object repr.
         if self.is_exception_value(&ty) {
-            let (loc, repr) = self.lower_expr(arg_idx)?;
             let vt = self.coerce(loc, repr, Repr::Tagged)?;
             let s = self.alloc_temp(Repr::Heap(HeapShape::Str));
             self.emit(MirInst::ExcInstanceStr { dst: s, value: Operand::Local(vt) });
@@ -662,7 +670,6 @@ impl<'a> FnLower<'a> {
             self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
             return Ok(());
         }
-        let (loc, repr) = self.lower_expr(arg_idx)?;
         let (kind, want) = print_dispatch(&ty);
         match want {
             // No-operand kinds (None_): value already evaluated for side effects.
@@ -1063,10 +1070,12 @@ impl<'a> FnLower<'a> {
         let span = self.func.exprs[value].span;
         let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
 
-        // `e.args` on a caught builtin exception (Phase 7B): the args tuple at
-        // instance field slot 0 (the layout `create_builtin_exception_instance`
-        // produces). Other attributes on builtin exceptions are out of scope.
-        if matches!(self.func.exprs[value].ty, SemTy::BuiltinException(_)) {
+        // `e.args` on a caught builtin exception — or a tuple clause of only
+        // builtins — (Phase 7B): the args tuple at instance field slot 0 (the
+        // layout `create_builtin_exception_instance` produces; user exception
+        // classes keep their own field layout and are NOT routed here). Other
+        // attributes on builtin exceptions are out of scope.
+        if is_builtin_exception_ty(&self.func.exprs[value].ty) {
             if self.interner.resolve(name) != "args" {
                 return Err(CompilerError::semantic_error(
                     format!(
@@ -1526,14 +1535,17 @@ impl<'a> FnLower<'a> {
     }
 
     /// True iff `ty` statically denotes a caught exception value (a builtin
-    /// exception or a user exception class) — drives the `str(e)`/`print(e)`
-    /// message routing (Phase 7B/7C).
+    /// exception, a user exception class, or a tuple-clause `Union` of those)
+    /// — drives the `str(e)`/`print(e)` message routing (Phase 7B/7C).
     fn is_exception_value(&self, ty: &SemTy) -> bool {
-        if matches!(ty, SemTy::BuiltinException(_)) {
-            return true;
+        match ty {
+            SemTy::BuiltinException(_) => true,
+            SemTy::Union(members) => {
+                !members.is_empty() && members.iter().all(|m| self.is_exception_value(m))
+            }
+            _ => class_of(ty, self.classes)
+                .is_some_and(|cid| self.classes.is_exception_class(cid)),
         }
-        class_of(ty, self.classes)
-            .is_some_and(|cid| self.classes.is_exception_class(cid))
     }
 
     /// If `ty` is a concrete user class defining the dunder `name` (and not
@@ -2656,6 +2668,20 @@ fn is_class_repr(r: &Repr) -> bool {
 /// True iff `name` is a dunder (`__name__`) — a registry-dispatched special method.
 fn is_dunder(name: &str) -> bool {
     name.len() > 4 && name.starts_with("__") && name.ends_with("__")
+}
+
+/// True iff `ty` is a builtin exception or a tuple-clause `Union` of only
+/// builtin exceptions — the receivers whose instances carry `.args` at field
+/// slot 0 (Phase 7B).
+fn is_builtin_exception_ty(ty: &SemTy) -> bool {
+    match ty {
+        SemTy::BuiltinException(_) => true,
+        SemTy::Union(members) => {
+            !members.is_empty()
+                && members.iter().all(|m| matches!(m, SemTy::BuiltinException(_)))
+        }
+        _ => false,
+    }
 }
 
 /// Convert a class-attribute initializer to a MIR [`Const`], interning literal

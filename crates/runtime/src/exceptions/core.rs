@@ -423,7 +423,12 @@ const BUILTIN_EXC_FIELD_COUNT: i64 = 1;
 ///
 /// The instance is a regular `InstanceObj` with:
 /// - class_id = exception type tag (0-27)
-/// - field 0 = `.args` tuple (single-element tuple containing the message string)
+/// - field 0 = `.args` tuple: a single-element tuple containing the message
+///   string, or — for a message-less raise like `ValueError()` — the EMPTY
+///   tuple, matching CPython's `e.args == ()`. (Deliberate Phase-7 substrate
+///   extension: the message pipeline cannot distinguish `ValueError()` from
+///   `ValueError("")`, so the explicit-empty-string edge also yields `()` —
+///   documented divergence, out of corpus.)
 ///
 /// # Safety
 /// The `exc` must have valid message pointer/length if non-null.
@@ -455,17 +460,20 @@ pub(super) unsafe fn create_builtin_exception_instance(
     };
     gc_push(&mut frame);
 
+    let has_msg = exc.message_len > 0 && !exc.message.is_null();
+
     // Create the message string object (may trigger GC; instance is rooted)
-    let msg_str = if exc.message_len > 0 && !exc.message.is_null() {
+    let msg_str = if has_msg {
         crate::string::rt_make_str(exc.message, exc.message_len)
     } else {
-        crate::string::rt_make_str(std::ptr::null(), 0)
+        std::ptr::null_mut()
     };
     // Root msg_str across rt_make_tuple
     roots[1] = msg_str;
 
-    // Create a 1-element tuple for .args (may trigger GC; both are rooted)
-    let args_tuple = crate::tuple::rt_make_tuple(1);
+    // Create the .args tuple (may trigger GC; both are rooted): 1 element with
+    // a message, empty without one.
+    let args_tuple = crate::tuple::rt_make_tuple(if has_msg { 1 } else { 0 });
 
     gc_pop();
 
@@ -473,7 +481,9 @@ pub(super) unsafe fn create_builtin_exception_instance(
     let instance = roots[0];
     let msg_str = roots[1];
 
-    crate::tuple::rt_tuple_set(args_tuple, 0, msg_str);
+    if has_msg {
+        crate::tuple::rt_tuple_set(args_tuple, 0, msg_str);
+    }
 
     // Set field 0 = .args tuple
     crate::instance::rt_instance_set_field(instance, 0, args_tuple as i64);
