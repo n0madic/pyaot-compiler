@@ -23,9 +23,9 @@ use rustpython_parser::text_size::TextRange;
 use pyaot_core_defs::FIRST_USER_CLASS_ID;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, ClassAttrInit, CmpOp, ContainerOp, GenOp, HirBlock, HirClass, HirClassAttr, HirExpr,
-    HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProperty, HirStmt, HirTerminator,
-    SymbolRef, UnaryOp,
+    BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
+    HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProperty,
+    HirRaise, HirStmt, HirTerminator, SymbolRef, UnaryOp,
 };
 use pyaot_types::{SemTy, Sig};
 use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, StringInterner};
@@ -377,10 +377,27 @@ impl<'a> ModuleLowerer<'a> {
     }
 }
 
-/// A loop's jump targets, pushed while lowering its body.
-struct LoopCtx {
-    continue_to: Idx<HirBlock>,
-    break_to: Idx<HirBlock>,
+/// One active control scope, pushed while lowering its body (Phase 7
+/// generalization of the loop stack). Early exits (`return` / `break` /
+/// `continue`) walk this stack emitting each scope's cleanup; the stack is the
+/// single owner of frame-pop discipline (every protected-region exit pops its
+/// frame exactly once; handler entry never pops).
+#[derive(Clone)]
+enum ScopeCtx {
+    /// A loop body: `break`/`continue` jump targets; no cleanup of its own.
+    Loop {
+        continue_to: Idx<HirBlock>,
+        break_to: Idx<HirBlock>,
+    },
+    /// A `try` body protected by an except frame. Cleanup: `PopFrame`.
+    TryFrame,
+    /// An `except` handler body. Cleanup: `EndHandling`.
+    Handler,
+    /// A `try` body protected by a finally frame. Cleanup: `PopFrame` + the
+    /// re-lowered (cloned) finalbody.
+    Finally { stmts: Vec<Stmt> },
+    /// A `with` body. Cleanup: `PopFrame` + `mgr.__exit__(None, None, None)`.
+    WithCleanup { mgr: LocalId },
 }
 
 /// The element action of a comprehension: append to a list/set, or insert into a
@@ -445,7 +462,11 @@ pub(crate) struct FnLowerer<'a> {
     is_main: bool,
     entry: Idx<HirBlock>,
     cur: Idx<HirBlock>,
-    loop_stack: Vec<LoopCtx>,
+    /// Blocks already sealed with a real terminator. Open-ness is tracked here,
+    /// not by inspecting the placeholder `Unreachable` terminator — an explicit
+    /// `Unreachable` seal (the `raise` shape) must stay sealed (Phase 7).
+    sealed: HashSet<Idx<HirBlock>>,
+    scope_stack: Vec<ScopeCtx>,
     /// Uniquifier for sibling synthetic functions (lambdas / nested defs).
     synth_counter: u32,
     /// Set when this nested function captures its OWN name (recursion): the
@@ -502,7 +523,8 @@ impl<'a> FnLowerer<'a> {
             is_main: false,
             entry,
             cur: entry,
-            loop_stack: Vec::new(),
+            sealed: HashSet::new(),
+            scope_stack: Vec::new(),
             synth_counter: 0,
             self_capture: None,
             gen: None,
@@ -630,7 +652,7 @@ impl<'a> FnLowerer<'a> {
     /// Seal the current block with `default_term` if it is still open, then
     /// assemble the [`HirFunction`].
     pub(crate) fn finish(mut self, default_term: HirTerminator) -> HirFunction {
-        if matches!(self.blocks[self.cur].term, HirTerminator::Unreachable) {
+        if !self.sealed.contains(&self.cur) {
             self.blocks[self.cur].term = default_term;
         }
         HirFunction {
@@ -658,8 +680,11 @@ impl<'a> FnLowerer<'a> {
 
     /// Seal the current block with `term` (only if still open) and leave `cur`
     /// pointing at it; the caller must `switch` to a fresh block next.
+    /// Open-ness is tracked explicitly (not by inspecting the placeholder
+    /// terminator) because an explicit `Unreachable` seal — the Phase-7 `raise`
+    /// shape — must not be overwritten by a later structural seal.
     fn seal(&mut self, term: HirTerminator) {
-        if matches!(self.blocks[self.cur].term, HirTerminator::Unreachable) {
+        if self.sealed.insert(self.cur) {
             self.blocks[self.cur].term = term;
         }
     }
@@ -674,6 +699,69 @@ impl<'a> FnLowerer<'a> {
 
     fn intern(&mut self, s: &str) -> InternedString {
         self.interner.intern(s)
+    }
+
+    /// True iff the current block is still open (no terminator emitted yet).
+    fn cur_open(&self) -> bool {
+        !self.sealed.contains(&self.cur)
+    }
+
+    // ── control scopes / early-exit cleanups (Phase 7) ──────────────────────
+
+    /// Index of the innermost `Loop` scope, if any.
+    fn innermost_loop(&self) -> Option<usize> {
+        self.scope_stack
+            .iter()
+            .rposition(|s| matches!(s, ScopeCtx::Loop { .. }))
+    }
+
+    /// Emit the cleanup sequence for an early exit (`return` / `break` /
+    /// `continue`) leaving every scope at index `down_to..`, innermost first.
+    /// The stack itself is not popped — control statements elsewhere in the
+    /// same scopes still need the entries.
+    fn emit_exit_cleanups(&mut self, down_to: usize, span: Span) -> Result<()> {
+        for i in (down_to..self.scope_stack.len()).rev() {
+            match self.scope_stack[i].clone() {
+                ScopeCtx::Loop { .. } => {}
+                ScopeCtx::TryFrame => {
+                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                }
+                ScopeCtx::Handler => {
+                    self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+                }
+                ScopeCtx::Finally { stmts } => {
+                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                    // Re-lower the finalbody on this exit edge. The scopes above
+                    // `i` are already cleaned up, so the finalbody must see only
+                    // the scopes BELOW this entry (a nested `return` inside it
+                    // must not re-run these cleanups).
+                    let saved = self.scope_stack.split_off(i);
+                    self.lower_body(&stmts)?;
+                    self.scope_stack.extend(saved);
+                }
+                ScopeCtx::WithCleanup { mgr } => {
+                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                    self.emit_exit_none_call(mgr, span);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit `mgr.__exit__(None, None, None)` as a statement (the normal-path
+    /// context-manager epilogue; the result is ignored).
+    fn emit_exit_none_call(&mut self, mgr: LocalId, span: Span) {
+        let recv = self.local_ref(mgr, span);
+        let method_name = self.intern("__exit__");
+        let args: Vec<Idx<HirExpr>> = (0..3)
+            .map(|_| self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span))
+            .collect();
+        let call = self.alloc(
+            HirExprKind::MethodCall { recv, method_name, args },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Expr(call));
     }
 
     // ── statements ──────────────────────────────────────────────────────────
@@ -725,10 +813,35 @@ impl<'a> FnLowerer<'a> {
             Stmt::While(s) => self.lower_while(s),
             Stmt::For(s) => self.lower_for(s),
             Stmt::Assert(s) => {
-                let cond = self.lower_expr(s.test.as_ref())?;
-                self.push_stmt(HirStmt::Assert { cond });
+                // `assert cond, msg` desugars to `if not cond: raise
+                // AssertionError(msg)` so the message survives (Phase 7);
+                // a bare `assert cond` keeps the lean AssertFail path.
+                if let Some(msg) = &s.msg {
+                    let span = to_span(s.range());
+                    let cond = self.lower_expr(s.test.as_ref())?;
+                    let fail_b = self.new_block();
+                    let ok_b = self.new_block();
+                    self.seal(HirTerminator::Branch { cond, then: ok_b, else_: fail_b });
+                    self.switch(fail_b);
+                    let m = self.lower_expr(msg.as_ref())?;
+                    self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+                        tag: pyaot_core_defs::BuiltinExceptionKind::AssertionError.tag(),
+                        msg: Some(m),
+                    }));
+                    self.seal(HirTerminator::Unreachable);
+                    self.switch(ok_b);
+                    let _ = span;
+                } else {
+                    let cond = self.lower_expr(s.test.as_ref())?;
+                    self.push_stmt(HirStmt::Assert { cond });
+                }
                 Ok(false)
             }
+            // ── exceptions / with / match (Phase 7) ──
+            Stmt::Try(t) => self.lower_try(t),
+            Stmt::Raise(r) => self.lower_raise(r),
+            Stmt::With(w) => self.lower_with(w),
+            Stmt::Match(m) => self.lower_match(m),
             Stmt::Pass(_) => Ok(false),
             // `from typing import ...` / `from __future__ import ...` are
             // type-level only (no runtime effect in our subset) — accept as no-ops
@@ -749,38 +862,63 @@ impl<'a> FnLowerer<'a> {
                 }
             }
             Stmt::Break(b) => {
-                let target = self
-                    .loop_stack
-                    .last()
-                    .map(|c| c.break_to)
-                    .ok_or_else(|| parse_error("'break' outside loop", to_span(b.range())))?;
-                self.seal(HirTerminator::Jump(target));
+                let span = to_span(b.range());
+                let loop_idx = self
+                    .innermost_loop()
+                    .ok_or_else(|| parse_error("'break' outside loop", span))?;
+                let ScopeCtx::Loop { break_to, .. } = self.scope_stack[loop_idx] else {
+                    unreachable!()
+                };
+                self.emit_exit_cleanups(loop_idx + 1, span)?;
+                self.seal(HirTerminator::Jump(break_to));
                 Ok(true)
             }
             Stmt::Continue(c) => {
-                let target = self
-                    .loop_stack
-                    .last()
-                    .map(|c| c.continue_to)
-                    .ok_or_else(|| parse_error("'continue' outside loop", to_span(c.range())))?;
-                self.seal(HirTerminator::Jump(target));
+                let span = to_span(c.range());
+                let loop_idx = self
+                    .innermost_loop()
+                    .ok_or_else(|| parse_error("'continue' outside loop", span))?;
+                let ScopeCtx::Loop { continue_to, .. } = self.scope_stack[loop_idx] else {
+                    unreachable!()
+                };
+                self.emit_exit_cleanups(loop_idx + 1, span)?;
+                self.seal(HirTerminator::Jump(continue_to));
                 Ok(true)
             }
             Stmt::Return(r) => {
+                let span = to_span(r.range());
                 // In a generator, `return` ends the generator (exhaust). The
                 // returned value (StopIteration.value) is out of scope (6E).
                 if self.gen.is_some() {
                     if let Some(e) = &r.value {
                         let _ = self.lower_expr(e.as_ref())?;
                     }
-                    let span = to_span(r.range());
+                    self.emit_exit_cleanups(0, span)?;
                     self.emit_gen_exhaust(span);
                     return Ok(true);
                 }
+                if self.scope_stack.iter().all(|s| matches!(s, ScopeCtx::Loop { .. })) {
+                    // Fast path: no protected regions to clean up.
+                    let val = match &r.value {
+                        Some(e) => Some(self.lower_expr(e.as_ref())?),
+                        None => None,
+                    };
+                    self.seal(HirTerminator::Return(val));
+                    return Ok(true);
+                }
+                // Evaluate the return value BEFORE the cleanups (CPython order),
+                // snapshotting it to a temp the cleanups cannot disturb.
                 let val = match &r.value {
-                    Some(e) => Some(self.lower_expr(e.as_ref())?),
+                    Some(e) => {
+                        let v = self.lower_expr(e.as_ref())?;
+                        let tmp = self.fresh_local(SemTy::Dyn);
+                        self.push_stmt(HirStmt::Assign { target: tmp, value: v });
+                        Some(tmp)
+                    }
                     None => None,
                 };
+                self.emit_exit_cleanups(0, span)?;
+                let val = val.map(|tmp| self.local_ref(tmp, span));
                 self.seal(HirTerminator::Return(val));
                 Ok(true)
             }
@@ -917,19 +1055,76 @@ impl<'a> FnLowerer<'a> {
 
     /// Unpack an arbitrary iterable RHS (`a, b = expr`, `for k, v in pairs`): stage
     /// the value once, then bind `target_i = tmp[i]` via positional subscripts.
-    /// Arity beyond the pattern is a runtime `IndexError` (no static shape here).
+    /// One starred target (`a, *rest = …`) captures a fresh list of the middle
+    /// slice. Arity beyond the pattern is a runtime `IndexError` (no static
+    /// shape here).
     fn lower_unpack_subscript(
         &mut self,
         targets: &[Expr],
         value: Idx<HirExpr>,
         span: Span,
     ) -> Result<()> {
-        reject_starred(targets, span)?;
+        let star_pos = targets.iter().position(|t| matches!(t, Expr::Starred(_)));
+        if targets
+            .iter()
+            .enumerate()
+            .any(|(i, t)| matches!(t, Expr::Starred(_)) && Some(i) != star_pos)
+        {
+            return Err(parse_error("multiple starred targets in unpacking", span));
+        }
         let tmp = self.fresh_local(SemTy::Dyn);
         self.push_stmt(HirStmt::Assign { target: tmp, value });
-        for (i, target) in targets.iter().enumerate() {
+
+        let (prefix, suffix): (&[Expr], &[Expr]) = match star_pos {
+            Some(p) => (&targets[..p], &targets[p + 1..]),
+            None => (targets, &[]),
+        };
+        for (i, target) in prefix.iter().enumerate() {
             let tmp_ref = self.local_ref(tmp, span);
             let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+            let sub = self.alloc(
+                HirExprKind::Subscript { base: tmp_ref, index: idx },
+                SemTy::Dyn,
+                span,
+            );
+            self.assign_to_target(target, sub)?;
+        }
+        let Some(p) = star_pos else { return Ok(()) };
+
+        // n = len(tmp), staged once for the star slice and the suffix indices.
+        let tmp_ref = self.local_ref(tmp, span);
+        let len_e = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Len, args: vec![tmp_ref] },
+            SemTy::Int,
+            span,
+        );
+        let len_l = self.fresh_local(SemTy::Int);
+        self.push_stmt(HirStmt::Assign { target: len_l, value: len_e });
+
+        // *rest = tmp[p .. n - m] as a fresh list.
+        let Expr::Starred(st) = &targets[p] else { unreachable!() };
+        let lo = self.alloc(HirExprKind::IntLit(p as i64), SemTy::Int, span);
+        let len_ref = self.local_ref(len_l, span);
+        let m_lit = self.alloc(HirExprKind::IntLit(suffix.len() as i64), SemTy::Int, span);
+        let hi = self.alloc(HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: m_lit }, SemTy::Dyn, span);
+        let rest = self.build_sublist(tmp, lo, hi, span)?;
+        let rest_ref = self.local_ref(rest, span);
+        self.assign_to_target(st.value.as_ref(), rest_ref)?;
+
+        // Suffix targets: tmp[n - (m - j)].
+        for (j, target) in suffix.iter().enumerate() {
+            let len_ref = self.local_ref(len_l, span);
+            let back = self.alloc(
+                HirExprKind::IntLit((suffix.len() - j) as i64),
+                SemTy::Int,
+                span,
+            );
+            let idx = self.alloc(
+                HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: back },
+                SemTy::Dyn,
+                span,
+            );
+            let tmp_ref = self.local_ref(tmp, span);
             let sub = self.alloc(
                 HirExprKind::Subscript { base: tmp_ref, index: idx },
                 SemTy::Dyn,
@@ -1151,9 +1346,9 @@ impl<'a> FnLowerer<'a> {
         self.seal(HirTerminator::Branch { cond, then: body_b, else_: else_b });
 
         self.switch(body_b);
-        self.loop_stack.push(LoopCtx { continue_to: header, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop { continue_to: header, break_to: exit });
         self.lower_body(&s.body)?;
-        self.loop_stack.pop();
+        self.scope_stack.pop();
         self.seal(HirTerminator::Jump(header));
 
         if !s.orelse.is_empty() {
@@ -1223,9 +1418,9 @@ impl<'a> FnLowerer<'a> {
         self.switch(body_b);
         let elem_ref = self.local_ref(elem, span);
         self.bind_for_target(s.target.as_ref(), elem_ref, span)?;
-        self.loop_stack.push(LoopCtx { continue_to: header, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop { continue_to: header, break_to: exit });
         self.lower_body(&s.body)?;
-        self.loop_stack.pop();
+        self.scope_stack.pop();
         self.seal(HirTerminator::Jump(header));
 
         if !s.orelse.is_empty() {
@@ -1309,9 +1504,9 @@ impl<'a> FnLowerer<'a> {
         // i = cursor
         let cref = self.local_ref(cursor, span);
         self.write_place(i_b, cref);
-        self.loop_stack.push(LoopCtx { continue_to: incr, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop { continue_to: incr, break_to: exit });
         self.lower_body(&s.body)?;
-        self.loop_stack.pop();
+        self.scope_stack.pop();
         self.seal(HirTerminator::Jump(incr));
 
         // incr: cursor = cursor + step
@@ -1395,6 +1590,867 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
+    // ── exceptions: try / raise (Phase 7A/7B) ───────────────────────────────
+
+    /// Lower a `try` statement. `try/except/finally` nests as
+    /// `try { try/except } finally` (two frames).
+    fn lower_try(&mut self, t: &rustpython_parser::ast::StmtTry) -> Result<bool> {
+        let span = to_span(t.range());
+        if !t.finalbody.is_empty() {
+            self.lower_try_finally(t, span)?;
+        } else {
+            self.lower_try_except(&t.body, &t.handlers, &t.orelse, span)?;
+        }
+        Ok(false)
+    }
+
+    /// `try X finally F`: normal edge `PopFrame; <F>`; exceptional edge
+    /// `StartHandling; <F>; Reraise`. Early exits re-lower `<F>` via the
+    /// [`ScopeCtx::Finally`] entry.
+    fn lower_try_finally(
+        &mut self,
+        t: &rustpython_parser::ast::StmtTry,
+        span: Span,
+    ) -> Result<()> {
+        let try_b = self.new_block();
+        let exc_b = self.new_block();
+        let join = self.new_block();
+        self.seal(HirTerminator::TryEnter { normal: try_b, handler: exc_b });
+
+        self.switch(try_b);
+        self.scope_stack.push(ScopeCtx::Finally { stmts: t.finalbody.clone() });
+        if t.handlers.is_empty() {
+            debug_assert!(t.orelse.is_empty(), "orelse without handlers is a SyntaxError");
+            self.lower_body(&t.body)?;
+        } else {
+            self.lower_try_except(&t.body, &t.handlers, &t.orelse, span)?;
+        }
+        self.scope_stack.pop();
+        if self.cur_open() {
+            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+            self.lower_body(&t.finalbody)?;
+            self.seal(HirTerminator::Jump(join));
+        }
+
+        // Exceptional edge: the frame is already popped by the dispatch. Park
+        // the in-flight exception (so a nested raise chains it as __context__),
+        // run the finalbody, then re-raise it.
+        self.switch(exc_b);
+        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        self.lower_body(&t.finalbody)?;
+        if self.cur_open() {
+            self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+            self.seal(HirTerminator::Unreachable);
+        }
+
+        self.switch(join);
+        Ok(())
+    }
+
+    /// `try/except[/else]`: seal `TryEnter`, lower the body (frame popped on
+    /// normal exit, `else` after the pop so its exceptions escape), then the
+    /// handler chain (`Matches*` tests; tuple clause = OR-chain), with a
+    /// no-match tail that re-raises.
+    fn lower_try_except(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[rustpython_parser::ast::ExceptHandler],
+        orelse: &[Stmt],
+        span: Span,
+    ) -> Result<()> {
+        debug_assert!(!handlers.is_empty(), "try without handlers or finally is a SyntaxError");
+        let try_b = self.new_block();
+        let h_test = self.new_block();
+        let join = self.new_block();
+        self.seal(HirTerminator::TryEnter { normal: try_b, handler: h_test });
+
+        // ── try body ──
+        self.switch(try_b);
+        self.scope_stack.push(ScopeCtx::TryFrame);
+        self.lower_body(body)?;
+        self.scope_stack.pop();
+        if self.cur_open() {
+            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+            // `else` runs after the pop: its exceptions are NOT caught here.
+            self.lower_body(orelse)?;
+            self.seal(HirTerminator::Jump(join));
+        }
+
+        // ── handler chain ──
+        self.switch(h_test);
+        for (hi, handler) in handlers.iter().enumerate() {
+            let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = handler;
+            let hspan = to_span(h.range());
+            let body_b = self.new_block();
+            let next_test = self.new_block();
+            match h.type_.as_deref() {
+                // Bare `except:` catches everything (must be last in CPython).
+                None => {
+                    if hi + 1 != handlers.len() {
+                        return Err(parse_error("default 'except:' must be last", hspan));
+                    }
+                    self.seal(HirTerminator::Jump(body_b));
+                }
+                Some(Expr::Tuple(tu)) => {
+                    // OR-chain: any matching member enters the body.
+                    for (i, te) in tu.elts.iter().enumerate() {
+                        let q = self.exc_match_query(te)?;
+                        if i + 1 == tu.elts.len() {
+                            self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: next_test });
+                        } else {
+                            let more = self.new_block();
+                            self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: more });
+                            self.switch(more);
+                        }
+                    }
+                }
+                Some(single) => {
+                    let q = self.exc_match_query(single)?;
+                    self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: next_test });
+                }
+            }
+
+            // ── handler body ──
+            self.switch(body_b);
+            if let Some(name) = &h.name {
+                // Bind `as e` BEFORE StartHandling (rt_exc_get_current reads
+                // the still-current exception). A fresh local per binding,
+                // shadowing the name, with the clause's static type.
+                let bind_ty = self.exc_clause_semty(h.type_.as_deref());
+                let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), bind_ty.clone(), hspan);
+                self.bind_exc_name(name.as_str(), bind_ty, cur);
+            }
+            self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+            self.scope_stack.push(ScopeCtx::Handler);
+            self.lower_body(&h.body)?;
+            self.scope_stack.pop();
+            if self.cur_open() {
+                self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+                self.seal(HirTerminator::Jump(join));
+            }
+            self.switch(next_test);
+        }
+
+        // ── no handler matched: propagate outward ──
+        self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+        self.seal(HirTerminator::Unreachable);
+
+        self.switch(join);
+        let _ = span;
+        Ok(())
+    }
+
+    /// The `Matches*` query for one `except` clause member: a user class from
+    /// the class map, else a builtin exception name.
+    fn exc_match_query(&mut self, te: &Expr) -> Result<Idx<HirExpr>> {
+        let span = to_span(te.range());
+        let Expr::Name(n) = te else {
+            return Err(parse_error(
+                "except clause must name an exception class",
+                span,
+            ));
+        };
+        let q = if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
+            ExcQuery::MatchesClass(cid)
+        } else if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
+            ExcQuery::MatchesBuiltin(tag)
+        } else {
+            return Err(parse_error(
+                format!("unknown exception type `{}` in except clause", n.id.as_str()),
+                span,
+            ));
+        };
+        Ok(self.alloc(HirExprKind::ExcQuery(q), SemTy::Bool, span))
+    }
+
+    /// Fold `value.__class__.__name__` to a string literal from `value`'s
+    /// statically-known type (Phase 7B). Only a directly-bound name whose
+    /// static type is a builtin exception or a user class folds; anything else
+    /// is rejected with a clear error.
+    fn fold_class_name(&mut self, value: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        let static_ty = match value {
+            Expr::Name(n) => {
+                let iname = self.intern(n.id.as_str());
+                match self.scope.get(&iname).copied() {
+                    Some(Binding::Direct(lid)) => Some(self.locals[lid.index()].ty.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let name_str = match static_ty {
+            Some(SemTy::BuiltinException(kind)) => kind.name().to_string(),
+            Some(SemTy::Class { name, .. }) => self.interner.resolve(name).to_string(),
+            _ => {
+                return Err(parse_error(
+                    "`.__class__.__name__` requires a variable with a statically-known \
+                     exception/class type (bind it via `except SomeError as e`)",
+                    span,
+                ))
+            }
+        };
+        let id = self.intern(&name_str);
+        Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span))
+    }
+
+    /// The static type an `except … as e` binding carries: a single builtin
+    /// name → `BuiltinException`; a single user class → `Class`; a tuple or
+    /// bare clause → `Dyn` (the always-correct tagged baseline).
+    fn exc_clause_semty(&mut self, ty: Option<&Expr>) -> SemTy {
+        let Some(Expr::Name(n)) = ty else { return SemTy::Dyn };
+        if let Some((cid, iname)) = self.ctx.class_map.get(n.id.as_str()).copied() {
+            return SemTy::Class { class_id: cid, name: iname };
+        }
+        match pyaot_core_defs::BuiltinExceptionKind::from_name(n.id.as_str()) {
+            Some(kind) => SemTy::BuiltinException(kind),
+            None => SemTy::Dyn,
+        }
+    }
+
+    /// Bind an `except … as e` name to a FRESH typed local, shadowing any
+    /// previous binding (CPython unbinds `e` after the handler; a fresh slot
+    /// per handler keeps each binding's static type precise). Celled names
+    /// keep their cell (uniform tagged content).
+    fn bind_exc_name(&mut self, name: &str, ty: SemTy, value: Idx<HirExpr>) {
+        let iname = self.intern(name);
+        if self.celled.contains(&iname) || self.global_decls.contains(&iname) {
+            self.write_named(iname, SemTy::Dyn, value);
+            return;
+        }
+        let id = LocalId::new(self.locals.len() as u32);
+        self.locals.push(HirLocal {
+            name: iname,
+            ty,
+            raw_int_ok: false,
+            pin_tagged: false,
+            cell_shared: false,
+        });
+        self.scope.insert(iname, Binding::Direct(id));
+        self.push_stmt(HirStmt::Assign { target: id, value });
+    }
+
+    /// Lower a `raise` statement. Always terminates the block.
+    fn lower_raise(&mut self, r: &rustpython_parser::ast::StmtRaise) -> Result<bool> {
+        let span = to_span(r.range());
+        let raise = match &r.exc {
+            // Bare `raise` — re-raise the exception being handled.
+            None => {
+                if r.cause.is_some() {
+                    return Err(parse_error("bare raise cannot carry a cause", span));
+                }
+                HirRaise::Reraise
+            }
+            Some(exc) => self.classify_raise_target(exc, r.cause.as_deref(), span)?,
+        };
+        self.push_stmt(HirStmt::Raise(raise));
+        self.seal(HirTerminator::Unreachable);
+        Ok(true)
+    }
+
+    /// Classify a `raise EXPR [from CAUSE]` target. Builtin-exception name
+    /// resolution is frontend-local: scope binding → `Instance`; class map →
+    /// `Custom`; `exception_name_to_tag` → builtin; else an error.
+    fn classify_raise_target(
+        &mut self,
+        exc: &Expr,
+        cause: Option<&Expr>,
+        span: Span,
+    ) -> Result<HirRaise> {
+        // `raise Name(...)` — a constructed exception.
+        if let Expr::Call(c) = exc {
+            if let Expr::Name(n) = c.func.as_ref() {
+                if !c.keywords.is_empty() {
+                    return Err(parse_error(
+                        "keyword arguments in a raise expression are out of scope",
+                        span,
+                    ));
+                }
+                let iname = self.intern(n.id.as_str());
+                if !self.scope.contains_key(&iname) {
+                    if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
+                        if cause.is_some() {
+                            return Err(parse_error(
+                                "`raise CustomError(...) from ...` is out of scope for this milestone",
+                                span,
+                            ));
+                        }
+                        let args = self.lower_expr_list(&c.args)?;
+                        return Ok(HirRaise::Custom { class_id: cid, args });
+                    }
+                    if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
+                        if c.args.len() > 1 {
+                            return Err(parse_error(
+                                "multi-argument builtin exceptions are out of scope",
+                                span,
+                            ));
+                        }
+                        let msg = match c.args.first() {
+                            Some(a) => Some(self.lower_expr(a)?),
+                            None => None,
+                        };
+                        return self.attach_cause(tag, msg, cause, span);
+                    }
+                }
+            }
+        }
+        // `raise Name` — a bare class (builtin/custom) or a caught instance.
+        if let Expr::Name(n) = exc {
+            let iname = self.intern(n.id.as_str());
+            if self.scope.contains_key(&iname) {
+                let value = self.lower_expr(exc)?;
+                if cause.is_some() {
+                    return Err(parse_error(
+                        "`raise e from ...` is out of scope for this milestone",
+                        span,
+                    ));
+                }
+                return Ok(HirRaise::Instance { value });
+            }
+            if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
+                if cause.is_some() {
+                    return Err(parse_error(
+                        "`raise CustomError from ...` is out of scope for this milestone",
+                        span,
+                    ));
+                }
+                return Ok(HirRaise::Custom { class_id: cid, args: vec![] });
+            }
+            if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
+                return self.attach_cause(tag, None, cause, span);
+            }
+        }
+        Err(parse_error(
+            "raise target must be an exception class, a constructed exception, \
+             or a caught exception variable",
+            span,
+        ))
+    }
+
+    /// Attach a `from CAUSE` clause to a builtin raise.
+    fn attach_cause(
+        &mut self,
+        tag: u8,
+        msg: Option<Idx<HirExpr>>,
+        cause: Option<&Expr>,
+        span: Span,
+    ) -> Result<HirRaise> {
+        let Some(cause) = cause else {
+            return Ok(HirRaise::Builtin { tag, msg });
+        };
+        // `from None` suppresses the context chain.
+        if matches!(cause, Expr::Constant(c) if matches!(c.value, Constant::None)) {
+            return Ok(HirRaise::BuiltinFromNone { tag, msg });
+        }
+        // `from Builtin(...)` / `from Builtin`.
+        let (cname, cargs): (&str, &[Expr]) = match cause {
+            Expr::Call(c) => match c.func.as_ref() {
+                Expr::Name(n) if c.keywords.is_empty() => (n.id.as_str(), &c.args),
+                _ => {
+                    return Err(parse_error(
+                        "a raise cause must be a builtin exception or None",
+                        span,
+                    ))
+                }
+            },
+            Expr::Name(n) => (n.id.as_str(), &[]),
+            _ => {
+                return Err(parse_error(
+                    "a raise cause must be a builtin exception or None",
+                    span,
+                ))
+            }
+        };
+        let Some(cause_tag) = pyaot_core_defs::exception_name_to_tag(cname) else {
+            return Err(parse_error(
+                format!("unknown exception type `{cname}` in raise cause"),
+                span,
+            ));
+        };
+        if cargs.len() > 1 {
+            return Err(parse_error(
+                "multi-argument builtin exceptions are out of scope",
+                span,
+            ));
+        }
+        let cause_msg = match cargs.first() {
+            Some(a) => Some(self.lower_expr(a)?),
+            None => None,
+        };
+        Ok(HirRaise::BuiltinFrom { tag, msg, cause_tag, cause_msg })
+    }
+
+    // ── with (Phase 7D) ──────────────────────────────────────────────────────
+
+    /// Lower a `with` statement: items nest left-to-right; each item desugars
+    /// to `__enter__` + `TryEnter` + `__exit__` on both edges (a truthy
+    /// exceptional `__exit__` swallows the exception).
+    fn lower_with(&mut self, w: &rustpython_parser::ast::StmtWith) -> Result<bool> {
+        let span = to_span(w.range());
+        self.lower_with_items(&w.items, &w.body, span)?;
+        Ok(false)
+    }
+
+    fn lower_with_items(
+        &mut self,
+        items: &[rustpython_parser::ast::WithItem],
+        body: &[Stmt],
+        span: Span,
+    ) -> Result<()> {
+        let Some((first, rest)) = items.split_first() else {
+            return self.lower_body(body);
+        };
+
+        // mgr = EXPR; val = mgr.__enter__(); [bind TARGET]
+        let mgr_e = self.lower_expr(&first.context_expr)?;
+        let mgr = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: mgr, value: mgr_e });
+        let recv = self.local_ref(mgr, span);
+        let enter_name = self.intern("__enter__");
+        let enter = self.alloc(
+            HirExprKind::MethodCall { recv, method_name: enter_name, args: vec![] },
+            SemTy::Dyn,
+            span,
+        );
+        match &first.optional_vars {
+            Some(t) => self.bind_for_target(t.as_ref(), enter, span)?,
+            None => self.push_stmt(HirStmt::Expr(enter)),
+        }
+
+        let body_b = self.new_block();
+        let exit_exc = self.new_block();
+        let join = self.new_block();
+        self.seal(HirTerminator::TryEnter { normal: body_b, handler: exit_exc });
+
+        // ── body (or the next nested item) ──
+        self.switch(body_b);
+        self.scope_stack.push(ScopeCtx::WithCleanup { mgr });
+        self.lower_with_items(rest, body, span)?;
+        self.scope_stack.pop();
+        if self.cur_open() {
+            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+            self.emit_exit_none_call(mgr, span);
+            self.seal(HirTerminator::Jump(join));
+        }
+
+        // ── exceptional edge: r = mgr.__exit__(e, e, None); truthy swallows ──
+        self.switch(exit_exc);
+        let e_local = self.fresh_local_tagged();
+        let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: e_local, value: cur });
+        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        let recv2 = self.local_ref(mgr, span);
+        let e1 = self.local_ref(e_local, span);
+        let e2 = self.local_ref(e_local, span);
+        let none = self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span);
+        let exit_name = self.intern("__exit__");
+        let r = self.alloc(
+            HirExprKind::MethodCall {
+                recv: recv2,
+                method_name: exit_name,
+                args: vec![e1, e2, none],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        let r_local = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: r_local, value: r });
+        let swallow_b = self.new_block();
+        let reraise_b = self.new_block();
+        let cond = self.local_ref(r_local, span);
+        self.seal(HirTerminator::Branch { cond, then: swallow_b, else_: reraise_b });
+        self.switch(swallow_b);
+        self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+        self.seal(HirTerminator::Jump(join));
+        self.switch(reraise_b);
+        self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+        self.seal(HirTerminator::Unreachable);
+
+        self.switch(join);
+        Ok(())
+    }
+
+    // ── match (Phase 7E) ─────────────────────────────────────────────────────
+
+    /// Lower a `match` statement: pure desugar to an if/elif CFG on a subject
+    /// temp. Captures are ordinary function-scope locals (CPython leak
+    /// semantics); binds happen on the partial-match path before the guard.
+    fn lower_match(&mut self, m: &rustpython_parser::ast::StmtMatch) -> Result<bool> {
+        let span = to_span(m.range());
+        let subj_e = self.lower_expr(m.subject.as_ref())?;
+        let subj = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: subj, value: subj_e });
+        let join = self.new_block();
+
+        for case in &m.cases {
+            let fail_b = self.new_block();
+            self.lower_pattern(&case.pattern, subj, fail_b, span)?;
+            if let Some(g) = &case.guard {
+                let cond = self.lower_expr(g.as_ref())?;
+                let body_b = self.new_block();
+                self.seal(HirTerminator::Branch { cond, then: body_b, else_: fail_b });
+                self.switch(body_b);
+            }
+            self.lower_body(&case.body)?;
+            self.seal(HirTerminator::Jump(join));
+            self.switch(fail_b);
+        }
+        // No case matched: a match statement just falls through.
+        self.seal(HirTerminator::Jump(join));
+        self.switch(join);
+        Ok(false)
+    }
+
+    /// Emit the tests for `pat` against the value in local `scr`. On mismatch
+    /// control jumps to `fail`; on fall-through the pattern matched and its
+    /// captures are bound.
+    fn lower_pattern(
+        &mut self,
+        pat: &rustpython_parser::ast::Pattern,
+        scr: LocalId,
+        fail: Idx<HirBlock>,
+        span: Span,
+    ) -> Result<()> {
+        use rustpython_parser::ast::Pattern;
+        match pat {
+            // Literal: `subject == literal` (the documented `==`-vs-`is`
+            // divergence for interned singletons is corpus-clean).
+            Pattern::MatchValue(v) => {
+                let lit = self.lower_expr(&v.value)?;
+                self.emit_pattern_eq(scr, lit, fail, span)
+            }
+            Pattern::MatchSingleton(s) => {
+                let lit = self.lower_constant(&s.value, span)?;
+                self.emit_pattern_eq(scr, lit, fail, span)
+            }
+            Pattern::MatchAs(a) => {
+                if let Some(sub) = &a.pattern {
+                    self.lower_pattern(sub, scr, fail, span)?;
+                }
+                if let Some(name) = &a.name {
+                    let iname = self.intern(name.as_str());
+                    let v = self.local_ref(scr, span);
+                    self.write_named(iname, SemTy::Dyn, v);
+                }
+                Ok(())
+            }
+            Pattern::MatchOr(o) => {
+                // v1: capture-free alternatives only (each alternative would
+                // otherwise need to bind the same names on its own path).
+                for sub in &o.patterns {
+                    if pattern_has_bindings(sub) {
+                        return Err(parse_error(
+                            "or-patterns with capture names are out of scope for this milestone",
+                            span,
+                        ));
+                    }
+                }
+                let ok = self.new_block();
+                let n = o.patterns.len();
+                for (i, sub) in o.patterns.iter().enumerate() {
+                    let alt_fail = if i + 1 == n { fail } else { self.new_block() };
+                    self.lower_pattern(sub, scr, alt_fail, span)?;
+                    self.seal(HirTerminator::Jump(ok));
+                    if i + 1 != n {
+                        self.switch(alt_fail);
+                    }
+                }
+                self.switch(ok);
+                Ok(())
+            }
+            Pattern::MatchSequence(s) => self.lower_seq_pattern(&s.patterns, scr, fail, span),
+            Pattern::MatchMapping(mp) => {
+                self.lower_mapping_pattern(&mp.keys, &mp.patterns, mp.rest.as_ref(), scr, fail, span)
+            }
+            Pattern::MatchClass(c) => self.lower_class_pattern(c, scr, fail, span),
+            Pattern::MatchStar(_) => Err(parse_error(
+                "a star pattern is only valid inside a sequence pattern",
+                span,
+            )),
+        }
+    }
+
+    /// `subject == lit` → continue, else jump to `fail`.
+    fn emit_pattern_eq(
+        &mut self,
+        scr: LocalId,
+        lit: Idx<HirExpr>,
+        fail: Idx<HirBlock>,
+        span: Span,
+    ) -> Result<()> {
+        let s = self.local_ref(scr, span);
+        let cmp = self.alloc(HirExprKind::Compare { op: CmpOp::Eq, l: s, r: lit }, SemTy::Bool, span);
+        let cont = self.new_block();
+        self.seal(HirTerminator::Branch { cond: cmp, then: cont, else_: fail });
+        self.switch(cont);
+        Ok(())
+    }
+
+    /// A sequence pattern `[p0, …, *star, …, pn]`: length test (`== n`, star:
+    /// `>= n-1`), positional subscripts for prefix/suffix, star capture as a
+    /// fresh list.
+    fn lower_seq_pattern(
+        &mut self,
+        pats: &[rustpython_parser::ast::Pattern],
+        scr: LocalId,
+        fail: Idx<HirBlock>,
+        span: Span,
+    ) -> Result<()> {
+        use rustpython_parser::ast::Pattern;
+        let star_pos = pats.iter().position(|p| matches!(p, Pattern::MatchStar(_)));
+        if pats
+            .iter()
+            .enumerate()
+            .any(|(i, p)| matches!(p, Pattern::MatchStar(_)) && Some(i) != star_pos)
+        {
+            return Err(parse_error("multiple star patterns in a sequence", span));
+        }
+
+        // n = len(subject), staged once.
+        let s = self.local_ref(scr, span);
+        let len_e = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Len, args: vec![s] },
+            SemTy::Int,
+            span,
+        );
+        let len_l = self.fresh_local(SemTy::Int);
+        self.push_stmt(HirStmt::Assign { target: len_l, value: len_e });
+
+        let (prefix, suffix): (&[Pattern], &[Pattern]) = match star_pos {
+            Some(p) => (&pats[..p], &pats[p + 1..]),
+            None => (pats, &[]),
+        };
+        let need = (prefix.len() + suffix.len()) as i64;
+        let len_ref = self.local_ref(len_l, span);
+        let need_lit = self.alloc(HirExprKind::IntLit(need), SemTy::Int, span);
+        let cmp_op = if star_pos.is_some() { CmpOp::GtE } else { CmpOp::Eq };
+        let cmp = self.alloc(
+            HirExprKind::Compare { op: cmp_op, l: len_ref, r: need_lit },
+            SemTy::Bool,
+            span,
+        );
+        let cont = self.new_block();
+        self.seal(HirTerminator::Branch { cond: cmp, then: cont, else_: fail });
+        self.switch(cont);
+
+        // Prefix elements: subject[i].
+        for (i, sub) in prefix.iter().enumerate() {
+            let base = self.local_ref(scr, span);
+            let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+            let elem = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value: elem });
+            self.lower_pattern(sub, tmp, fail, span)?;
+        }
+        // Star capture: subject[p .. n-m] as a fresh list.
+        if let Some(p) = star_pos {
+            let Pattern::MatchStar(st) = &pats[p] else { unreachable!() };
+            if let Some(name) = &st.name {
+                let lo = self.alloc(HirExprKind::IntLit(p as i64), SemTy::Int, span);
+                let len_ref = self.local_ref(len_l, span);
+                let m_lit = self.alloc(HirExprKind::IntLit(suffix.len() as i64), SemTy::Int, span);
+                let hi = self.alloc(
+                    HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: m_lit },
+                    SemTy::Dyn,
+                    span,
+                );
+                let rest = self.build_sublist(scr, lo, hi, span)?;
+                let iname = self.intern(name.as_str());
+                let v = self.local_ref(rest, span);
+                self.write_named(iname, SemTy::Dyn, v);
+            }
+        }
+        // Suffix elements: subject[n - (m - j)].
+        for (j, sub) in suffix.iter().enumerate() {
+            let len_ref = self.local_ref(len_l, span);
+            let back = self.alloc(
+                HirExprKind::IntLit((suffix.len() - j) as i64),
+                SemTy::Int,
+                span,
+            );
+            let idx = self.alloc(
+                HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: back },
+                SemTy::Dyn,
+                span,
+            );
+            let base = self.local_ref(scr, span);
+            let elem = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value: elem });
+            self.lower_pattern(sub, tmp, fail, span)?;
+        }
+        Ok(())
+    }
+
+    /// Build a fresh list of `src[lo..hi]` (both bounds already lowered,
+    /// evaluated exactly once).
+    fn build_sublist(
+        &mut self,
+        src: LocalId,
+        lo: Idx<HirExpr>,
+        hi: Idx<HirExpr>,
+        span: Span,
+    ) -> Result<LocalId> {
+        let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        let cursor = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: cursor, value: lo });
+        let hi_l = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: hi_l, value: hi });
+
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let c1 = self.local_ref(cursor, span);
+        let h1 = self.local_ref(hi_l, span);
+        let cond = self.alloc(HirExprKind::Compare { op: CmpOp::Lt, l: c1, r: h1 }, SemTy::Bool, span);
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch { cond, then: body_b, else_: exit });
+
+        self.switch(body_b);
+        let base = self.local_ref(src, span);
+        let c2 = self.local_ref(cursor, span);
+        let elem = self.alloc(HirExprKind::Subscript { base, index: c2 }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::ContainerPush { container: result, value: elem });
+        let c3 = self.local_ref(cursor, span);
+        let one = self.alloc(HirExprKind::IntLit(1), SemTy::Int, span);
+        let inc = self.alloc(HirExprKind::BinOp { op: BinOp::Add, l: c3, r: one }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: cursor, value: inc });
+        self.seal(HirTerminator::Jump(header));
+
+        self.switch(exit);
+        Ok(result)
+    }
+
+    /// A mapping pattern `{k: p, …, **rest}`: per-key `Contains` → branch,
+    /// bind via `DictGet`; `**rest` is a copy with the matched keys popped
+    /// (the original is untouched).
+    fn lower_mapping_pattern(
+        &mut self,
+        keys: &[Expr],
+        pats: &[rustpython_parser::ast::Pattern],
+        rest: Option<&rustpython_parser::ast::Identifier>,
+        scr: LocalId,
+        fail: Idx<HirBlock>,
+        span: Span,
+    ) -> Result<()> {
+        // Stage the keys once (used by Contains, DictGet, and DictPopM).
+        let mut key_locals = Vec::with_capacity(keys.len());
+        for k in keys {
+            let ke = self.lower_expr(k)?;
+            let kl = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: kl, value: ke });
+            key_locals.push(kl);
+        }
+        // Membership tests, then sub-pattern binds.
+        for (kl, sub) in key_locals.iter().zip(pats) {
+            let c = self.local_ref(scr, span);
+            let k = self.local_ref(*kl, span);
+            let has = self.alloc(
+                HirExprKind::ContainerExpr { op: ContainerOp::Contains, args: vec![c, k] },
+                SemTy::Bool,
+                span,
+            );
+            let cont = self.new_block();
+            self.seal(HirTerminator::Branch { cond: has, then: cont, else_: fail });
+            self.switch(cont);
+
+            let c2 = self.local_ref(scr, span);
+            let k2 = self.local_ref(*kl, span);
+            let got = self.alloc(
+                HirExprKind::ContainerExpr { op: ContainerOp::DictGet, args: vec![c2, k2] },
+                SemTy::Dyn,
+                span,
+            );
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value: got });
+            self.lower_pattern(sub, tmp, fail, span)?;
+        }
+        // `**rest` = copy minus the matched keys (copy semantics).
+        if let Some(rest_name) = rest {
+            let c = self.local_ref(scr, span);
+            let copy = self.alloc(
+                HirExprKind::ContainerExpr { op: ContainerOp::DictCopy, args: vec![c] },
+                SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+                span,
+            );
+            let copy_l = self.fresh_local(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn));
+            self.push_stmt(HirStmt::Assign { target: copy_l, value: copy });
+            for kl in &key_locals {
+                let d = self.local_ref(copy_l, span);
+                let k = self.local_ref(*kl, span);
+                let popped = self.alloc(
+                    HirExprKind::ContainerExpr { op: ContainerOp::DictPopM, args: vec![d, k] },
+                    SemTy::Dyn,
+                    span,
+                );
+                self.push_stmt(HirStmt::Expr(popped));
+            }
+            let iname = self.intern(rest_name.as_str());
+            let v = self.local_ref(copy_l, span);
+            self.write_named(iname, SemTy::Dyn, v);
+        }
+        Ok(())
+    }
+
+    /// A class pattern `Cls(attr=p, …)` (keyword-only): `IsInstance` → branch,
+    /// then per-kwarg attribute reads feeding sub-patterns.
+    fn lower_class_pattern(
+        &mut self,
+        c: &rustpython_parser::ast::PatternMatchClass,
+        scr: LocalId,
+        fail: Idx<HirBlock>,
+        span: Span,
+    ) -> Result<()> {
+        let Expr::Name(n) = c.cls.as_ref() else {
+            return Err(parse_error("class pattern must name a user class", span));
+        };
+        let Some((cid, iname)) = self.ctx.class_map.get(n.id.as_str()).copied() else {
+            return Err(parse_error(
+                format!("unknown class `{}` in class pattern", n.id.as_str()),
+                span,
+            ));
+        };
+        if !c.patterns.is_empty() {
+            return Err(parse_error(
+                "positional class patterns (`__match_args__`) are out of scope; \
+                 use keyword patterns (`Cls(attr=…)`)",
+                span,
+            ));
+        }
+        let v = self.local_ref(scr, span);
+        let isinst = self.alloc(HirExprKind::IsInstance { value: v, class_id: cid }, SemTy::Bool, span);
+        let cont = self.new_block();
+        self.seal(HirTerminator::Branch { cond: isinst, then: cont, else_: fail });
+        self.switch(cont);
+
+        // Narrow the subject to the class type so attribute reads resolve. The
+        // narrowing is runtime-guarded by the `IsInstance` branch above, but
+        // inference would still see `Class{subject} → Class{pattern}` and the
+        // annotation-contract check would reject it — so the value is
+        // type-erased through a shared cell first (a `cell_shared` `CellGet`
+        // is always `Dyn`, the gradual seam the contract check admits).
+        let erase_name = self.intern("<match-subject>");
+        let cell_lid = self.alloc_cell_local(erase_name, SemTy::Dyn, true);
+        let init = self.local_ref(scr, span);
+        let mc = self.alloc(HirExprKind::MakeCell { init: Some(init) }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign { target: cell_lid, value: mc });
+        let erased = self.alloc(HirExprKind::CellGet { cell: cell_lid }, SemTy::Dyn, span);
+        let cls_local = self.fresh_local(SemTy::Class { class_id: cid, name: iname });
+        self.push_stmt(HirStmt::Assign { target: cls_local, value: erased });
+
+        for (attr, sub) in c.kwd_attrs.iter().zip(&c.kwd_patterns) {
+            let base = self.local_ref(cls_local, span);
+            let aname = self.intern(attr.as_str());
+            let read = self.alloc(HirExprKind::Attribute { value: base, name: aname }, SemTy::Dyn, span);
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value: read });
+            self.lower_pattern(sub, tmp, fail, span)?;
+        }
+        Ok(())
+    }
+
     // ── expressions ──────────────────────────────────────────────────────────
 
     fn lower_expr(&mut self, expr: &Expr) -> Result<Idx<HirExpr>> {
@@ -1451,6 +2507,18 @@ impl<'a> FnLowerer<'a> {
             }
             Expr::Subscript(s) => self.lower_subscript_expr(s, span),
             Expr::Attribute(a) => {
+                // `e.__class__.__name__` (Phase 7B): constant-fold to the bare
+                // class name from the variable's static type. (Documented
+                // divergence: a base-typed `except` clause folds the static —
+                // not dynamic — class name; the corpus only reads exact
+                // handler matches.)
+                if a.attr.as_str() == "__name__" {
+                    if let Expr::Attribute(inner) = a.value.as_ref() {
+                        if inner.attr.as_str() == "__class__" {
+                            return self.fold_class_name(inner.value.as_ref(), span);
+                        }
+                    }
+                }
                 let value = self.lower_expr(a.value.as_ref())?;
                 let name = self.intern(a.attr.as_str());
                 Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))
@@ -1652,10 +2720,18 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// `min`/`max` over a single iterable, or over 2+ positional args (wrapped in a
-    /// synthetic list). Compares with the tagged baseline (`rt_obj_cmp`), so heap
-    /// elements order by value, not pointer (PITFALLS B13). Empty input yields
-    /// `None` (CPython raises `ValueError`; that path is out of scope).
-    fn lower_minmax(&mut self, args: &[Expr], span: Span, is_min: bool) -> Result<Idx<HirExpr>> {
+    /// synthetic list), with optional `key=`. Compares with the tagged baseline
+    /// (`rt_obj_cmp`), so heap elements order by value, not pointer (PITFALLS
+    /// B13). An empty input raises `ValueError` (Phase 7, CPython semantics);
+    /// the accumulator is seeded from the first element, so its inferred type
+    /// is the element type — never a spurious `Optional`.
+    fn lower_minmax(
+        &mut self,
+        args: &[Expr],
+        key: Option<&Expr>,
+        span: Span,
+        is_min: bool,
+    ) -> Result<Idx<HirExpr>> {
         if args.is_empty() {
             return Err(parse_error("min()/max() require at least one argument", span));
         }
@@ -1666,46 +2742,128 @@ impl<'a> FnLowerer<'a> {
             let elems = self.lower_expr_list(args)?;
             self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span)
         };
+        // Stage the key callable once (CPython evaluates it once).
+        let key_l = match key {
+            Some(k) => {
+                let kv = self.lower_expr(k)?;
+                let l = self.fresh_local(SemTy::Dyn);
+                self.push_stmt(HirStmt::Assign { target: l, value: kv });
+                Some(l)
+            }
+            None => None,
+        };
 
-        let acc = self.fresh_local(SemTy::Dyn);
-        let have = self.fresh_local(SemTy::Bool);
-        let init_have = self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span);
-        self.push_stmt(HirStmt::Assign { target: have, value: init_have });
-        let init_acc = self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span);
-        self.push_stmt(HirStmt::Assign { target: acc, value: init_acc });
-
-        let lp = self.begin_iter_loop(iterable, span)?;
-        // if not have: first element; else compare and maybe replace.
-        let have_ref = self.local_ref(have, span);
+        // it = iter(iterable); first probe decides empty-vs-seed.
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        let elem0 = self.emit_iter_next(it, span);
+        let done0 = self.emit_iter_exhausted(it, span);
+        let empty_b = self.new_block();
         let first_b = self.new_block();
-        let cmp_b = self.new_block();
-        let cont = self.new_block();
-        self.seal(HirTerminator::Branch { cond: have_ref, then: cmp_b, else_: first_b });
+        self.seal(HirTerminator::Branch { cond: done0, then: empty_b, else_: first_b });
 
-        // first_b: acc = elem; have = True
+        // empty: raise ValueError("min() arg is an empty sequence").
+        self.switch(empty_b);
+        let what = if is_min { "min" } else { "max" };
+        let msg_id = self.intern(&format!("{what}() arg is an empty sequence"));
+        let msg = self.alloc(HirExprKind::StrLit(msg_id), SemTy::Str, span);
+        self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+            tag: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            msg: Some(msg),
+        }));
+        self.seal(HirTerminator::Unreachable);
+
+        // seed: acc = elem0; acc_key = key(elem0) when keyed.
         self.switch(first_b);
-        let e1 = self.local_ref(lp.elem, span);
-        self.push_stmt(HirStmt::Assign { target: acc, value: e1 });
-        let t = self.alloc(HirExprKind::BoolLit(true), SemTy::Bool, span);
-        self.push_stmt(HirStmt::Assign { target: have, value: t });
-        self.seal(HirTerminator::Jump(cont));
+        let acc = self.fresh_local(SemTy::Dyn);
+        let e0 = self.local_ref(elem0, span);
+        self.push_stmt(HirStmt::Assign { target: acc, value: e0 });
+        let acc_key = match key_l {
+            Some(kl) => {
+                let l = self.fresh_local(SemTy::Dyn);
+                let v = self.emit_key_call(kl, elem0, span);
+                self.push_stmt(HirStmt::Assign { target: l, value: v });
+                Some(l)
+            }
+            None => None,
+        };
 
-        // cmp_b: if elem </> acc: acc = elem
-        self.switch(cmp_b);
-        let e2 = self.local_ref(lp.elem, span);
-        let acc_ref = self.local_ref(acc, span);
+        // loop: elem = next(it); done → exit; cand </> best → replace.
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let elem = self.emit_iter_next(it, span);
+        let done = self.emit_iter_exhausted(it, span);
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+
+        self.switch(body_b);
+        let cand_key = match key_l {
+            Some(kl) => {
+                let l = self.fresh_local(SemTy::Dyn);
+                let v = self.emit_key_call(kl, elem, span);
+                self.push_stmt(HirStmt::Assign { target: l, value: v });
+                Some(l)
+            }
+            None => None,
+        };
+        let (cl, bl) = match (cand_key, acc_key) {
+            (Some(c), Some(b)) => (c, b),
+            _ => (elem, acc),
+        };
+        let cref = self.local_ref(cl, span);
+        let bref = self.local_ref(bl, span);
         let op = if is_min { CmpOp::Lt } else { CmpOp::Gt };
-        let cmp = self.alloc(HirExprKind::Compare { op, l: e2, r: acc_ref }, SemTy::Bool, span);
+        let cmp = self.alloc(HirExprKind::Compare { op, l: cref, r: bref }, SemTy::Bool, span);
         let upd = self.new_block();
-        self.seal(HirTerminator::Branch { cond: cmp, then: upd, else_: cont });
+        self.seal(HirTerminator::Branch { cond: cmp, then: upd, else_: header });
         self.switch(upd);
-        let e3 = self.local_ref(lp.elem, span);
-        self.push_stmt(HirStmt::Assign { target: acc, value: e3 });
-        self.seal(HirTerminator::Jump(cont));
+        let e_ref = self.local_ref(elem, span);
+        self.push_stmt(HirStmt::Assign { target: acc, value: e_ref });
+        if let (Some(ck), Some(ak)) = (cand_key, acc_key) {
+            let ck_ref = self.local_ref(ck, span);
+            self.push_stmt(HirStmt::Assign { target: ak, value: ck_ref });
+        }
+        self.seal(HirTerminator::Jump(header));
 
-        self.switch(cont);
-        self.end_iter_loop(lp);
+        self.switch(exit);
         Ok(self.local_ref(acc, span))
+    }
+
+    /// `elem = next(it)` into a fresh pin-tagged local (null on exhaustion).
+    fn emit_iter_next(&mut self, it: LocalId, span: Span) -> LocalId {
+        let elem = self.fresh_local_tagged();
+        let it_ref = self.local_ref(it, span);
+        let next = self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref] },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        elem
+    }
+
+    /// `is_exhausted(it)` as a Bool condition expr.
+    fn emit_iter_exhausted(&mut self, it: LocalId, span: Span) -> Idx<HirExpr> {
+        let it_ref = self.local_ref(it, span);
+        self.alloc(
+            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref] },
+            SemTy::Bool,
+            span,
+        )
+    }
+
+    /// `key(elem)` — an indirect call through the staged key callable.
+    fn emit_key_call(&mut self, key_l: LocalId, elem: LocalId, span: Span) -> Idx<HirExpr> {
+        let callee = self.local_ref(key_l, span);
+        let arg = self.local_ref(elem, span);
+        self.alloc(HirExprKind::Call { callee, args: vec![arg] }, SemTy::Dyn, span)
     }
 
     /// `set()` → empty set; `set(iterable)` → fill an empty set from the iterable.
@@ -2254,12 +3412,32 @@ impl<'a> FnLowerer<'a> {
         // Builtins that desugar to reduce / iterator loops are recognized by name
         // (like `print`/`range`; shadowing these names is not supported).
         if let Expr::Name(n) = c.func.as_ref() {
-            if matches!(n.id.as_str(), "sum" | "min" | "max" | "set" | "next") {
+            // `min`/`max` accept the `key=` keyword (Phase 7).
+            if matches!(n.id.as_str(), "min" | "max") {
+                if has_starred_arg(c) {
+                    return Err(parse_error("`*args` spreading is not supported for min()/max()", span));
+                }
+                let mut key: Option<&Expr> = None;
+                for kw in &c.keywords {
+                    match kw.arg.as_ref().map(|i| i.as_str()) {
+                        Some("key") => key = Some(&kw.value),
+                        Some(other) => {
+                            return Err(parse_error(
+                                format!("min()/max() got an unsupported keyword argument '{other}'"),
+                                span,
+                            ))
+                        }
+                        None => {
+                            return Err(parse_error("min()/max() do not support **kwargs", span))
+                        }
+                    }
+                }
+                return self.lower_minmax(&c.args, key, span, n.id.as_str() == "min");
+            }
+            if matches!(n.id.as_str(), "sum" | "set" | "next") {
                 reject_call_extras(c, span, "this builtin")?;
                 match n.id.as_str() {
                     "sum" => return self.lower_sum(&c.args, span),
-                    "min" => return self.lower_minmax(&c.args, span, true),
-                    "max" => return self.lower_minmax(&c.args, span, false),
                     "set" => return self.lower_set_call(&c.args, span),
                     // `next(g)` (Phase 6E): resume the generator → its next value.
                     "next" => {
@@ -2414,7 +3592,7 @@ impl<'a> FnLowerer<'a> {
             let start = rl.new_block();
             rl.switch(start);
             rl.lower_genexpr_clauses(g, 0, iter0, span)?;
-            if matches!(rl.blocks[rl.cur].term, HirTerminator::Unreachable) {
+            if rl.cur_open() {
                 rl.emit_gen_exhaust(span);
             }
             rl.gen_rewrite_locals();
@@ -2527,6 +3705,15 @@ impl<'a> FnLowerer<'a> {
         want_sent: bool,
         span: Span,
     ) -> Result<Option<Idx<HirExpr>>> {
+        // A suspended frame would dangle its stack-allocated ExceptionFrame
+        // (the frame registers a stack address with the runtime, and the
+        // resume call runs on a different stack) — reject lexically (Phase 7).
+        if self.scope_stack.iter().any(|s| !matches!(s, ScopeCtx::Loop { .. })) {
+            return Err(parse_error(
+                "yield inside try/with is unsupported in this milestone",
+                span,
+            ));
+        }
         let value = value.unwrap_or_else(|| self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span));
         let k = {
             let g = self.gen.as_mut().expect("generator mode");
@@ -3388,8 +4575,44 @@ fn stmt_has_yield(s: &Stmt) -> bool {
         Stmt::If(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
         Stmt::While(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
         Stmt::For(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
+        // Phase 7: a yield lexically inside try/with/match still makes the def
+        // a generator (the suspend path then rejects try/with with a clear
+        // message instead of "unsupported expression").
+        Stmt::Try(t) => {
+            body_has_yield(&t.body)
+                || t.handlers.iter().any(|h| {
+                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    body_has_yield(&h.body)
+                })
+                || body_has_yield(&t.orelse)
+                || body_has_yield(&t.finalbody)
+        }
+        Stmt::With(w) => body_has_yield(&w.body),
+        Stmt::Match(m) => m.cases.iter().any(|c| body_has_yield(&c.body)),
         // A nested def/lambda/class is its own scope — its yields don't count.
         _ => false,
+    }
+}
+
+/// True iff a `match` pattern binds any name (capture / star / `**rest`) —
+/// the v1 or-pattern restriction (Phase 7E).
+fn pattern_has_bindings(p: &rustpython_parser::ast::Pattern) -> bool {
+    use rustpython_parser::ast::Pattern;
+    match p {
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => false,
+        Pattern::MatchAs(a) => {
+            a.name.is_some() || a.pattern.as_deref().is_some_and(pattern_has_bindings)
+        }
+        Pattern::MatchOr(o) => o.patterns.iter().any(pattern_has_bindings),
+        Pattern::MatchSequence(s) => s.patterns.iter().any(pattern_has_bindings),
+        Pattern::MatchStar(s) => s.name.is_some(),
+        Pattern::MatchMapping(m) => {
+            m.rest.is_some() || m.patterns.iter().any(pattern_has_bindings)
+        }
+        Pattern::MatchClass(c) => {
+            c.patterns.iter().any(pattern_has_bindings)
+                || c.kwd_patterns.iter().any(pattern_has_bindings)
+        }
     }
 }
 
@@ -3437,7 +4660,7 @@ fn lower_generator_def(
     rl.switch(start);
     rl.lower_body(body)?;
     // Fallthrough → exhaust.
-    if matches!(rl.blocks[rl.cur].term, HirTerminator::Unreachable) {
+    if rl.cur_open() {
         rl.emit_gen_exhaust(span);
     }
     rl.gen_rewrite_locals();
@@ -3894,6 +5117,99 @@ mod tests {
         let mut interner = StringInterner::new();
         let module = crate::parse(src, &mut interner).expect("parse");
         (module, interner)
+    }
+
+    /// Parse `src`, returning the error message (the rejection-path helper).
+    fn parse_err(src: &str) -> String {
+        let mut interner = StringInterner::new();
+        match crate::parse(src, &mut interner) {
+            Ok(_) => panic!("expected a parse rejection"),
+            Err(e) => format!("{e:?}"),
+        }
+    }
+
+    // ── Phase 7 lexical restrictions ──
+
+    #[test]
+    fn rejects_yield_inside_try() {
+        // A suspended frame would dangle its stack-allocated ExceptionFrame.
+        let err = parse_err(
+            "def g():\n    try:\n        yield 1\n    except ValueError:\n        pass\n",
+        );
+        assert!(err.contains("yield inside try/with"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_yield_inside_with() {
+        let err = parse_err(
+            "def g():\n    with ctx() as c:\n        yield c\n",
+        );
+        assert!(err.contains("yield inside try/with"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_or_pattern_with_captures() {
+        let err = parse_err(
+            "match x:\n    case [a] | [a, b]:\n        pass\n",
+        );
+        assert!(err.contains("or-patterns with capture names"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_positional_class_pattern() {
+        let err = parse_err(
+            "class P:\n    def __init__(self, x: int):\n        self.x = x\nmatch P(1):\n    case P(1):\n        pass\n",
+        );
+        assert!(err.contains("positional class patterns"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_exception_in_except() {
+        let err = parse_err(
+            "try:\n    pass\nexcept NotAThing:\n    pass\n",
+        );
+        assert!(err.contains("unknown exception type"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_bare_except_not_last() {
+        let err = parse_err(
+            "try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n",
+        );
+        assert!(err.contains("must be last"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_try_raise_with_match_shapes() {
+        // The Phase-7 statement forms all lower without rejection.
+        let src = "\
+def f(n: int) -> int:
+    total = 0
+    try:
+        if n == 1:
+            raise ValueError(\"one\")
+        total = total + 1
+    except (ValueError, TypeError) as e:
+        total = total - 1
+    except:
+        raise
+    else:
+        total = total + 10
+    finally:
+        total = total + 100
+    match n:
+        case 0:
+            total = total + 1
+        case [x, *rest]:
+            total = total + x
+        case {\"k\": v, **other}:
+            total = total + v
+        case y if y > 5:
+            total = total + y
+    return total
+";
+        let (m, _i) = parsed(src);
+        assert!(m.functions.len() >= 2);
     }
 
     #[test]

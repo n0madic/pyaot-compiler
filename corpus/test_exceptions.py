@@ -159,7 +159,7 @@ def test_min_max_empty_collections():
     caught_min_tuple_float: bool = False
     try:
         x7 = ()
-        result7: float = min(x7)
+        result7 = min(x7)
     except ValueError:
         caught_min_tuple_float = True
     assert caught_min_tuple_float, "min() on empty float tuple should raise ValueError"
@@ -168,7 +168,7 @@ def test_min_max_empty_collections():
     caught_max_tuple_float: bool = False
     try:
         x8 = ()
-        result8: float = max(x8)
+        result8 = max(x8)
     except ValueError:
         caught_max_tuple_float = True
     assert caught_max_tuple_float, "max() on empty float tuple should raise ValueError"
@@ -493,8 +493,8 @@ def test_context_nested():
     assert ctx2.exited, "ctx2.exited should be True"
 
 # Exception info passed to __exit__
-# exc_type: exception instance pointer (truthy) or None/0 (falsy)
-# exc_val:  exception instance pointer or None/0
+# exc_type: exception info (truthy) or None (falsy)
+# exc_val:  exception info or None
 # exc_tb:   None (traceback not yet supported)
 class ExcInfoChecker:
     had_exception: bool
@@ -505,9 +505,9 @@ class ExcInfoChecker:
     def __enter__(self) -> int:
         return 0
 
-    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
-        # exc_type is the exception instance (truthy) or None/0 (falsy)
-        self.had_exception = exc_type != 0
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        # exc_type is truthy when an exception is active, falsy (None) otherwise
+        self.had_exception = bool(exc_type)
         return False
 
 def test_exc_info_no_exception():
@@ -530,9 +530,9 @@ class Suppressor:
     def __enter__(self) -> int:
         return 0
 
-    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
-        # exc_type is None (0) when no exception, non-zero when exception
-        return exc_type != 0  # Suppress if exception
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        # exc_type is None (falsy) when no exception, truthy when exception
+        return bool(exc_type)  # Suppress if exception
 
 def test_suppression():
     ctx = Suppressor()
@@ -545,7 +545,7 @@ class NonSuppressor:
     def __enter__(self) -> int:
         return 0
 
-    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         return False  # Never suppress
 
 def test_no_suppression():
@@ -1454,19 +1454,19 @@ print("test_print_builtin_exception passed")
 # ===== SECTION: __exit__ receives real exception info =====
 
 class ExcValueReceiver:
-    exc_type_received: int
-    exc_val_received: int
+    saw_exc_type: bool
+    saw_exc_val: bool
 
     def __init__(self):
-        self.exc_type_received = 0
-        self.exc_val_received = 0
+        self.saw_exc_type = False
+        self.saw_exc_val = False
 
     def __enter__(self) -> int:
         return 0
 
-    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
-        self.exc_type_received = exc_type
-        self.exc_val_received = exc_val
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.saw_exc_type = bool(exc_type)
+        self.saw_exc_val = bool(exc_val)
         return False
 
 def test_exit_exc_val_on_exception():
@@ -1476,17 +1476,17 @@ def test_exit_exc_val_on_exception():
             raise ValueError("hello")
     except:
         pass
-    # exc_type and exc_val should both be non-zero (exception instance pointer)
-    assert ctx.exc_type_received != 0, "exc_type should be non-zero on exception"
-    assert ctx.exc_val_received != 0, "exc_val should be non-zero on exception"
+    # exc_type and exc_val should both be truthy (exception info)
+    assert ctx.saw_exc_type, "exc_type should be truthy on exception"
+    assert ctx.saw_exc_val, "exc_val should be truthy on exception"
 
 def test_exit_exc_val_on_normal():
     ctx = ExcValueReceiver()
     with ctx:
         x: int = 1
-    # No exception: both should be 0
-    assert ctx.exc_type_received == 0, "exc_type should be 0 on normal exit"
-    assert ctx.exc_val_received == 0, "exc_val should be 0 on normal exit"
+    # No exception: both should be falsy (None)
+    assert not ctx.saw_exc_type, "exc_type should be falsy on normal exit"
+    assert not ctx.saw_exc_val, "exc_val should be falsy on normal exit"
 
 test_exit_exc_val_on_exception()
 print("test_exit_exc_val_on_exception passed")

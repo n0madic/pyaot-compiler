@@ -11,7 +11,8 @@
 
 use crate::{
     classify_coercion, is_heap_str, BinOp, Const, ContainerArg, ContainerOp, ContainerResult,
-    GenOp, GenResult, MirFunction, MirInst, MirTerminator, Operand, PrintKind, UnaryOp,
+    ExcQuery, GenOp, GenResult, MirFunction, MirInst, MirRaise, MirTerminator, Operand, PrintKind,
+    UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -57,6 +58,11 @@ pub enum VerifyError {
     /// A `CallIndirect` whose callee repr is not `Closure(sig)` for the carried
     /// `sig` — Phase 6A.
     IndirectCalleeRepr { actual: Repr },
+    /// A `Raise`/`AssertFail` that is not the last instruction of its block, or
+    /// whose block terminator is not `Unreachable` (Phase 7A).
+    BadRaiseShape,
+    /// A `TryEnter` whose handler is the entry block (Phase 7A).
+    TryHandlerIsEntry,
 }
 
 impl std::fmt::Display for VerifyError {
@@ -124,6 +130,16 @@ impl std::fmt::Display for VerifyError {
             }
             VerifyError::IndirectCalleeRepr { actual } => {
                 write!(f, "CallIndirect callee must be Closure(sig) matching the carried sig, got {actual:?}")
+            }
+            VerifyError::BadRaiseShape => {
+                write!(
+                    f,
+                    "Raise/AssertFail must be the last instruction of its block, \
+                     with an Unreachable terminator"
+                )
+            }
+            VerifyError::TryHandlerIsEntry => {
+                write!(f, "TryEnter handler must not be the entry block")
             }
         }
     }
@@ -211,8 +227,16 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
     }
 
     for block in &f.blocks {
-        for inst in &block.insts {
+        for (i, inst) in block.insts.iter().enumerate() {
             verify_inst(f, funcs, inst)?;
+            // A diverging instruction must be last, with `Unreachable` after it
+            // (the AssertFail shape, enforced since Phase 7A).
+            if matches!(inst, MirInst::Raise(_) | MirInst::AssertFail)
+                && (i + 1 != block.insts.len()
+                    || !matches!(block.term, MirTerminator::Unreachable))
+            {
+                return Err(VerifyError::BadRaiseShape);
+            }
         }
         match &block.term {
             MirTerminator::Return(Some(op)) => check_operand(f, op)?,
@@ -226,6 +250,13 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
                 }
                 check_block(f, *then)?;
                 check_block(f, *else_)?;
+            }
+            MirTerminator::TryEnter { normal, handler } => {
+                check_block(f, *normal)?;
+                check_block(f, *handler)?;
+                if *handler == f.entry {
+                    return Err(VerifyError::TryHandlerIsEntry);
+                }
             }
             MirTerminator::Unreachable => {}
         }
@@ -508,6 +539,41 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             }
         }
         MirInst::AssertFail => {}
+        // ── exceptions (Phase 7) ──
+        MirInst::ExcOp(_) => {}
+        MirInst::ExcQuery { dst, query } => match query {
+            ExcQuery::Current => want_local(f, *dst, &TAGGED, "ExcQuery(Current).dst")?,
+            ExcQuery::MatchesBuiltin(_) | ExcQuery::MatchesClass(_) => {
+                want_local(f, *dst, &RAW_I8, "ExcQuery(Matches*).dst")?
+            }
+        },
+        MirInst::ExcInstanceStr { dst, value } => {
+            want(f, value, &TAGGED, "ExcInstanceStr.value")?;
+            want_local(f, *dst, &Repr::Heap(HeapShape::Str), "ExcInstanceStr.dst")?;
+        }
+        MirInst::Raise(r) => {
+            let tagged = |op: &Option<Operand>, ctx: &'static str| -> Result<(), VerifyError> {
+                if let Some(op) = op {
+                    want(f, op, &TAGGED, ctx)?;
+                }
+                Ok(())
+            };
+            match r {
+                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
+                    tagged(msg, "Raise.msg")?;
+                }
+                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
+                    tagged(msg, "Raise.msg")?;
+                    tagged(cause_msg, "Raise.cause_msg")?;
+                }
+                MirRaise::CustomWithInstance { msg, instance, .. } => {
+                    tagged(msg, "Raise.msg")?;
+                    want(f, instance, &TAGGED, "Raise.instance")?;
+                }
+                MirRaise::Instance { value } => want(f, value, &TAGGED, "Raise.value")?,
+                MirRaise::Reraise => {}
+            }
+        }
         MirInst::Print { kind, arg } => match kind {
             PrintKind::Newline | PrintKind::Sep | PrintKind::None_ => {
                 if arg.is_some() {
@@ -954,6 +1020,90 @@ mod tests {
             MirTerminator::Return(None),
         );
         assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    // ── exceptions (Phase 7) ──
+
+    #[test]
+    fn rejects_raise_not_last_in_block() {
+        use crate::MirRaise;
+        // A Raise followed by another instruction is malformed.
+        let f = single_block(
+            vec![Repr::Tagged],
+            vec![
+                MirInst::Raise(MirRaise::Reraise),
+                MirInst::Const { dst: LocalId::new(0), val: Const::None },
+            ],
+            MirTerminator::Unreachable,
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::BadRaiseShape)));
+    }
+
+    #[test]
+    fn rejects_raise_without_unreachable_term() {
+        use crate::MirRaise;
+        let f = single_block(
+            vec![],
+            vec![MirInst::Raise(MirRaise::Reraise)],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::BadRaiseShape)));
+    }
+
+    #[test]
+    fn accepts_raise_shape_and_checks_msg_repr() {
+        use crate::MirRaise;
+        // Well-formed: Raise last + Unreachable, Tagged message operand.
+        let ok = single_block(
+            vec![Repr::Tagged],
+            vec![MirInst::Raise(MirRaise::Builtin {
+                tag: 3,
+                msg: Some(Operand::Local(LocalId::new(0))),
+            })],
+            MirTerminator::Unreachable,
+        );
+        assert_eq!(verify(&ok, &[]), Ok(()));
+        // A raw message operand is rejected.
+        let bad = single_block(
+            vec![Repr::Raw(RawKind::F64)],
+            vec![MirInst::Raise(MirRaise::Builtin {
+                tag: 3,
+                msg: Some(Operand::Local(LocalId::new(0))),
+            })],
+            MirTerminator::Unreachable,
+        );
+        assert!(matches!(verify(&bad, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn rejects_try_enter_handler_at_entry() {
+        let f = single_block(
+            vec![],
+            vec![],
+            MirTerminator::TryEnter { normal: BlockId::new(0), handler: BlockId::new(0) },
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::TryHandlerIsEntry)));
+    }
+
+    #[test]
+    fn exc_query_dst_reprs() {
+        use crate::ExcQuery;
+        // Current → Tagged dst; Matches* → Raw(I8) dst.
+        let ok = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::I8)],
+            vec![
+                MirInst::ExcQuery { dst: LocalId::new(0), query: ExcQuery::Current },
+                MirInst::ExcQuery { dst: LocalId::new(1), query: ExcQuery::MatchesBuiltin(3) },
+            ],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&ok, &[]), Ok(()));
+        let bad = single_block(
+            vec![Repr::Raw(RawKind::I8)],
+            vec![MirInst::ExcQuery { dst: LocalId::new(0), query: ExcQuery::Current }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&bad, &[]), Err(VerifyError::ReprMismatch { .. })));
     }
 
     #[test]

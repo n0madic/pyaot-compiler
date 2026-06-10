@@ -64,6 +64,22 @@ const PHASE_CORPUS: &[&str] = &[
     "p6_send_close.py",
     "p6_genexpr.py",
     "p6_gc_stress.py",
+    // Phase 7A — raise + try/except (builtin exceptions).
+    "p7_raise_tryexcept.py",
+    "test_multi_except.py",
+    // Phase 7B — finally/else, raise-from chaining, instance surface.
+    "p7_finally.py",
+    "test_traceback.py",
+    // Phase 7C — custom exception classes.
+    "p7_custom_exc.py",
+    // Phase 7D — context managers.
+    "p7_with.py",
+    "test_exceptions.py",
+    // Phase 7E — structural match.
+    "p7_match.py",
+    "test_match.py",
+    // Phase 7 — raise/catch GC soak (shadow-stack unwind + rooted `as e`).
+    "p7_gc_stress.py",
 ];
 
 #[test]

@@ -139,23 +139,33 @@ pub fn collect_classes(module: &HirModule, interner: &StringInterner) -> Result<
         by_id.insert(c.class_id, c);
     }
 
-    // Resolve base names → parent ClassIds (declaration order).
+    // Resolve base names → parent ClassIds (declaration order). A base that is
+    // not a user class is tried against the builtin exception names (Phase 7C):
+    // on a hit it contributes no C3 input (an opaque root) and marks the class
+    // as an exception class via `exception_base`.
     let mut parents: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+    let mut direct_exc_base: HashMap<ClassId, pyaot_hir::BuiltinExceptionKind> = HashMap::new();
     for c in &module.classes {
         let mut bases = Vec::new();
         for base in &c.base_names {
+            let base_name = interner.resolve(*base);
             // `object` is the implicit root and carries no fields/methods.
-            if interner.resolve(*base) == "object" {
+            if base_name == "object" {
                 continue;
             }
             match name_to_id.get(base) {
                 Some(bid) => bases.push(*bid),
-                None => {
-                    return Err(CompilerError::semantic_error(
-                        format!("unknown base class `{}`", interner.resolve(*base)),
-                        Span::dummy(),
-                    ))
-                }
+                None => match pyaot_hir::BuiltinExceptionKind::from_name(base_name) {
+                    Some(kind) => {
+                        direct_exc_base.insert(c.class_id, kind);
+                    }
+                    None => {
+                        return Err(CompilerError::semantic_error(
+                            format!("unknown base class `{base_name}`"),
+                            Span::dummy(),
+                        ))
+                    }
+                },
             }
         }
         parents.insert(c.class_id, bases);
@@ -297,6 +307,13 @@ pub fn collect_classes(module: &HirModule, interner: &StringInterner) -> Result<
             })
             .collect();
 
+        // The effective builtin exception base (Phase 7C): a direct builtin
+        // base, else inherited through the first user parent (already resolved
+        // — bases are declared before subclasses).
+        let exception_base = direct_exc_base.get(&c.class_id).copied().or_else(|| {
+            parent.and_then(|p| table.get(p).and_then(|info| info.exception_base))
+        });
+
         table.insert(ClassInfo {
             class_id: c.class_id,
             name: c.name,
@@ -312,6 +329,7 @@ pub fn collect_classes(module: &HirModule, interner: &StringInterner) -> Result<
             class_attrs,
             num_vtable_slots,
             type_params: c.type_params.clone(),
+            exception_base,
         });
     }
 

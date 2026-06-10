@@ -495,10 +495,10 @@ d_rest1: dict[str, int] = {"a": 1, "b": 2, "c": 3}
 match d_rest1:
     case {"a": val_a, **rest1}:
         pass
-assert val_a == 1, f"matched value wrong: {val_a}"
+assert val_a == 1, "matched value wrong"
 assert "a" not in rest1, "'a' should be excluded from rest"
-assert rest1["b"] == 2 and rest1["c"] == 3, f"wrong rest values: {rest1}"
-assert len(rest1) == 2, f"wrong rest length: {len(rest1)}"
+assert rest1["b"] == 2 and rest1["c"] == 3, "wrong rest values"
+assert len(rest1) == 2, "wrong rest length"
 
 # Multiple matched keys
 d_rest2: dict[str, int] = {"x": 10, "y": 20, "z": 30}
@@ -506,21 +506,21 @@ match d_rest2:
     case {"x": vx, "y": vy, **rest2}:
         pass
 assert vx == 10 and vy == 20
-assert len(rest2) == 1 and rest2["z"] == 30, f"wrong rest: {rest2}"
+assert len(rest2) == 1 and rest2["z"] == 30, "wrong rest"
 
 # All keys matched — rest is empty
 d_rest3: dict[str, int] = {"a": 1}
 match d_rest3:
     case {"a": va, **rest3}:
         pass
-assert len(rest3) == 0, f"expected empty rest: {rest3}"
+assert len(rest3) == 0, "expected empty rest"
 
 # Original dict is not modified (copy semantics)
 d_rest4: dict[str, int] = {"a": 1, "b": 2}
 match d_rest4:
     case {"a": _, **rest4}:
         pass
-assert len(d_rest4) == 2 and d_rest4["a"] == 1, f"original modified: {d_rest4}"
+assert len(d_rest4) == 2 and d_rest4["a"] == 1, "original modified"
 
 print("Mapping pattern **rest tests passed!")
 

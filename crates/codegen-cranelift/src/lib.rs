@@ -204,6 +204,30 @@ struct RuntimeFns {
     gen_is_closing: FuncId,
     gen_send: FuncId,
     gen_close: FuncId,
+    // ── exceptions (Phase 7) ──
+    /// libc `setjmp` — called DIRECTLY from generated code (B3; a Rust wrapper
+    /// would return and invalidate the saved frame).
+    setjmp: FuncId,
+    exc_push_frame: FuncId,
+    exc_pop_frame: FuncId,
+    exc_raise: FuncId,
+    exc_raise_from: FuncId,
+    exc_raise_from_none: FuncId,
+    exc_raise_custom_with_instance: FuncId,
+    exc_raise_instance: FuncId,
+    exc_reraise: FuncId,
+    exc_start_handling: FuncId,
+    exc_end_handling: FuncId,
+    /// `rt_exc_isinstance_class` serves BOTH builtin and user-class clauses:
+    /// builtin tags are runtime class ids, and the registry walk is what lets
+    /// `except ValueError` catch a user `class LimitError(ValueError)` (the
+    /// exact-match `rt_exc_isinstance` cannot, so it is not imported).
+    exc_isinstance_class: FuncId,
+    exc_get_current: FuncId,
+    exc_instance_str: FuncId,
+    exc_register_class_name: FuncId,
+    str_data: FuncId,
+    str_len: FuncId,
 }
 
 impl RuntimeFns {
@@ -365,6 +389,29 @@ impl RuntimeFns {
             gen_is_closing: d("rt_generator_is_closing", &[ti], &[t8])?,
             gen_send: d("rt_generator_send", &[ti, ti], &[ti])?,
             gen_close: d("rt_generator_close", &[ti], &[])?,
+            // Exceptions (Phase 7). Tags / class ids are u8 at the ABI; message
+            // pointers + lengths come from rt_str_data/rt_str_len of a StrObj.
+            setjmp: d("setjmp", &[ptr], &[t32])?,
+            exc_push_frame: d("rt_exc_push_frame", &[ptr], &[])?,
+            exc_pop_frame: d("rt_exc_pop_frame", &[], &[])?,
+            exc_raise: d("rt_exc_raise", &[t8, ptr, ti], &[])?,
+            exc_raise_from: d("rt_exc_raise_from", &[t8, ptr, ti, t8, ptr, ti], &[])?,
+            exc_raise_from_none: d("rt_exc_raise_from_none", &[t8, ptr, ti], &[])?,
+            exc_raise_custom_with_instance: d(
+                "rt_exc_raise_custom_with_instance",
+                &[t8, ptr, ti, ti],
+                &[],
+            )?,
+            exc_raise_instance: d("rt_exc_raise_instance", &[ti], &[])?,
+            exc_reraise: d("rt_exc_reraise", &[], &[])?,
+            exc_start_handling: d("rt_exc_start_handling", &[], &[])?,
+            exc_end_handling: d("rt_exc_end_handling", &[], &[])?,
+            exc_isinstance_class: d("rt_exc_isinstance_class", &[t8], &[t8])?,
+            exc_get_current: d("rt_exc_get_current", &[], &[ti])?,
+            exc_instance_str: d("rt_exc_instance_str", &[ti], &[ti])?,
+            exc_register_class_name: d("rt_exc_register_class_name", &[t8, ptr, ti], &[])?,
+            str_data: d("rt_str_data", &[ti], &[ptr])?,
+            str_len: d("rt_str_len", &[ti], &[ti])?,
         })
     }
 }
@@ -597,11 +644,31 @@ fn emit_classinit(
 
         for c in &program.classes {
             let cid8 = builder.ins().iconst(types::I8, c.class_id.0 as i64);
-            // 255 = no parent (NO_PARENT sentinel in the runtime registry).
-            let parent = c.parent.map(|p| p.0 as i64).unwrap_or(255);
+            // Runtime parent: a user parent; else, for an exception class, its
+            // builtin base tag (builtin tags ARE runtime class ids, so the
+            // registry walk reaches the pre-seeded builtin hierarchy — 7C);
+            // else 255 = no parent (NO_PARENT sentinel).
+            let parent = c
+                .parent
+                .map(|p| p.0 as i64)
+                .or(c.exception_base.map(|t| t as i64))
+                .unwrap_or(255);
             let parent8 = builder.ins().iconst(types::I8, parent);
             let rc = module.declare_func_in_func(rt.register_class, builder.func);
             builder.ins().call(rc, &[cid8, parent8]);
+
+            // Exception classes also register their bare name for display.
+            if c.exception_base.is_some() {
+                let (data_id, len) = *data_ids
+                    .get(&c.name)
+                    .ok_or_else(|| cg_error("missing data object for exception class name"))?;
+                let gv = module.declare_data_in_func(data_id, builder.func);
+                let nptr = builder.ins().global_value(_ptr_ty, gv);
+                let nlen = builder.ins().iconst(types::I64, len as i64);
+                let cid8n = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let regn = module.declare_func_in_func(rt.exc_register_class_name, builder.func);
+                builder.ins().call(regn, &[cid8n, nptr, nlen]);
+            }
 
             let cid8b = builder.ins().iconst(types::I8, c.class_id.0 as i64);
             let fc = builder.ins().iconst(types::I64, c.field_count as i64);
@@ -848,6 +915,47 @@ fn define_function(
             (None, None)
         };
 
+        // ── setjmp-clobbered locals (Phase 7A, the B3 correctness design) ──
+        // A function containing any `TryEnter` gets FULL memory-backing: every
+        // read re-loads from a stack home, every write stores. Rooted locals'
+        // home is their roots-array slot (already stored on def); each raw
+        // local gets a zero-initialized spill slot. The lying setjmp→handler
+        // edge then only ever observes memory, which `dispatch_to_handler`
+        // leaves intact — no Cranelift `Variable` is live across the setjmp,
+        // so register allocation cannot cache a stale copy (no `returns_twice`
+        // attribute needed). Functions without try keep the fast Variable path.
+        let has_try = mf
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, MirTerminator::TryEnter { .. }));
+        let mut spill_slot_of: Vec<Option<StackSlot>> = vec![None; mf.locals.len()];
+        if has_try {
+            for (i, local) in mf.locals.iter().enumerate() {
+                if !local.repr.is_gc_root() {
+                    spill_slot_of[i] = Some(builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        8,
+                        3,
+                    )));
+                }
+            }
+        }
+        // One ExceptionFrame stack slot per `TryEnter` occurrence (nested
+        // regions need distinct frames), keyed by the block that ends in it.
+        let mut exc_frame_slots: HashMap<usize, StackSlot> = HashMap::new();
+        for (bi, b) in mf.blocks.iter().enumerate() {
+            if matches!(b.term, MirTerminator::TryEnter { .. }) {
+                exc_frame_slots.insert(
+                    bi,
+                    builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        pyaot_core_defs::layout::EXCEPTION_FRAME_SIZE,
+                        3,
+                    )),
+                );
+            }
+        }
+
         let entry_idx = mf.entry.index();
         builder.append_block_params_for_function_params(cl_blocks[entry_idx]);
 
@@ -866,13 +974,26 @@ fn define_function(
             nroots,
             roots_slot,
             frame_slot,
+            has_try,
+            spill_slot_of,
+            exc_frame_slots,
+            cur_block: entry_idx,
         };
 
         for (bi, mblock) in mf.blocks.iter().enumerate() {
             fb.builder.switch_to_block(cl_blocks[bi]);
+            fb.cur_block = bi;
             if bi == entry_idx {
                 // GC frame setup must precede any rooted store (incl. params).
                 fb.emit_gc_prologue();
+                // Zero the raw spill slots so a load-before-def reads 0, not
+                // garbage (memory-backed mode only).
+                if fb.has_try {
+                    let zero = fb.builder.ins().iconst(types::I64, 0);
+                    for slot in fb.spill_slot_of.iter().flatten() {
+                        fb.builder.ins().stack_store(zero, *slot, 0);
+                    }
+                }
                 // Prologue: define parameter variables from block params.
                 let params: Vec<Value> = fb.builder.block_params(cl_blocks[bi]).to_vec();
                 for (i, pv) in params.iter().enumerate() {
@@ -917,10 +1038,30 @@ struct FnGen<'a, 'b> {
     nroots: u32,
     roots_slot: Option<StackSlot>,
     frame_slot: Option<StackSlot>,
+    /// Phase 7A: this function contains a `TryEnter` → every local is
+    /// memory-backed (loads/stores only; no `Variable` is live across setjmp).
+    has_try: bool,
+    /// Spill slot per non-rooted local (memory-backed mode only).
+    spill_slot_of: Vec<Option<StackSlot>>,
+    /// The `ExceptionFrame` slot of each block ending in `TryEnter`.
+    exc_frame_slots: HashMap<usize, StackSlot>,
+    /// Index of the MIR block currently being lowered.
+    cur_block: usize,
 }
 
 impl FnGen<'_, '_> {
     fn use_local(&mut self, id: LocalId) -> Value {
+        if self.has_try {
+            // Memory-backed read: rooted locals live in the roots array,
+            // raw locals in their spill slot.
+            let ty = clif_ty(&self.locals[id.index()].repr);
+            if let Some(slot_idx) = self.root_slot_of[id.index()] {
+                let rs = self.roots_slot.expect("rooted local needs a roots slot");
+                return self.builder.ins().stack_load(ty, rs, (slot_idx * 8) as i32);
+            }
+            let slot = self.spill_slot_of[id.index()].expect("raw local needs a spill slot");
+            return self.builder.ins().stack_load(ty, slot, 0);
+        }
         self.builder.use_var(Variable::from_u32(id.index() as u32))
     }
 
@@ -938,9 +1079,15 @@ impl FnGen<'_, '_> {
     }
 
     /// Define a local. If it is a GC root, mirror the value into the frame roots
-    /// array (store-on-def) so the collector can find it (PITFALLS B15).
+    /// array (store-on-def) so the collector can find it (PITFALLS B15). In
+    /// memory-backed mode (`has_try`) the store IS the definition — rooted
+    /// locals' home is their roots slot, raw locals' home their spill slot.
     fn def_local(&mut self, id: LocalId, val: Value) {
-        self.builder.def_var(Variable::from_u32(id.index() as u32), val);
+        if !self.has_try {
+            self.builder.def_var(Variable::from_u32(id.index() as u32), val);
+        } else if let Some(slot) = self.spill_slot_of[id.index()] {
+            self.builder.ins().stack_store(val, slot, 0);
+        }
         if let Some(slot_idx) = self.root_slot_of[id.index()] {
             let rs = self.roots_slot.expect("rooted local needs a roots slot");
             self.builder.ins().stack_store(val, rs, (slot_idx * 8) as i32);
@@ -1114,7 +1261,104 @@ impl FnGen<'_, '_> {
             MirInst::GenOpInst { dst, op, gen, imm, value } => {
                 self.lower_gen_op(dst, *op, gen, *imm, value)
             }
+            // ── exceptions (Phase 7) ──
+            MirInst::ExcOp(op) => {
+                let fid = match op {
+                    pyaot_mir::ExcOp::PopFrame => self.rt.exc_pop_frame,
+                    pyaot_mir::ExcOp::StartHandling => self.rt.exc_start_handling,
+                    pyaot_mir::ExcOp::EndHandling => self.rt.exc_end_handling,
+                };
+                self.call(fid, &[]);
+                Ok(())
+            }
+            MirInst::ExcQuery { dst, query } => {
+                let v = match query {
+                    pyaot_mir::ExcQuery::Current => {
+                        self.call(self.rt.exc_get_current, &[]).unwrap()
+                    }
+                    pyaot_mir::ExcQuery::MatchesBuiltin(tag) => {
+                        // Builtin tags ARE runtime class ids, so the registry
+                        // walk covers both a raised builtin AND a user subclass
+                        // (`class LimitError(ValueError)` caught by
+                        // `except ValueError`) — `rt_exc_isinstance` would only
+                        // exact-match builtins.
+                        let t = self.builder.ins().iconst(types::I8, *tag as i64);
+                        self.call(self.rt.exc_isinstance_class, &[t]).unwrap()
+                    }
+                    pyaot_mir::ExcQuery::MatchesClass(cid) => {
+                        let c = self.builder.ins().iconst(types::I8, cid.0 as i64);
+                        self.call(self.rt.exc_isinstance_class, &[c]).unwrap()
+                    }
+                };
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::ExcInstanceStr { dst, value } => {
+                let v = self.use_operand(value);
+                let s = self.call(self.rt.exc_instance_str, &[v]).unwrap();
+                self.def_local(*dst, s);
+                Ok(())
+            }
+            MirInst::Raise(r) => self.lower_raise(r),
         }
+    }
+
+    /// Read a raise message operand's bytes: `(rt_str_data(v), rt_str_len(v))`,
+    /// or `(null, 0)` for a message-less raise. The runtime copies the bytes
+    /// before any unwinding (B2), and the StrObj itself is a rooted MIR temp.
+    fn msg_ptr_len(&mut self, msg: &Option<Operand>) -> (Value, Value) {
+        match msg {
+            Some(op) => {
+                let v = self.use_operand(op);
+                let ptr = self.call(self.rt.str_data, &[v]).unwrap();
+                let len = self.call(self.rt.str_len, &[v]).unwrap();
+                (ptr, len)
+            }
+            None => {
+                let ptr = self.builder.ins().iconst(self.ptr_ty, 0);
+                let len = self.builder.ins().iconst(types::I64, 0);
+                (ptr, len)
+            }
+        }
+    }
+
+    /// Lower a `Raise` (Phase 7). The runtime call never returns; the block's
+    /// `Unreachable` terminator traps right after (dead).
+    fn lower_raise(&mut self, r: &pyaot_mir::MirRaise) -> Result<()> {
+        use pyaot_mir::MirRaise as R;
+        match r {
+            R::Builtin { tag, msg } => {
+                let (ptr, len) = self.msg_ptr_len(msg);
+                let t = self.builder.ins().iconst(types::I8, *tag as i64);
+                self.call(self.rt.exc_raise, &[t, ptr, len]);
+            }
+            R::BuiltinFromNone { tag, msg } => {
+                let (ptr, len) = self.msg_ptr_len(msg);
+                let t = self.builder.ins().iconst(types::I8, *tag as i64);
+                self.call(self.rt.exc_raise_from_none, &[t, ptr, len]);
+            }
+            R::BuiltinFrom { tag, msg, cause_tag, cause_msg } => {
+                let (ptr, len) = self.msg_ptr_len(msg);
+                let (cptr, clen) = self.msg_ptr_len(cause_msg);
+                let t = self.builder.ins().iconst(types::I8, *tag as i64);
+                let ct = self.builder.ins().iconst(types::I8, *cause_tag as i64);
+                self.call(self.rt.exc_raise_from, &[t, ptr, len, ct, cptr, clen]);
+            }
+            R::CustomWithInstance { class_id, msg, instance } => {
+                let (ptr, len) = self.msg_ptr_len(msg);
+                let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
+                let inst = self.use_operand(instance);
+                self.call(self.rt.exc_raise_custom_with_instance, &[cid, ptr, len, inst]);
+            }
+            R::Instance { value } => {
+                let v = self.use_operand(value);
+                self.call(self.rt.exc_raise_instance, &[v]);
+            }
+            R::Reraise => {
+                self.call(self.rt.exc_reraise, &[]);
+            }
+        }
+        Ok(())
     }
 
     /// Lower a generator state-machine op (Phase 6E) to its runtime call. Slot /
@@ -1628,6 +1872,23 @@ impl FnGen<'_, '_> {
                 let t = self.cl_blocks[then.index()];
                 let e = self.cl_blocks[else_.index()];
                 self.builder.ins().brif(c, t, &[], e, &[]);
+            }
+            // Enter a protected region (Phase 7A). Emitted atomically — nothing
+            // schedulable sits between the DIRECT setjmp call and the brif (B3),
+            // and in `has_try` mode no Variable is live across it (every value
+            // the handler edge reads is a memory load).
+            MirTerminator::TryEnter { normal, handler } => {
+                let slot = self.exc_frame_slots[&self.cur_block];
+                let frame = self.builder.ins().stack_addr(self.ptr_ty, slot, 0);
+                self.call(self.rt.exc_push_frame, &[frame]);
+                let jb = self
+                    .builder
+                    .ins()
+                    .iadd_imm(frame, pyaot_core_defs::layout::EXCEPTION_JMP_BUF_OFFSET as i64);
+                let rc = self.call(self.rt.setjmp, &[jb]).unwrap();
+                let n = self.cl_blocks[normal.index()];
+                let h = self.cl_blocks[handler.index()];
+                self.builder.ins().brif(rc, h, &[], n, &[]);
             }
             MirTerminator::Unreachable => {
                 self.builder.ins().trap(TrapCode::unwrap_user(1));

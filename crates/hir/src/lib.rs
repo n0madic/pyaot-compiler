@@ -46,6 +46,9 @@ use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, SymbolId};
 // Re-exported so the resolution-vocabulary consumers (`semantics`) can name
 // `Symbol::Builtin`'s payload without each taking a direct `core-defs` dep.
 pub use pyaot_core_defs::BuiltinFunctionKind;
+// Re-exported so `semantics`/`lowering` can name an exception class's builtin
+// base (Phase 7C) without a direct `core-defs` dep.
+pub use pyaot_core_defs::BuiltinExceptionKind;
 
 // ============================================================================
 // Module / function structure
@@ -299,6 +302,75 @@ pub enum HirExprKind {
     /// `slot`/`state` immediate rides alongside (`GetLocal`), and `value` is the
     /// sent value (`Send`); other ops ignore both.
     GenQuery { op: GenOp, gen: Idx<HirExpr>, imm: u32, value: Option<Idx<HirExpr>> },
+
+    // ── exceptions (Phase 7) ──
+    /// A query against the thread-local exception state (Phase 7A). Only ever
+    /// emitted by the frontend's `try`/`with` desugar, inside handler blocks
+    /// where an exception is pending.
+    ExcQuery(ExcQuery),
+    /// `str(e)` / `print(e)` of a caught exception instance (Phase 7B) —
+    /// `rt_exc_instance_str(value)` → the message `StrObj`.
+    ExcInstanceStr { value: Idx<HirExpr> },
+}
+
+// ============================================================================
+// Exceptions (Phase 7)
+// ============================================================================
+
+/// An exception-frame bookkeeping op (Phase 7A), emitted only by the frontend's
+/// `try`/`with`/`finally` desugar. Each maps 1:1 to a runtime call:
+/// `rt_exc_pop_frame` / `rt_exc_start_handling` / `rt_exc_end_handling`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcOp {
+    /// Normal exit from a protected region pops its frame exactly once.
+    /// Handler entry never pops — `dispatch_to_handler` already did.
+    PopFrame,
+    /// Handler entry: move the current exception into "handling" state (so a
+    /// nested raise chains it as `__context__`).
+    StartHandling,
+    /// Normal handler exit: clear the handled exception.
+    EndHandling,
+}
+
+/// A query against the current exception (Phase 7A).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcQuery {
+    /// The current exception as a heap instance — `rt_exc_get_current()` →
+    /// a `Tagged` value (B5: rooted like any tagged slot).
+    Current,
+    /// Does the current exception match builtin tag? — `rt_exc_isinstance`.
+    /// Knows BaseException-catches-all and the Exception/SystemExit split.
+    MatchesBuiltin(u8),
+    /// Does it match user exception class `cid` (walking the registered class
+    /// hierarchy)? — `rt_exc_isinstance_class`.
+    MatchesClass(ClassId),
+}
+
+/// A `raise` statement's resolved shape (Phase 7A/7C). Builtin-exception name
+/// resolution is frontend-local (`class_map` first, then
+/// `exception_name_to_tag`); custom-class construction details (own `__init__`
+/// or not) are resolved at lowering via the `ClassTable`.
+#[derive(Debug, Clone)]
+pub enum HirRaise {
+    /// `raise ValueError("msg")` / `raise ValueError`.
+    Builtin { tag: u8, msg: Option<Idx<HirExpr>> },
+    /// `raise X("m") from Y("c")` — both builtin.
+    BuiltinFrom {
+        tag: u8,
+        msg: Option<Idx<HirExpr>>,
+        cause_tag: u8,
+        cause_msg: Option<Idx<HirExpr>>,
+    },
+    /// `raise X("m") from None`.
+    BuiltinFromNone { tag: u8, msg: Option<Idx<HirExpr>> },
+    /// `raise MyError(args…)` for a user exception class. Lowering constructs
+    /// the instance (running `__init__` when the class has one; a single arg
+    /// becomes the message operand otherwise so `str(e)` works).
+    Custom { class_id: ClassId, args: Vec<Idx<HirExpr>> },
+    /// `raise e` — re-raise a caught exception instance value.
+    Instance { value: Idx<HirExpr> },
+    /// Bare `raise` — re-raise the exception being handled.
+    Reraise,
 }
 
 /// A generator state-machine operation (Phase 6E) — the runtime-backed surface
@@ -842,6 +914,13 @@ pub enum HirStmt {
     GenSetState { gen: Idx<HirExpr>, state: u32 },
     /// Mark the generator exhausted — `GenOp::SetExhausted`.
     GenSetExhausted { gen: Idx<HirExpr> },
+
+    // ── exceptions (Phase 7) ──
+    /// Exception-frame bookkeeping (pop / start-handling / end-handling).
+    ExcOp(ExcOp),
+    /// `raise …` — must be the last statement of its block, followed by an
+    /// [`HirTerminator::Unreachable`] (the AssertFail shape).
+    Raise(HirRaise),
 }
 
 /// How a block ends.
@@ -853,6 +932,13 @@ pub enum HirTerminator {
         cond: Idx<HirExpr>,
         then: Idx<HirBlock>,
         else_: Idx<HirBlock>,
+    },
+    /// Enter a protected region (Phase 7A): push an exception frame + `setjmp`.
+    /// Falls through to `normal`; a raise inside the region longjmps to
+    /// `handler` (with the frame already popped by `dispatch_to_handler`).
+    TryEnter {
+        normal: Idx<HirBlock>,
+        handler: Idx<HirBlock>,
     },
     /// Provably unreachable (e.g. the fall-through of an `assert` fail block).
     Unreachable,
@@ -1037,6 +1123,10 @@ pub struct ClassInfo {
     pub num_vtable_slots: usize,
     /// Declared type parameters (Phase 5E).
     pub type_params: Vec<InternedString>,
+    /// The builtin exception this class (transitively) derives from (Phase 7C):
+    /// `class MyError(ValueError)` → `Some(ValueError)`, inherited through user
+    /// parents. `None` for ordinary (non-exception) classes.
+    pub exception_base: Option<BuiltinExceptionKind>,
 }
 
 /// A resolved `@property` (Phase 5D).
@@ -1090,6 +1180,10 @@ impl ClassInfo {
     pub fn class_attr(&self, name: InternedString) -> Option<&ClassAttrInfo> {
         self.class_attrs.iter().find(|a| a.name == name)
     }
+    /// True iff this class is a user exception class (Phase 7C).
+    pub fn is_exception_class(&self) -> bool {
+        self.exception_base.is_some()
+    }
 }
 
 /// The resolved class table — `ClassId → ClassInfo`. The *shape* lives here (like
@@ -1115,6 +1209,11 @@ impl ClassTable {
     pub fn is_empty(&self) -> bool {
         self.classes.is_empty()
     }
+    /// True iff `cid` is a user exception class (Phase 7C).
+    pub fn is_exception_class(&self, cid: ClassId) -> bool {
+        self.get(cid).is_some_and(ClassInfo::is_exception_class)
+    }
+
     /// Nominal subtyping (D8): `a <: b` iff `b` appears in `a`'s MRO. Consulted in
     /// `typeck`, never baked into the sealed `types` lattice.
     pub fn is_subclass(&self, a: ClassId, b: ClassId) -> bool {

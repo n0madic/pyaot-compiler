@@ -209,11 +209,106 @@ impl Walker {
                     self.read(n.as_str());
                 }
             }
+            // ── exceptions / with / match (Phase 7) ──
+            Stmt::Try(t) => {
+                self.stmts(&t.body);
+                for h in &t.handlers {
+                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    if let Some(ty) = &h.type_ {
+                        self.expr(ty);
+                    }
+                    if let Some(name) = &h.name {
+                        self.bind(name.as_str());
+                    }
+                    self.stmts(&h.body);
+                }
+                self.stmts(&t.orelse);
+                self.stmts(&t.finalbody);
+            }
+            Stmt::Raise(r) => {
+                if let Some(e) = &r.exc {
+                    self.expr(e);
+                }
+                if let Some(c) = &r.cause {
+                    self.expr(c);
+                }
+            }
+            Stmt::With(w) => {
+                for item in &w.items {
+                    self.expr(&item.context_expr);
+                    if let Some(t) = &item.optional_vars {
+                        self.target(t);
+                    }
+                }
+                self.stmts(&w.body);
+            }
+            Stmt::Match(m) => {
+                self.expr(&m.subject);
+                for case in &m.cases {
+                    self.pattern(&case.pattern);
+                    if let Some(g) = &case.guard {
+                        self.expr(g);
+                    }
+                    self.stmts(&case.body);
+                }
+            }
             // No names: control / no-ops / type-level imports.
             Stmt::Pass(_) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Import(_) | Stmt::ImportFrom(_) => {}
             // Anything else is outside the lowered subset (rejected there).
             _ => {}
+        }
+    }
+
+    /// A `match` pattern (Phase 7E): captures bind; value/class-name reads read.
+    fn pattern(&mut self, p: &rustpython_parser::ast::Pattern) {
+        use rustpython_parser::ast::Pattern;
+        match p {
+            Pattern::MatchValue(v) => self.expr(&v.value),
+            Pattern::MatchSingleton(_) => {}
+            Pattern::MatchSequence(s) => {
+                for sub in &s.patterns {
+                    self.pattern(sub);
+                }
+            }
+            Pattern::MatchMapping(m) => {
+                for k in &m.keys {
+                    self.expr(k);
+                }
+                for sub in &m.patterns {
+                    self.pattern(sub);
+                }
+                if let Some(rest) = &m.rest {
+                    self.bind(rest.as_str());
+                }
+            }
+            Pattern::MatchClass(c) => {
+                self.expr(&c.cls);
+                for sub in &c.patterns {
+                    self.pattern(sub);
+                }
+                for sub in &c.kwd_patterns {
+                    self.pattern(sub);
+                }
+            }
+            Pattern::MatchStar(s) => {
+                if let Some(name) = &s.name {
+                    self.bind(name.as_str());
+                }
+            }
+            Pattern::MatchAs(a) => {
+                if let Some(sub) = &a.pattern {
+                    self.pattern(sub);
+                }
+                if let Some(name) = &a.name {
+                    self.bind(name.as_str());
+                }
+            }
+            Pattern::MatchOr(o) => {
+                for sub in &o.patterns {
+                    self.pattern(sub);
+                }
+            }
         }
     }
 

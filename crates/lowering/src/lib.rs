@@ -34,8 +34,9 @@ use pyaot_hir::{
     HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
-    BinOp as MBinOp, CmpOp as MCmpOp, Const, GenOp, LocalDecl, MirBlock, MirClass, MirFunction,
-    MirInst, MirProgram, MirTerminator, Operand, PrintKind, StrPool, UnaryOp as MUnaryOp,
+    BinOp as MBinOp, CmpOp as MCmpOp, Const, ExcQuery, GenOp, LocalDecl, MirBlock, MirClass,
+    MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand, PrintKind, StrPool,
+    UnaryOp as MUnaryOp,
 };
 use pyaot_types::{repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner};
@@ -73,6 +74,8 @@ pub fn lower(
             } else {
                 repr_of(&f.ret_ty)
             },
+            varargs: f.varargs,
+            kwargs: f.kwargs,
         })
         .collect();
     let mut funcs = Vec::with_capacity(module.functions.len());
@@ -105,6 +108,9 @@ fn build_mir_classes(
     let mut out = Vec::new();
     for info in classes.iter() {
         str_pool.insert(info.qualname, interner.resolve(info.qualname).as_bytes().to_vec());
+        if info.is_exception_class() {
+            str_pool.insert(info.name, interner.resolve(info.name).as_bytes().to_vec());
+        }
         // Vtable: slot → resolved FuncId (5B). Each distinct method name occupies
         // a stable slot across the class and its subclasses.
         let mut vtable = vec![None; info.num_vtable_slots];
@@ -133,8 +139,10 @@ fn build_mir_classes(
             .collect();
         out.push(MirClass {
             class_id: info.class_id,
+            name: info.name,
             qualname: info.qualname,
             parent: info.parent,
+            exception_base: info.exception_base.map(|k| k.tag()),
             field_count: info.field_count(),
             vtable,
             method_names,
@@ -147,10 +155,14 @@ fn build_mir_classes(
     out
 }
 
-/// A function's representation-level signature (ABI).
+/// A function's representation-level signature (ABI), plus the Phase-6C
+/// variadic flags (the trailing `*args` tuple / `**kwargs` dict params) so
+/// method-call sites can pack excess args (Phase 7D: `__exit__(self, *a)`).
 struct FnSig {
     params: Vec<Repr>,
     ret: Repr,
+    varargs: bool,
+    kwargs: bool,
 }
 
 /// Per-function lowering state with a small MIR block builder.
@@ -437,7 +449,109 @@ impl<'a> FnLower<'a> {
                 });
                 Ok(())
             }
+            // ── exceptions (Phase 7) ──
+            HirStmt::ExcOp(op) => {
+                self.emit(MirInst::ExcOp(*op));
+                Ok(())
+            }
+            HirStmt::Raise(r) => self.lower_raise(r),
         }
+    }
+
+    /// Lower a `raise` (Phase 7A/7C). The frontend guarantees the `Raise` is
+    /// the last statement of its block with an `Unreachable` terminator (the
+    /// verifier re-checks).
+    fn lower_raise(&mut self, r: &pyaot_hir::HirRaise) -> Result<()> {
+        use pyaot_hir::HirRaise as H;
+        match r {
+            H::Builtin { tag, msg } => {
+                let msg = self.lower_exc_msg(*msg)?;
+                self.emit(MirInst::Raise(MirRaise::Builtin { tag: *tag, msg }));
+            }
+            H::BuiltinFromNone { tag, msg } => {
+                let msg = self.lower_exc_msg(*msg)?;
+                self.emit(MirInst::Raise(MirRaise::BuiltinFromNone { tag: *tag, msg }));
+            }
+            H::BuiltinFrom { tag, msg, cause_tag, cause_msg } => {
+                let msg = self.lower_exc_msg(*msg)?;
+                let cause_msg = self.lower_exc_msg(*cause_msg)?;
+                self.emit(MirInst::Raise(MirRaise::BuiltinFrom {
+                    tag: *tag,
+                    msg,
+                    cause_tag: *cause_tag,
+                    cause_msg,
+                }));
+            }
+            H::Custom { class_id, args } => {
+                let span = args
+                    .first()
+                    .map(|a| self.func.exprs[*a].span)
+                    .unwrap_or_else(pyaot_utils::Span::dummy);
+                let has_init = self
+                    .classes
+                    .get(*class_id)
+                    .is_some_and(|info| {
+                        info.methods
+                            .iter()
+                            .any(|m| self.interner.resolve(m.name) == "__init__")
+                    });
+                if has_init {
+                    // Construct + run __init__ at the raise site; the instance
+                    // carries the user fields.
+                    let (inst, irep) = self.lower_construct(*class_id, args, span)?;
+                    let it = self.coerce(inst, irep, Repr::Tagged)?;
+                    self.emit(MirInst::Raise(MirRaise::CustomWithInstance {
+                        class_id: *class_id,
+                        msg: None,
+                        instance: Operand::Local(it),
+                    }));
+                } else {
+                    // No __init__: a single argument becomes the message (so
+                    // `str(e)` works); the instance is bare.
+                    if args.len() > 1 {
+                        return Err(CompilerError::semantic_error(
+                            "multi-argument exceptions without __init__ are out of scope",
+                            span,
+                        ));
+                    }
+                    let msg = self.lower_exc_msg(args.first().copied())?;
+                    let (inst, irep) = self.lower_construct(*class_id, &[], span)?;
+                    let it = self.coerce(inst, irep, Repr::Tagged)?;
+                    self.emit(MirInst::Raise(MirRaise::CustomWithInstance {
+                        class_id: *class_id,
+                        msg,
+                        instance: Operand::Local(it),
+                    }));
+                }
+            }
+            H::Instance { value } => {
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                self.emit(MirInst::Raise(MirRaise::Instance { value: Operand::Local(vt) }));
+            }
+            H::Reraise => self.emit(MirInst::Raise(MirRaise::Reraise)),
+        }
+        Ok(())
+    }
+
+    /// Lower a raise message operand to a Tagged `StrObj` (codegen reads its
+    /// bytes via `rt_str_data`/`rt_str_len`; the runtime copies them — B2). A
+    /// non-`str` message converts through the builtin `str`.
+    fn lower_exc_msg(&mut self, msg: Option<Idx<HirExpr>>) -> Result<Option<Operand>> {
+        let Some(e) = msg else { return Ok(None) };
+        let is_str = self.func.exprs[e].ty == SemTy::Str;
+        let (l, r) = self.lower_expr(e)?;
+        let t = self.coerce(l, r, Repr::Tagged)?;
+        if is_str {
+            return Ok(Some(Operand::Local(t)));
+        }
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallBuiltin {
+            dst: Some(dst),
+            kind: pyaot_mir::BuiltinFunctionKind::Str,
+            args: vec![Operand::Local(t)],
+        });
+        Ok(Some(Operand::Local(dst)))
     }
 
     /// Lower a generator operand expr to a `Tagged` local (the generator value).
@@ -537,6 +651,17 @@ impl<'a> FnLower<'a> {
             self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
             return Ok(());
         }
+        // `print(e)` of a caught exception prints its message (Phase 7B) —
+        // the generic instance print would render the default object repr.
+        if self.is_exception_value(&ty) {
+            let (loc, repr) = self.lower_expr(arg_idx)?;
+            let vt = self.coerce(loc, repr, Repr::Tagged)?;
+            let s = self.alloc_temp(Repr::Heap(HeapShape::Str));
+            self.emit(MirInst::ExcInstanceStr { dst: s, value: Operand::Local(vt) });
+            let tagged = self.coerce(s, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
+            return Ok(());
+        }
         let (loc, repr) = self.lower_expr(arg_idx)?;
         let (kind, want) = print_dispatch(&ty);
         match want {
@@ -575,6 +700,10 @@ impl<'a> FnLower<'a> {
                 Ok(MirTerminator::Return(Some(Operand::Local(coerced))))
             }
             HirTerminator::Jump(target) => Ok(MirTerminator::Jump(self.block_map[target])),
+            HirTerminator::TryEnter { normal, handler } => Ok(MirTerminator::TryEnter {
+                normal: self.block_map[normal],
+                handler: self.block_map[handler],
+            }),
             HirTerminator::Branch { cond, then, else_ } => {
                 let cond_op = self.lower_cond(*cond)?;
                 Ok(MirTerminator::Branch {
@@ -719,6 +848,26 @@ impl<'a> FnLower<'a> {
             }
             HirExprKind::GenQuery { op, gen, imm, value } => {
                 self.lower_gen_query(*op, *gen, *imm, *value)
+            }
+            // ── exceptions (Phase 7) ──
+            HirExprKind::ExcQuery(q) => match q {
+                ExcQuery::Current => {
+                    let dst = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::ExcQuery { dst, query: *q });
+                    Ok((dst, Repr::Tagged))
+                }
+                ExcQuery::MatchesBuiltin(_) | ExcQuery::MatchesClass(_) => {
+                    let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+                    self.emit(MirInst::ExcQuery { dst, query: *q });
+                    Ok((dst, Repr::Raw(RawKind::I8)))
+                }
+            },
+            HirExprKind::ExcInstanceStr { value } => {
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                self.emit(MirInst::ExcInstanceStr { dst, value: Operand::Local(vt) });
+                Ok((dst, Repr::Heap(HeapShape::Str)))
             }
         }
     }
@@ -913,6 +1062,28 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let span = self.func.exprs[value].span;
         let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
+
+        // `e.args` on a caught builtin exception (Phase 7B): the args tuple at
+        // instance field slot 0 (the layout `create_builtin_exception_instance`
+        // produces). Other attributes on builtin exceptions are out of scope.
+        if matches!(self.func.exprs[value].ty, SemTy::BuiltinException(_)) {
+            if self.interner.resolve(name) != "args" {
+                return Err(CompilerError::semantic_error(
+                    format!(
+                        "`.{}` on a builtin exception is out of scope (only `.args`, \
+                         `str(e)`, and `e.__class__.__name__` are supported)",
+                        self.interner.resolve(name)
+                    ),
+                    span,
+                ));
+            }
+            let (bl, br) = self.lower_expr(value)?;
+            let bt = self.coerce(bl, br, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::GetField { dst, base: Operand::Local(bt), slot: 0 });
+            let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+            return Ok((coerced, result_repr));
+        }
 
         // (a) `ClassName.attr` → a class-level attribute (Phase 5D).
         if let Some(cid) = self.class_name_ref(value) {
@@ -1144,25 +1315,72 @@ impl<'a> FnLower<'a> {
                     span,
                 )
             })?;
-        let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
-        if args.len() + 1 != params.len() {
+        let self_param = self.sigs[fid.index()].params[0].clone();
+        let (rl, rr) = self.lower_expr(recv)?;
+        let self_arg = self.coerce(rl, rr, self_param)?;
+        let argvals = self.adapt_method_args(fid, Operand::Local(self_arg), args, span)?;
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        Ok((dst, ret))
+    }
+
+    /// Build a direct method call's full operand vector, adapting the call-site
+    /// args to the callee's MIR signature: fixed params are coerced
+    /// individually; a `*args` callee packs the excess into a fresh tuple; a
+    /// `**kwargs` callee gets an empty dict (Phase 7D — `__exit__(self, *a)`
+    /// rides this; methods see no frontend keyword adaptation).
+    fn adapt_method_args(
+        &mut self,
+        fid: FuncId,
+        self_arg: Operand,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<Vec<Operand>> {
+        let params = self.sigs[fid.index()].params.clone();
+        let varargs = self.sigs[fid.index()].varargs;
+        let kwargs = self.sigs[fid.index()].kwargs;
+        let fixed = params.len() - 1 - usize::from(varargs) - usize::from(kwargs);
+        let arity_ok = if varargs { args.len() >= fixed } else { args.len() == fixed };
+        if !arity_ok {
             return Err(CompilerError::semantic_error(
                 "wrong number of arguments in method call".to_string(),
                 span,
             ));
         }
-        let (rl, rr) = self.lower_expr(recv)?;
-        let self_arg = self.coerce(rl, rr, params[0].clone())?;
-        let mut argvals = vec![Operand::Local(self_arg)];
-        for (a, prepr) in args.iter().zip(&params[1..]) {
+        let mut argvals = vec![self_arg];
+        for (a, prepr) in args.iter().take(fixed).zip(&params[1..1 + fixed]) {
             let (al, ar) = self.lower_expr(*a)?;
             let at = self.coerce(al, ar, prepr.clone())?;
             argvals.push(Operand::Local(at));
         }
-        let dst = self.alloc_temp(ret.clone());
-        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
-        Ok((dst, ret))
+        if varargs {
+            let tup_repr = params[1 + fixed].clone();
+            let excess = &args[fixed..];
+            let size = self.raw_i64_const(excess.len() as i64);
+            let (tup, _) = self.emit_container(
+                ContainerOp::TupleNew,
+                vec![(size, Repr::Raw(RawKind::I64))],
+                Some(tup_repr.clone()),
+            )?;
+            let tup = tup.expect("TupleNew produces a tuple");
+            for (i, e) in excess.iter().enumerate() {
+                let (el, er) = self.lower_expr(*e)?;
+                let pos = self.raw_i64_const(i as i64);
+                self.emit_container(
+                    ContainerOp::TupleSet,
+                    vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (el, er)],
+                    None,
+                )?;
+            }
+            argvals.push(Operand::Local(tup));
+        }
+        if kwargs {
+            let dict_repr = params.last().expect("kwargs param exists").clone();
+            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr)?;
+            argvals.push(Operand::Local(d));
+        }
+        Ok(argvals)
     }
 
     /// If `name` is a `@staticmethod` / `@classmethod` on `cid`, lower it as a
@@ -1305,6 +1523,17 @@ impl<'a> FnLower<'a> {
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
         self.emit(MirInst::IsInstance { dst, value: Operand::Local(vt), class_id });
         Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// True iff `ty` statically denotes a caught exception value (a builtin
+    /// exception or a user exception class) — drives the `str(e)`/`print(e)`
+    /// message routing (Phase 7B/7C).
+    fn is_exception_value(&self, ty: &SemTy) -> bool {
+        if matches!(ty, SemTy::BuiltinException(_)) {
+            return true;
+        }
+        class_of(ty, self.classes)
+            .is_some_and(|cid| self.classes.is_exception_class(cid))
     }
 
     /// If `ty` is a concrete user class defining the dunder `name` (and not
@@ -2025,6 +2254,18 @@ impl<'a> FnLower<'a> {
         };
         match sym {
             Symbol::Builtin(kind) => {
+                // `str(e)` of a caught exception returns its message (Phase 7B);
+                // the generic `rt_builtin_str` would render the object repr.
+                if kind == pyaot_mir::BuiltinFunctionKind::Str && args.len() == 1 {
+                    let arg_ty = self.func.exprs[args[0]].ty.clone();
+                    if self.is_exception_value(&arg_ty) {
+                        let (vl, vr) = self.lower_expr(args[0])?;
+                        let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                        let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                        self.emit(MirInst::ExcInstanceStr { dst, value: Operand::Local(vt) });
+                        return Ok((dst, Repr::Heap(HeapShape::Str)));
+                    }
+                }
                 let mut argvals = Vec::with_capacity(args.len());
                 for a in &args {
                     let (al, ar) = self.lower_expr(*a)?;

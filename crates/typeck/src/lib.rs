@@ -339,12 +339,18 @@ fn check_repr_boundaries(
                 }
                 // `recv.m(args)` — resolve the target method through the dispatch
                 // the lowering uses, skipping `self` for instance/`super()` calls.
+                // Trailing `*args`/`**kwargs` slots receive lowering-packed
+                // containers, never call-site values — drop them from the zip.
                 HirExprKind::MethodCall { recv, method_name, args } => {
                     match method_call_target(func, resolve, classes, *recv, *method_name) {
                         Some((fid, skip_self)) => {
-                            let p = &module.functions[fid.index()].params[..];
+                            let callee = &module.functions[fid.index()];
+                            let p = &callee.params[..];
                             let p = if skip_self { &p[1.min(p.len())..] } else { p };
-                            (p, args)
+                            let cut = p.len()
+                                - usize::from(callee.varargs)
+                                - usize::from(callee.kwargs);
+                            (&p[..cut.min(p.len())], args)
                         }
                         None => continue,
                     }
@@ -905,6 +911,16 @@ impl<'a> Solver<'a> {
                     self.global_tys.get(vid).cloned().unwrap_or(SemTy::Dyn)
                 }
             }
+            // ── exceptions (Phase 7) ──
+            // `Current` keeps the frontend-assigned static type (the except
+            // clause's class); the match queries are booleans. All ride the
+            // Tagged baseline (Principle 2) — no new constraints.
+            HirExprKind::ExcQuery(q) => match q {
+                pyaot_hir::ExcQuery::Current => self.func.exprs[idx].ty.clone(),
+                pyaot_hir::ExcQuery::MatchesBuiltin(_)
+                | pyaot_hir::ExcQuery::MatchesClass(_) => SemTy::Bool,
+            },
+            HirExprKind::ExcInstanceStr { .. } => SemTy::Str,
         }
     }
 
@@ -968,6 +984,13 @@ impl<'a> Solver<'a> {
     /// `@property` getter's return, an instance field's best-effort type (D5), or
     /// a class attribute's type; `Dyn` for an unknown receiver/attribute.
     fn attribute_ty(&self, recv: SemTy, name: InternedString) -> SemTy {
+        // `e.args` on a caught builtin exception (Phase 7B): the args tuple.
+        // Typed `Dyn` (not `tuple[Dyn, ...]`) so a user annotation like
+        // `args: tuple[str]` is admitted gradually rather than rejected by the
+        // tuple-arity contract.
+        if matches!(recv, SemTy::BuiltinException(_)) {
+            return SemTy::Dyn;
+        }
         let Some(cid) = class_of(&recv, self.classes) else { return SemTy::Dyn };
         let Some(info) = self.classes.get(cid) else { return SemTy::Dyn };
         let raw = if let Some(p) = info.property(name) {
@@ -1071,6 +1094,22 @@ impl<'a> Solver<'a> {
             C::BytesFromList => SemTy::Bytes,
             C::Sorted => SemTy::list_of(iter_elem_ty(&arg0())),
             C::Reversed => SemTy::Iterator(Box::new(iter_elem_ty(&arg0()))),
+            // ── ops the Phase-7E match desugar emits directly ──
+            C::DictGet | C::DictPopM => {
+                let a = arg0();
+                match a.dict_kv() {
+                    Some((_, v)) => v.clone(),
+                    None => SemTy::Dyn,
+                }
+            }
+            C::DictCopy => {
+                let a = arg0();
+                if a.dict_kv().is_some() {
+                    a
+                } else {
+                    SemTy::dict_of(SemTy::Dyn, SemTy::Dyn)
+                }
+            }
             // Remaining ops are emitted only by lowering (literals / subscript /
             // operators), never typed through this path.
             _ => SemTy::Dyn,

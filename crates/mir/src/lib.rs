@@ -39,6 +39,8 @@ pub use pyaot_core_defs::BuiltinFunctionKind;
 pub use pyaot_hir::{ContainerArg, ContainerOp, ContainerResult, CmpOp as ContainerCmpOp};
 // Generator op surface (Phase 6E), shared so lowering/codegen name it.
 pub use pyaot_hir::{GenOp, GenResult};
+// Exception op surface (Phase 7), shared so lowering/codegen name it.
+pub use pyaot_hir::{ExcOp, ExcQuery};
 
 // ============================================================================
 // Program / function structure
@@ -68,10 +70,18 @@ pub struct MirProgram {
 #[derive(Debug, Clone)]
 pub struct MirClass {
     pub class_id: ClassId,
+    /// The bare class name (`Cls`; bytes in `str_pool`) — registered via
+    /// `rt_exc_register_class_name` for exception classes (Phase 7C).
+    pub name: InternedString,
     /// The `__main__.Cls` qualified-name string (its bytes are in `str_pool`).
     pub qualname: InternedString,
     /// Direct runtime parent (255 = none), for `rt_register_class`.
     pub parent: Option<ClassId>,
+    /// The builtin exception tag this class derives from (Phase 7C). With no
+    /// user `parent`, `__pyaot_classinit` registers the tag as the runtime
+    /// parent (builtin tags ARE runtime class ids), so `rt_exc_isinstance_class`
+    /// walks into the pre-seeded builtin hierarchy.
+    pub exception_base: Option<u8>,
     pub field_count: usize,
     /// Vtable layout: `slot → FuncId` (Phase 5B). `vtable[slot]` is the function
     /// address codegen materializes into the static vtable data object.
@@ -290,6 +300,52 @@ pub enum MirInst {
         imm: u32,
         value: Option<Operand>,
     },
+
+    // ── exceptions (Phase 7) ──
+    /// Exception-frame bookkeeping — `rt_exc_pop_frame` /
+    /// `rt_exc_start_handling` / `rt_exc_end_handling`. Opaque side-effecting
+    /// barrier for the optimizer.
+    ExcOp(ExcOp),
+    /// A query against the current exception. `Current` → `dst` is `Tagged`
+    /// (B5: rooted); `Matches*` → `dst` is `Raw(I8)`.
+    ExcQuery { dst: LocalId, query: ExcQuery },
+    /// `rt_exc_instance_str(value)` — `value` is `Tagged`, `dst` is `Heap(Str)`.
+    ExcInstanceStr { dst: LocalId, value: Operand },
+    /// Raise an exception (never returns). Must be the last instruction of its
+    /// block, with terminator [`MirTerminator::Unreachable`] (the AssertFail
+    /// shape — both are now verifier-enforced). All operands are `Tagged`;
+    /// message operands are `StrObj` values (lowering converts via the builtin
+    /// `str`), read out with `rt_str_data`/`rt_str_len` at the call (B2-safe:
+    /// the runtime copies the bytes; the StrObj itself is a rooted MIR temp).
+    Raise(MirRaise),
+}
+
+/// The resolved shape of a `raise` (Phase 7). Mirrors the `rt_exc_*` raise
+/// entry points one-to-one.
+#[derive(Debug, Clone)]
+pub enum MirRaise {
+    /// `rt_exc_raise(tag, msg, len)`.
+    Builtin { tag: u8, msg: Option<Operand> },
+    /// `rt_exc_raise_from(tag, msg, len, cause_tag, cause_msg, cause_len)`.
+    BuiltinFrom {
+        tag: u8,
+        msg: Option<Operand>,
+        cause_tag: u8,
+        cause_msg: Option<Operand>,
+    },
+    /// `rt_exc_raise_from_none(tag, msg, len)`.
+    BuiltinFromNone { tag: u8, msg: Option<Operand> },
+    /// `rt_exc_raise_custom_with_instance(class_id, msg, len, instance)` — the
+    /// instance was constructed (and `__init__` run) at the raise site.
+    CustomWithInstance {
+        class_id: ClassId,
+        msg: Option<Operand>,
+        instance: Operand,
+    },
+    /// `rt_exc_raise_instance(value)` — re-raise a caught instance (`raise e`).
+    Instance { value: Operand },
+    /// `rt_exc_reraise()` — bare `raise`.
+    Reraise,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +425,12 @@ pub enum MirTerminator {
         then: BlockId,
         else_: BlockId,
     },
+    /// Enter a protected region (Phase 7A): codegen allocates an
+    /// `ExceptionFrame` stack slot, calls `rt_exc_push_frame`, calls `setjmp`
+    /// **directly** (B3), and branches `rc == 0 → normal`, else `handler`.
+    /// Handler entry must NOT pop the frame (`dispatch_to_handler` already
+    /// popped it and unwound the GC shadow stack / traceback).
+    TryEnter { normal: BlockId, handler: BlockId },
     Unreachable,
 }
 
