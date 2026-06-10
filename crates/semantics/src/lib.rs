@@ -30,16 +30,17 @@ use pyaot_hir::{
 use pyaot_types::SemTy;
 use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, StringInterner, SymbolId};
 
+/// Per-namespace name maps: index by namespace id to get that module's
+/// `name → FuncId` / `name → ClassId` view (own defs overlaid by imports).
+type NamespaceMaps = (
+    Vec<HashMap<InternedString, FuncId>>,
+    Vec<HashMap<InternedString, ClassId>>,
+);
+
 /// Per-namespace function/class name maps (Phase 8): a module sees its own
 /// top-level definitions plus its imported bindings. A single-file program has
 /// exactly one namespace, recovering the original global behavior.
-fn build_namespace_maps(
-    module: &HirModule,
-    namespaces: &NamespaceTable,
-) -> (
-    Vec<HashMap<InternedString, FuncId>>,
-    Vec<HashMap<InternedString, ClassId>>,
-) {
+fn build_namespace_maps(module: &HirModule, namespaces: &NamespaceTable) -> NamespaceMaps {
     let n_ns = namespaces.imports.len().max(1);
     let mut func_maps: Vec<HashMap<InternedString, FuncId>> = vec![HashMap::new(); n_ns];
     for (i, f) in module.functions.iter().enumerate() {

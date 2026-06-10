@@ -90,6 +90,10 @@ const PHASE_CORPUS: &[&str] = &[
     // path = the source's directory), never gate entries themselves.
     "test_import.py",
     "test_packages.py",
+    // Phase 8A — package re-export: a package `__init__.py` that publishes names
+    // it imported from a submodule (`from .circle import Circle`). The canonical
+    // facade — `from shapes import Circle` and `import shapes; shapes.Circle`.
+    "test_reexport.py",
 ];
 
 #[test]

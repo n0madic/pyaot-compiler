@@ -194,6 +194,12 @@ struct ImportCollect {
     aliases: HashSet<String>,
     /// `"M.VAR"` → the exporter module's global slot (for live `M.VAR` reads).
     alias_vars: HashMap<String, u32>,
+    /// Names this module re-exports: `from .x import Y` makes `Y` part of THIS
+    /// module's public surface, so a downstream `from thismod import Y` (and
+    /// `import thismod; thismod.Y`) resolves — the canonical package-`__init__`
+    /// API. Funcs/classes only; re-exported variables already ride `promoted`.
+    reexport_funcs: Vec<(String, FuncId, TopDefInfo)>,
+    reexport_classes: Vec<(String, ClassId, InternedString)>,
     /// Import-statement body index → its precomputed runtime effect.
     actions: HashMap<usize, ImportAction>,
 }
@@ -370,6 +376,11 @@ impl<'a> ProgramLowerer<'a> {
             let mut action = ImportAction::default();
             self.emit_init_chain(&target, my_ns, &mut action);
             // `import a.b.c` binds the top package `a`; `import x as y` binds `y`.
+            // TODO(phase8): `import a.b.c` (no `as`) registers only `a`'s own
+            // surface, so a deep `a.b.c.f()` does not fold (the alias matcher is
+            // depth-1). Workaround: `import a.b.c as x; x.f()`, or
+            // `from a.b.c import f`. Closing this needs attribute-chain flattening
+            // in the three fold sites plus per-prefix-module export registration.
             let (bind, bound): (String, Vec<String>) = match &alias.asname {
                 Some(n) => (n.as_str().to_string(), target.clone()),
                 None => (target[0].clone(), target[..1].to_vec()),
@@ -425,11 +436,13 @@ impl<'a> ProgramLowerer<'a> {
             if let Some((fid, info)) = exp.funcs.get(name) {
                 // A from-imported function is a static binding to its FuncId.
                 col.imported_funcs.push((bind.to_string(), info.clone()));
+                col.reexport_funcs.push((bind.to_string(), *fid, info.clone()));
                 let bi = self.interner.intern(bind);
                 self.namespace_imports[my_ns as usize].funcs.insert(bi, *fid);
             } else if let Some((cid, iname)) = exp.classes.get(name) {
                 // A from-imported class is a static binding to its ClassId.
                 col.class_map.insert(bind.to_string(), (*cid, *iname));
+                col.reexport_classes.push((bind.to_string(), *cid, *iname));
                 let bi = self.interner.intern(bind);
                 self.namespace_imports[my_ns as usize].classes.insert(bi, *cid);
             } else if let Some(src_slot) = exp.var_slots.get(name) {
@@ -518,10 +531,11 @@ impl<'a> ProgramLowerer<'a> {
         // ── Promoted module globals (var_ids from the program-global counter). ──
         let mut promoted: HashMap<String, u32> = HashMap::new();
         for n in freevars::collect_promoted_globals(&body) {
-            if !promoted.contains_key(&n) {
-                promoted.insert(n, self.next_global);
+            promoted.entry(n).or_insert_with(|| {
+                let id = self.next_global;
                 self.next_global += 1;
-            }
+                id
+            });
         }
         // An imported module's every module-level variable is a module attribute
         // (a global), even if no local function reads it (`math_utils.PI`).
@@ -556,6 +570,8 @@ impl<'a> ProgramLowerer<'a> {
             imported_funcs: Vec::new(),
             aliases: HashSet::new(),
             alias_vars: HashMap::new(),
+            reexport_funcs: Vec::new(),
+            reexport_classes: Vec::new(),
             actions: HashMap::new(),
         };
         for (idx, stmt) in body.iter().enumerate() {
@@ -774,6 +790,18 @@ impl<'a> ProgramLowerer<'a> {
         let mut export_classes: HashMap<String, (ClassId, InternedString)> = HashMap::new();
         for (name, cid, iname) in &own_classes {
             export_classes.insert(name.clone(), (*cid, *iname));
+        }
+        // Re-exports complete the public surface (`from .x import Y` in a package
+        // `__init__`). Own definitions win on a name clash (or_insert).
+        for (name, fid, info) in &col.reexport_funcs {
+            export_funcs
+                .entry(name.clone())
+                .or_insert_with(|| (*fid, info.clone()));
+        }
+        for (name, cid, iname) in &col.reexport_classes {
+            export_classes
+                .entry(name.clone())
+                .or_insert_with(|| (*cid, *iname));
         }
         Ok(ModuleExports {
             init_fid,
@@ -1291,20 +1319,35 @@ impl<'a> FnLowerer<'a> {
             Stmt::Pass(_) => Ok(false),
             // `from typing import ...` / `from __future__ import ...` are
             // type-level only (no runtime effect in our subset) — accept as no-ops
-            // so generics (TypeVar/Generic) compile. Other imports stay out of scope.
+            // so generics (TypeVar/Generic) compile. Real imports are processed at
+            // module top level (`lower_module_into`'s import scan); reaching here
+            // means the import is nested — inside a function body or a top-level
+            // `if`/`try` block. Those are rejected: the load DFS precomputes each
+            // module's `<init>` order in source order, so a conditionally-executed
+            // import has no place in that schedule yet (Phase 8 limitation — a
+            // top-level guarded `import` / optional-dependency pattern must be
+            // hoisted to an unconditional top-level import).
             Stmt::ImportFrom(i) => {
                 let module = i.module.as_ref().map(|m| m.as_str()).unwrap_or("");
                 if matches!(module, "typing" | "__future__" | "typing_extensions") {
                     Ok(false)
                 } else {
-                    Err(parse_error("imports are out of scope for this milestone", to_span(i.range())))
+                    Err(parse_error(
+                        "only module-top-level imports are supported (an import inside \
+                         a function or a conditional block is out of scope)",
+                        to_span(i.range()),
+                    ))
                 }
             }
             Stmt::Import(i) => {
                 if i.names.iter().all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions")) {
                     Ok(false)
                 } else {
-                    Err(parse_error("imports are out of scope for this milestone", to_span(i.range())))
+                    Err(parse_error(
+                        "only module-top-level imports are supported (an import inside \
+                         a function or a conditional block is out of scope)",
+                        to_span(i.range()),
+                    ))
                 }
             }
             Stmt::Break(b) => {
