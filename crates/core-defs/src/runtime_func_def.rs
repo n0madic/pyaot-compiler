@@ -409,7 +409,17 @@ pub static RT_FILE_OPEN: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_file_o
 /// rt_file_read(file: *mut Obj) -> *mut Obj
 pub static RT_FILE_READ: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_file_read");
 /// rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj
-pub static RT_FILE_READ_N: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_file_read_n");
+/// The count `n` is a RAW i64, not a tagged Value — so this cannot use
+/// `ptr_binary` (which marks both params Tagged). The first param is the
+/// tagged File pointer; the second is the raw read length.
+pub static RT_FILE_READ_N: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_file_read_n",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
 /// rt_file_readline(file: *mut Obj) -> *mut Obj
 pub static RT_FILE_READLINE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_file_readline");
 /// rt_file_readlines(file: *mut Obj) -> *mut Obj

@@ -13,7 +13,7 @@ use std::process::Command;
 /// timestamps), compared in self-checking mode instead of byte-diff: both
 /// runs must exit 0 and end with the same final line — the file's own
 /// "…passed!" marker, which only prints when every internal assert held.
-const SELF_CHECKING: &[&str] = &["test_stdlib_time.py"];
+const SELF_CHECKING: &[&str] = &["test_stdlib_time.py", "test_file_io_core.py"];
 
 /// The phase spec entries — an explicit allowlist that grows one feature at a
 /// time. Each file's compiled stdout must match CPython byte-for-byte
@@ -109,6 +109,13 @@ const PHASE_CORPUS: &[&str] = &[
     "test_stdlib_random.py",
     "test_stdlib_sys.py",
     "test_stdlib_time.py",
+    // Phase 8C — stdlib object types: re/Match methods (group/span via the
+    // object-type registry), json (dumps/loads + dump/load to a File), and
+    // File I/O (open/read/write/with/modes/encoding/iteration, io.StringIO/
+    // BytesIO). `test_file_io_core.py` is self-checking — it writes /tmp paths.
+    "test_stdlib_re.py",
+    "test_stdlib_json.py",
+    "test_file_io_core.py",
 ];
 
 #[test]

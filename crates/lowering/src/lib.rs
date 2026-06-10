@@ -1166,24 +1166,201 @@ impl<'a> FnLower<'a> {
             ops.push(Operand::Local(c));
         }
 
+        self.emit_runtime_call(expr_idx, def, ops, ret_spec)
+    }
+
+    /// Emit a `CallRuntime` for descriptor `def` with already-legalized arg
+    /// operands, then coerce its result to `call_idx`'s static repr (Phase 8B/C
+    /// shared tail). A void descriptor yields a `None` value so the call can
+    /// stand in expression position.
+    fn emit_runtime_call(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        ops: Vec<Operand>,
+        ret_spec: &pyaot_stdlib_defs::TypeSpec,
+    ) -> Result<(LocalId, Repr)> {
         match def.returns {
             Some(_) => {
                 let ret_repr = runtime_return_repr(def, ret_spec);
                 let dst = self.alloc_temp(ret_repr.clone());
                 self.emit(MirInst::CallRuntime { dst: Some(dst), def, args: ops });
-                let result_repr = repr_of(&self.func.exprs[expr_idx].ty);
+                let result_repr = repr_of(&self.func.exprs[call_idx].ty);
                 let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
                 Ok((coerced, result_repr))
             }
             None => {
                 self.emit(MirInst::CallRuntime { dst: None, def, args: ops });
-                // A void call used as an expression yields `None`.
                 let dst = self.alloc_temp(Repr::Tagged);
                 self.emit(MirInst::Const { dst, val: Const::None });
                 Ok((dst, Repr::Tagged))
             }
         }
     }
+
+    /// Lower a stdlib runtime-object method (`m.group(0)`, Phase 8C). The
+    /// receiver is descriptor arg 0 (always a Tagged pointer); the written args
+    /// fill the method's declared params (`codegen.params[1..]`), legalized to
+    /// each param's repr. An absent optional param defaults to a zero / null
+    /// sentinel matching its register class (e.g. `m.group()` ≡ `m.group(0)`).
+    fn lower_runtime_object_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method: &'static pyaot_stdlib_defs::StdlibMethodDef,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        let def = &method.codegen;
+        if args.len() > method.params.len() {
+            return Err(CompilerError::semantic_error(
+                format!("`{}()` takes at most {} argument(s)", method.name, method.params.len()),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_op = self.coerce(rl, rr, Repr::Tagged)?;
+        let mut ops = vec![Operand::Local(recv_op)];
+        for (i, p) in method.params.iter().enumerate() {
+            let pt = def
+                .params
+                .get(i + 1)
+                .copied()
+                .unwrap_or(pyaot_core_defs::runtime_func_def::P_I64);
+            let want = runtime_param_repr(pt, Some(&p.ty));
+            if i < args.len() {
+                if want == Repr::Raw(RawKind::I64) {
+                    if let HirExprKind::IntLit(v) = self.func.exprs[args[i]].kind {
+                        let d = self.alloc_temp(Repr::Raw(RawKind::I64));
+                        self.emit(MirInst::Const { dst: d, val: Const::Int(v) });
+                        ops.push(Operand::Local(d));
+                        continue;
+                    }
+                }
+                let (al, ar) = self.lower_expr(args[i])?;
+                ops.push(Operand::Local(self.coerce(al, ar, want)?));
+            } else {
+                // Absent optional param: a zero in its raw register class, else
+                // the null-pointer object sentinel.
+                let d = self.alloc_temp(want.clone());
+                let val = if let Repr::Raw(_) = want { Const::Int(0) } else { Const::NullPtr };
+                self.emit(MirInst::Const { dst: d, val });
+                ops.push(Operand::Local(d));
+            }
+        }
+        self.emit_runtime_call(call_idx, def, ops, &method.return_type)
+    }
+
+    /// Lower a str-receiver method to its `rt_str_*` descriptor (Phase 8B/8C).
+    /// Returns `None` for an unrecognized name so the caller falls through to
+    /// the container path. `find` rides the generic `rt_str_search` with op_tag
+    /// 0; the result reprs follow `method_call_ty` (str/bool/int).
+    fn lower_str_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<Option<(LocalId, Repr)>> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        use pyaot_stdlib_defs::TypeSpec;
+        let name = self.interner.resolve(method_name);
+        // (descriptor, arg count, trailing op_tag if any, return spec). The
+        // return spec disambiguates the I64 ABI: `find` returns a RAW index
+        // (Int → Raw(I64), then tagged), the case ops a heap str (Tagged).
+        let plan: Option<(&'static pyaot_core_defs::RuntimeFuncDef, usize, Option<i64>, TypeSpec)> =
+            match name {
+                "upper" => Some((&rf::RT_STR_UPPER, 0, None, TypeSpec::Str)),
+                "lower" => Some((&rf::RT_STR_LOWER, 0, None, TypeSpec::Str)),
+                "strip" => Some((&rf::RT_STR_STRIP, 0, None, TypeSpec::Str)),
+                "startswith" => Some((&rf::RT_STR_STARTSWITH, 1, None, TypeSpec::Bool)),
+                "endswith" => Some((&rf::RT_STR_ENDSWITH, 1, None, TypeSpec::Bool)),
+                "find" => Some((&rf::RT_STR_FIND, 1, Some(0), TypeSpec::Int)),
+                _ => None,
+            };
+        let Some((def, want_args, op_tag, ret_spec)) = plan else { return Ok(None) };
+        if args.len() != want_args {
+            return Err(CompilerError::semantic_error(
+                format!("`str.{name}()` takes {want_args} argument(s), got {}", args.len()),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
+        for a in args {
+            let (al, ar) = self.lower_expr(*a)?;
+            ops.push(Operand::Local(self.coerce(al, ar, Repr::Tagged)?));
+        }
+        if let Some(tag) = op_tag {
+            let t = self.alloc_temp(Repr::Raw(RawKind::I8));
+            self.emit(MirInst::Const { dst: t, val: Const::Int(tag) });
+            ops.push(Operand::Local(t));
+        }
+        Ok(Some(self.emit_runtime_call(call_idx, def, ops, &ret_spec)?))
+    }
+
+    /// Lower a File method (`f.read()`, `f.write(s)`, Phase 8C) to its
+    /// `rt_file_*` descriptor. Context-manager dunders route here too: the
+    /// `with`-desugar's `__exit__(e, e, None)` drops its three exception args
+    /// (`rt_file_exit` takes only the file and always returns "don't swallow").
+    fn lower_file_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        binary: bool,
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let name = self.interner.resolve(method_name);
+        // `read(n)` selects the n-arg descriptor; bare `read()` the whole-file one.
+        let def: &'static pyaot_core_defs::RuntimeFuncDef = match (name, args.len()) {
+            ("read", 0) => &rf::RT_FILE_READ,
+            ("read", _) => &rf::RT_FILE_READ_N,
+            ("readline", 0) => &rf::RT_FILE_READLINE,
+            ("readlines", 0) => &rf::RT_FILE_READLINES,
+            ("write", 1) => &rf::RT_FILE_WRITE,
+            ("close", 0) => &rf::RT_FILE_CLOSE,
+            ("flush", 0) => &rf::RT_FILE_FLUSH,
+            ("__enter__", 0) => &rf::RT_FILE_ENTER,
+            // `__exit__` arrives with 3 exception args; drop them.
+            ("__exit__", _) => &rf::RT_FILE_EXIT,
+            _ => {
+                return Err(CompilerError::semantic_error(
+                    format!("File has no method `.{name}()` (or wrong arity)"),
+                    span,
+                ));
+            }
+        };
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_op = self.coerce(rl, rr, Repr::Tagged)?;
+        let mut ops = vec![Operand::Local(recv_op)];
+        // `read(n)`'s count is a raw i64; `write(data)`'s buffer is a Tagged
+        // pointer. Other methods take no trailing arg.
+        match name {
+            "read" if !args.is_empty() => {
+                let (al, ar) = self.lower_expr(args[0])?;
+                ops.push(Operand::Local(self.coerce(al, ar, Repr::Raw(RawKind::I64))?));
+            }
+            "write" => {
+                let (al, ar) = self.lower_expr(args[0])?;
+                ops.push(Operand::Local(self.coerce(al, ar, Repr::Tagged)?));
+            }
+            _ => {}
+        }
+        // Return spec drives the result repr: `read`/`readline` are bytes/str by
+        // mode; `write` returns a raw byte count (Int); the rest ride Tagged.
+        let ret_spec = match name {
+            "read" | "readline" if binary => pyaot_stdlib_defs::TypeSpec::Bytes,
+            "read" | "readline" => pyaot_stdlib_defs::TypeSpec::Str,
+            "write" => pyaot_stdlib_defs::TypeSpec::Int,
+            _ => pyaot_stdlib_defs::TypeSpec::Any,
+        };
+        self.emit_runtime_call(call_idx, def, ops, &ret_spec)
+    }
+
 
     fn lower_attribute(
         &mut self,
@@ -1455,29 +1632,30 @@ impl<'a> FnLower<'a> {
             return self.lower_class_method_call(cid, recv, method_name, args, span);
         }
         // A str-receiver method routed through its runtime descriptor (Phase
-        // 8B; the full str-method surface lands with 8E). Zero-arg, str → str.
-        if matches!(recv_ty, SemTy::Str) && args.is_empty() {
-            use pyaot_core_defs::runtime_func_def::{RT_STR_LOWER, RT_STR_STRIP, RT_STR_UPPER};
-            let def: Option<&'static pyaot_core_defs::RuntimeFuncDef> =
-                match self.interner.resolve(method_name) {
-                    "upper" => Some(&RT_STR_UPPER),
-                    "lower" => Some(&RT_STR_LOWER),
-                    "strip" => Some(&RT_STR_STRIP),
-                    _ => None,
-                };
-            if let Some(def) = def {
-                let (rl, rr) = self.lower_expr(recv)?;
-                let rv = self.coerce(rl, rr, Repr::Tagged)?;
-                let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::CallRuntime {
-                    dst: Some(dst),
-                    def,
-                    args: vec![Operand::Local(rv)],
-                });
-                let result_repr = repr_of(&self.func.exprs[call_idx].ty);
-                let c = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
-                return Ok((c, result_repr));
+        // 8B/8C; the full str-method surface lands with 8E). Covers the
+        // zero-arg `str → str` trio and the one-arg `startswith`/`endswith`
+        // (`→ bool`) / `find` (`→ int`, op_tag 0).
+        if matches!(recv_ty, SemTy::Str) {
+            if let Some(res) = self.lower_str_method(call_idx, recv, method_name, args, span)? {
+                return Ok(res);
             }
+        }
+        // A stdlib runtime object method (`m.group(0)`, Phase 8C): resolved via
+        // the object-type registry, lowered to its `CallRuntime` descriptor.
+        if let SemTy::RuntimeObject(tag) = &recv_ty {
+            let name = self.interner.resolve(method_name);
+            let method = pyaot_stdlib_defs::object_types::lookup_object_method(*tag, name)
+                .ok_or_else(|| {
+                    CompilerError::semantic_error(
+                        format!("runtime object has no method `.{name}()`"),
+                        span,
+                    )
+                })?;
+            return self.lower_runtime_object_method(call_idx, recv, method, args, span);
+        }
+        // File methods (Phase 8C): a fixed surface mapped to `rt_file_*`.
+        if let SemTy::File { binary } = &recv_ty {
+            return self.lower_file_method(call_idx, recv, method_name, args, *binary, span);
         }
         // Container receiver → the Phase-4D ContainerMethod path.
         let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {

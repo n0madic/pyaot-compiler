@@ -978,7 +978,24 @@ impl<'a> Solver<'a> {
             // A stdlib runtime call types as its descriptor's declared return
             // `TypeSpec` (Phase 8B); arg/param compatibility is enforced in
             // `check_repr_boundaries` (the contract seam, like calls).
-            HirExprKind::CallRuntime { target, .. } => target.result_semty(),
+            HirExprKind::CallRuntime { target, args, .. } => {
+                let base = target.result_semty();
+                // `open(...)`'s File is text or binary by its (constant) mode
+                // literal — a `b` in the mode string (Phase 8C).
+                if let SemTy::File { .. } = base {
+                    let binary = args
+                        .get(1)
+                        .and_then(|slot| *slot)
+                        .map(|idx| match &self.func.exprs[idx].kind {
+                            HirExprKind::StrLit(s) => self.interner.resolve(*s).contains('b'),
+                            _ => false,
+                        })
+                        .unwrap_or(false);
+                    SemTy::File { binary }
+                } else {
+                    base
+                }
+            }
             // `Stack[int](...)` → the generic instance type (args drive precise
             // field/method substitution; erased at repr to one shared layout). A
             // bare construction of a *non-generic* class (no type args, no type
@@ -1105,12 +1122,30 @@ impl<'a> Solver<'a> {
                 None => SemTy::Dyn,
             };
         }
-        // str-receiver methods routed through runtime descriptors (Phase 8B;
+        // str-receiver methods routed through runtime descriptors (Phase 8B/8C;
         // the full str-method surface lands with 8E).
-        if matches!(recv, SemTy::Str)
-            && matches!(self.interner.resolve(method_name), "upper" | "lower" | "strip")
-        {
-            return SemTy::Str;
+        if matches!(recv, SemTy::Str) {
+            match self.interner.resolve(method_name) {
+                "upper" | "lower" | "strip" => return SemTy::Str,
+                "startswith" | "endswith" => return SemTy::Bool,
+                "find" => return SemTy::Int,
+                _ => {}
+            }
+        }
+        // A stdlib runtime object's method (`m.group()`, Phase 8C): typed from
+        // its `StdlibMethodDef` in the object-type registry.
+        if let SemTy::RuntimeObject(tag) = &recv {
+            return pyaot_stdlib_defs::object_types::lookup_object_method(
+                *tag,
+                self.interner.resolve(method_name),
+            )
+            .map(|m| pyaot_hir::semty_from_typespec(&m.return_type))
+            .unwrap_or(SemTy::Dyn);
+        }
+        // File object methods (Phase 8C): a fixed surface routed to `rt_file_*`
+        // at lowering. `read`/`readline`/`readlines` yield bytes in binary mode.
+        if let SemTy::File { binary } = &recv {
+            return file_method_ty(self.interner.resolve(method_name), *binary);
         }
         match ContainerMethod::from_name(self.interner.resolve(method_name)) {
             Some(cm) => method_ty(&recv, cm),
@@ -1454,6 +1489,23 @@ fn is_sequence(t: &SemTy) -> bool {
 /// concrete dispatch is by receiver in lowering; here we just produce the Python
 /// result type). Unknown (receiver, method) pairs fall back to `Dyn` — the
 /// always-correct tagged baseline.
+/// The static return type of a File method (Phase 8C). `read`/`readline` give
+/// `bytes` in binary mode, `str` in text mode; `readlines` a list of those.
+fn file_method_ty(method: &str, binary: bool) -> SemTy {
+    let elem = if binary { SemTy::Bytes } else { SemTy::Str };
+    match method {
+        "read" | "readline" => elem,
+        "readlines" => SemTy::list_of(elem),
+        "write" => SemTy::Int,
+        "close" | "flush" => SemTy::NoneTy,
+        // Context-manager dunders: `__enter__` returns self (the File), and
+        // `__exit__` returns a bool (truthy ⇒ swallow the exception).
+        "__enter__" => SemTy::File { binary },
+        "__exit__" => SemTy::Bool,
+        _ => SemTy::Dyn,
+    }
+}
+
 fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
     use ContainerMethod as M;
     let none = SemTy::NoneTy;

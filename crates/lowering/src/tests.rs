@@ -854,3 +854,74 @@ print(isinstance(f(1), str))
 ";
     assert!(try_lower(src).is_err());
 }
+
+// ── Phase 8C: stdlib object types (re/Match, File I/O) ──────────────────────
+
+#[test]
+fn stdlib_match_method_routes_to_descriptor() {
+    // `m.group(0)` on a Match-typed value (re.search → Optional[Match] narrowed
+    // to Match) lowers to the `rt_match_group` descriptor: recv Tagged + a raw
+    // i64 group index.
+    let src = "\
+import re
+m = re.search(\"x\", \"x\")
+g: str = m.group(0)
+print(g)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    let grp = calls.iter().find(|(s, _, _)| *s == "rt_match_group").expect("group call");
+    assert_eq!(grp.1, vec![Repr::Tagged, Repr::Raw(RawKind::I64)]);
+}
+
+#[test]
+fn stdlib_open_binary_mode_typed_bytes() {
+    // `open(p, "rb").read()` → File{binary} → read returns bytes (Heap(Bytes)),
+    // routed through `rt_file_read`.
+    let src = "\
+data = open(\"/tmp/x\", \"rb\").read()
+print(data)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_open"));
+    assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_read"), "read call present");
+    // Binary-mode typing shows as a Coerce(Tagged → Heap(Bytes)) after the read.
+    let to_bytes = p.funcs.iter().any(|f| {
+        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(i, MirInst::Coerce { to, .. } if *to == Repr::Heap(HeapShape::Bytes))
+        })
+    });
+    assert!(to_bytes, "binary read legalizes to Heap(Bytes)");
+}
+
+#[test]
+fn stdlib_file_write_returns_raw_count() {
+    // `f.write(s)` → `rt_file_write` (recv Tagged, data Tagged), a raw i64 byte
+    // count tagged back to the Int result.
+    let src = "\
+f = open(\"/tmp/x\", \"w\")
+n: int = f.write(\"hi\")
+print(n)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    let w = calls.iter().find(|(s, _, _)| *s == "rt_file_write").expect("write call");
+    assert_eq!(w.1, vec![Repr::Tagged, Repr::Tagged]);
+    assert_eq!(w.2, Some(Repr::Raw(RawKind::I64)));
+}
+
+#[test]
+fn stdlib_file_iteration_desugars_to_readlines() {
+    // `for line in open(p):` desugars to iterating `open(p).readlines()` — the
+    // frozen runtime cannot iterate a File directly.
+    let src = "\
+acc: list[str] = []
+for line in open(\"/tmp/x\"):
+    acc.append(line)
+print(acc)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_readlines"));
+}

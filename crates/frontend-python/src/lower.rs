@@ -875,6 +875,30 @@ impl<'a> ProgramLowerer<'a> {
     }
 }
 
+/// Synthetic descriptor for the builtin `open()` (Phase 8C). `open` is not a
+/// stdlib *module* function, so it lives here rather than in `stdlib-defs`; it
+/// targets the frozen `rt_file_open(filename, mode, encoding)` and returns a
+/// `File`. `encoding` is optional with no default → the null-pointer sentinel,
+/// which the runtime reads as "use the default codec".
+static OPEN_DEF: pyaot_stdlib_defs::StdlibFunctionDef = pyaot_stdlib_defs::StdlibFunctionDef {
+    name: "open",
+    runtime_name: "rt_file_open",
+    params: &[
+        pyaot_stdlib_defs::ParamDef::required("file", pyaot_stdlib_defs::TypeSpec::Str),
+        pyaot_stdlib_defs::ParamDef::optional_with_default(
+            "mode",
+            pyaot_stdlib_defs::TypeSpec::Str,
+            pyaot_stdlib_defs::ConstValue::Str("r"),
+        ),
+        pyaot_stdlib_defs::ParamDef::optional("encoding", pyaot_stdlib_defs::TypeSpec::Str),
+    ],
+    return_type: pyaot_stdlib_defs::TypeSpec::File,
+    min_args: 1,
+    max_args: 3,
+    hints: pyaot_stdlib_defs::LoweringHints::NO_AUTO_BOX,
+    codegen: pyaot_core_defs::RuntimeFuncDef::ptr_ternary("rt_file_open"),
+};
+
 /// Register `import M [as A]` against a stdlib module (Phase 8B): every
 /// function / constant / attr / class of `M` becomes reachable as a qualified
 /// `"A.name"` key. Submodule chains (`os.path.join`) are Phase 8D.
@@ -1987,11 +2011,30 @@ impl<'a> FnLowerer<'a> {
     /// (`iter` → `next` → `is_exhausted`), binding the target (a name or a tuple
     /// pattern) each iteration. `for`-else / `break` / `continue` reuse the loop
     /// stack exactly as the `while`/range paths do.
+    /// Lower a for-loop / comprehension iterable. The frozen runtime cannot
+    /// iterate a File object (PITFALLS), so a syntactic `open(...)` iterable is
+    /// desugared to `open(...).readlines()` — iterating the eager line list is
+    /// line-for-line identical to CPython's lazy file iteration on the small
+    /// corpus inputs (Phase 8C). A File first stored in a variable then iterated
+    /// is out of scope — call `.readlines()` explicitly.
+    fn lower_iterable_expr(&mut self, e: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        let lowered = self.lower_expr(e)?;
+        if is_open_call(e) {
+            let readlines = self.intern("readlines");
+            return Ok(self.alloc(
+                HirExprKind::MethodCall { recv: lowered, method_name: readlines, args: vec![] },
+                SemTy::Dyn,
+                span,
+            ));
+        }
+        Ok(lowered)
+    }
+
     fn lower_for_iter(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
         let span = to_span(s.range());
 
         // it = iter(iterable)  — a Heap(Iterator) local, live across the loop.
-        let iterable = self.lower_expr(s.iter.as_ref())?;
+        let iterable = self.lower_iterable_expr(s.iter.as_ref(), span)?;
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
             HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
@@ -3297,17 +3340,29 @@ impl<'a> FnLowerer<'a> {
                     parts.push(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
                 }
                 Expr::FormattedValue(fv) => {
-                    if fv.format_spec.is_some() || fv.conversion.to_byte().is_some() {
+                    if fv.format_spec.is_some() {
                         return Err(parse_error(
-                            "f-string format specs / `!r` conversions are out of scope \
-                             (Phase 8E)",
+                            "f-string format specs (`:.4f`) are out of scope (Phase 8E)",
                             span,
                         ));
                     }
+                    // `{x}` / `{x!s}` → `str(x)`; `{x!r}` → `repr(x)`. `!a`
+                    // (ascii) has no builtin in our subset (Phase 8E).
+                    let builtin = match fv.conversion {
+                        rustpython_parser::ast::ConversionFlag::None
+                        | rustpython_parser::ast::ConversionFlag::Str => "str",
+                        rustpython_parser::ast::ConversionFlag::Repr => "repr",
+                        rustpython_parser::ast::ConversionFlag::Ascii => {
+                            return Err(parse_error(
+                                "f-string `!a` (ascii) conversion is out of scope (Phase 8E)",
+                                span,
+                            ));
+                        }
+                    };
                     let v = self.lower_expr(fv.value.as_ref())?;
-                    let str_name = self.intern("str");
+                    let fn_name = self.intern(builtin);
                     let callee = self.alloc(
-                        HirExprKind::Name(SymbolRef::Unresolved(str_name)),
+                        HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
                         SemTy::Dyn,
                         span,
                     );
@@ -3378,7 +3433,7 @@ impl<'a> FnLowerer<'a> {
         }
 
         // it = iter(gen.iter)
-        let iterable = self.lower_expr(&gen.iter)?;
+        let iterable = self.lower_iterable_expr(&gen.iter, span)?;
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
             HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
@@ -4167,6 +4222,7 @@ impl<'a> FnLowerer<'a> {
                         "int" => Some(SemTy::Int),
                         "float" => Some(SemTy::Float),
                         "bool" => Some(SemTy::Bool),
+                        "bytes" => Some(SemTy::Bytes),
                         _ => None,
                     };
                     if let Some(target) = target {
@@ -4177,6 +4233,19 @@ impl<'a> FnLowerer<'a> {
                             span,
                         ));
                     }
+                }
+            }
+        }
+        // The builtin `open(...)` (Phase 8C) → the synthetic File-open
+        // descriptor, unless a user binding (local/param/top-level def) shadows
+        // the name.
+        if let Expr::Name(n) = c.func.as_ref() {
+            if n.id.as_str() == "open" {
+                let iname = self.intern("open");
+                if !self.scope.contains_key(&iname)
+                    && !self.ctx.top_defs.contains_key("open")
+                {
+                    return self.lower_open_builtin(c, span);
                 }
             }
         }
@@ -4726,6 +4795,14 @@ impl<'a> FnLowerer<'a> {
     /// args, fill constant defaults, and pack `*args` / `**kwargs` — producing
     /// the positional argument vector matching the callee's MIR parameter order
     /// (fixed → keyword-only → `*args` tuple → `**kwargs` dict).
+    /// Lower the builtin `open(file, mode="r", encoding=None)` (Phase 8C)
+    /// through the shared stdlib-call adapter, against a synthetic descriptor
+    /// targeting `rt_file_open`. The result's `binary`-ness is derived in
+    /// typeck from the (constant) mode literal.
+    fn lower_open_builtin(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        self.lower_stdlib_call(&OPEN_DEF, c, span)
+    }
+
     /// Adapt a Python-level stdlib call against its declarative descriptor and
     /// emit [`HirExprKind::CallRuntime`] (Phase 8B). Positional args fill param
     /// slots in order; keywords match by `ParamDef.name`; an absent optional
@@ -5117,6 +5194,13 @@ enum RangeArg<'a> {
 fn is_range_call(iter: &Expr) -> bool {
     matches!(iter, Expr::Call(c)
         if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "range"))
+}
+
+/// True if `e` is a syntactic `open(...)` call — the File-iteration desugar
+/// trigger (Phase 8C).
+fn is_open_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call(c)
+        if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "open"))
 }
 
 /// If `stmt` is `Name = TypeVar(...)` (or `ParamSpec`/`TypeVarTuple`), return the

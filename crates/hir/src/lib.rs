@@ -454,7 +454,14 @@ pub fn semty_from_typespec(spec: &pyaot_stdlib_defs::TypeSpec) -> SemTy {
         TypeSpec::Tuple(elem) => SemTy::tuple_var_of(semty_from_typespec(elem)),
         TypeSpec::Dict(k, v) => SemTy::dict_of(semty_from_typespec(k), semty_from_typespec(v)),
         TypeSpec::Iterator(elem) => SemTy::Iterator(Box::new(semty_from_typespec(elem))),
-        TypeSpec::Optional(_) | TypeSpec::Any => SemTy::Dyn,
+        // `Optional[T]` narrows to `T` for static dispatch (Phase 8C): a stdlib
+        // function declared `Optional[Match]` / `Optional[str]` (`re.search`,
+        // `Match.group`) is used as the inner type so its methods resolve. The
+        // None possibility is a gradual-typing simplification — the frozen
+        // runtime accepts a null receiver (returns None / -1), matching
+        // CPython's AttributeError-on-None failure mode rather than masking it.
+        TypeSpec::Optional(inner) => semty_from_typespec(inner),
+        TypeSpec::Any => SemTy::Dyn,
         TypeSpec::File => SemTy::File { binary: false },
         TypeSpec::Match => SemTy::RuntimeObject(TypeTagKind::Match),
         TypeSpec::StructTime => SemTy::RuntimeObject(TypeTagKind::StructTime),
