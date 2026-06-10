@@ -80,6 +80,16 @@ const PHASE_CORPUS: &[&str] = &[
     "test_match.py",
     // Phase 7 — raise/catch GC soak (shadow-stack unwind + rooted `as e`).
     "p7_gc_stress.py",
+    // Phase 8A — module-level global scoping (annotated globals stay typed even
+    // when written inside functions). No imports — exercises the global
+    // infrastructure the import machinery promotes module bindings onto.
+    "test_global_scoping.py",
+    // Phase 8A — multi-module: `import` / `from … import` (incl. relative),
+    // packages, cross-module functions / classes / constants / generators. The
+    // `math_utils.py` / `genmod.py` / `mypackage/**` trees are fixtures (search
+    // path = the source's directory), never gate entries themselves.
+    "test_import.py",
+    "test_packages.py",
 ];
 
 #[test]

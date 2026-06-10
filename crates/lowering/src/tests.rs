@@ -11,8 +11,10 @@ use pyaot_utils::StringInterner;
 fn lowered(src: &str) -> MirProgram {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-    let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
+    let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
+    let classes =
+        pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
     let program = super::lower(&module, &resolve, &interner, &classes).expect("lower");
     for f in &program.funcs {
@@ -30,8 +32,10 @@ fn main_fn(p: &MirProgram) -> &MirFunction {
 fn try_lower(src: &str) -> pyaot_diagnostics::Result<MirProgram> {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-    let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
+    let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
+    let classes =
+        pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
     super::lower(&module, &resolve, &interner, &classes)
 }

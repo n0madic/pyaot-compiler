@@ -109,6 +109,18 @@ pub fn infer(
         }
     }
     let mut global_tys: Vec<SemTy> = vec![SemTy::Dyn; n_globals];
+    // Module-level annotated globals are authoritative (Phase 8): their declared
+    // type holds even when a function writes the slot (which otherwise demotes
+    // inference to `Dyn`). The annotation is a contract; `check_repr_boundaries`
+    // validates each write against it.
+    let mut global_authoritative: Vec<bool> = vec![false; n_globals];
+    for (vid, ty) in &module.global_annotations {
+        let vid = *vid as usize;
+        if vid < n_globals {
+            global_tys[vid] = ty.clone();
+            global_authoritative[vid] = true;
+        }
+    }
 
     let mut order: Vec<usize> = Vec::with_capacity(module.functions.len());
     order.push(main_idx);
@@ -124,12 +136,19 @@ pub fn infer(
                 interner,
                 &global_tys,
                 &demoted,
+                &global_authoritative,
                 n_globals,
             );
             solver.solve()
         };
         if idx == main_idx {
-            seed_global_tys(&module.functions[idx], &solution, &demoted, &mut global_tys);
+            seed_global_tys(
+                &module.functions[idx],
+                &solution,
+                &demoted,
+                &global_authoritative,
+                &mut global_tys,
+            );
         }
         materialize(&mut module.functions[idx], &solution);
     }
@@ -146,6 +165,7 @@ fn seed_global_tys(
     main: &HirFunction,
     solution: &Solution,
     demoted: &[bool],
+    authoritative: &[bool],
     global_tys: &mut [SemTy],
 ) {
     let mut writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); global_tys.len()];
@@ -157,7 +177,9 @@ fn seed_global_tys(
         }
     }
     for (vid, ws) in writes.iter().enumerate() {
-        if demoted[vid] || ws.is_empty() {
+        // An annotated slot keeps its declared type — never overwritten by the
+        // join of main's writes (Phase 8).
+        if demoted[vid] || authoritative[vid] || ws.is_empty() {
             continue;
         }
         let ety = |v: &Idx<HirExpr>| {
@@ -267,6 +289,20 @@ fn check_repr_boundaries(
                             check_reinterpret(
                                 &func.exprs[*value], &local.ty, kind, "assigned to", classes,
                             )?;
+                        }
+                    }
+                    // Writes into a module-level annotated global slot (Phase 8):
+                    // the annotation is a contract, so a `GlobalSet` of a
+                    // mismatched type is rejected like any other reinterpret seam.
+                    // (Globals are physically tagged, but a `GlobalGet` reinterprets
+                    // by the annotated type, so a wrong write would later misread.)
+                    HirStmt::GlobalSet { var_id, value } => {
+                        if let Some(slot_ty) = module.global_annotations.get(var_id) {
+                            if let Some(kind) = reinterpret_kind(slot_ty) {
+                                check_reinterpret(
+                                    &func.exprs[*value], slot_ty, kind, "assigned to global", classes,
+                                )?;
+                            }
                         }
                     }
                     // Writes into a typed instance-field slot (the A5 storage seam):
@@ -636,6 +672,9 @@ struct Solver<'a> {
     global_tys: &'a [SemTy],
     /// Slots written outside `__main__` — always `Dyn` (Phase 6B).
     global_demoted: &'a [bool],
+    /// Slots with a module-level annotation — their declared type is
+    /// authoritative and overrides demotion (Phase 8).
+    global_authoritative: &'a [bool],
     /// This function's own `GlobalSet` writes per slot — only `__main__` has
     /// any when the slot is not demoted, making its reads a worklist join.
     global_writes: Vec<Vec<Idx<HirExpr>>>,
@@ -653,6 +692,7 @@ impl<'a> Solver<'a> {
         interner: &'a StringInterner,
         global_tys: &'a [SemTy],
         global_demoted: &'a [bool],
+        global_authoritative: &'a [bool],
         n_globals: usize,
     ) -> Self {
         let n = func.locals.len();
@@ -707,6 +747,7 @@ impl<'a> Solver<'a> {
             cell_writes,
             global_tys,
             global_demoted,
+            global_authoritative,
             global_writes,
         }
     }
@@ -861,9 +902,17 @@ impl<'a> Solver<'a> {
                 .unwrap_or(SemTy::Dyn),
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             // `Stack[int](...)` → the generic instance type (args drive precise
-            // field/method substitution; erased at repr to one shared layout).
+            // field/method substitution; erased at repr to one shared layout). A
+            // bare construction of a *non-generic* class (no type args, no type
+            // params — e.g. the Phase-8 `M.Cls(...)` qualified path) types as the
+            // nominal `Class` so it unifies with a `Cls`-typed annotation.
             HirExprKind::GenericConstruct { class_id, type_args, .. } => {
-                SemTy::Generic { base: *class_id, args: type_args.clone() }
+                match self.classes.get(*class_id) {
+                    Some(info) if type_args.is_empty() && info.type_params.is_empty() => {
+                        SemTy::Class { class_id: *class_id, name: info.name }
+                    }
+                    _ => SemTy::Generic { base: *class_id, args: type_args.clone() },
+                }
             }
             // ── closures / cells / globals (Phase 6) ──
             HirExprKind::MakeClosure { func, .. } => {
@@ -903,7 +952,11 @@ impl<'a> Solver<'a> {
             // function writes it (Phase 6B).
             HirExprKind::GlobalGet { var_id } => {
                 let vid = *var_id as usize;
-                if self.global_demoted.get(vid).copied().unwrap_or(false) {
+                if self.global_authoritative.get(vid).copied().unwrap_or(false) {
+                    // A module-level annotation is the slot's contract type
+                    // everywhere — never inferred from writes (Phase 8).
+                    self.global_tys.get(vid).cloned().unwrap_or(SemTy::Dyn)
+                } else if self.global_demoted.get(vid).copied().unwrap_or(false) {
                     SemTy::Dyn
                 } else if !self.global_writes[vid].is_empty() {
                     self.join_writes(&self.global_writes[vid])

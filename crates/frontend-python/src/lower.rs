@@ -16,7 +16,7 @@ use rustpython_parser::ast::{
     ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
     ExprSetComp,
     ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt, StmtClassDef,
-    StmtFunctionDef, UnaryOp as PyUnaryOp,
+    StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
 
@@ -24,8 +24,9 @@ use pyaot_core_defs::FIRST_USER_CLASS_ID;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
     BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
-    HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProperty,
-    HirRaise, HirStmt, HirTerminator, SymbolRef, UnaryOp,
+    HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProgram,
+    HirProperty, HirRaise, HirStmt, HirTerminator, NamespaceImports, NamespaceTable, SymbolRef,
+    UnaryOp,
 };
 use pyaot_types::{SemTy, Sig};
 use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, StringInterner};
@@ -85,6 +86,13 @@ pub(crate) struct AnnCtx<'a> {
     /// is a promoted global slot of a `(*args, **kwargs)` wrapper, so a call by
     /// that name packs its positional/keyword args into the variadic slots.
     decorated: &'a HashSet<String>,
+    /// `import M` alias names (Phase 8). `M.f(...)` / `M.Cls(...)` / `M.VAR`
+    /// fold to qualified accesses: imported funcs/classes live in `top_defs` /
+    /// `class_map` under the `"M.name"` key, module vars in `alias_vars`.
+    aliases: &'a HashSet<String>,
+    /// `"M.VAR"` → the exporter module's promoted global slot, for live reads of
+    /// an aliased module's module-level variable (Phase 8).
+    alias_vars: &'a HashMap<String, u32>,
 }
 
 /// A decorated module-level function's runtime facts (Phase 6D): the promoted
@@ -101,21 +109,38 @@ struct DecoratedDef {
 /// stable regardless of nesting), plus the per-module thunk memo.
 pub(crate) struct Shared {
     funcs: Vec<Option<HirFunction>>,
-    /// Memoized value-position thunks for top-level functions: name → FuncId.
-    thunks: HashMap<String, FuncId>,
-    /// Generator resume functions indexed by dense `gen_id` (Phase 6E).
+    /// Owning namespace id per `FuncId` (parallel to `funcs`), set at reserve
+    /// time from `current_ns` (Phase 8). Every function — including synthetics
+    /// (thunks / lambdas / generator resumes) — belongs to the module being
+    /// lowered, so `semantics` resolves its `Unresolved` names in that scope.
+    func_ns: Vec<u32>,
+    /// Namespace new reservations are tagged with (the module being lowered).
+    current_ns: u32,
+    /// Memoized value-position thunks for top-level functions: `(namespace,
+    /// name) → FuncId`. Keyed by namespace so a same-named function in two
+    /// modules gets distinct thunks (Phase 8).
+    thunks: HashMap<(u32, String), FuncId>,
+    /// Generator resume functions indexed by dense `gen_id` (Phase 6E) — a
+    /// single program-global, dense space across all modules.
     generators: Vec<FuncId>,
 }
 
 impl Shared {
     fn new() -> Self {
-        Self { funcs: Vec::new(), thunks: HashMap::new(), generators: Vec::new() }
+        Self {
+            funcs: Vec::new(),
+            func_ns: Vec::new(),
+            current_ns: 0,
+            thunks: HashMap::new(),
+            generators: Vec::new(),
+        }
     }
 
     /// Reserve the next dense `FuncId`; the caller must `fill` it.
     fn reserve(&mut self) -> FuncId {
         let id = FuncId::new(self.funcs.len() as u32);
         self.funcs.push(None);
+        self.func_ns.push(self.current_ns);
         id
     }
 
@@ -132,25 +157,321 @@ impl Shared {
     }
 }
 
-pub(crate) struct ModuleLowerer<'a> {
-    interner: &'a mut StringInterner,
+/// What a fully-lowered module exports (frontend-internal, Phase 8). Drives
+/// `from M import x` static binding and `M.x` attribute folding in importers.
+#[derive(Clone)]
+pub(crate) struct ModuleExports {
+    init_fid: FuncId,
+    init_name: InternedString,
+    /// Top-level def name → (FuncId, call-facing shape).
+    funcs: HashMap<String, (FuncId, TopDefInfo)>,
+    /// Top-level class name → (ClassId, interned class name).
+    classes: HashMap<String, (ClassId, InternedString)>,
+    /// Module-level variable name → promoted global var_id.
+    var_slots: HashMap<String, u32>,
 }
 
-impl<'a> ModuleLowerer<'a> {
-    pub(crate) fn new(interner: &'a mut StringInterner) -> Self {
-        Self { interner }
+/// One import statement's runtime effect (Phase 8), precomputed during the load
+/// DFS (so first-import order matches CPython) and replayed positionally during
+/// the importing module's body lowering.
+#[derive(Default, Clone)]
+struct ImportAction {
+    /// Module-`<init>` callees to invoke in order (parent packages first, each
+    /// only at its program-wide first-import site).
+    init_calls: Vec<InternedString>,
+    /// `from M import VAR` snapshots: (importer slot, exporter slot).
+    snapshots: Vec<(u32, u32)>,
+}
+
+/// Per-module binding state collected during the import scan (Phase A) and used
+/// when lowering the module body (Phase B).
+struct ImportCollect {
+    class_map: ClassNameMap,
+    promoted: HashMap<String, u32>,
+    /// `from M import f` / qualified `M.f` → call-facing shape, by lookup key.
+    imported_funcs: Vec<(String, TopDefInfo)>,
+    /// `import M` alias names — `M.x` folds to a qualified access.
+    aliases: HashSet<String>,
+    /// `"M.VAR"` → the exporter module's global slot (for live `M.VAR` reads).
+    alias_vars: HashMap<String, u32>,
+    /// Import-statement body index → its precomputed runtime effect.
+    actions: HashMap<usize, ImportAction>,
+}
+
+/// The shared program-lowering context (Phase 8). Owns the global allocators and
+/// drives the import-graph DFS; every module lowers into the one shared
+/// function / class / generator / global-slot space — no merge or remap pass.
+pub(crate) struct ProgramLowerer<'a> {
+    interner: &'a mut StringInterner,
+    loader: &'a mut dyn crate::ModuleSource,
+    shared: Shared,
+    classes: Vec<HirClass>,
+    global_annotations: HashMap<u32, SemTy>,
+    class_ns: HashMap<ClassId, u32>,
+    namespace_imports: Vec<NamespaceImports>,
+    next_class_id: u32,
+    next_global: u32,
+    loaded: HashMap<String, ModuleExports>,
+    loading: Vec<String>,
+    init_emitted: HashSet<String>,
+}
+
+impl<'a> ProgramLowerer<'a> {
+    pub(crate) fn new(
+        interner: &'a mut StringInterner,
+        loader: &'a mut dyn crate::ModuleSource,
+    ) -> Self {
+        Self {
+            interner,
+            loader,
+            shared: Shared::new(),
+            classes: Vec::new(),
+            global_annotations: HashMap::new(),
+            class_ns: HashMap::new(),
+            namespace_imports: Vec::new(),
+            next_class_id: FIRST_USER_CLASS_ID as u32,
+            next_global: 0,
+            loaded: HashMap::new(),
+            loading: Vec::new(),
+            init_emitted: HashSet::new(),
+        }
     }
 
-    /// Lower a module body into an [`HirModule`]: `__main__` (the module body,
-    /// `FuncId(0)`) followed by each top-level `def`. Cross-function references
-    /// (recursion / forward calls) resolve later in `semantics`, which sees the
-    /// complete function table — so no frontend pre-pass is needed.
-    pub(crate) fn lower_module(self, body: Vec<Stmt>) -> Result<HirModule> {
-        let interner = self.interner;
+    /// Discover the import graph from the entry script and lower every reachable
+    /// module into one shared [`HirProgram`].
+    pub(crate) fn run(mut self, body: Vec<Stmt>) -> Result<HirProgram> {
+        // Entry namespace = 0; `__main__` is `FuncId(0)` (codegen wraps it).
+        self.namespace_imports.push(NamespaceImports::default());
+        self.shared.current_ns = 0;
+        let main_id = self.shared.reserve();
+        self.lower_module_into(&[], false, body, true, 0, main_id)?;
 
-        // Partition top-level statements: undecorated `def`s, decorated `def`s
-        // (Phase 6D — body renamed, public name promoted to a global slot),
-        // `class`es, and module-body statements.
+        let func_ns = self.shared.func_ns.clone();
+        let generators = self.shared.generators.clone();
+        let functions = self.shared.finish();
+        let module = HirModule {
+            functions,
+            classes: self.classes,
+            main: main_id,
+            generators,
+            global_annotations: self.global_annotations,
+        };
+        let namespaces = NamespaceTable {
+            func_ns,
+            class_ns: self.class_ns,
+            imports: self.namespace_imports,
+        };
+        Ok(HirProgram { module, namespaces })
+    }
+
+    /// Load module `path` (and its parent packages) if not already loaded. A
+    /// genuine import cycle on the primary target is a loud error; a parent
+    /// package mid-initialization (`implicit`) is normal partial-init.
+    fn ensure_loaded(&mut self, path: &[String], implicit: bool, span: Span) -> Result<()> {
+        if path.is_empty() {
+            return Ok(());
+        }
+        let dotted = path.join(".");
+        if self.loaded.contains_key(&dotted) {
+            return Ok(());
+        }
+        if self.loading.iter().any(|m| m == &dotted) {
+            if implicit {
+                return Ok(());
+            }
+            return Err(parse_error(
+                format!("circular import detected involving module `{dotted}`"),
+                span,
+            ));
+        }
+        // CPython initializes a package before its submodules.
+        if path.len() > 1 {
+            self.ensure_loaded(&path[..path.len() - 1], true, span)?;
+        }
+        let (src, is_package) = self.loader.load(path).ok_or_else(|| {
+            parse_error(format!("no module named `{dotted}`"), span)
+        })?;
+        let body = crate::parse_module_body(&src)?;
+        let ns = self.namespace_imports.len() as u32;
+        self.namespace_imports.push(NamespaceImports::default());
+        let saved_ns = self.shared.current_ns;
+        self.shared.current_ns = ns;
+        let init_fid = self.shared.reserve();
+        self.loading.push(dotted.clone());
+        let exports = self.lower_module_into(path, is_package, body, false, ns, init_fid)?;
+        self.loading.pop();
+        self.shared.current_ns = saved_ns;
+        self.loaded.insert(dotted, exports);
+        Ok(())
+    }
+
+    /// Schedule the `<init>` calls for `target`'s package chain (parent packages
+    /// first), each only at its program-wide first-import site (`init_emitted`).
+    /// A chain member still initializing (a parent in `loading`) is already
+    /// running and is not re-called.
+    fn emit_init_chain(&mut self, target: &[String], my_ns: u32, action: &mut ImportAction) {
+        for k in 1..=target.len() {
+            let dotted = target[..k].join(".");
+            if self.loading.iter().any(|m| m == &dotted) {
+                continue;
+            }
+            if self.init_emitted.contains(&dotted) {
+                continue;
+            }
+            if let Some(exp) = self.loaded.get(&dotted) {
+                let name = exp.init_name;
+                self.init_emitted.insert(dotted);
+                // Make the `<init>` name resolvable as a callee in the importer.
+                self.namespace_imports[my_ns as usize].funcs.insert(name, exp.init_fid);
+                action.init_calls.push(name);
+            }
+        }
+    }
+
+    /// Register an `import M` alias: every exported func/class/var of `M` becomes
+    /// reachable as a qualified `"alias.name"` access (Phase 8).
+    fn register_alias(&mut self, alias: &str, module: &[String], my_ns: u32, col: &mut ImportCollect) {
+        let dotted = module.join(".");
+        let Some(exp) = self.loaded.get(&dotted).cloned() else { return };
+        col.aliases.insert(alias.to_string());
+        for (fname, (fid, info)) in &exp.funcs {
+            let key = format!("{alias}.{fname}");
+            col.imported_funcs.push((key.clone(), info.clone()));
+            let ki = self.interner.intern(&key);
+            self.namespace_imports[my_ns as usize].funcs.insert(ki, *fid);
+        }
+        for (cname, (cid, iname)) in &exp.classes {
+            let key = format!("{alias}.{cname}");
+            col.class_map.insert(key.clone(), (*cid, *iname));
+            let ki = self.interner.intern(&key);
+            self.namespace_imports[my_ns as usize].classes.insert(ki, *cid);
+        }
+        for (vname, slot) in &exp.var_slots {
+            col.alias_vars.insert(format!("{alias}.{vname}"), *slot);
+        }
+    }
+
+    /// Process `import a.b.c [as x]` (Phase 8).
+    fn handle_import(
+        &mut self,
+        i: &StmtImport,
+        my_ns: u32,
+        idx: usize,
+        col: &mut ImportCollect,
+    ) -> Result<()> {
+        let span = to_span(i.range());
+        for alias in &i.names {
+            let dotted_name = alias.name.as_str();
+            if matches!(dotted_name, "typing" | "__future__" | "typing_extensions") {
+                continue;
+            }
+            let target: Vec<String> = dotted_name.split('.').map(|s| s.to_string()).collect();
+            self.ensure_loaded(&target, false, span)?;
+            let mut action = ImportAction::default();
+            self.emit_init_chain(&target, my_ns, &mut action);
+            // `import a.b.c` binds the top package `a`; `import x as y` binds `y`.
+            let (bind, bound): (String, Vec<String>) = match &alias.asname {
+                Some(n) => (n.as_str().to_string(), target.clone()),
+                None => (target[0].clone(), target[..1].to_vec()),
+            };
+            self.register_alias(&bind, &bound, my_ns, col);
+            let entry = col.actions.entry(idx).or_default();
+            entry.init_calls.extend(action.init_calls);
+            entry.snapshots.extend(action.snapshots);
+        }
+        Ok(())
+    }
+
+    /// Process `from [.]*module import n1, n2, …` (Phase 8).
+    fn handle_import_from(
+        &mut self,
+        i: &StmtImportFrom,
+        importer: &[String],
+        is_package: bool,
+        my_ns: u32,
+        idx: usize,
+        col: &mut ImportCollect,
+    ) -> Result<()> {
+        let span = to_span(i.range());
+        let level = i.level.map(|l| l.to_u32() as usize).unwrap_or(0);
+        let module_name = i.module.as_ref().map(|m| m.as_str());
+        if level == 0 {
+            if let Some(m) = module_name {
+                if matches!(m, "typing" | "__future__" | "typing_extensions") {
+                    return Ok(());
+                }
+            }
+        }
+        let target: Vec<String> = if level == 0 {
+            module_name
+                .ok_or_else(|| parse_error("malformed import", span))?
+                .split('.')
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            resolve_relative(importer, is_package, level, module_name, span)?
+        };
+        self.ensure_loaded(&target, false, span)?;
+        let mut action = ImportAction::default();
+        self.emit_init_chain(&target, my_ns, &mut action);
+        let dotted = target.join(".");
+        let exp = self.loaded.get(&dotted).cloned().expect("target loaded");
+        for alias in &i.names {
+            let name = alias.name.as_str();
+            if name == "*" {
+                return Err(parse_error("`from … import *` is out of scope", span));
+            }
+            let bind = alias.asname.as_ref().map(|n| n.as_str()).unwrap_or(name);
+            if let Some((fid, info)) = exp.funcs.get(name) {
+                // A from-imported function is a static binding to its FuncId.
+                col.imported_funcs.push((bind.to_string(), info.clone()));
+                let bi = self.interner.intern(bind);
+                self.namespace_imports[my_ns as usize].funcs.insert(bi, *fid);
+            } else if let Some((cid, iname)) = exp.classes.get(name) {
+                // A from-imported class is a static binding to its ClassId.
+                col.class_map.insert(bind.to_string(), (*cid, *iname));
+                let bi = self.interner.intern(bind);
+                self.namespace_imports[my_ns as usize].classes.insert(bi, *cid);
+            } else if let Some(src_slot) = exp.var_slots.get(name) {
+                // A from-imported variable is a snapshot copy (CPython-faithful).
+                let dst = match col.promoted.get(bind) {
+                    Some(s) => *s,
+                    None => {
+                        let s = self.next_global;
+                        self.next_global += 1;
+                        col.promoted.insert(bind.to_string(), s);
+                        s
+                    }
+                };
+                action.snapshots.push((dst, *src_slot));
+                if let Some(ty) = self.global_annotations.get(src_slot).cloned() {
+                    self.global_annotations.insert(dst, ty);
+                }
+            } else {
+                return Err(parse_error(
+                    format!("cannot import name `{name}` from `{dotted}`"),
+                    span,
+                ));
+            }
+        }
+        let entry = col.actions.entry(idx).or_default();
+        entry.init_calls.extend(action.init_calls);
+        entry.snapshots.extend(action.snapshots);
+        Ok(())
+    }
+
+    /// Lower one module's full content into the shared program tables. `mod_path`
+    /// is empty for the entry script. Returns the module's exports.
+    fn lower_module_into(
+        &mut self,
+        mod_path: &[String],
+        is_package: bool,
+        body: Vec<Stmt>,
+        is_entry: bool,
+        my_ns: u32,
+        init_fid: FuncId,
+    ) -> Result<ModuleExports> {
+        // Partition top-level statements (as the single-module lowering did).
         let mut defs: Vec<&StmtFunctionDef> = Vec::new();
         let mut decorated: Vec<&StmtFunctionDef> = Vec::new();
         let mut classdefs: Vec<&StmtClassDef> = Vec::new();
@@ -164,69 +485,106 @@ impl<'a> ModuleLowerer<'a> {
             }
         }
 
-        // Pre-assign a stable `ClassId` per class (declaration order from
-        // FIRST_USER_CLASS_ID) and build the annotation class map *before* lowering
-        // any body, so `-> Widget` / `x: Widget` annotations — including forward
-        // references — resolve to `SemTy::Class`.
+        // ── ClassIds from the program-global counter (no per-module remap). ──
         let mut class_map: ClassNameMap = HashMap::new();
         let mut class_ids: Vec<ClassId> = Vec::with_capacity(classdefs.len());
-        for (i, cdef) in classdefs.iter().enumerate() {
-            let raw_id = FIRST_USER_CLASS_ID as u32 + i as u32;
-            // The runtime `class_id` is a `u8`, so the user range is [67, 255].
-            if raw_id > u8::MAX as u32 {
+        let mut own_classes: Vec<(String, ClassId, InternedString)> = Vec::new();
+        for cdef in &classdefs {
+            if self.next_class_id > u8::MAX as u32 {
                 return Err(parse_error(
-                    "too many user-defined classes (the runtime class_id is a u8)",
+                    "too many user-defined classes across all modules (the runtime \
+                     class_id is a u8, so at most 189 in [67, 255])",
                     to_span(cdef.range()),
                 ));
             }
-            let class_id = ClassId::new(raw_id);
-            let iname = interner.intern(cdef.name.as_str());
+            let class_id = ClassId::new(self.next_class_id);
+            self.next_class_id += 1;
+            let iname = self.interner.intern(cdef.name.as_str());
             class_map.insert(cdef.name.as_str().to_string(), (class_id, iname));
             class_ids.push(class_id);
+            own_classes.push((cdef.name.as_str().to_string(), class_id, iname));
+            self.class_ns.insert(class_id, my_ns);
         }
 
-        // Module-level type variables: `T = TypeVar("T")` (Phase 5E). These are
-        // type-level only — recorded for annotation resolution and skipped from the
-        // `__main__` body (no runtime `TypeVar` object).
+        // Module-level type variables (Phase 5E).
         let mut module_type_vars: TypeVarSet = HashMap::new();
         for stmt in &top {
             if let Some(name) = type_var_assign_name(stmt) {
-                let id = interner.intern(&name);
+                let id = self.interner.intern(&name);
                 module_type_vars.insert(name, id);
             }
         }
 
-        // Top-level def table (Phase 6A): name → params/ret, so any scope can
-        // synthesize a value-position thunk. Annotations resolve through a
-        // pre-context (the table itself is annotation-irrelevant).
-        // Promoted module globals (Phase 6B): names in `global` statements plus
-        // module-assigned names read inside functions, with dense var_ids. A
-        // decorated module-level def's public name is ALSO a promoted slot
-        // (Phase 6D — the body is renamed `{name}.<orig>`, and the slot holds
-        // the wrapper produced by applying the decorators).
+        // ── Promoted module globals (var_ids from the program-global counter). ──
         let mut promoted: HashMap<String, u32> = HashMap::new();
         for n in freevars::collect_promoted_globals(&body) {
-            let id = promoted.len() as u32;
-            promoted.entry(n).or_insert(id);
+            if !promoted.contains_key(&n) {
+                promoted.insert(n, self.next_global);
+                self.next_global += 1;
+            }
+        }
+        // An imported module's every module-level variable is a module attribute
+        // (a global), even if no local function reads it (`math_utils.PI`).
+        if !is_entry {
+            let mfacts = freevars::analyze_module_body(&top);
+            let def_class: HashSet<&str> = defs
+                .iter()
+                .chain(decorated.iter())
+                .map(|d| d.name.as_str())
+                .chain(classdefs.iter().map(|c| c.name.as_str()))
+                .collect();
+            for n in &mfacts.bound {
+                if n != "__name__" && !def_class.contains(n.as_str()) && !promoted.contains_key(n) {
+                    promoted.insert(n.clone(), self.next_global);
+                    self.next_global += 1;
+                }
+            }
         }
         let mut decorated_names: HashSet<String> = HashSet::new();
         for d in &decorated {
-            let id = promoted.len() as u32;
-            promoted.entry(d.name.as_str().to_string()).or_insert(id);
+            if !promoted.contains_key(d.name.as_str()) {
+                promoted.insert(d.name.as_str().to_string(), self.next_global);
+                self.next_global += 1;
+            }
             decorated_names.insert(d.name.as_str().to_string());
         }
 
+        // ── Phase A: scan imports, load dependencies, build bindings + actions. ──
+        let mut col = ImportCollect {
+            class_map,
+            promoted,
+            imported_funcs: Vec::new(),
+            aliases: HashSet::new(),
+            alias_vars: HashMap::new(),
+            actions: HashMap::new(),
+        };
+        for (idx, stmt) in body.iter().enumerate() {
+            match stmt {
+                Stmt::Import(im) => self.handle_import(im, my_ns, idx, &mut col)?,
+                Stmt::ImportFrom(im) => {
+                    self.handle_import_from(im, mod_path, is_package, my_ns, idx, &mut col)?
+                }
+                _ => {}
+            }
+        }
+        // Restore the namespace for this module's own function reservations.
+        self.shared.current_ns = my_ns;
+
+        // ── Top-level def table (own defs through a pre-context, then imports). ──
         let empty_defs: TopDefMap = HashMap::new();
         let pre_ctx = AnnCtx {
-            class_map: &class_map,
+            class_map: &col.class_map,
             type_vars: &module_type_vars,
             top_defs: &empty_defs,
-            promoted: &promoted,
+            promoted: &col.promoted,
             decorated: &decorated_names,
+            aliases: &col.aliases,
+            alias_vars: &col.alias_vars,
         };
         let mut top_defs: TopDefMap = HashMap::new();
         for def in &defs {
-            let parsed = parse_params(interner, &pre_ctx, def.args.as_ref(), &FirstParam::Plain)?;
+            let parsed =
+                parse_params(&mut *self.interner, &pre_ctx, def.args.as_ref(), &FirstParam::Plain)?;
             let ret = match &def.returns {
                 Some(e) => annotation_to_semty(e.as_ref(), &pre_ctx),
                 None => SemTy::Dyn,
@@ -242,28 +600,27 @@ impl<'a> ModuleLowerer<'a> {
                 },
             );
         }
+        for (key, info) in &col.imported_funcs {
+            top_defs.insert(key.clone(), info.clone());
+        }
         let module_ctx = AnnCtx {
-            class_map: &class_map,
+            class_map: &col.class_map,
             type_vars: &module_type_vars,
             top_defs: &top_defs,
-            promoted: &promoted,
+            promoted: &col.promoted,
             decorated: &decorated_names,
+            aliases: &col.aliases,
+            alias_vars: &col.alias_vars,
         };
 
-        let mut shared = Shared::new();
-
-        // __main__ is `FuncId(0)`: reserve it first so its id is stable, but
-        // build its body LAST (after every callee FuncId exists, so decorated
-        // rebindings can reference the renamed `<orig>` thunks).
-        let main_id = shared.reserve();
-
-        // Undecorated top-level functions (Symbol::Function callables).
+        // ── Phase B: lower own functions, the module-init body, and classes. ──
+        let mut own_func_fids: HashMap<String, FuncId> = HashMap::new();
         for def in &defs {
-            let name = interner.intern(def.name.as_str());
-            lower_callable(
-                &mut *interner,
+            let name = self.interner.intern(def.name.as_str());
+            let fid = lower_callable(
+                &mut *self.interner,
                 &module_ctx,
-                &mut shared,
+                &mut self.shared,
                 def,
                 def.name.as_str(),
                 name,
@@ -272,31 +629,31 @@ impl<'a> ModuleLowerer<'a> {
                 false,
                 None,
             )?;
+            own_func_fids.insert(def.name.as_str().to_string(), fid);
         }
 
-        // Decorated top-level functions (Phase 6D): the body becomes a hidden
-        // `{name}.<orig>` callable; a generic `(*args, **kwargs)` adapter thunk
-        // wraps it so the value matches a decorator's `Callable[..., R]` param.
-        // The public name's rebinding is emitted into `__main__` below, in
-        // source order.
         let mut decorated_info: HashMap<String, DecoratedDef> = HashMap::new();
         for d in &decorated {
             let orig_name_str = format!("{}.<orig>", d.name.as_str());
-            let orig_name = interner.intern(&orig_name_str);
+            let orig_name = self.interner.intern(&orig_name_str);
             let orig_fid = lower_callable(
-                &mut *interner,
+                &mut *self.interner,
                 &module_ctx,
-                &mut shared,
+                &mut self.shared,
                 d,
                 &orig_name_str,
                 orig_name,
                 FirstParam::Plain,
                 None,
-                true, // decorators consumed by the rebinding; body is plain
+                true,
                 None,
             )?;
-            let parsed =
-                parse_params(interner, &module_ctx, d.args.as_ref(), &FirstParam::Plain)?;
+            let parsed = parse_params(
+                &mut *self.interner,
+                &module_ctx,
+                d.args.as_ref(),
+                &FirstParam::Plain,
+            )?;
             if parsed.varargs.is_some() || parsed.kwargs.is_some() || !parsed.kwonly.is_empty() {
                 return Err(parse_error(
                     "a decorated function with *args/**kwargs/keyword-only params is out \
@@ -309,14 +666,28 @@ impl<'a> ModuleLowerer<'a> {
                 Some(e) => annotation_to_semty(e.as_ref(), &module_ctx),
                 None => SemTy::Dyn,
             };
-            let thunk_fid =
-                build_generic_thunk(interner, &module_ctx, &mut shared, orig_fid, &orig_name_str, arity, ret);
-            let slot = promoted[d.name.as_str()];
+            let thunk_fid = build_generic_thunk(
+                &mut *self.interner,
+                &module_ctx,
+                &mut self.shared,
+                orig_fid,
+                &orig_name_str,
+                arity,
+                ret,
+            );
+            let slot = col.promoted[d.name.as_str()];
             decorated_info.insert(d.name.as_str().to_string(), DecoratedDef { slot, thunk_fid });
         }
 
-        // `__main__`: the module body. `__name__` is pre-bound to "__main__".
-        let main_name = interner.intern("__main__");
+        // The module-init function: `__main__` for the entry, `<dotted>.<init>`
+        // for an imported module. `__name__` is the module's name.
+        let module_dotted = mod_path.join(".");
+        let (init_name_str, name_value): (String, String) = if is_entry {
+            ("__main__".to_string(), "__main__".to_string())
+        } else {
+            (format!("{module_dotted}.<init>"), module_dotted.clone())
+        };
+        let init_name = self.interner.intern(&init_name_str);
         let main_facts = freevars::analyze_module_body(&top);
         if let Some(n) = main_facts.nonlocals.iter().next() {
             return Err(parse_error(
@@ -324,57 +695,123 @@ impl<'a> ModuleLowerer<'a> {
                 Span::dummy(),
             ));
         }
-        let mut main = FnLowerer::new(
-            &mut *interner,
-            &module_ctx,
-            &mut shared,
-            main_name,
-            "__main__",
-            SemTy::NoneTy,
-            None,
-        );
-        main.is_main = true;
-        main.set_scope_facts(&main_facts);
-        main.init_cells();
-        let dunder_name = main.intern("__name__");
-        let main_str = main.intern("__main__");
-        let name_val = main.alloc(HirExprKind::StrLit(main_str), SemTy::Str, Span::dummy());
-        main.write_named(dunder_name, SemTy::Str, name_val);
-        // Walk the FULL body in source order: decorated-def rebindings interleave
-        // with module statements exactly where they appear; undecorated defs and
-        // classes were lowered separately and are skipped here.
-        for stmt in &body {
-            match stmt {
-                Stmt::FunctionDef(f) if !f.decorator_list.is_empty() => {
-                    let info = &decorated_info[f.name.as_str()];
-                    main.emit_decorated_rebinding(f, info.thunk_fid, info.slot)?;
+        {
+            let mut main = FnLowerer::new(
+                &mut *self.interner,
+                &module_ctx,
+                &mut self.shared,
+                init_name,
+                &init_name_str,
+                SemTy::NoneTy,
+                None,
+            );
+            main.is_main = true;
+            main.set_scope_facts(&main_facts);
+            main.init_cells();
+            let dunder_name = main.intern("__name__");
+            let name_lit = main.intern(&name_value);
+            let name_val = main.alloc(HirExprKind::StrLit(name_lit), SemTy::Str, Span::dummy());
+            main.write_named(dunder_name, SemTy::Str, name_val);
+            for (idx, stmt) in body.iter().enumerate() {
+                match stmt {
+                    // Module-level imports replay their precomputed init-calls +
+                    // snapshots here (typing-only imports have no action).
+                    Stmt::Import(_) | Stmt::ImportFrom(_) => {
+                        if let Some(action) = col.actions.get(&idx) {
+                            main.emit_import_action(action);
+                        }
+                    }
+                    Stmt::FunctionDef(f) if !f.decorator_list.is_empty() => {
+                        let info = &decorated_info[f.name.as_str()];
+                        main.emit_decorated_rebinding(f, info.thunk_fid, info.slot)?;
+                    }
+                    Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
+                    _ if type_var_assign_name(stmt).is_some() => {}
+                    other => {
+                        if main.lower_stmt(other)? {
+                            break;
+                        }
+                    }
                 }
-                Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
-                _ if type_var_assign_name(stmt).is_some() => {}
-                // A terminating statement (`return` at module level is invalid,
-                // but `break`/`continue` outside loops error earlier) seals the
-                // block; stop emitting trailing dead code.
-                other => {
-                    if main.lower_stmt(other)? {
-                        break;
+            }
+            let main_fn = main.finish(HirTerminator::Return(None));
+            self.shared.fill(init_fid, main_fn);
+        }
+
+        // Classes (own).
+        for (i, cdef) in classdefs.iter().enumerate() {
+            let hclass = lower_class(
+                &mut *self.interner,
+                &module_ctx,
+                cdef,
+                class_ids[i],
+                &mut self.shared,
+            )?;
+            self.classes.push(hclass);
+        }
+
+        // Module-level annotated promoted globals (Phase 8 contract types).
+        for stmt in &body {
+            if let Stmt::AnnAssign(a) = stmt {
+                if let Expr::Name(n) = a.target.as_ref() {
+                    if let Some(vid) = col.promoted.get(n.id.as_str()).copied() {
+                        let ty = annotation_to_semty(a.annotation.as_ref(), &module_ctx);
+                        if ty != SemTy::Dyn {
+                            self.global_annotations.insert(vid, ty);
+                        }
                     }
                 }
             }
         }
-        let main_fn = main.finish(HirTerminator::Return(None));
-        shared.fill(main_id, main_fn);
 
-        // Lower each class's methods into the table, recording their FuncIds.
-        let mut classes: Vec<HirClass> = Vec::new();
-        for (i, cdef) in classdefs.iter().enumerate() {
-            let hclass =
-                lower_class(&mut *interner, &module_ctx, cdef, class_ids[i], &mut shared)?;
-            classes.push(hclass);
+        // ── Build this module's exports. ──
+        let mut export_funcs: HashMap<String, (FuncId, TopDefInfo)> = HashMap::new();
+        for (name, fid) in &own_func_fids {
+            if let Some(info) = top_defs.get(name) {
+                export_funcs.insert(name.clone(), (*fid, info.clone()));
+            }
         }
-
-        let generators = shared.generators.clone();
-        Ok(HirModule { functions: shared.finish(), classes, main: main_id, generators })
+        let mut export_classes: HashMap<String, (ClassId, InternedString)> = HashMap::new();
+        for (name, cid, iname) in &own_classes {
+            export_classes.insert(name.clone(), (*cid, *iname));
+        }
+        Ok(ModuleExports {
+            init_fid,
+            init_name,
+            funcs: export_funcs,
+            classes: export_classes,
+            var_slots: col.promoted,
+        })
     }
+}
+
+/// Resolve a relative `from`-import (`level` leading dots + optional `module`)
+/// against the importing module's package path — CPython `__package__` rules.
+fn resolve_relative(
+    importer: &[String],
+    is_package: bool,
+    level: usize,
+    module: Option<&str>,
+    span: Span,
+) -> Result<Vec<String>> {
+    // The importer's package: itself if it is a package (`__init__.py`), else
+    // its parent.
+    let mut pkg: Vec<String> = if is_package {
+        importer.to_vec()
+    } else {
+        importer[..importer.len().saturating_sub(1)].to_vec()
+    };
+    // The first dot is the package itself; each extra dot ascends one level.
+    for _ in 1..level {
+        if pkg.is_empty() {
+            return Err(parse_error("relative import beyond top-level package", span));
+        }
+        pkg.pop();
+    }
+    if let Some(m) = module {
+        pkg.extend(m.split('.').map(|s| s.to_string()));
+    }
+    Ok(pkg)
 }
 
 /// One active control scope, pushed while lowering its body (Phase 7
@@ -2573,6 +3010,27 @@ impl<'a> FnLowerer<'a> {
                         }
                     }
                 }
+                // `M.VAR` / `M.func` through an `import M` alias (Phase 8): a live
+                // module-variable read folds to a `GlobalGet` of the exporter's
+                // slot; an aliased function used as a value becomes its thunk.
+                if let Expr::Name(m) = a.value.as_ref() {
+                    if self.ctx.aliases.contains(m.id.as_str()) {
+                        let mname = self.intern(m.id.as_str());
+                        if !self.scope.contains_key(&mname) {
+                            let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
+                            if let Some(slot) = self.ctx.alias_vars.get(&qual).copied() {
+                                return Ok(self.alloc(
+                                    HirExprKind::GlobalGet { var_id: slot },
+                                    SemTy::Dyn,
+                                    span,
+                                ));
+                            }
+                            if self.ctx.top_defs.contains_key(&qual) {
+                                return self.lower_top_fn_value(&qual, span);
+                            }
+                        }
+                    }
+                }
                 let value = self.lower_expr(a.value.as_ref())?;
                 let name = self.intern(a.attr.as_str());
                 Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))
@@ -3164,7 +3622,8 @@ impl<'a> FnLowerer<'a> {
     /// slots) positionally, so a function with defaults/varargs is still
     /// callable as a value (indirect calls require full arity — 6C).
     fn lower_top_fn_value(&mut self, fname: &str, span: Span) -> Result<Idx<HirExpr>> {
-        let fid = match self.shared.thunks.get(fname) {
+        let thunk_key = (self.shared.current_ns, fname.to_string());
+        let fid = match self.shared.thunks.get(&thunk_key) {
             Some(f) => *f,
             None => {
                 let info = self.ctx.top_defs[fname].clone();
@@ -3198,7 +3657,7 @@ impl<'a> FnLowerer<'a> {
                 f.varargs = info.varargs.is_some();
                 f.kwargs = info.kwargs.is_some();
                 self.shared.fill(fid, f);
-                self.shared.thunks.insert(fname.to_string(), fid);
+                self.shared.thunks.insert(thunk_key, fid);
                 fid
             }
         };
@@ -3439,6 +3898,35 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
+        // `M.f(args)` / `M.Cls(args)` through an `import M` alias (Phase 8): a
+        // qualified module access folds to an ordinary direct call / class
+        // construction (the imported FuncId/ClassId lives under the `"M.name"`
+        // key in `top_defs` / `class_map`). Handled before the method-call path
+        // so the alias receiver is never mistaken for an object receiver.
+        if let Expr::Attribute(attr) = c.func.as_ref() {
+            if let Expr::Name(m) = attr.value.as_ref() {
+                let mname = self.intern(m.id.as_str());
+                if self.ctx.aliases.contains(m.id.as_str()) && !self.scope.contains_key(&mname) {
+                    let qual = format!("{}.{}", m.id.as_str(), attr.attr.as_str());
+                    if let Some((class_id, _)) = self.ctx.class_map.get(&qual).copied() {
+                        reject_call_extras(c, span, "module class construction")?;
+                        let args = self.lower_expr_list(&c.args)?;
+                        return Ok(self.alloc(
+                            HirExprKind::GenericConstruct { class_id, type_args: vec![], args },
+                            SemTy::Dyn,
+                            span,
+                        ));
+                    }
+                    if let Some(info) = self.ctx.top_defs.get(&qual).cloned() {
+                        return self.lower_direct_known_call(&info, &qual, c, span);
+                    }
+                    return Err(parse_error(
+                        format!("module `{}` has no callable attribute `{}`", m.id.as_str(), attr.attr.as_str()),
+                        span,
+                    ));
+                }
+            }
+        }
         // Generator `g.send(v)` / `g.close()` (Phase 6E): a generator-specific
         // method (no user class in our subset defines these), routed to the
         // runtime generator ops. `g.throw(...)` is out of scope.
@@ -3608,6 +4096,22 @@ impl<'a> FnLowerer<'a> {
     /// Emit a decorated module-level function's rebinding into `__main__`
     /// (Phase 6D): `slot := dN(…d1(closure(<orig>.<thunk>)))`, decorators
     /// applied innermost-first.
+    /// Replay one import statement's precomputed effect (Phase 8): emit the
+    /// module-`<init>` calls (execute-once on first import) followed by the
+    /// `from M import VAR` snapshot copies.
+    fn emit_import_action(&mut self, action: &ImportAction) {
+        let span = Span::dummy();
+        for name in &action.init_calls {
+            let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(*name)), SemTy::Dyn, span);
+            let call = self.alloc(HirExprKind::Call { callee, args: vec![] }, SemTy::NoneTy, span);
+            self.push_stmt(HirStmt::Expr(call));
+        }
+        for (dst, src) in &action.snapshots {
+            let val = self.alloc(HirExprKind::GlobalGet { var_id: *src }, SemTy::Dyn, span);
+            self.push_stmt(HirStmt::GlobalSet { var_id: *dst, value: val });
+        }
+    }
+
     fn emit_decorated_rebinding(
         &mut self,
         f: &StmtFunctionDef,
@@ -4425,6 +4929,19 @@ fn binop_from_ast(op: &PyOperator, span: Span) -> Result<BinOp> {
 fn annotation_to_semty(ann: &Expr, ctx: &AnnCtx) -> SemTy {
     match ann {
         Expr::Name(n) => named_annotation(n.id.as_str(), ctx),
+        // A qualified class annotation through an `import M` alias (Phase 8):
+        // `math_utils.Point` resolves via the `"M.Cls"` key in `class_map`.
+        Expr::Attribute(a) => {
+            if let Expr::Name(m) = a.value.as_ref() {
+                if ctx.aliases.contains(m.id.as_str()) {
+                    let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
+                    if let Some((class_id, name)) = ctx.class_map.get(&qual) {
+                        return SemTy::Class { class_id: *class_id, name: *name };
+                    }
+                }
+            }
+            SemTy::Dyn
+        }
         Expr::Subscript(s) => annotation_subscript(s.value.as_ref(), s.slice.as_ref(), ctx),
         Expr::Constant(c) => match &c.value {
             Constant::None => SemTy::NoneTy,
@@ -4902,6 +5419,8 @@ fn lower_class(
         top_defs: ctx.top_defs,
         promoted: ctx.promoted,
         decorated: ctx.decorated,
+        aliases: ctx.aliases,
+        alias_vars: ctx.alias_vars,
     };
 
     let name = interner.intern(cdef.name.as_str());

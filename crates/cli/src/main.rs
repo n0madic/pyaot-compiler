@@ -14,7 +14,32 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use pyaot_diagnostics::{CompilerError, Result};
+use pyaot_frontend_python::ModuleSource;
 use pyaot_utils::StringInterner;
+
+/// Resolves `import` targets against the entry script's directory (Phase 8): a
+/// dotted module `a.b.c` is `root/a/b/c.py`, else the package `root/a/b/c/__init__.py`.
+struct DirModuleSource {
+    root: PathBuf,
+}
+
+impl ModuleSource for DirModuleSource {
+    fn load(&mut self, path: &[String]) -> Option<(String, bool)> {
+        let mut base = self.root.clone();
+        for component in path {
+            base.push(component);
+        }
+        let module_file = base.with_extension("py");
+        if module_file.is_file() {
+            return std::fs::read_to_string(&module_file).ok().map(|s| (s, false));
+        }
+        let init_file = base.join("__init__.py");
+        if init_file.is_file() {
+            return std::fs::read_to_string(&init_file).ok().map(|s| (s, true));
+        }
+        None
+    }
+}
 
 /// Static AOT compiler for a typed subset of Python 3 → native (Cranelift).
 #[derive(Parser)]
@@ -59,9 +84,18 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     let mut interner = StringInterner::new();
 
     // ── front-half ──
-    let mut module = pyaot_frontend_python::parse(source, &mut interner)?;
-    let resolve = pyaot_semantics::resolve(&mut module, &interner)?;
-    let classes = pyaot_semantics::collect_classes(&module, &interner)?;
+    // The import search path is the entry script's directory (Phase 8).
+    let root = cli
+        .input
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut loader = DirModuleSource { root };
+    let program = pyaot_frontend_python::parse_program(source, &mut loader, &mut interner)?;
+    let mut module = program.module;
+    let namespaces = program.namespaces;
+    let resolve = pyaot_semantics::resolve(&mut module, &namespaces, &interner)?;
+    let classes = pyaot_semantics::collect_classes(&module, &namespaces, &interner)?;
     pyaot_typeck::infer(&mut module, &resolve, &classes, &interner)?;
     let mut mir = pyaot_lowering::lower(&module, &resolve, &interner, &classes)?;
 

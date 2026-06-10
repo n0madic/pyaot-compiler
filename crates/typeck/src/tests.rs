@@ -11,8 +11,10 @@ use super::infer;
 fn typed(src: &str) -> (HirModule, StringInterner) {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-    let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
+    let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
+    let classes =
+        pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     infer(&mut module, &resolve, &classes, &interner).expect("infer");
     (module, interner)
 }
@@ -21,8 +23,10 @@ fn typed(src: &str) -> (HirModule, StringInterner) {
 fn try_infer(src: &str) -> pyaot_diagnostics::Result<()> {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-    let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
+    let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
+    let classes =
+        pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     infer(&mut module, &resolve, &classes, &interner)
 }
 

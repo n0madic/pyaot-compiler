@@ -24,28 +24,63 @@ use std::collections::HashMap;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
     BuiltinFunctionKind, ClassAttrInfo, ClassInfo, ClassTable, ContainerOp, FieldInfo, HirClass,
-    HirExprKind, HirFunction, HirModule, HirStmt, MethodInfo, PropertyInfo, ResolveResult, Symbol,
-    SymbolRef,
+    HirExprKind, HirFunction, HirModule, HirStmt, MethodInfo, NamespaceTable, PropertyInfo,
+    ResolveResult, Symbol, SymbolRef,
 };
 use pyaot_types::SemTy;
 use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, StringInterner, SymbolId};
 
-/// Resolve every name in `module`, mutating each [`SymbolRef`] in place.
-pub fn resolve(module: &mut HirModule, interner: &StringInterner) -> Result<ResolveResult> {
-    let mut result = ResolveResult::new();
-
-    // Global: every top-level function name → its FuncId.
-    let mut func_map: HashMap<InternedString, FuncId> = HashMap::new();
+/// Per-namespace function/class name maps (Phase 8): a module sees its own
+/// top-level definitions plus its imported bindings. A single-file program has
+/// exactly one namespace, recovering the original global behavior.
+fn build_namespace_maps(
+    module: &HirModule,
+    namespaces: &NamespaceTable,
+) -> (
+    Vec<HashMap<InternedString, FuncId>>,
+    Vec<HashMap<InternedString, ClassId>>,
+) {
+    let n_ns = namespaces.imports.len().max(1);
+    let mut func_maps: Vec<HashMap<InternedString, FuncId>> = vec![HashMap::new(); n_ns];
     for (i, f) in module.functions.iter().enumerate() {
-        func_map.insert(f.name, FuncId::new(i as u32));
+        let ns = namespaces.func_ns.get(i).copied().unwrap_or(0) as usize;
+        func_maps[ns.min(n_ns - 1)].insert(f.name, FuncId::new(i as u32));
     }
-    // Global: every class name → its ClassId.
-    let mut class_map: HashMap<InternedString, ClassId> = HashMap::new();
+    let mut class_maps: Vec<HashMap<InternedString, ClassId>> = vec![HashMap::new(); n_ns];
     for c in &module.classes {
-        class_map.insert(c.name, c.class_id);
+        let ns = namespaces.class_ns.get(&c.class_id).copied().unwrap_or(0) as usize;
+        class_maps[ns.min(n_ns - 1)].insert(c.name, c.class_id);
     }
+    // Imported bindings overlay the own definitions (`from m import x` shadows a
+    // same-named local def — the corpus never conflicts).
+    for (ns, imp) in namespaces.imports.iter().enumerate() {
+        for (name, fid) in &imp.funcs {
+            func_maps[ns].insert(*name, *fid);
+        }
+        for (name, cid) in &imp.classes {
+            class_maps[ns].insert(*name, *cid);
+        }
+    }
+    (func_maps, class_maps)
+}
 
-    for func in module.functions.iter_mut() {
+/// Resolve every name in `module`, mutating each [`SymbolRef`] in place. Name
+/// scope is per-namespace (Phase 8): a function resolves names through its
+/// owning module's definitions + imports (`namespaces.func_ns[fid]`).
+pub fn resolve(
+    module: &mut HirModule,
+    namespaces: &NamespaceTable,
+    interner: &StringInterner,
+) -> Result<ResolveResult> {
+    let mut result = ResolveResult::new();
+    let (func_maps, class_maps) = build_namespace_maps(module, namespaces);
+    let n_ns = func_maps.len();
+
+    for (fi, func) in module.functions.iter_mut().enumerate() {
+        let ns = (namespaces.func_ns.get(fi).copied().unwrap_or(0) as usize).min(n_ns - 1);
+        let func_map = &func_maps[ns];
+        let class_map = &class_maps[ns];
+
         // Per-function local scope, read off the locals table.
         let mut local_map: HashMap<InternedString, LocalId> = HashMap::new();
         for (li, loc) in func.locals.iter().enumerate() {
@@ -62,7 +97,7 @@ pub fn resolve(module: &mut HirModule, interner: &StringInterner) -> Result<Reso
                         Some(id) => *id,
                         None => {
                             let symbol = resolve_name(
-                                name, &local_map, &func_map, &class_map, interner, span,
+                                name, &local_map, func_map, class_map, interner, span,
                             )?;
                             let id = result.intern(symbol);
                             cache.insert(name, id);
@@ -125,17 +160,38 @@ fn resolve_name(
 /// compute the C3 MRO, lay out instance fields (parent-first, slot-stable),
 /// best-effort field types (D5), and the method table (own + inherited, with
 /// vtable slots). A single forward terminal pass; no feedback into `resolve`.
-pub fn collect_classes(module: &HirModule, interner: &StringInterner) -> Result<ClassTable> {
+pub fn collect_classes(
+    module: &HirModule,
+    namespaces: &NamespaceTable,
+    interner: &StringInterner,
+) -> Result<ClassTable> {
     let mut table = ClassTable::new();
     if module.classes.is_empty() {
         return Ok(table);
     }
 
-    // name → ClassId, and ClassId → &HirClass, for base resolution.
-    let mut name_to_id: HashMap<InternedString, ClassId> = HashMap::new();
+    // ClassId → &HirClass, for base resolution. Base *names* resolve per-namespace
+    // (Phase 8): a class's bases are looked up in its own module's class map plus
+    // its imported classes — so cross-module inheritance and same-name classes in
+    // different modules both resolve correctly.
+    let (_func_maps, class_maps) = {
+        // Reuse the same per-namespace class maps the name resolver builds.
+        let n_ns = namespaces.imports.len().max(1);
+        let mut class_maps: Vec<HashMap<InternedString, ClassId>> = vec![HashMap::new(); n_ns];
+        for c in &module.classes {
+            let ns = namespaces.class_ns.get(&c.class_id).copied().unwrap_or(0) as usize;
+            class_maps[ns.min(n_ns - 1)].insert(c.name, c.class_id);
+        }
+        for (ns, imp) in namespaces.imports.iter().enumerate() {
+            for (name, cid) in &imp.classes {
+                class_maps[ns].insert(*name, *cid);
+            }
+        }
+        (Vec::<()>::new(), class_maps)
+    };
+    let n_ns = class_maps.len();
     let mut by_id: HashMap<ClassId, &HirClass> = HashMap::new();
     for c in &module.classes {
-        name_to_id.insert(c.name, c.class_id);
         by_id.insert(c.class_id, c);
     }
 
@@ -146,6 +202,8 @@ pub fn collect_classes(module: &HirModule, interner: &StringInterner) -> Result<
     let mut parents: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
     let mut direct_exc_base: HashMap<ClassId, pyaot_hir::BuiltinExceptionKind> = HashMap::new();
     for c in &module.classes {
+        let ns = (namespaces.class_ns.get(&c.class_id).copied().unwrap_or(0) as usize).min(n_ns - 1);
+        let name_to_id = &class_maps[ns];
         let mut bases = Vec::new();
         for base in &c.base_names {
             let base_name = interner.resolve(*base);
@@ -475,8 +533,9 @@ mod tests {
     fn collected(src: &str) -> (ClassTable, StringInterner) {
         let mut interner = StringInterner::new();
         let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-        resolve(&mut module, &interner).expect("resolve");
-        let table = collect_classes(&module, &interner).expect("collect_classes");
+        let ns = NamespaceTable::single(module.functions.len());
+        resolve(&mut module, &ns, &interner).expect("resolve");
+        let table = collect_classes(&module, &ns, &interner).expect("collect_classes");
         (table, interner)
     }
 
@@ -484,8 +543,9 @@ mod tests {
     fn try_collect(src: &str) -> Result<ClassTable> {
         let mut interner = StringInterner::new();
         let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-        resolve(&mut module, &interner).expect("resolve");
-        collect_classes(&module, &interner)
+        let ns = NamespaceTable::single(module.functions.len());
+        resolve(&mut module, &ns, &interner).expect("resolve");
+        collect_classes(&module, &ns, &interner)
     }
 
     #[test]
@@ -651,7 +711,8 @@ class Dog(Animal):
     fn resolved(src: &str) -> (HirModule, ResolveResult, StringInterner) {
         let mut interner = StringInterner::new();
         let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
-        let result = resolve(&mut module, &interner).expect("resolve");
+        let ns = NamespaceTable::single(module.functions.len());
+        let result = resolve(&mut module, &ns, &interner).expect("resolve");
         (module, result, interner)
     }
 

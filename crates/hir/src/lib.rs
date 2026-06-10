@@ -72,6 +72,12 @@ pub struct HirModule {
     /// `g.<resume>(gen) -> Value` state machine the dispatcher tail-calls. A
     /// generator's wrapper carries the same `gen_id` in its `MakeGenerator`.
     pub generators: Vec<FuncId>,
+    /// Module-level annotated promoted globals (Phase 8): `var_id → declared
+    /// SemTy`. A module-level `name: T = …` declares the slot's type as a
+    /// contract, so `typeck` keeps it even when a *function* writes the slot
+    /// (which would otherwise demote it to `Dyn`). Globals are physically tagged
+    /// storage; this only refines how a `GlobalGet` result is typed downstream.
+    pub global_annotations: HashMap<u32, SemTy>,
 }
 
 impl HirModule {
@@ -82,6 +88,53 @@ impl HirModule {
     pub fn function_mut(&mut self, id: FuncId) -> &mut HirFunction {
         &mut self.functions[id.index()]
     }
+}
+
+/// A whole multi-module compilation unit (Phase 8).
+///
+/// Every imported module is lowered into the SAME shared [`HirModule`] — one
+/// global `FuncId` / `ClassId` / `gen_id` / promoted-var-slot space, no merge or
+/// remap pass. `namespaces` records the per-module name-resolution scopes so two
+/// modules may define the same `add`/`Animal` without colliding. A single-file
+/// program is the degenerate case: one namespace, no imports.
+#[derive(Debug)]
+pub struct HirProgram {
+    pub module: HirModule,
+    pub namespaces: NamespaceTable,
+}
+
+/// Per-module name-resolution scopes (Phase 8). Resolution of a `Name` inside a
+/// function uses the function's owning namespace (`func_ns[fid]`): its own
+/// module's functions/classes plus that module's imported bindings.
+#[derive(Debug, Default)]
+pub struct NamespaceTable {
+    /// Owning namespace id per `FuncId` (parallel to [`HirModule::functions`]).
+    pub func_ns: Vec<u32>,
+    /// Owning namespace id per user `ClassId`.
+    pub class_ns: HashMap<ClassId, u32>,
+    /// Imported name bindings, indexed by namespace id.
+    pub imports: Vec<NamespaceImports>,
+}
+
+impl NamespaceTable {
+    /// The single-file degenerate case: one namespace, every function/class in
+    /// it, no imports.
+    pub fn single(num_funcs: usize) -> Self {
+        NamespaceTable {
+            func_ns: vec![0; num_funcs],
+            class_ns: HashMap::new(),
+            imports: vec![NamespaceImports::default()],
+        }
+    }
+}
+
+/// One module's imported name bindings (Phase 8): a name bound by `from M import
+/// f`/`Cls`, or a module-init call target, resolves through here in addition to
+/// the module's own definitions.
+#[derive(Debug, Default, Clone)]
+pub struct NamespaceImports {
+    pub funcs: HashMap<InternedString, FuncId>,
+    pub classes: HashMap<InternedString, ClassId>,
 }
 
 /// A function parameter. The annotation drives the parameter's `Repr` (and hence
