@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+mod freevars;
 mod lower;
 
 use rustpython_parser::ast::{Mod, Stmt};

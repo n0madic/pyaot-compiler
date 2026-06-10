@@ -65,8 +65,14 @@ These are *why* the phases are ordered the way they are.
    on their own merits. The substrate (`runtime`, `core-defs`, …) is a sealed
    dependency.
 
-8. **The runtime is a frozen contract.** Its `Value` ABI + `rt_*` signatures are
-   the seam. Bignum is the one planned extension; treat all else as frozen.
+8. **The runtime is a frozen contract — frozen only while the freeze serves this
+   plan.** Its `Value` ABI + `rt_*` signatures are the seam, so it is frozen by
+   default. The freeze is a discipline, not an absolute prohibition: when fully
+   realizing a planned feature genuinely requires a runtime change — as bignum
+   did — the plan wins and the runtime is extended deliberately (new `rt_*`/ABI,
+   documented, with corpus coverage). Bignum is the precedent, not the only ever
+   permitted extension. What stays forbidden is editing the runtime to paper over
+   a front-half bug or to dodge front-half work.
 
 9. **Differential testing is the spine.** The corpus-vs-CPython harness is built
    in Phase 1 and gates every subsequent feature.

@@ -36,10 +36,12 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
+
 use la_arena::{Arena, Idx};
 
 use pyaot_types::SemTy;
-use pyaot_utils::{FuncId, InternedString, LocalId, Span, SymbolId};
+use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, SymbolId};
 
 // Re-exported so the resolution-vocabulary consumers (`semantics`) can name
 // `Symbol::Builtin`'s payload without each taking a direct `core-defs` dep.
@@ -56,8 +58,17 @@ pub use pyaot_core_defs::BuiltinFunctionKind;
 pub struct HirModule {
     /// All functions, indexed by [`FuncId`]. `__main__` is one of these.
     pub functions: Vec<HirFunction>,
+    /// User-defined classes (Phase 5). Methods are ordinary [`HirFunction`]s in
+    /// `functions`; an [`HirClass`] records their FuncIds plus its raw shape (base
+    /// names + class-level annotations). The resolved [`ClassTable`] (MRO, slot
+    /// layout, field/method tables) is computed by `semantics`, not stored here.
+    pub classes: Vec<HirClass>,
     /// The synthetic module-body function.
     pub main: FuncId,
+    /// Generator resume functions (Phase 6E), indexed by dense `gen_id`: the
+    /// `g.<resume>(gen) -> Value` state machine the dispatcher tail-calls. A
+    /// generator's wrapper carries the same `gen_id` in its `MakeGenerator`.
+    pub generators: Vec<FuncId>,
 }
 
 impl HirModule {
@@ -76,6 +87,10 @@ impl HirModule {
 pub struct HirParam {
     pub name: InternedString,
     pub ty: SemTy,
+    /// Constant default value (Phase 6C; immutable literals only, the
+    /// [`ClassAttrInit`] shape). Direct call sites fill missing trailing args
+    /// from it; indirect calls require full declared arity.
+    pub default: Option<ClassAttrInit>,
 }
 
 /// A local slot. Index into [`HirFunction::locals`] is the [`LocalId`].
@@ -99,13 +114,28 @@ pub struct HirLocal {
     /// `UntagBool` of null (a SIGSEGV). The typed loop variable is a *separate*
     /// local, bound from this one only inside the loop body where it is non-null.
     pub pin_tagged: bool,
+    /// This slot holds a cell whose contents another function may WRITE (a
+    /// descendant's `nonlocal`, or this function's own `nonlocal` capture) —
+    /// Phase 6B. `typeck` must type its `CellGet` as `Dyn` instead of the join
+    /// of this function's writes, because cross-function writes are invisible
+    /// to per-function inference (a precise join would be an unsound unbox
+    /// hint, PITFALLS A2).
+    pub cell_shared: bool,
 }
 
 /// A function: a flat `exprs` arena, a `locals` table, and a CFG of `blocks`.
+///
+/// There is deliberately NO `is_closure` flag: a nested function's environment
+/// is just its explicit param 0 (`__env__: Dyn`), so the ABI stays a pure
+/// function of parameter `Repr`s (Phase 6A / Invariant 3).
 #[derive(Debug)]
 pub struct HirFunction {
     pub name: InternedString,
     pub params: Vec<HirParam>,
+    /// The trailing `*args` param (one `tuple[Dyn, ...]` slot) is present (6C).
+    pub varargs: bool,
+    /// The trailing `**kwargs` param (one `dict[str, Dyn]` slot) is present (6C).
+    pub kwargs: bool,
     pub ret_ty: SemTy,
     pub locals: Vec<HirLocal>,
     pub blocks: Arena<HirBlock>,
@@ -205,15 +235,135 @@ pub enum HirExprKind {
     /// *builtins* called by name (`len`/`enumerate`/`zip`/…) instead flow through
     /// [`HirExprKind::Call`] → [`Symbol::Container`] so user shadowing is honored.
     ContainerExpr { op: ContainerOp, args: Vec<Idx<HirExpr>> },
-    /// A method call `recv.method(args...)` on a statically-known container
-    /// receiver (Phase 4D). Bounded built-in-method dispatch, not Phase-5 vtables.
-    /// The method name is resolved to a [`ContainerMethod`] in the frontend; the
-    /// concrete runtime op is chosen at lowering from the receiver's type.
+    /// A method call `recv.method(args...)`. The frontend carries the interned
+    /// method *name* (no early rejection of unknown names — Phase 5); lowering
+    /// dispatches by the receiver's static type: a container receiver resolves the
+    /// name to a [`ContainerMethod`] (the Phase-4D path), a class receiver resolves
+    /// it to the method's `FuncId` via the [`ClassTable`] (a devirtualized direct
+    /// call, or a `CallVirtual` when polymorphic — Phase 5B).
     MethodCall {
         recv: Idx<HirExpr>,
-        method: ContainerMethod,
+        method_name: InternedString,
         args: Vec<Idx<HirExpr>>,
     },
+    /// Attribute read `value.name` (Phase 5). The slot is resolved at lowering
+    /// from the receiver's class via the [`ClassTable`]; a `@property` getter
+    /// becomes a method call (Phase 5D). Attribute *writes* are [`HirStmt::SetAttr`].
+    Attribute { value: Idx<HirExpr>, name: InternedString },
+    /// `super()` evaluated inside a method of the carried class (Phase 5B). Only
+    /// ever the receiver of a [`Self::MethodCall`]; resolved at lowering against the
+    /// enclosing class's MRO to a direct `Call` with the current `self`.
+    Super(ClassId),
+    /// `isinstance(value, Cls)` (Phase 5B) → `Bool`. The class is resolved by the
+    /// frontend; lowering emits the inheritance-aware runtime check.
+    IsInstance { value: Idx<HirExpr>, class_id: ClassId },
+    /// A subscripted generic construction `Stack[int](args)` (Phase 5E). Lowers
+    /// identically to `Stack(args)` (type args are erased at repr — every
+    /// instantiation shares one physical layout); the `type_args` only refine the
+    /// static type to `SemTy::Generic{base, args}` for precise field/method
+    /// substitution in `typeck`.
+    GenericConstruct {
+        class_id: ClassId,
+        type_args: Vec<SemTy>,
+        args: Vec<Idx<HirExpr>>,
+    },
+
+    // ── closures (Phase 6A) ──
+    /// Build a closure value over `func` (Phase 6A): an env tuple of `1+N` slots
+    /// — slot 0 the int-tagged code address, slots `1..=N` the `captures` (each a
+    /// direct read of a cell-holding local; always tagged cell pointers, never
+    /// raw values — the P6-2 cell rule). `func`'s compiled signature has the env
+    /// as explicit param 0, so the ABI stays a pure function of param `Repr`s.
+    MakeClosure {
+        func: FuncId,
+        captures: Vec<Idx<HirExpr>>,
+    },
+    /// Allocate a fresh cell (`rt_make_cell_ptr`) holding `init` (or `None`).
+    /// One per celled variable per *function activation*, emitted in the owner's
+    /// entry block — this is what gives CPython late-binding/cell-identity
+    /// semantics (P6-2).
+    MakeCell {
+        init: Option<Idx<HirExpr>>,
+    },
+    /// Read the current value of the cell held in local `cell`.
+    CellGet { cell: LocalId },
+    /// Read promoted module-global slot `var_id` (Phase 6B) — GC-rooted uniform
+    /// tagged storage (`rt_global_get_ptr`).
+    GlobalGet { var_id: u32 },
+
+    // ── generators (Phase 6E) ──
+    /// Build a generator object (the wrapper's body) — `rt_make_generator`.
+    MakeGenerator { gen_id: u32, num_locals: u32 },
+    /// A generator state-machine query carrying its generator operand (P6-3:
+    /// all values crossing a `GenOp` are `Tagged`, structurally enforced). The
+    /// `slot`/`state` immediate rides alongside (`GetLocal`), and `value` is the
+    /// sent value (`Send`); other ops ignore both.
+    GenQuery { op: GenOp, gen: Idx<HirExpr>, imm: u32, value: Option<Idx<HirExpr>> },
+}
+
+/// A generator state-machine operation (Phase 6E) — the runtime-backed surface
+/// of the desugared state machine. Each op has a fixed argument/result
+/// representation the MIR verifier enforces (P6-3: tagged slot storage).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenOp {
+    /// Read generator slot `imm` — `rt_generator_get_local_ptr` → tagged Value.
+    GetLocal,
+    /// Write generator slot `imm` — `rt_generator_set_local_ptr` (Tagged value).
+    SetLocal,
+    /// Current state — `rt_generator_get_state` → an `Int`.
+    GetState,
+    /// Set the state to `imm` — `rt_generator_set_state`.
+    SetState,
+    /// The value passed to `send()` — `rt_generator_get_sent_value` → Value.
+    GetSentValue,
+    /// Mark exhausted — `rt_generator_set_exhausted`.
+    SetExhausted,
+    /// In the `close()` unwind? — `rt_generator_is_closing` → `Bool`.
+    IsClosing,
+    /// `next(g)` — `rt_generator_next` → the yielded Value.
+    Next,
+    /// `g.send(v)` — `rt_generator_send` → the yielded Value.
+    Send,
+    /// `g.close()` — `rt_generator_close` (no result).
+    Close,
+}
+
+impl GenOp {
+    /// The result category (drives the `dst` representation), or `None` for a
+    /// mutating op.
+    pub fn result(self) -> GenResult {
+        match self {
+            GenOp::GetLocal | GenOp::GetSentValue | GenOp::Next | GenOp::Send => GenResult::Value,
+            GenOp::GetState => GenResult::Int,
+            GenOp::IsClosing => GenResult::Bool,
+            GenOp::SetLocal | GenOp::SetState | GenOp::SetExhausted | GenOp::Close => {
+                GenResult::None
+            }
+        }
+    }
+
+    /// True iff this op takes the `imm` immediate (slot index / state number).
+    pub fn uses_imm(self) -> bool {
+        matches!(self, GenOp::GetLocal | GenOp::SetLocal | GenOp::SetState)
+    }
+
+    /// True iff this op takes a stored value operand (`SetLocal` / `Send`).
+    pub fn takes_value(self) -> bool {
+        matches!(self, GenOp::SetLocal | GenOp::Send)
+    }
+}
+
+/// The result category of a [`GenOp`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenResult {
+    /// A `Tagged` value (a slot read, the sent value).
+    Value,
+    /// A `Raw(I64)` integer (the state).
+    Int,
+    /// A `Raw(I8)` boolean (`is_closing`).
+    Bool,
+    /// No result (a mutating op).
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -652,6 +802,14 @@ pub enum HirStmt {
         index: Idx<HirExpr>,
         value: Idx<HirExpr>,
     },
+    /// Attribute write `base.name = value` (Phase 5). The slot is resolved at
+    /// lowering from `base`'s class; the value coerces to the uniform tagged field
+    /// slot (the A5 storage rule). A `@property` setter becomes a method call (5D).
+    SetAttr {
+        base: Idx<HirExpr>,
+        name: InternedString,
+        value: Idx<HirExpr>,
+    },
     /// Append `value` to the container local `container` (Phase 4C comprehension
     /// element-push). Lowers to the same `CallContainer{ListPush/SetAdd}` path as a
     /// literal build, so a desugared comprehension never needs user methods.
@@ -663,6 +821,27 @@ pub enum HirStmt {
         key: Idx<HirExpr>,
         value: Idx<HirExpr>,
     },
+    /// Store `value` into the cell held in local `cell` (Phase 6A). Assignments
+    /// to a celled variable rewrite to this; the cell local itself is written
+    /// exactly once (the entry-block `MakeCell`).
+    CellSet {
+        cell: LocalId,
+        value: Idx<HirExpr>,
+    },
+    /// Write promoted module-global slot `var_id` (Phase 6B) —
+    /// `rt_global_set_ptr` (uniform tagged storage).
+    GlobalSet {
+        var_id: u32,
+        value: Idx<HirExpr>,
+    },
+
+    // ── generators (Phase 6E) ──
+    /// Write generator slot `slot` from `value` — `GenOp::SetLocal`.
+    GenSetLocal { gen: Idx<HirExpr>, slot: u32, value: Idx<HirExpr> },
+    /// Set the generator state — `GenOp::SetState`.
+    GenSetState { gen: Idx<HirExpr>, state: u32 },
+    /// Mark the generator exhausted — `GenOp::SetExhausted`.
+    GenSetExhausted { gen: Idx<HirExpr> },
 }
 
 /// How a block ends.
@@ -707,6 +886,9 @@ pub enum Symbol {
     /// `list`/`dict`/… constructors). Resolved here instead of as a frozen
     /// `BuiltinFunctionKind` so `core-defs` stays sealed (Phase 4).
     Container(ContainerOp),
+    /// A user-defined class name used as a value — almost always a constructor
+    /// call `Cls(args)` (Phase 5). Carries the frontend-assigned [`ClassId`].
+    Class(ClassId),
 }
 
 /// The output of name resolution: a table of [`Symbol`]s indexed by
@@ -730,5 +912,246 @@ impl ResolveResult {
 
     pub fn symbol(&self, id: SymbolId) -> Symbol {
         self.symbols[id.index()]
+    }
+}
+
+// ============================================================================
+// Classes (Phase 5)
+// ============================================================================
+
+/// A user-defined class as the frontend produces it: its identity + raw shape.
+/// Methods are ordinary [`HirFunction`]s in [`HirModule::functions`]; this records
+/// their FuncIds. The *resolved* layout (MRO, slots, inherited members) is the
+/// [`ClassTable`], computed once by `semantics`.
+#[derive(Debug, Clone)]
+pub struct HirClass {
+    /// The bare class name (`Widget`).
+    pub name: InternedString,
+    /// The CPython qualified name (`__main__.Widget`) for the default repr,
+    /// interned by the frontend (the only stage with a mutable interner).
+    pub qualname: InternedString,
+    /// The frontend-assigned class id (≥ `FIRST_USER_CLASS_ID`).
+    pub class_id: ClassId,
+    /// Base-class names in declaration order (`class Dog(Animal)` → `[Animal]`).
+    pub base_names: Vec<InternedString>,
+    /// `(method_name, func_id)` for ordinary instance methods defined directly on
+    /// this class (`__init__`, `area`, dunders, …). These get vtable slots + virtual
+    /// dispatch. `@staticmethod`/`@classmethod`/`@property` live separately below.
+    pub methods: Vec<(InternedString, FuncId)>,
+    /// `@staticmethod`s (no `self`) — called directly (Phase 5D).
+    pub static_methods: Vec<(InternedString, FuncId)>,
+    /// `@classmethod`s (`cls` is the enclosing class, statically resolved) — Phase 5D.
+    pub class_methods: Vec<(InternedString, FuncId)>,
+    /// `@property` getters + their `@x.setter`s (Phase 5D).
+    pub properties: Vec<HirProperty>,
+    /// Class-level value attributes (`count = 0`) — shared across instances (5D).
+    pub class_attrs: Vec<HirClassAttr>,
+    /// Class-level `name: T` annotations contributing field types (B10/D5).
+    pub field_annotations: Vec<(InternedString, SemTy)>,
+    /// Declared type parameters (`class Stack[T]` / `Generic[T]`), Phase 5E.
+    pub type_params: Vec<InternedString>,
+}
+
+/// A `@property`: a getter and an optional `@x.setter` (Phase 5D).
+#[derive(Debug, Clone)]
+pub struct HirProperty {
+    pub name: InternedString,
+    pub getter: FuncId,
+    pub setter: Option<FuncId>,
+    /// The getter's declared return type (the property's value type).
+    pub ty: SemTy,
+}
+
+/// A class-level value attribute with a constant initializer (Phase 5D).
+#[derive(Debug, Clone)]
+pub struct HirClassAttr {
+    pub name: InternedString,
+    pub ty: SemTy,
+    pub init: ClassAttrInit,
+}
+
+/// A constant class-attribute initializer (`count = 0`, `scale = "c"`). Non-literal
+/// initializers are out of scope for Phase 5D.
+#[derive(Debug, Clone)]
+pub enum ClassAttrInit {
+    Int(i64),
+    BigInt(InternedString),
+    Float(f64),
+    Bool(bool),
+    Str(InternedString),
+    Bytes(InternedString),
+    None,
+}
+
+/// One instance field's resolved layout entry: its name, best-effort static type
+/// (D5), and 0-based slot index. The slot is stable across subclasses — a base
+/// field keeps its offset in every subclass (parent-first layout, Phase 5B).
+#[derive(Debug, Clone)]
+pub struct FieldInfo {
+    pub name: InternedString,
+    pub ty: SemTy,
+}
+
+/// One method's resolved entry: its name, the `FuncId` to call, and its vtable
+/// slot (stable across the class and its subclasses; Phase 5B).
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    pub name: InternedString,
+    pub func_id: FuncId,
+    pub slot: usize,
+}
+
+/// A fully-resolved class: identity, inheritance (parent + C3 MRO), instance-field
+/// slot layout, and the method table (own + inherited). Produced by `semantics`
+/// after `resolve`; consumed by `typeck` (field/method/return types, the nominal
+/// subtyping oracle), `lowering` (slot/FuncId resolution), and `codegen` (the
+/// `__pyaot_classinit` registrations).
+#[derive(Debug, Clone)]
+pub struct ClassInfo {
+    pub class_id: ClassId,
+    pub name: InternedString,
+    /// `__main__.Widget` — the CPython qualified name for the default repr.
+    pub qualname: InternedString,
+    /// Direct parent (single inheritance fast path); `None` for a root class.
+    /// Multiple inheritance still records the full MRO but the runtime parent
+    /// chain follows the first base (Phase 5B).
+    pub parent: Option<ClassId>,
+    /// C3 linearization, `self` first (Phase 5B; `[self]` in 5A).
+    pub mro: Vec<ClassId>,
+    /// Instance fields ordered by slot index (parent fields first).
+    pub fields: Vec<FieldInfo>,
+    /// Methods incl. inherited, each with its resolved `FuncId` + vtable slot.
+    pub methods: Vec<MethodInfo>,
+    /// Methods defined *directly* on this class (own body only) — drives `super()`
+    /// resolution and the "overridden below" polymorphism check (Phase 5B).
+    pub own_methods: Vec<(InternedString, FuncId)>,
+    /// `@staticmethod`s (own + inherited), called directly (Phase 5D).
+    pub static_methods: Vec<MethodInfo>,
+    /// `@classmethod`s (own + inherited), called directly (Phase 5D).
+    pub class_methods: Vec<MethodInfo>,
+    /// `@property` definitions (own + inherited), Phase 5D.
+    pub properties: Vec<PropertyInfo>,
+    /// Class-level attributes (own + inherited) with their assigned slot (Phase 5D).
+    pub class_attrs: Vec<ClassAttrInfo>,
+    /// Number of vtable slots (max slot + 1 across the class; Phase 5B).
+    pub num_vtable_slots: usize,
+    /// Declared type parameters (Phase 5E).
+    pub type_params: Vec<InternedString>,
+}
+
+/// A resolved `@property` (Phase 5D).
+#[derive(Debug, Clone)]
+pub struct PropertyInfo {
+    pub name: InternedString,
+    pub getter: FuncId,
+    pub setter: Option<FuncId>,
+    pub ty: SemTy,
+}
+
+/// A resolved class-level attribute (Phase 5D): its name, best-effort type, the
+/// runtime `attr_idx` slot, and constant initializer.
+#[derive(Debug, Clone)]
+pub struct ClassAttrInfo {
+    pub name: InternedString,
+    pub ty: SemTy,
+    pub attr_idx: u32,
+    pub init: ClassAttrInit,
+}
+
+impl ClassInfo {
+    /// Slot index of `name` in this class's field layout.
+    pub fn field_slot(&self, name: InternedString) -> Option<usize> {
+        self.fields.iter().position(|f| f.name == name)
+    }
+    /// Best-effort static type of field `name`.
+    pub fn field_ty(&self, name: InternedString) -> Option<&SemTy> {
+        self.fields.iter().find(|f| f.name == name).map(|f| &f.ty)
+    }
+    /// Resolve method `name` (own or inherited).
+    pub fn method(&self, name: InternedString) -> Option<&MethodInfo> {
+        self.methods.iter().find(|m| m.name == name)
+    }
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+    /// Resolve a `@staticmethod` by name (Phase 5D).
+    pub fn static_method(&self, name: InternedString) -> Option<&MethodInfo> {
+        self.static_methods.iter().find(|m| m.name == name)
+    }
+    /// Resolve a `@classmethod` by name (Phase 5D).
+    pub fn class_method(&self, name: InternedString) -> Option<&MethodInfo> {
+        self.class_methods.iter().find(|m| m.name == name)
+    }
+    /// Resolve a `@property` by name (Phase 5D).
+    pub fn property(&self, name: InternedString) -> Option<&PropertyInfo> {
+        self.properties.iter().find(|p| p.name == name)
+    }
+    /// Resolve a class-level attribute by name (Phase 5D).
+    pub fn class_attr(&self, name: InternedString) -> Option<&ClassAttrInfo> {
+        self.class_attrs.iter().find(|a| a.name == name)
+    }
+}
+
+/// The resolved class table — `ClassId → ClassInfo`. The *shape* lives here (like
+/// [`ResolveResult`]); `semantics` fills it.
+#[derive(Debug, Default, Clone)]
+pub struct ClassTable {
+    classes: HashMap<ClassId, ClassInfo>,
+}
+
+impl ClassTable {
+    pub fn new() -> Self {
+        Self { classes: HashMap::new() }
+    }
+    pub fn insert(&mut self, info: ClassInfo) {
+        self.classes.insert(info.class_id, info);
+    }
+    pub fn get(&self, cid: ClassId) -> Option<&ClassInfo> {
+        self.classes.get(&cid)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &ClassInfo> {
+        self.classes.values()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty()
+    }
+    /// Nominal subtyping (D8): `a <: b` iff `b` appears in `a`'s MRO. Consulted in
+    /// `typeck`, never baked into the sealed `types` lattice.
+    pub fn is_subclass(&self, a: ClassId, b: ClassId) -> bool {
+        if a == b {
+            return true;
+        }
+        self.classes.get(&a).is_some_and(|info| info.mro.contains(&b))
+    }
+
+    /// Resolve `super().name()` from class `cid` (Phase 5B): the first class in
+    /// `cid`'s MRO *after* `cid` whose own body defines `name`.
+    pub fn resolve_super_method(&self, cid: ClassId, name: InternedString) -> Option<FuncId> {
+        let info = self.get(cid)?;
+        for ancestor in info.mro.iter().skip(1) {
+            if let Some(ac) = self.get(*ancestor) {
+                if let Some((_, fid)) = ac.own_methods.iter().find(|(n, _)| *n == name) {
+                    return Some(*fid);
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve `super().name`'s declared return type (Phase 5B), `None` if unknown.
+    pub fn resolve_super_method_info(&self, cid: ClassId, name: InternedString) -> Option<FuncId> {
+        self.resolve_super_method(cid, name)
+    }
+
+    /// True iff method `name` is overridden in a *proper subclass* of `cid` — i.e.
+    /// a receiver statically typed `cid` may dynamically dispatch to a different
+    /// body, so it must use virtual dispatch (D7). When false, a `cid`-typed
+    /// receiver devirtualizes to `cid`'s resolved method.
+    pub fn method_overridden_below(&self, cid: ClassId, name: InternedString) -> bool {
+        self.classes.values().any(|d| {
+            d.class_id != cid
+                && d.mro.contains(&cid)
+                && d.own_methods.iter().any(|(n, _)| *n == name)
+        })
     }
 }

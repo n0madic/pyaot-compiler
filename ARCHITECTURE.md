@@ -16,6 +16,13 @@ only ever sees `Value` and `rt_*` calls — it is agnostic to the compiler's typ
 system. So the architectural seam is the **runtime's `Value`-level ABI**: it is
 frozen as a contract, and everything above it is built to target it.
 
+The freeze is a default discipline, not an absolute prohibition: it holds only
+as long as it serves the plan. When fully realizing a planned feature genuinely
+requires a runtime change — as bignum did — the plan wins, and the seam is
+extended deliberately (a new `rt_*`/ABI, documented as such, with corpus
+coverage). The freeze exists to keep front-half bugs from being papered over in
+the runtime, not to block the plan.
+
 | Layer | Crates | Status |
 |---|---|---|
 | **Frozen substrate + contract** | `core-defs`, `format-shared`, `utils`, `diagnostics`, `linker`, `stdlib-defs`, `runtime` | sealed; treated as a fixed dependency |

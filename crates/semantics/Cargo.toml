@@ -7,7 +7,12 @@ description = "Name resolution, scopes, and MRO linearization"
 [dependencies]
 pyaot-utils = { path = "../utils" }
 pyaot-hir = { path = "../hir" }
+pyaot-types = { path = "../types" }
 pyaot-diagnostics = { path = "../diagnostics" }
+la-arena = { workspace = true }
+
+[dev-dependencies]
+pyaot-frontend-python = { path = "../frontend-python" }
 
 [lints.rust]
 unsafe_code = "forbid"

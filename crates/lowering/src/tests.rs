@@ -12,8 +12,9 @@ fn lowered(src: &str) -> MirProgram {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    pyaot_typeck::infer(&mut module, &resolve).expect("infer");
-    let program = super::lower(&module, &resolve, &interner).expect("lower");
+    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    let program = super::lower(&module, &resolve, &interner, &classes).expect("lower");
     for f in &program.funcs {
         pyaot_mir::verify(f, &program.funcs).expect("verify");
     }
@@ -22,6 +23,24 @@ fn lowered(src: &str) -> MirProgram {
 
 fn main_fn(p: &MirProgram) -> &MirFunction {
     &p.funcs[p.entry.index()]
+}
+
+/// Parse → resolve → collect → infer → lower, returning the (possibly error)
+/// lower result — for asserting lowering-stage rejections.
+fn try_lower(src: &str) -> pyaot_diagnostics::Result<MirProgram> {
+    let mut interner = StringInterner::new();
+    let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
+    let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
+    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    super::lower(&module, &resolve, &interner, &classes)
+}
+
+#[test]
+fn unknown_container_method_rejected_at_lowering() {
+    // Phase 5 (D2): the unknown-method rejection moved from the frontend to
+    // lowering, where the receiver type selects the dispatch.
+    assert!(try_lower("xs = [1]\nxs.frobnicate()\nprint(xs)\n").is_err());
 }
 
 /// Every `BinOp` in `f` paired with the declared `Repr` of its `dst` local.
@@ -338,4 +357,382 @@ fn non_literal_range_stays_tagged() {
     assert_eq!(locals_with_repr(f, &i64r), 0, "non-literal range cursor must stay tagged");
     // And the guard compares tagged operands.
     assert!(compare_operand_reprs(f).iter().all(|r| *r == Repr::Tagged));
+}
+
+// ── classes (Phase 5A) ──
+
+/// All MIR instructions of `f` flattened.
+fn insts(f: &MirFunction) -> Vec<&MirInst> {
+    f.blocks.iter().flat_map(|b| &b.insts).collect()
+}
+
+const CLASS_SRC: &str = "\
+class Widget:
+    def __init__(self, w: int, h: int):
+        self.w = w
+        self.h = h
+
+    def area(self) -> int:
+        return self.w * self.h
+
+x = Widget(3, 4)
+print(x.area())
+print(x.w)
+";
+
+#[test]
+fn construction_lowers_to_make_instance_then_init_call() {
+    let p = lowered(CLASS_SRC);
+    let f = main_fn(&p);
+    // MakeInstance with a Heap(Class) dst.
+    let mk = insts(f).into_iter().find_map(|i| match i {
+        MirInst::MakeInstance { dst, class_id, .. } => Some((*dst, *class_id)),
+        _ => None,
+    });
+    let (dst, cid) = mk.expect("a MakeInstance");
+    assert_eq!(f.locals[dst.index()].repr, Repr::Heap(HeapShape::Class(cid)));
+    // __init__ is a direct Call right after construction (devirtualized, dst None).
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { dst: None, .. })));
+}
+
+#[test]
+fn field_read_is_getfield_then_legalize() {
+    // `x.w` (an int field) → GetField (Tagged result) flowing as the field's repr.
+    let p = lowered(CLASS_SRC);
+    let f = main_fn(&p);
+    let gf = insts(f).into_iter().find_map(|i| match i {
+        MirInst::GetField { dst, .. } => Some(*dst),
+        _ => None,
+    });
+    let dst = gf.expect("a GetField");
+    // The uniform tagged field value (int field → stays Tagged).
+    assert_eq!(f.locals[dst.index()].repr, Repr::Tagged);
+}
+
+#[test]
+fn field_write_is_setfield_with_tagged_value() {
+    // `self.w = w` inside __init__ → SetField; the value operand is Tagged (A5).
+    let p = lowered(CLASS_SRC);
+    let init = p
+        .funcs
+        .iter()
+        .find(|f| f.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, MirInst::SetField { .. })))
+        .expect("a function with SetField (the __init__)");
+    let sf = init
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .find_map(|i| match i {
+            MirInst::SetField { value: Operand::Local(v), base: Operand::Local(b), .. } => Some((*b, *v)),
+            _ => None,
+        })
+        .expect("a SetField");
+    assert_eq!(init.locals[sf.1.index()].repr, Repr::Tagged, "field value is Tagged");
+    // The base is a valid instance operand: Heap(Class) (the `self` param) or Tagged.
+    assert!(matches!(
+        init.locals[sf.0.index()].repr,
+        Repr::Heap(HeapShape::Class(_)) | Repr::Tagged
+    ));
+}
+
+#[test]
+fn method_call_is_devirtualized_direct_call() {
+    // `x.area()` on a statically-known class lowers to a direct Call to the
+    // method's FuncId (no CallVirtual in 5A).
+    let p = lowered(CLASS_SRC);
+    let f = main_fn(&p);
+    // A Call with a dst (area returns int → Tagged) referencing a user method.
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { dst: Some(_), .. })));
+}
+
+#[test]
+fn classes_recorded_in_program() {
+    let p = lowered(CLASS_SRC);
+    assert_eq!(p.classes.len(), 1);
+    assert_eq!(p.classes[0].field_count, 2);
+}
+
+// ── inheritance / dispatch (Phase 5B) ──
+
+const INHERIT_SRC: &str = "\
+class Animal:
+    def __init__(self, name: str):
+        self.name = name
+    def speak(self) -> str:
+        return \"...\"
+class Dog(Animal):
+    def __init__(self, name: str, breed: str):
+        super().__init__(name)
+        self.breed = breed
+    def speak(self) -> str:
+        return \"Woof\"
+animals: list[Animal] = [Dog(\"Rex\", \"Lab\"), Animal(\"Thing\")]
+for a in animals:
+    print(a.speak())
+d = Dog(\"Fido\", \"Beagle\")
+print(isinstance(d, Animal))
+";
+
+fn has_call_virtual(p: &MirProgram) -> bool {
+    p.funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts))
+        .any(|i| matches!(i, MirInst::CallVirtual { .. }))
+}
+
+#[test]
+fn overridden_method_dispatches_virtually() {
+    // `a.speak()` where `a: Animal` and `speak` is overridden by `Dog` → CallVirtual.
+    let p = lowered(INHERIT_SRC);
+    assert!(has_call_virtual(&p), "an overridden method must use virtual dispatch");
+}
+
+#[test]
+fn isinstance_lowers_to_instance_check() {
+    let p = lowered(INHERIT_SRC);
+    assert!(p
+        .funcs
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts))
+        .any(|i| matches!(i, MirInst::IsInstance { .. })));
+}
+
+#[test]
+fn super_call_is_a_direct_call_not_virtual() {
+    // `super().__init__(name)` resolves statically to Animal.__init__ — a direct
+    // Call, never CallVirtual.
+    let src = "\
+class Animal:
+    def __init__(self, name: str):
+        self.name = name
+class Dog(Animal):
+    def __init__(self, name: str, breed: str):
+        super().__init__(name)
+        self.breed = breed
+d = Dog(\"x\", \"y\")
+print(d.name)
+";
+    let p = lowered(src);
+    // No method is overridden (each class has its own __init__, but __init__ is
+    // never called polymorphically) → no CallVirtual.
+    assert!(!has_call_virtual(&p));
+    // The Dog.__init__ body contains a direct Call (to Animal.__init__ via super).
+    let dog_init = p.funcs.iter().any(|f| {
+        f.blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, MirInst::Call { .. }))
+    });
+    assert!(dog_init, "super().__init__ must lower to a direct Call");
+}
+
+#[test]
+fn concrete_non_overridden_method_devirtualizes() {
+    // `speak` defined only on a leaf class with no subclasses → direct Call.
+    let src = "\
+class Widget:
+    def __init__(self, w: int):
+        self.w = w
+    def area(self) -> int:
+        return self.w
+x = Widget(3)
+print(x.area())
+";
+    let p = lowered(src);
+    assert!(!has_call_virtual(&p), "a non-overridden method must devirtualize");
+}
+
+// ── dunders (Phase 5C) ──
+
+const DUNDER_SRC: &str = "\
+class Vector:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+    def __add__(self, other: Vector) -> Vector:
+        return Vector(self.x + other.x, self.y + other.y)
+    def __eq__(self, other: Vector) -> bool:
+        return self.x == other.x and self.y == other.y
+    def __repr__(self) -> str:
+        return \"V\"
+a = Vector(1, 2)
+b = Vector(3, 4)
+print(a + b)
+print(a == b)
+";
+
+#[test]
+fn eq_dunder_is_compiler_routed_to_direct_call() {
+    // `a == b` must NOT lower to a bare Compare (rt_obj_eq won't dispatch __eq__);
+    // it routes to a direct Call + Truthy.
+    let p = lowered(DUNDER_SRC);
+    let f = main_fn(&p);
+    // There is a Call (the __eq__ dispatch) and a Truthy (the bool→i8 reduction),
+    // and no Compare with Eq directly on the two Vector operands at top level.
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { .. })));
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Truthy { .. })));
+}
+
+#[test]
+fn arithmetic_dunder_rides_tagged_baseline() {
+    // `a + b` lowers to the tagged BinOp(Add) (→ rt_obj_add → registered __add__),
+    // not a typed container op.
+    let p = lowered(DUNDER_SRC);
+    let f = main_fn(&p);
+    assert!(binops_with_repr(f)
+        .iter()
+        .any(|(op, r)| *op == BinOp::Add && *r == Repr::Tagged));
+    // __add__ / __eq__ / __repr__ are registered as dunders for the class.
+    assert!(!p.classes[0].dunders.is_empty());
+}
+
+#[test]
+fn dunder_method_returns_tagged() {
+    // B11: a dunder's return repr is forced to Tagged even when declared `-> bool`
+    // (`__eq__`), so the registry dispatch ABI stays uniform `Value -> Value`.
+    let p = lowered(DUNDER_SRC);
+    // The `__eq__` body is the only function with an inner Compare; it must return
+    // Tagged despite its `-> bool` annotation.
+    let eq = p.funcs.iter().find(|f| {
+        f.blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, MirInst::Compare { .. }))
+    });
+    assert_eq!(eq.expect("the __eq__ method").ret, Repr::Tagged);
+}
+
+#[test]
+fn print_instance_routes_to_repr_dunder() {
+    // print(instance) routes to a direct __repr__/__str__ Call (the runtime's
+    // top-level print path renders the default repr otherwise).
+    let p = lowered(DUNDER_SRC);
+    let f = main_fn(&p);
+    // A Print(StrObj) fed by a Call result (the __repr__ dispatch).
+    assert!(insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::Print { kind: pyaot_mir::PrintKind::StrObj, .. })));
+}
+
+// ── decorators + class attributes (Phase 5D) ──
+
+const DECO_SRC: &str = "\
+class T:
+    scale = \"c\"
+    def __init__(self, d: float):
+        self._d = d
+    @property
+    def d(self) -> float:
+        return self._d
+    @d.setter
+    def d(self, v: float):
+        self._d = v
+    @staticmethod
+    def zero() -> float:
+        return 0.0
+    @classmethod
+    def unit(cls) -> str:
+        return T.scale
+t = T(1.0)
+print(t.d)
+t.d = 2.0
+print(T.zero())
+print(t.zero())
+print(T.unit())
+print(T.scale)
+T.scale = \"k\"
+";
+
+#[test]
+fn class_attr_get_set_lowered() {
+    let p = lowered(DECO_SRC);
+    let f = main_fn(&p);
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::GetClassAttr { .. })));
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::SetClassAttr { .. })));
+    // The class attribute initializer is recorded for classinit.
+    assert!(p.classes.iter().any(|c| !c.class_attr_inits.is_empty()));
+}
+
+#[test]
+fn property_getter_setter_are_calls() {
+    // `t.d` (getter) and `t.d = v` (setter) lower to direct method Calls — never
+    // GetField/SetField (the property body owns the backing field access).
+    let p = lowered(DECO_SRC);
+    let f = main_fn(&p);
+    // No GetField/SetField in __main__ (only the property/method bodies do field IO).
+    assert!(!insts(f).iter().any(|i| matches!(i, MirInst::GetField { .. } | MirInst::SetField { .. })));
+    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { .. })));
+}
+
+#[test]
+fn static_and_class_methods_drop_receiver() {
+    // `T.zero()` (static) and `T.unit()` (class) take no self/cls argument.
+    let p = lowered(DECO_SRC);
+    // The static method `zero` has zero parameters; the classmethod `unit` too.
+    let zero = p.funcs.iter().find(|f| f.params.is_empty() && f.ret == Repr::Raw(RawKind::F64));
+    assert!(zero.is_some(), "the @staticmethod must have no parameters");
+}
+
+// ── closures / generators (Phase 6) ──
+
+/// Count instructions matching a predicate across every function.
+fn count_insts(p: &MirProgram, pred: impl Fn(&MirInst) -> bool) -> usize {
+    p.funcs.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts).filter(|i| pred(i)).count()
+}
+
+#[test]
+fn closure_call_emits_make_closure_and_call_indirect() {
+    // A returned closure called through a `Callable` param lowers to a
+    // `MakeClosure` (the env tuple) and a `CallIndirect` (Phase 6A).
+    let src = "\
+from typing import Callable
+def make(n: int) -> Callable[[int], int]:
+    def add(x: int) -> int:
+        return x + n
+    return add
+def apply(f: Callable[[int], int], x: int) -> int:
+    return f(x)
+print(apply(make(5), 1))
+";
+    let p = lowered(src);
+    assert!(count_insts(&p, |i| matches!(i, MirInst::MakeClosure { .. })) >= 1);
+    assert!(count_insts(&p, |i| matches!(i, MirInst::CallIndirect { .. })) >= 1);
+}
+
+#[test]
+fn varargs_call_packs_a_tuple() {
+    // A call to a `*args` function packs excess positionals into a fresh tuple
+    // (the `TupleNew`/`TupleSet` container ops) — Phase 6C.
+    let src = "\
+def total(*nums):
+    s = 0
+    for n in nums:
+        s += n
+    return s
+print(total(1, 2, 3))
+";
+    let p = lowered(src);
+    assert!(count_insts(&p, |i| matches!(
+        i,
+        MirInst::CallContainer { op: ContainerOp::TupleNew, .. }
+    )) >= 1);
+}
+
+#[test]
+fn generator_lowers_to_make_generator_and_gen_ops() {
+    // A generator def lowers a wrapper (`MakeGenerator`) plus a resume state
+    // machine using `GenOpInst` slot ops, and registers a resume fn (Phase 6E).
+    let src = "\
+def count(n):
+    i = 0
+    while i < n:
+        yield i
+        i = i + 1
+for x in count(3):
+    print(x)
+";
+    let p = lowered(src);
+    assert!(count_insts(&p, |i| matches!(i, MirInst::MakeGenerator { .. })) >= 1);
+    assert!(count_insts(&p, |i| matches!(i, MirInst::GenOpInst { .. })) >= 1);
+    assert_eq!(p.generators.len(), 1, "one registered resume fn");
 }

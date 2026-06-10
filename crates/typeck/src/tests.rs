@@ -12,7 +12,8 @@ fn typed(src: &str) -> (HirModule, StringInterner) {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    infer(&mut module, &resolve).expect("infer");
+    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    infer(&mut module, &resolve, &classes, &interner).expect("infer");
     (module, interner)
 }
 
@@ -21,7 +22,8 @@ fn try_infer(src: &str) -> pyaot_diagnostics::Result<()> {
     let mut interner = StringInterner::new();
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let resolve = pyaot_semantics::resolve(&mut module, &interner).expect("resolve");
-    infer(&mut module, &resolve)
+    let classes = pyaot_semantics::collect_classes(&module, &interner).expect("collect_classes");
+    infer(&mut module, &resolve, &classes, &interner)
 }
 
 /// The synthetic `__main__` function (module body).
@@ -284,13 +286,17 @@ fn dict_view_method_result_types() {
 }
 
 #[test]
-fn rejects_unknown_method() {
+fn unknown_method_parses_and_infers_dyn() {
+    // Phase 5 (D2): the frontend no longer rejects unknown method names — they
+    // become a `MethodCall` carrying the name. A non-container method on a
+    // container receiver infers `Dyn` here; the *rejection* moves to lowering
+    // (where the receiver type selects the dispatch). Parse + infer must succeed.
     let parses = |src: &str| {
         let mut interner = StringInterner::new();
         pyaot_frontend_python::parse(src, &mut interner).is_ok()
     };
-    // A non-container method name is rejected at parse time (Phase 5).
-    assert!(!parses("xs = [1]\nxs.frobnicate()\nprint(xs)\n"));
+    assert!(parses("xs = [1]\nxs.frobnicate()\nprint(xs)\n"));
+    assert!(try_infer("xs = [1]\nxs.frobnicate()\nprint(xs)\n").is_ok());
 }
 
 #[test]
@@ -327,4 +333,307 @@ fn accepts_tagged_float_value_into_float_local() {
     // a `float()` call) is a legitimate UnboxFloat — it must NOT be rejected.
     assert!(try_infer("x: float = 7.0 / 2.0\nprint(x)\n").is_ok());
     assert!(try_infer("y: float = float(3)\nprint(y)\n").is_ok());
+}
+
+// ── classes (Phase 5A) ──
+
+const WIDGET_SRC: &str = "\
+class Widget:
+    def __init__(self, w: int, h: int):
+        self.w = w
+        self.h = h
+
+    def area(self) -> int:
+        return self.w * self.h
+
+x = Widget(3, 4)
+a = x.area()
+ww = x.w
+print(a)
+print(ww)
+";
+
+#[test]
+fn class_construction_infers_class_type() {
+    let (m, i) = typed(WIDGET_SRC);
+    let f = main_fn(&m);
+    match local_ty(f, &i, "x") {
+        SemTy::Class { name, .. } => assert_eq!(i.resolve(name), "Widget"),
+        other => panic!("expected `x: Widget`, got {other:?}"),
+    }
+}
+
+#[test]
+fn class_method_call_takes_declared_return() {
+    // `a = x.area()` → the method's declared `-> int`.
+    let (m, i) = typed(WIDGET_SRC);
+    assert_eq!(local_ty(main_fn(&m), &i, "a"), SemTy::Int);
+}
+
+#[test]
+fn class_attribute_read_takes_field_type() {
+    // `ww = x.w` → the field's best-effort type (`self.w = w` of param `w: int`).
+    let (m, i) = typed(WIDGET_SRC);
+    assert_eq!(local_ty(main_fn(&m), &i, "ww"), SemTy::Int);
+}
+
+#[test]
+fn class_typed_return_annotation_resolves() {
+    // `def make() -> Widget` resolves the class-name annotation to `Class`.
+    let src = "\
+class Widget:
+    def __init__(self, w: int):
+        self.w = w
+
+def make(w: int) -> Widget:
+    return Widget(w)
+
+g = make(5)
+print(g.w)
+";
+    let (m, i) = typed(src);
+    match local_ty(main_fn(&m), &i, "g") {
+        SemTy::Class { name, .. } => assert_eq!(i.resolve(name), "Widget"),
+        other => panic!("expected `g: Widget`, got {other:?}"),
+    }
+}
+
+#[test]
+fn float_field_round_trips_through_uniform_storage() {
+    // A `float` field reads back via UnboxFloat from the uniform tagged slot; the
+    // write of a matching float value must pass the repr-boundary contract.
+    let src = "\
+class P:
+    def __init__(self, x: float):
+        self.x = x
+
+    def get(self) -> float:
+        return self.x
+
+p = P(1.5)
+v = p.get()
+print(v)
+";
+    assert!(try_infer(src).is_ok());
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "v"), SemTy::Float);
+}
+
+// ── dunders (Phase 5C) ──
+
+const VECTOR_SRC: &str = "\
+class Vector:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+    def __add__(self, other: Vector) -> Vector:
+        return Vector(self.x + other.x, self.y + other.y)
+    def __mul__(self, k: int) -> Vector:
+        return Vector(self.x * k, self.y * k)
+    def __eq__(self, other: Vector) -> bool:
+        return self.x == other.x and self.y == other.y
+a = Vector(1, 2)
+b = Vector(3, 4)
+s = a + b
+m = a * 3
+e = a == b
+";
+
+#[test]
+fn class_binop_takes_dunder_return_type() {
+    // `a + b` / `a * 3` type as the dunder's declared return (`Vector`), so field
+    // access on the result is statically resolvable.
+    let (md, i) = typed(VECTOR_SRC);
+    let f = main_fn(&md);
+    for name in ["s", "m"] {
+        match local_ty(f, &i, name) {
+            SemTy::Class { name: n, .. } => assert_eq!(i.resolve(n), "Vector"),
+            other => panic!("expected `{name}: Vector`, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn class_eq_is_bool() {
+    let (md, i) = typed(VECTOR_SRC);
+    assert_eq!(local_ty(main_fn(&md), &i, "e"), SemTy::Bool);
+}
+
+#[test]
+fn class_getitem_takes_dunder_return_type() {
+    let src = "\
+class Box:
+    def __init__(self, data: list[int]):
+        self.data = data
+    def __getitem__(self, i: int) -> int:
+        return self.data[i]
+b = Box([1, 2, 3])
+v = b[0]
+";
+    let (md, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&md), &i, "v"), SemTy::Int);
+}
+
+// ── generics (Phase 5E) ──
+
+const GENERIC_SRC: &str = "\
+from typing import TypeVar, Generic
+T = TypeVar(\"T\")
+class Box(Generic[T]):
+    def __init__(self, v: T):
+        self.value = v
+    def get(self) -> T:
+        return self.value
+bi = Box[int](1)
+gi = bi.get()
+bs = Box[str](\"x\")
+gs = bs.get()
+bare = Box(5)
+gd = bare.get()
+";
+
+#[test]
+fn generic_method_substitutes_type_arg() {
+    // `Box[int].get()` substitutes T↦int; `Box[str].get()` → str.
+    let (m, i) = typed(GENERIC_SRC);
+    let f = main_fn(&m);
+    assert_eq!(local_ty(f, &i, "gi"), SemTy::Int);
+    assert_eq!(local_ty(f, &i, "gs"), SemTy::Str);
+}
+
+#[test]
+fn bare_generic_erases_type_var_to_dyn() {
+    // A bare `Box(5)` (no type args) leaves no residual `Var`: `get()` erases to
+    // `Dyn` (→ Tagged), never a representation-less type variable.
+    let (m, i) = typed(GENERIC_SRC);
+    let gd = local_ty(main_fn(&m), &i, "gd");
+    assert!(!gd.contains_var(), "no residual type variable may survive materialize");
+    assert_eq!(gd, SemTy::Dyn);
+}
+
+#[test]
+fn generic_instance_type_is_generic() {
+    let (m, i) = typed(GENERIC_SRC);
+    match local_ty(main_fn(&m), &i, "bi") {
+        SemTy::Generic { args, .. } => assert_eq!(args, vec![SemTy::Int]),
+        other => panic!("expected `bi: Generic`, got {other:?}"),
+    }
+}
+
+// ── reinterpret-boundary on call forms (Phase 5 review fix #1) ──
+
+#[test]
+fn rejects_int_into_float_method_arg() {
+    // `C().scaled(3)` must be rejected loudly (the int→float method-param coerce is
+    // an UnboxFloat the verifier would otherwise accept → SIGSEGV at runtime).
+    let src = "\
+class C:
+    def scaled(self, a: float) -> float:
+        return a * 2.0
+print(C().scaled(3))
+";
+    assert!(try_infer(src).is_err());
+    // The matching-type call still type-checks.
+    let ok = "\
+class C:
+    def scaled(self, a: float) -> float:
+        return a * 2.0
+print(C().scaled(3.0))
+";
+    assert!(try_infer(ok).is_ok());
+}
+
+#[test]
+fn rejects_int_into_float_super_and_static_args() {
+    // super() arg into a float param.
+    let sup = "\
+class A:
+    def __init__(self, a: float):
+        self.a = a
+class B(A):
+    def __init__(self, a: float):
+        super().__init__(3)
+print(B(1.0).a)
+";
+    assert!(try_infer(sup).is_err());
+    // @staticmethod arg into a float param.
+    let st = "\
+class C:
+    @staticmethod
+    def f(a: float) -> float:
+        return a
+print(C.f(3))
+";
+    assert!(try_infer(st).is_err());
+    // generic-construction arg into a float param.
+    let gen = "\
+from typing import TypeVar, Generic
+T = TypeVar(\"T\")
+class P(Generic[T]):
+    def __init__(self, v: T, scale: float):
+        self.v = v
+        self.scale = scale
+p = P[int](1, 2)
+print(p.scale)
+";
+    assert!(try_infer(gen).is_err());
+}
+
+// ── closures / callables (Phase 6) ──
+
+#[test]
+fn make_closure_infers_callable() {
+    // A returned nested function value is a `Callable` (drives `Repr::Closure`).
+    let src = "\
+from typing import Callable
+def make() -> Callable[[int], int]:
+    def add(x: int) -> int:
+        return x + 1
+    return add
+f = make()
+print(f(1))
+";
+    // The `f` local holds the closure value → Callable.
+    let (m, i) = typed(src);
+    assert!(matches!(local_ty(main_fn(&m), &i, "f"), SemTy::Callable(_)));
+}
+
+#[test]
+fn rejects_calling_dyn_value() {
+    // Calling a value of unknown (Dyn) type cannot build an indirect-call
+    // signature → a loud compile error (Phase 6A).
+    let src = "\
+def f(g):
+    return g()
+print(f(0))
+";
+    assert!(try_infer(src).is_err());
+}
+
+#[test]
+fn rejects_callable_sig_repr_mismatch() {
+    // Passing a closure whose signature differs from the annotated `Callable`
+    // slot is rejected (the slot IS the native call ABI, Phase 6A).
+    let src = "\
+from typing import Callable
+def takes(f: Callable[[int], int]) -> int:
+    return f(1)
+def two(a: int, b: int) -> int:
+    return a + b
+print(takes(two))
+";
+    assert!(try_infer(src).is_err());
+}
+
+#[test]
+fn indirect_arg_poly_guard_fires() {
+    // An indirect call guards each argument against the callee's param reprs:
+    // a `float`-annotated param fed an `int` is rejected (the poly(3) seam).
+    let src = "\
+from typing import Callable
+def apply(f: Callable[[float], float]) -> float:
+    return f(3)
+print(apply(lambda x: x))
+";
+    assert!(try_infer(src).is_err());
 }

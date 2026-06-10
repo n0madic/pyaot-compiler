@@ -41,30 +41,146 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, BuiltinFunctionKind, ContainerMethod, ContainerOp, HirExpr, HirExprKind, HirFunction,
-    HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
+    BinOp, BuiltinFunctionKind, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
+    HirFunction, HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
-use pyaot_types::{repr_of, RawKind, Repr, SemTy, TypeLattice};
+use pyaot_types::{repr_of, sig_repr, RawKind, Repr, SemTy, Sig, TypeLattice};
+use pyaot_utils::{ClassId, InternedString, StringInterner};
 
 /// Run inference over every function, mutating each node's [`SemTy`] in place.
 ///
 /// Per-function inference: a callee's return type is read from its (annotated or
 /// `Dyn`) signature — return-type inference across functions is not in scope.
-pub fn infer(module: &mut HirModule, resolve: &ResolveResult) -> Result<()> {
+/// Class field/method/return types and nominal subtyping are consulted through
+/// the [`ClassTable`] oracle (D4/D8), never baked into the sealed lattice.
+pub fn infer(
+    module: &mut HirModule,
+    resolve: &ResolveResult,
+    classes: &ClassTable,
+    interner: &StringInterner,
+) -> Result<()> {
     // Snapshot each function's declared return type so `Call` results can be typed
     // without holding a second borrow of `module` while we mutate a function.
     let ret_tys: Vec<SemTy> = module.functions.iter().map(|f| f.ret_ty.clone()).collect();
-    for func in module.functions.iter_mut() {
+    // The visible Callable signature of each function when used as a closure
+    // target (Phase 6A): declared params MINUS the env param 0 (every
+    // `MakeClosure` target carries one), plus the 6C varargs/kwargs flags.
+    let closure_sigs: Vec<Sig> = module
+        .functions
+        .iter()
+        .map(|f| Sig {
+            params: f.params.iter().skip(1).map(|p| p.ty.clone()).collect(),
+            ret: f.ret_ty.clone(),
+            varargs: f.varargs,
+            kwargs: f.kwargs,
+        })
+        .collect();
+    // ── promoted-global slot typing (Phase 6B) ──
+    // The slot type is the join of `__main__`'s writes (the single storage's
+    // module-level initializers / rebindings); a slot any OTHER function writes
+    // (`global` declaration) is demoted to `Dyn` — that write's type is
+    // invisible to main's solve, so a precise type would be unsound. `__main__`
+    // is therefore solved FIRST; its solution seeds `global_tys` for the rest.
+    let main_idx = module.main.index();
+    let mut n_globals = 0usize;
+    let mut demoted: Vec<bool> = Vec::new();
+    for (i, f) in module.functions.iter().enumerate() {
+        let mut grow = |vid: u32, demote: bool, demoted: &mut Vec<bool>| {
+            let vid = vid as usize;
+            if vid >= n_globals {
+                n_globals = vid + 1;
+                demoted.resize(n_globals, false);
+            }
+            if demote {
+                demoted[vid] = true;
+            }
+        };
+        for (_b, block) in f.blocks.iter() {
+            for stmt in &block.stmts {
+                if let HirStmt::GlobalSet { var_id, .. } = stmt {
+                    grow(*var_id, i != main_idx, &mut demoted);
+                }
+            }
+        }
+        for (_e, expr) in f.exprs.iter() {
+            if let HirExprKind::GlobalGet { var_id } = expr.kind {
+                grow(var_id, false, &mut demoted);
+            }
+        }
+    }
+    let mut global_tys: Vec<SemTy> = vec![SemTy::Dyn; n_globals];
+
+    let mut order: Vec<usize> = Vec::with_capacity(module.functions.len());
+    order.push(main_idx);
+    order.extend((0..module.functions.len()).filter(|i| *i != main_idx));
+    for idx in order {
         let solution = {
-            let solver = Solver::collect(&*func, resolve, &ret_tys);
+            let solver = Solver::collect(
+                &module.functions[idx],
+                resolve,
+                &ret_tys,
+                &closure_sigs,
+                classes,
+                interner,
+                &global_tys,
+                &demoted,
+                n_globals,
+            );
             solver.solve()
         };
-        materialize(func, &solution);
+        if idx == main_idx {
+            seed_global_tys(&module.functions[idx], &solution, &demoted, &mut global_tys);
+        }
+        materialize(&mut module.functions[idx], &solution);
     }
     // Types are now materialized on every node; validate the unboxed-slot
     // boundaries before lowering can emit an unsound coercion.
-    check_repr_boundaries(module, resolve)?;
+    check_repr_boundaries(module, resolve, classes, interner)?;
     Ok(())
+}
+
+/// Compute each global slot's type from `__main__`'s solved writes: the join,
+/// with the same `Raw`-uniformity guard as locals (a mixed-repr join must stay
+/// `Dyn`, never an unbox hint). Demoted or never-written slots stay `Dyn`.
+fn seed_global_tys(
+    main: &HirFunction,
+    solution: &Solution,
+    demoted: &[bool],
+    global_tys: &mut [SemTy],
+) {
+    let mut writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); global_tys.len()];
+    for (_b, block) in main.blocks.iter() {
+        for stmt in &block.stmts {
+            if let HirStmt::GlobalSet { var_id, value } = stmt {
+                writes[*var_id as usize].push(*value);
+            }
+        }
+    }
+    for (vid, ws) in writes.iter().enumerate() {
+        if demoted[vid] || ws.is_empty() {
+            continue;
+        }
+        let ety = |v: &Idx<HirExpr>| {
+            erase_vars(&solution.expr_ty.get(v).cloned().unwrap_or(SemTy::Never))
+        };
+        let mut joined = SemTy::Never;
+        for v in ws {
+            joined = joined.join(&ety(v));
+        }
+        if joined == SemTy::Never {
+            continue; // stays Dyn
+        }
+        if matches!(repr_of(&joined), Repr::Raw(_)) {
+            let target = repr_of(&joined);
+            if !ws.iter().all(|v| {
+                let t = ety(v);
+                t == SemTy::Never || repr_of(&t) == target
+            }) {
+                continue; // stays Dyn
+            }
+        }
+        global_tys[vid] = joined;
+    }
 }
 
 /// How a slot's representation *reinterprets a tagged value by its assumed type*
@@ -84,6 +200,11 @@ enum ReinterpretKind {
     /// loudly; a gradual `Dyn` value is admitted (a future runtime guard, exactly as
     /// uniform-tagged iteration elements legitimately produce `Dyn → Heap` bindings).
     Gradual,
+    /// `Repr::Closure(sig)` (Phase 6A): the slot's signature IS the indirect-call
+    /// ABI, so a stored callable must match it at the *representation* level
+    /// exactly (subtyping that changes a param/ret `Repr` would forge a different
+    /// ABI). `Dyn` is admitted gradually like `Gradual`.
+    Closure,
 }
 
 /// The reinterpret family of a slot's representation, or `None` if storing into it
@@ -92,6 +213,7 @@ fn reinterpret_kind(ty: &SemTy) -> Option<ReinterpretKind> {
     match repr_of(ty) {
         Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8) => Some(ReinterpretKind::Strict),
         Repr::Heap(_) => Some(ReinterpretKind::Gradual),
+        Repr::Closure(_) => Some(ReinterpretKind::Closure),
         _ => None,
     }
 }
@@ -108,41 +230,264 @@ fn reinterpret_kind(ty: &SemTy) -> Option<ReinterpretKind> {
 /// accept-then-crash, we treat the annotation as a contract and reject the
 /// violation loudly. (A future whole-program pass could instead demote such a slot
 /// to `Tagged` when a call site proves it polymorphic — PITFALLS B10, deferred.)
-fn check_repr_boundaries(module: &HirModule, resolve: &ResolveResult) -> Result<()> {
+fn check_repr_boundaries(
+    module: &HirModule,
+    resolve: &ResolveResult,
+    classes: &ClassTable,
+    interner: &StringInterner,
+) -> Result<()> {
     for func in &module.functions {
         for (_b, block) in func.blocks.iter() {
-            // Assignments into an annotated unboxed / typed-heap local slot.
             for stmt in &block.stmts {
-                if let HirStmt::Assign { target, value } = stmt {
-                    let target_ty = &func.locals[target.index()].ty;
-                    if let Some(kind) = reinterpret_kind(target_ty) {
-                        check_reinterpret(&func.exprs[*value], target_ty, kind, "assigned to")?;
+                match stmt {
+                    // Assignments into an annotated unboxed / typed-heap local slot.
+                    HirStmt::Assign { target, value } => {
+                        let local = &func.locals[target.index()];
+                        // A pin_tagged slot stays `Tagged` regardless of its
+                        // (content) type — storing into it never reinterprets.
+                        if local.pin_tagged {
+                            continue;
+                        }
+                        let target_ty = &local.ty;
+                        if let Some(kind) = reinterpret_kind(target_ty) {
+                            check_reinterpret(
+                                &func.exprs[*value], target_ty, kind, "assigned to", classes,
+                            )?;
+                        }
                     }
+                    // Writes through a cell whose content type is authoritative
+                    // (a captured annotation): reads will reinterpret by that
+                    // type, so the written value must match it (Phase 6A).
+                    HirStmt::CellSet { cell, value } => {
+                        let local = &func.locals[cell.index()];
+                        if local.cell_shared || local.ty == SemTy::Dyn {
+                            continue;
+                        }
+                        if let Some(kind) = reinterpret_kind(&local.ty) {
+                            check_reinterpret(
+                                &func.exprs[*value], &local.ty, kind, "assigned to", classes,
+                            )?;
+                        }
+                    }
+                    // Writes into a typed instance-field slot (the A5 storage seam):
+                    // a `float` field reads back via `UnboxFloat`, a class/`str`
+                    // field via `TaggedToHeap`, so the *written* value must match.
+                    HirStmt::SetAttr { base, name, value } => {
+                        if let Some(cid) = class_of(&func.exprs[*base].ty, classes) {
+                            if let Some(info) = classes.get(cid) {
+                                if let Some(field_ty) = info.field_ty(*name) {
+                                    if let Some(kind) = reinterpret_kind(field_ty) {
+                                        check_reinterpret(
+                                            &func.exprs[*value], field_ty, kind,
+                                            "assigned to field", classes,
+                                        )?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             // Return value into an annotated return slot.
             if let HirTerminator::Return(Some(v)) = &block.term {
                 if let Some(kind) = reinterpret_kind(&func.ret_ty) {
-                    check_reinterpret(&func.exprs[*v], &func.ret_ty, kind, "returned from")?;
+                    check_reinterpret(&func.exprs[*v], &func.ret_ty, kind, "returned from", classes)?;
                 }
             }
         }
-        // Call arguments into annotated parameters.
+        // Arguments into annotated parameters. This is the SAME reinterpret seam
+        // as the original `poly(3)` guard, extended (Phase 5) to every call form
+        // whose lowering coerces args to the callee's param `Repr` — free
+        // functions, constructors, **method calls** (instance / static / class /
+        // `super()` / virtual), and **generic construction** — since a
+        // `Tagged → Raw(F64)`/typed-`Heap` coercion the verifier accepts would
+        // otherwise mis-read a mismatched value (PITFALLS A2).
         for (_idx, expr) in func.exprs.iter() {
-            let HirExprKind::Call { callee, args } = &expr.kind else { continue };
-            let HirExprKind::Name(SymbolRef::Resolved(id)) = func.exprs[*callee].kind else {
-                continue;
+            let (params, args) = match &expr.kind {
+                HirExprKind::Call { callee, args } => {
+                    let direct = match func.exprs[*callee].kind {
+                        HirExprKind::Name(SymbolRef::Resolved(id)) => match resolve.symbol(id) {
+                            Symbol::Function(fid) => {
+                                Some((&module.functions[fid.index()].params[..], args))
+                            }
+                            // `Cls(args)` → `__init__(self, args…)`: skip `self`.
+                            Symbol::Class(cid) => {
+                                match init_params(classes, module, interner, cid) {
+                                    Some(p) => Some((&p[1.min(p.len())..], args)),
+                                    None => continue,
+                                }
+                            }
+                            Symbol::Local(_) => None,
+                            _ => continue,
+                        },
+                        _ => None,
+                    };
+                    match direct {
+                        Some(pair) => pair,
+                        // Indirect call through a callable VALUE (Phase 6A):
+                        // the callee must be a known `Callable` — calling a
+                        // gradual `Dyn` cannot build an indirect-call signature
+                        // and is rejected loudly — and every argument is
+                        // guarded against the signature's param reprs (the
+                        // poly(3) seam, extended to closures).
+                        None => {
+                            check_indirect_call(func, *callee, args, classes)?;
+                            continue;
+                        }
+                    }
+                }
+                // `recv.m(args)` — resolve the target method through the dispatch
+                // the lowering uses, skipping `self` for instance/`super()` calls.
+                HirExprKind::MethodCall { recv, method_name, args } => {
+                    match method_call_target(func, resolve, classes, *recv, *method_name) {
+                        Some((fid, skip_self)) => {
+                            let p = &module.functions[fid.index()].params[..];
+                            let p = if skip_self { &p[1.min(p.len())..] } else { p };
+                            (p, args)
+                        }
+                        None => continue,
+                    }
+                }
+                // `Cls[T](args)` → `__init__(self, args…)`: skip `self`.
+                HirExprKind::GenericConstruct { class_id, args, .. } => {
+                    match init_params(classes, module, interner, *class_id) {
+                        Some(p) => (&p[1.min(p.len())..], args),
+                        None => continue,
+                    }
+                }
+                _ => continue,
             };
-            let Symbol::Function(fid) = resolve.symbol(id) else { continue };
-            let callee_fn = &module.functions[fid.index()];
-            for (arg, param) in args.iter().zip(&callee_fn.params) {
+            for (arg, param) in args.iter().zip(params) {
                 if let Some(kind) = reinterpret_kind(&param.ty) {
-                    check_reinterpret(&func.exprs[*arg], &param.ty, kind, "passed to")?;
+                    check_reinterpret(&func.exprs[*arg], &param.ty, kind, "passed to", classes)?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Validate an indirect call `value(args…)` (Phase 6A): the callee's static
+/// type must be a concrete `Callable` of matching arity, and each argument is
+/// guarded against the parameter types exactly like direct-call arguments.
+fn check_indirect_call(
+    func: &HirFunction,
+    callee: Idx<HirExpr>,
+    args: &[Idx<HirExpr>],
+    classes: &ClassTable,
+) -> Result<()> {
+    let cexpr = &func.exprs[callee];
+    let sig = match &cexpr.ty {
+        SemTy::Callable(sig) => sig,
+        // Unreachable code may call anything.
+        SemTy::Never => return Ok(()),
+        SemTy::Dyn => {
+            return Err(CompilerError::type_error(
+                "cannot call a value of unknown type: annotate it (e.g. \
+                 `Callable[[int], int]`) so the compiler can build its native \
+                 call signature"
+                    .to_string(),
+                cexpr.span,
+            ))
+        }
+        other => {
+            return Err(CompilerError::type_error(
+                format!("`{}` object is not callable", type_name(other)),
+                cexpr.span,
+            ))
+        }
+    };
+    let fixed = sig.fixed_arity();
+    let arity_ok = if sig.varargs { args.len() >= fixed } else { args.len() == fixed };
+    if !arity_ok {
+        return Err(CompilerError::type_error(
+            format!(
+                "this callable takes {} positional argument(s){} but {} were given \
+                 (indirect calls require the full declared arity — defaults are \
+                 filled only at direct call sites)",
+                fixed,
+                if sig.varargs { " or more" } else { "" },
+                args.len(),
+            ),
+            cexpr.span,
+        ));
+    }
+    for (arg, pty) in args.iter().zip(sig.params.iter().take(fixed)) {
+        if let Some(kind) = reinterpret_kind(pty) {
+            check_reinterpret(&func.exprs[*arg], pty, kind, "passed to", classes)?;
+        }
+    }
+    Ok(())
+}
+
+/// The `__init__` parameter list for class `cid`, or `None` if it defines none.
+fn init_params<'a>(
+    classes: &ClassTable,
+    module: &'a HirModule,
+    interner: &StringInterner,
+    cid: ClassId,
+) -> Option<&'a [pyaot_hir::HirParam]> {
+    let info = classes.get(cid)?;
+    let m = info.methods.iter().find(|m| interner.resolve(m.name) == "__init__")?;
+    Some(&module.functions[m.func_id.index()].params)
+}
+
+/// The class id a `Name` expr resolves to (a `Symbol::Class`) — for
+/// `ClassName.attr` / `ClassName.method()` class-level access.
+fn name_class_ref_at(
+    func: &HirFunction,
+    resolve: &ResolveResult,
+    idx: Idx<HirExpr>,
+) -> Option<ClassId> {
+    if let HirExprKind::Name(SymbolRef::Resolved(id)) = func.exprs[idx].kind {
+        if let Symbol::Class(cid) = resolve.symbol(id) {
+            return Some(cid);
+        }
+    }
+    None
+}
+
+/// Resolve a `recv.method(args)` call to its target `FuncId` plus whether `self`
+/// is dropped from the arg→param alignment — mirroring `lowering::lower_method_call`
+/// dispatch exactly (instance / static / class / `super()`). Used by the
+/// reinterpret-boundary check so method-call args are validated like free-call args.
+fn method_call_target(
+    func: &HirFunction,
+    resolve: &ResolveResult,
+    classes: &ClassTable,
+    recv: Idx<HirExpr>,
+    method_name: pyaot_utils::InternedString,
+) -> Option<(pyaot_utils::FuncId, bool)> {
+    // `super().m()` → the parent method, called with the current `self`.
+    if let HirExprKind::Super(cid) = func.exprs[recv].kind {
+        return classes.resolve_super_method(cid, method_name).map(|f| (f, true));
+    }
+    // `ClassName.m()` → a static/class method (never an instance method).
+    if let Some(cid) = name_class_ref_at(func, resolve, recv) {
+        return classes.get(cid).and_then(|i| {
+            i.static_method(method_name)
+                .or_else(|| i.class_method(method_name))
+                .map(|m| (m.func_id, false))
+        });
+    }
+    // `instance.m()` → static/class method (no `self`), else an instance method.
+    let cid = class_of(&func.exprs[recv].ty, classes)?;
+    let info = classes.get(cid)?;
+    if let Some(m) = info.static_method(method_name).or_else(|| info.class_method(method_name)) {
+        return Some((m.func_id, false));
+    }
+    info.method(method_name).map(|m| (m.func_id, true))
+}
+
+/// The class id a receiver type denotes (a nominal `Class`, or a user generic
+/// instance whose base is a user class), else `None`.
+fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
+    match ty {
+        SemTy::Class { class_id, .. } => Some(*class_id),
+        SemTy::Generic { base, .. } if classes.get(*base).is_some() => Some(*base),
+        _ => None,
+    }
 }
 
 /// Error unless `value`'s type may be soundly stored in a `target`-typed
@@ -153,10 +498,27 @@ fn check_reinterpret(
     target: &SemTy,
     kind: ReinterpretKind,
     verb: &str,
+    classes: &ClassTable,
 ) -> Result<()> {
-    let ok = value.ty == SemTy::Never
-        || value.ty.is_subtype_of(target)
-        || (kind == ReinterpretKind::Gradual && value.ty == SemTy::Dyn);
+    let ok = match kind {
+        // A Callable slot requires representation-level signature equality —
+        // ordinary subtyping could change a param/ret `Repr` and forge a
+        // different indirect-call ABI (Phase 6A). `Dyn` is admitted gradually.
+        ReinterpretKind::Closure => {
+            value.ty == SemTy::Never
+                || value.ty == SemTy::Dyn
+                || match (&value.ty, target) {
+                    (SemTy::Callable(vs), SemTy::Callable(ts)) => sig_repr(vs) == sig_repr(ts),
+                    _ => false,
+                }
+        }
+        _ => {
+            value.ty == SemTy::Never
+                || value.ty.is_subtype_of(target)
+                || nominal_subtype(&value.ty, target, classes)
+                || (kind == ReinterpretKind::Gradual && value.ty == SemTy::Dyn)
+        }
+    };
     if ok {
         return Ok(());
     }
@@ -168,6 +530,10 @@ fn check_reinterpret(
             "this compiler stores annotated container/`str`/`bytes` slots as typed \
              heap pointers, so a mismatched value would be reinterpreted as one and \
              crash at the first operation on it. Pass a matching type.",
+        ReinterpretKind::Closure =>
+            "this compiler compiles a `Callable[...]` slot to that exact native \
+             call signature, so the stored function's parameter/return types must \
+             match the annotation exactly.",
     };
     Err(CompilerError::type_error(
         format!(
@@ -178,6 +544,37 @@ fn check_reinterpret(
         ),
         value.span,
     ))
+}
+
+/// Nominal subtyping via the [`ClassTable`] oracle (D8): consulted here rather
+/// than baked into the sealed `types` lattice (`Class = id1 == id2`). Beyond the
+/// base case (`target` in `value`'s MRO) this also closes the cases the
+/// nominal-unaware lattice misses: covariant container elements (`list[Dog] <:
+/// list[Animal]`) and a union of subclasses (`Union[Dog, Cat] <: Animal`, which
+/// is how a mixed `[Dog(), Cat()]` literal types).
+fn nominal_subtype(value: &SemTy, target: &SemTy, classes: &ClassTable) -> bool {
+    // A single element is assignable if the lattice already says so, or nominally.
+    let elem_ok = |v: &SemTy, t: &SemTy| {
+        *v == SemTy::Never
+            || *t == SemTy::Dyn
+            || v.is_subtype_of(t)
+            || nominal_subtype(v, t, classes)
+    };
+    match (value, target) {
+        (SemTy::Class { class_id: a, .. }, SemTy::Class { class_id: b, .. }) => {
+            classes.is_subclass(*a, *b)
+        }
+        // A union is assignable iff every member is.
+        (SemTy::Union(members), _) => members.iter().all(|m| elem_ok(m, target)),
+        // Covariant same-base generic containers (element-wise).
+        (
+            SemTy::Generic { base: b1, args: a1 },
+            SemTy::Generic { base: b2, args: a2 },
+        ) if b1 == b2 && a1.len() == a2.len() => {
+            a1.iter().zip(a2.iter()).all(|(x, y)| elem_ok(x, y))
+        }
+        _ => false,
+    }
 }
 
 /// A short Python-facing name for a `SemTy` (best-effort, for diagnostics).
@@ -191,6 +588,7 @@ fn type_name(ty: &SemTy) -> &'static str {
         SemTy::NoneTy => "None",
         SemTy::Dyn => "Any",
         SemTy::Iterator(_) => "iterator",
+        SemTy::Callable(_) => "Callable",
         _ if ty.list_elem().is_some() => "list",
         _ if ty.dict_kv().is_some() => "dict",
         _ if ty.set_elem().is_some() => "set",
@@ -210,6 +608,11 @@ struct Solver<'a> {
     func: &'a HirFunction,
     resolve: &'a ResolveResult,
     ret_tys: &'a [SemTy],
+    /// Each function's visible Callable signature (params minus env) — the
+    /// type a `MakeClosure` over it produces (Phase 6A).
+    closure_sigs: &'a [Sig],
+    classes: &'a ClassTable,
+    interner: &'a StringInterner,
     /// Current per-expr type (absent = `Never`, the lattice bottom).
     expr_ty: HashMap<Idx<HirExpr>, SemTy>,
     /// Current per-local type.
@@ -219,11 +622,33 @@ struct Solver<'a> {
     authoritative: Vec<bool>,
     /// Value expressions assigned to each local, indexed by `LocalId`.
     assignments: Vec<Vec<Idx<HirExpr>>>,
+    /// Value expressions written into the cell held by each local (`CellSet`
+    /// plus the `MakeCell` init), indexed by the cell local's `LocalId` — the
+    /// per-cell constraint of Phase 6A (the B10 field-join shape).
+    cell_writes: Vec<Vec<Idx<HirExpr>>>,
+    /// Precomputed global slot types (from `__main__`'s writes; Phase 6B).
+    global_tys: &'a [SemTy],
+    /// Slots written outside `__main__` — always `Dyn` (Phase 6B).
+    global_demoted: &'a [bool],
+    /// This function's own `GlobalSet` writes per slot — only `__main__` has
+    /// any when the slot is not demoted, making its reads a worklist join.
+    global_writes: Vec<Vec<Idx<HirExpr>>>,
 }
 
 impl<'a> Solver<'a> {
     /// **collect** — seed the assignment table and the authoritative-local set.
-    fn collect(func: &'a HirFunction, resolve: &'a ResolveResult, ret_tys: &'a [SemTy]) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    fn collect(
+        func: &'a HirFunction,
+        resolve: &'a ResolveResult,
+        ret_tys: &'a [SemTy],
+        closure_sigs: &'a [Sig],
+        classes: &'a ClassTable,
+        interner: &'a StringInterner,
+        global_tys: &'a [SemTy],
+        global_demoted: &'a [bool],
+        n_globals: usize,
+    ) -> Self {
         let n = func.locals.len();
         // A frontend type other than `Dyn` is authoritative: it comes from a
         // parameter annotation, a `name: T` annotation, or a synthetic local the
@@ -239,15 +664,45 @@ impl<'a> Solver<'a> {
             .collect();
 
         let mut assignments: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n];
+        let mut cell_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n];
+        let mut global_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n_globals];
         for (_bidx, block) in func.blocks.iter() {
             for stmt in &block.stmts {
-                if let HirStmt::Assign { target, value } = stmt {
-                    assignments[target.index()].push(*value);
+                match stmt {
+                    HirStmt::Assign { target, value } => {
+                        assignments[target.index()].push(*value);
+                        // A `MakeCell` init is the cell's first write.
+                        if let HirExprKind::MakeCell { init: Some(i) } = func.exprs[*value].kind {
+                            cell_writes[target.index()].push(i);
+                        }
+                    }
+                    HirStmt::CellSet { cell, value } => {
+                        cell_writes[cell.index()].push(*value);
+                    }
+                    HirStmt::GlobalSet { var_id, value } => {
+                        global_writes[*var_id as usize].push(*value);
+                    }
+                    _ => {}
                 }
             }
         }
 
-        Solver { func, resolve, ret_tys, expr_ty: HashMap::new(), local_ty, authoritative, assignments }
+        Solver {
+            func,
+            resolve,
+            ret_tys,
+            closure_sigs,
+            classes,
+            interner,
+            expr_ty: HashMap::new(),
+            local_ty,
+            authoritative,
+            assignments,
+            cell_writes,
+            global_tys,
+            global_demoted,
+            global_writes,
+        }
     }
 
     /// **solve** — iterate the monotone worklist to a fixpoint, then write back.
@@ -291,16 +746,23 @@ impl<'a> Solver<'a> {
     /// Recompute one inferred local's type from its assigned values, applying the
     /// `Raw`-repr soundness guard (see the module docs).
     fn recompute_local(&self, i: usize) -> SemTy {
+        self.join_writes(&self.assignments[i])
+    }
+
+    /// Join the types of a set of written values with the `Raw`-repr soundness
+    /// guard. Shared by inferred locals and cell contents (Phase 6A).
+    ///
+    /// `Never` is the in-progress bottom: a slot still being computed (or one
+    /// only fed by not-yet-evaluated values across a loop back-edge) must stay
+    /// `Never`, never jump to a spurious `Dyn`. `join` treats `Never` as the
+    /// identity, so a bottom contributor is correctly ignored by dependents;
+    /// an injected `Dyn` would instead absorb and poison them irreversibly.
+    /// Genuinely-unconstrained slots are mapped to `Dyn` once, in materialize.
+    fn join_writes(&self, writes: &[Idx<HirExpr>]) -> SemTy {
         let mut joined = SemTy::Never;
-        for &v in &self.assignments[i] {
+        for &v in writes {
             joined = joined.join(&self.ety(v));
         }
-        // `Never` is the in-progress bottom: a local still being computed (or one
-        // only fed by not-yet-evaluated values across a loop back-edge) must stay
-        // `Never`, never jump to a spurious `Dyn`. `join` treats `Never` as the
-        // identity, so a bottom contributor is correctly ignored by dependents;
-        // an injected `Dyn` would instead absorb and poison them irreversibly.
-        // Genuinely-unconstrained locals are mapped to `Dyn` once, in materialize.
         if joined == SemTy::Never {
             return SemTy::Never;
         }
@@ -312,7 +774,7 @@ impl<'a> Solver<'a> {
             // A still-`Never` contributor (not yet evaluated this sweep) is skipped
             // — it adds nothing to the join, so it must not spuriously block the
             // narrowing and force a sticky `Dyn`.
-            let uniform = self.assignments[i].iter().all(|&v| {
+            let uniform = writes.iter().all(|&v| {
                 let t = self.ety(v);
                 t == SemTy::Never || repr_of(&t) == target
             });
@@ -351,10 +813,174 @@ impl<'a> Solver<'a> {
             HirExprKind::BytesLit(_) => SemTy::Bytes,
             HirExprKind::Subscript { base, index } => self.subscript_ty(*base, *index),
             HirExprKind::ContainerExpr { op, args } => self.container_op_ty(*op, args),
-            HirExprKind::MethodCall { recv, method, .. } => {
-                method_ty(&self.ety(*recv), *method)
+            HirExprKind::MethodCall { recv, method_name, .. } => {
+                // `super().m()` resolves against the enclosing class's MRO; a
+                // `ClassName.m()` static/classmethod resolves on the class; an
+                // ordinary receiver dispatches by its static type.
+                if let HirExprKind::Super(cid) = self.func.exprs[*recv].kind {
+                    self.classes
+                        .resolve_super_method(cid, *method_name)
+                        .map(|fid| self.ret_tys[fid.index()].clone())
+                        .unwrap_or(SemTy::Dyn)
+                } else if let Some(cid) = self.name_class_ref(*recv) {
+                    self.classes
+                        .get(cid)
+                        .and_then(|i| {
+                            i.static_method(*method_name).or_else(|| i.class_method(*method_name))
+                        })
+                        .map(|m| self.ret_tys[m.func_id.index()].clone())
+                        .unwrap_or(SemTy::Dyn)
+                } else {
+                    self.method_call_ty(self.ety(*recv), *method_name)
+                }
+            }
+            HirExprKind::Attribute { value, name } => {
+                // `ClassName.attr` → a class attribute (or static-method ref).
+                if let Some(cid) = self.name_class_ref(*value) {
+                    self.classes
+                        .get(cid)
+                        .and_then(|i| i.class_attr(*name))
+                        .map(|a| a.ty.clone())
+                        .unwrap_or(SemTy::Dyn)
+                } else {
+                    self.attribute_ty(self.ety(*value), *name)
+                }
+            }
+            // `super()` itself only ever feeds a MethodCall; type it as the class so
+            // it has a representation, though it is never read as a value.
+            HirExprKind::Super(cid) => self
+                .classes
+                .get(*cid)
+                .map(|info| SemTy::Class { class_id: *cid, name: info.name })
+                .unwrap_or(SemTy::Dyn),
+            HirExprKind::IsInstance { .. } => SemTy::Bool,
+            // `Stack[int](...)` → the generic instance type (args drive precise
+            // field/method substitution; erased at repr to one shared layout).
+            HirExprKind::GenericConstruct { class_id, type_args, .. } => {
+                SemTy::Generic { base: *class_id, args: type_args.clone() }
+            }
+            // ── closures / cells / globals (Phase 6) ──
+            HirExprKind::MakeClosure { func, .. } => {
+                SemTy::Callable(Box::new(self.closure_sigs[func.index()].clone()))
+            }
+            HirExprKind::MakeCell { .. } => SemTy::Dyn,
+            HirExprKind::CellGet { cell } => {
+                let l = &self.func.locals[cell.index()];
+                // A cell another function may write (`nonlocal`) is invisible to
+                // per-function inference — its reads stay gradual (Dyn), never a
+                // precise type a cross-function write would falsify (P6-2).
+                if l.cell_shared {
+                    SemTy::Dyn
+                } else if l.ty != SemTy::Dyn {
+                    // The cell's authoritative CONTENT type — an enclosing
+                    // annotation carried across the capture boundary by the
+                    // frontend (the slot itself is a pin_tagged cell pointer).
+                    l.ty.clone()
+                } else {
+                    self.join_writes(&self.cell_writes[cell.index()])
+                }
+            }
+            // ── generators (Phase 6E) ──
+            // A generator object is an iterator value; its slot reads / sent
+            // value are uniform tagged storage (Dyn), the state an int, the
+            // closing flag a bool.
+            HirExprKind::MakeGenerator { .. } => SemTy::Iterator(Box::new(SemTy::Dyn)),
+            HirExprKind::GenQuery { op, .. } => match op.result() {
+                pyaot_hir::GenResult::Value => SemTy::Dyn,
+                pyaot_hir::GenResult::Int => SemTy::Int,
+                pyaot_hir::GenResult::Bool => SemTy::Bool,
+                pyaot_hir::GenResult::None => SemTy::NoneTy,
+            },
+            // Global slots are uniform tagged storage; the slot type is the
+            // join of `__main__`'s writes (a live worklist join inside main
+            // itself, the precomputed table elsewhere), `Dyn` once any other
+            // function writes it (Phase 6B).
+            HirExprKind::GlobalGet { var_id } => {
+                let vid = *var_id as usize;
+                if self.global_demoted.get(vid).copied().unwrap_or(false) {
+                    SemTy::Dyn
+                } else if !self.global_writes[vid].is_empty() {
+                    self.join_writes(&self.global_writes[vid])
+                } else {
+                    self.global_tys.get(vid).cloned().unwrap_or(SemTy::Dyn)
+                }
             }
         }
+    }
+
+    /// The type-parameter substitution implied by a generic-instance receiver
+    /// (`Stack[int]` → `{T ↦ int}`), if its base is a user generic class (5E).
+    fn subst_for(&self, recv: &SemTy) -> Option<HashMap<pyaot_utils::InternedString, SemTy>> {
+        let SemTy::Generic { base, args } = recv else { return None };
+        let info = self.classes.get(*base)?;
+        if info.type_params.is_empty() {
+            return None;
+        }
+        Some(info.type_params.iter().copied().zip(args.iter().cloned()).collect())
+    }
+
+    /// Apply the receiver's type-param substitution to a member type (5E).
+    fn apply_subst(&self, recv: &SemTy, ty: SemTy) -> SemTy {
+        match self.subst_for(recv) {
+            Some(subst) => ty.substitute(&subst),
+            None => ty,
+        }
+    }
+
+    /// The class id a `Name` expr resolves to (a `Symbol::Class`), for
+    /// `ClassName.attr` / `ClassName.method()` class-level access.
+    fn name_class_ref(&self, idx: Idx<HirExpr>) -> Option<ClassId> {
+        if let HirExprKind::Name(SymbolRef::Resolved(id)) = self.func.exprs[idx].kind {
+            if let Symbol::Class(cid) = self.resolve.symbol(id) {
+                return Some(cid);
+            }
+        }
+        None
+    }
+
+    /// Type of `recv.method(args)`: a class receiver yields the resolved method's
+    /// (instance / static / class) declared return; a container receiver resolves
+    /// the name to a [`ContainerMethod`] and reuses the Phase-4D [`method_ty`].
+    fn method_call_ty(&self, recv: SemTy, method_name: InternedString) -> SemTy {
+        if let Some(cid) = class_of(&recv, self.classes) {
+            let ret = self
+                .classes
+                .get(cid)
+                .and_then(|info| {
+                    info.method(method_name)
+                        .or_else(|| info.static_method(method_name))
+                        .or_else(|| info.class_method(method_name))
+                })
+                .map(|m| self.ret_tys[m.func_id.index()].clone());
+            return match ret {
+                // Substitute the generic type params for a `Stack[int]` receiver.
+                Some(t) => self.apply_subst(&recv, t),
+                None => SemTy::Dyn,
+            };
+        }
+        match ContainerMethod::from_name(self.interner.resolve(method_name)) {
+            Some(cm) => method_ty(&recv, cm),
+            None => SemTy::Dyn,
+        }
+    }
+
+    /// Type of an attribute read `value.name` from the receiver's class: a
+    /// `@property` getter's return, an instance field's best-effort type (D5), or
+    /// a class attribute's type; `Dyn` for an unknown receiver/attribute.
+    fn attribute_ty(&self, recv: SemTy, name: InternedString) -> SemTy {
+        let Some(cid) = class_of(&recv, self.classes) else { return SemTy::Dyn };
+        let Some(info) = self.classes.get(cid) else { return SemTy::Dyn };
+        let raw = if let Some(p) = info.property(name) {
+            p.ty.clone()
+        } else if let Some(t) = info.field_ty(name) {
+            t.clone()
+        } else if let Some(a) = info.class_attr(name) {
+            a.ty.clone()
+        } else {
+            return SemTy::Dyn;
+        };
+        // Substitute the generic type params for a `Stack[int]` receiver (5E).
+        self.apply_subst(&recv, raw)
     }
 
     /// Join the types of every expr in `elems` (the lattice bottom for empty).
@@ -362,10 +988,23 @@ impl<'a> Solver<'a> {
         elems.iter().fold(SemTy::Never, |acc, e| acc.join(&self.ety(*e)))
     }
 
+    /// The declared return type of a concrete-class dunder `name` on `ty`, if any
+    /// (used to type class operator results precisely — `v + v → Vector`).
+    fn class_dunder_ret(&self, ty: &SemTy, name: &str) -> Option<SemTy> {
+        let cid = class_of(ty, self.classes)?;
+        let info = self.classes.get(cid)?;
+        let m = info.methods.iter().find(|m| self.interner.resolve(m.name) == name)?;
+        Some(self.ret_tys[m.func_id.index()].clone())
+    }
+
     /// Result type of a subscript read `base[index]`, from the base's container
     /// shape. A fixed-tuple indexed by an integer literal yields that slot's type.
     fn subscript_ty(&self, base: Idx<HirExpr>, index: Idx<HirExpr>) -> SemTy {
         let bt = self.ety(base);
+        // A class with `__getitem__` yields that method's declared return (5C).
+        if let Some(t) = self.class_dunder_ret(&bt, "__getitem__") {
+            return t;
+        }
         if let Some(elem) = bt.list_elem() {
             return elem.clone();
         }
@@ -450,6 +1089,18 @@ impl<'a> Solver<'a> {
 
     /// Result type of a unary operator.
     fn unary_ty(&self, op: UnaryOp, operand: SemTy) -> SemTy {
+        // A class with the corresponding dunder yields its declared return (5C).
+        let dunder = match op {
+            UnaryOp::Neg => Some("__neg__"),
+            UnaryOp::Pos => Some("__pos__"),
+            UnaryOp::Invert => Some("__invert__"),
+            UnaryOp::Not => None,
+        };
+        if let Some(name) = dunder {
+            if let Some(t) = self.class_dunder_ret(&operand, name) {
+                return t;
+            }
+        }
         match op {
             UnaryOp::Not => SemTy::Bool,
             // `~x` is integer-valued for int-like operands; `bool`/`int` → `int`.
@@ -473,6 +1124,25 @@ impl<'a> Solver<'a> {
 
     /// Result type of a binary operator, applying CPython's numeric semantics.
     fn binop_ty(&self, op: BinOp, l: SemTy, r: SemTy) -> SemTy {
+        // A class left operand defining the operator's dunder yields that method's
+        // declared return (`v + v → Vector`, `v * 2 → Vector`) — 5C.
+        let dunder = match op {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::FloorDiv => "__floordiv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitXor => "__xor__",
+            BinOp::Shl => "__lshift__",
+            BinOp::Shr => "__rshift__",
+        };
+        if let Some(t) = self.class_dunder_ret(&l, dunder) {
+            return t;
+        }
         match op {
             // Arithmetic follows the numeric tower via `join` (Bool ⊂ Int ⊂ Float;
             // same-type stays; mixed non-numerics → a tagged union). `**` is also
@@ -517,20 +1187,33 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// Result type of a call: a compiled function's declared return, or a
-    /// per-builtin result type.
+    /// Result type of a call: a compiled function's declared return, a
+    /// per-builtin result type, or — for a callable VALUE (closure / lambda /
+    /// thunk, Phase 6A) — the value's `Callable` return type.
     fn call_ty(&self, callee: Idx<HirExpr>, args: &[Idx<HirExpr>]) -> SemTy {
-        let symref = match &self.func.exprs[callee].kind {
-            HirExprKind::Name(s) => *s,
-            _ => return SemTy::Dyn,
-        };
-        let SymbolRef::Resolved(id) = symref else { return SemTy::Dyn };
-        match self.resolve.symbol(id) {
-            Symbol::Function(fid) => self.ret_tys[fid.index()].clone(),
-            Symbol::Builtin(kind) => self.builtin_ty(kind, args),
-            Symbol::Container(op) => self.container_op_ty(op, args),
-            // `range(...)` used as a value is an iterable of ints.
-            Symbol::BuiltinRange => SemTy::Iterator(Box::new(SemTy::Int)),
+        if let HirExprKind::Name(SymbolRef::Resolved(id)) = &self.func.exprs[callee].kind {
+            match self.resolve.symbol(*id) {
+                Symbol::Function(fid) => return self.ret_tys[fid.index()].clone(),
+                Symbol::Builtin(kind) => return self.builtin_ty(kind, args),
+                Symbol::Container(op) => return self.container_op_ty(op, args),
+                // `Cls(args)` constructs an instance of that class.
+                Symbol::Class(cid) => {
+                    return match self.classes.get(cid) {
+                        Some(info) => SemTy::Class { class_id: cid, name: info.name },
+                        None => SemTy::Dyn,
+                    }
+                }
+                // `range(...)` used as a value is an iterable of ints.
+                Symbol::BuiltinRange => return SemTy::Iterator(Box::new(SemTy::Int)),
+                // A local holding a callable value → fall through to its type.
+                Symbol::Local(_) => {}
+                _ => return SemTy::Dyn,
+            }
+        }
+        // Indirect call: type by the callee VALUE's signature.
+        match self.ety(callee) {
+            SemTy::Callable(sig) => sig.ret.clone(),
+            SemTy::Never => SemTy::Never,
             _ => SemTy::Dyn,
         }
     }
@@ -660,9 +1343,30 @@ fn iter_elem_raw(t: &SemTy) -> SemTy {
 /// **materialize** — write solved types back. Expr nodes that solved to `Never`
 /// (genuinely unconstrained / unreachable) keep their frontend type rather than
 /// taking the bottom representation.
+/// Erase any residual type variable to `Dyn` (→ `Tagged`) — a generic accessed
+/// without instantiation args (a bare `Stack()`) leaves `Var`s the codegen has no
+/// representation for (5E). `repr_of(Var)` is already `Tagged`, so this is a
+/// clarity/soundness belt rather than a correctness requirement.
+fn erase_vars(ty: &SemTy) -> SemTy {
+    if !ty.contains_var() {
+        return ty.clone();
+    }
+    match ty {
+        SemTy::Var(_) => SemTy::Dyn,
+        SemTy::Generic { base, args } => {
+            SemTy::Generic { base: *base, args: args.iter().map(erase_vars).collect() }
+        }
+        SemTy::Iterator(t) => SemTy::Iterator(Box::new(erase_vars(t))),
+        // Re-join union members through the lattice so an erased `Dyn` absorbs.
+        SemTy::Union(ts) => ts.iter().fold(SemTy::Never, |acc, t| acc.join(&erase_vars(t))),
+        other => other.clone(),
+    }
+}
+
 fn materialize(func: &mut HirFunction, solution: &Solution) {
     for (i, local) in func.locals.iter_mut().enumerate() {
-        let ty = &solution.local_ty[i];
+        let ty = erase_vars(&solution.local_ty[i]);
+        let ty = &ty;
         if *ty != SemTy::Never {
             local.ty = ty.clone();
         }
@@ -675,8 +1379,9 @@ fn materialize(func: &mut HirFunction, solution: &Solution) {
     }
     for (idx, expr) in func.exprs.iter_mut() {
         if let Some(ty) = solution.expr_ty.get(&idx) {
-            if *ty != SemTy::Never {
-                expr.ty = ty.clone();
+            let ty = erase_vars(ty);
+            if ty != SemTy::Never {
+                expr.ty = ty;
             }
         }
     }

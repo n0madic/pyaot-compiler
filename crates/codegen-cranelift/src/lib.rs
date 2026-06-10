@@ -36,7 +36,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
-    classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, LocalDecl,
+    classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp, LocalDecl,
     MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
@@ -130,6 +130,7 @@ struct RuntimeFns {
     tuple_cmp: FuncId,
     // ── iterator protocol (Phase 4B) ──
     iter_value: FuncId,
+    iter_next: FuncId,
     iter_next_no_exc: FuncId,
     iter_is_exhausted: FuncId,
     // ── iteration builtins (Phase 4C) ──
@@ -169,6 +170,40 @@ struct RuntimeFns {
     set_difference: FuncId,
     set_copy: FuncId,
     set_clear: FuncId,
+    // ── classes (Phase 5) ──
+    make_instance: FuncId,
+    instance_get_field: FuncId,
+    instance_set_field: FuncId,
+    register_class: FuncId,
+    register_class_field_count: FuncId,
+    register_class_qualname: FuncId,
+    // ── inheritance / dispatch (Phase 5B) ──
+    register_vtable: FuncId,
+    register_method_name: FuncId,
+    vtable_lookup_by_name: FuncId,
+    isinstance_inherited: FuncId,
+    // ── dunders (Phase 5C) ──
+    register_dunder_func: FuncId,
+    // ── class attributes (Phase 5D) ──
+    class_attr_get_ptr: FuncId,
+    class_attr_set_ptr: FuncId,
+    // ── closures / cells / globals (Phase 6) ──
+    make_cell_ptr: FuncId,
+    cell_get_ptr: FuncId,
+    cell_set_ptr: FuncId,
+    global_get_ptr: FuncId,
+    global_set_ptr: FuncId,
+    // ── generators (Phase 6E) ──
+    make_generator: FuncId,
+    gen_get_local: FuncId,
+    gen_set_local: FuncId,
+    gen_get_state: FuncId,
+    gen_set_state: FuncId,
+    gen_get_sent_value: FuncId,
+    gen_set_exhausted: FuncId,
+    gen_is_closing: FuncId,
+    gen_send: FuncId,
+    gen_close: FuncId,
 }
 
 impl RuntimeFns {
@@ -253,6 +288,8 @@ impl RuntimeFns {
             list_cmp: d("rt_list_cmp", &[ti, ti, t8], &[t8])?,
             tuple_cmp: d("rt_tuple_cmp", &[ti, ti, t8], &[t8])?,
             iter_value: d("rt_iter_value", &[ti], &[ti])?,
+            // The raising variant (StopIteration on exhaustion) — `next(x)`.
+            iter_next: d("rt_iter_next", &[ti], &[ti])?,
             iter_next_no_exc: d("rt_iter_next_no_exc", &[ti], &[ti])?,
             iter_is_exhausted: d("rt_iter_is_exhausted", &[ti], &[t8])?,
             iter_enumerate: d("rt_iter_enumerate", &[ti, ti], &[ti])?,
@@ -290,6 +327,44 @@ impl RuntimeFns {
             set_difference: d("rt_set_difference", &[ti, ti], &[ti])?,
             set_copy: d("rt_set_copy", &[ti], &[ti])?,
             set_clear: d("rt_set_clear", &[ti], &[])?,
+            // Classes (Phase 5). `class_id` is a `u8` → `i8` at the ABI; instance
+            // values + the qualname `StrObj` are tagged `Value` = i64.
+            make_instance: d("rt_make_instance", &[t8, ti], &[ti])?,
+            instance_get_field: d("rt_instance_get_field", &[ti, ti], &[ti])?,
+            instance_set_field: d("rt_instance_set_field", &[ti, ti, ti], &[])?,
+            register_class: d("rt_register_class", &[t8, t8], &[])?,
+            register_class_field_count: d("rt_register_class_field_count", &[t8, ti], &[])?,
+            register_class_qualname: d("rt_register_class_qualname", &[ti, ti], &[])?,
+            // Inheritance / dispatch. The vtable ptr is a code/data address (i64);
+            // `rt_vtable_lookup_by_name` takes the instance Value + name hash → fn ptr.
+            register_vtable: d("rt_register_vtable", &[t8, ti], &[])?,
+            register_method_name: d("rt_register_method_name", &[ti, ti, ti], &[])?,
+            vtable_lookup_by_name: d("rt_vtable_lookup_by_name", &[ti, ti], &[ti])?,
+            isinstance_inherited: d("rt_isinstance_class_inherited", &[ti, ti], &[t8])?,
+            register_dunder_func: d("rt_register_dunder_func", &[ti, ti, ti], &[])?,
+            // Class attributes by (class_id: u8, attr_idx: u32) → tagged Value.
+            class_attr_get_ptr: d("rt_class_attr_get_ptr", &[t8, t32], &[ti])?,
+            class_attr_set_ptr: d("rt_class_attr_set_ptr", &[t8, t32, ti], &[])?,
+            // Cells hold full tagged Value bits (P6-2: ONLY the ptr variants —
+            // the typed int/float/bool cell variants hide heap pointers from
+            // the GC and are never emitted). Globals likewise (GC-rooted).
+            make_cell_ptr: d("rt_make_cell_ptr", &[ti], &[ti])?,
+            cell_get_ptr: d("rt_cell_get_ptr", &[ti], &[ti])?,
+            cell_set_ptr: d("rt_cell_set_ptr", &[ti, ti], &[])?,
+            global_get_ptr: d("rt_global_get_ptr", &[t32], &[ti])?,
+            global_set_ptr: d("rt_global_set_ptr", &[t32, ti], &[])?,
+            // Generators (Phase 6E). Slot reads/writes use the Ptr variants
+            // (full tagged Value bits, GC-traced); state/slot indices are u32.
+            make_generator: d("rt_make_generator", &[t32, t32], &[ti])?,
+            gen_get_local: d("rt_generator_get_local_ptr", &[ti, t32], &[ti])?,
+            gen_set_local: d("rt_generator_set_local_ptr", &[ti, t32, ti], &[])?,
+            gen_get_state: d("rt_generator_get_state", &[ti], &[t32])?,
+            gen_set_state: d("rt_generator_set_state", &[ti, t32], &[])?,
+            gen_get_sent_value: d("rt_generator_get_sent_value", &[ti], &[ti])?,
+            gen_set_exhausted: d("rt_generator_set_exhausted", &[ti], &[])?,
+            gen_is_closing: d("rt_generator_is_closing", &[ti], &[t8])?,
+            gen_send: d("rt_generator_send", &[ti, ti], &[ti])?,
+            gen_close: d("rt_generator_close", &[ti], &[])?,
         })
     }
 }
@@ -366,13 +441,52 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
         func_ids.push(id);
     }
 
+    // One static vtable data object per class (Phase 5B): `[num_slots: u64,
+    // fn_ptr…]`, each fn_ptr a relocation to the resolved method's address. Its
+    // pointer is registered in `__pyaot_classinit` via `rt_register_vtable`.
+    let mut vtable_ids: HashMap<u32, DataId> = HashMap::new();
+    for c in &program.classes {
+        if c.vtable.is_empty() {
+            continue;
+        }
+        let num_slots = c.vtable.len();
+        let mut bytes = vec![0u8; pyaot_core_defs::layout::vtable_data_size(num_slots)];
+        bytes[0..8].copy_from_slice(&(num_slots as u64).to_le_bytes());
+        let name = format!("pyaot_vtable_{}", c.class_id.0);
+        let data_id = module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| cg_error(format!("declare vtable `{name}`: {e}")))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        for (slot, fid) in c.vtable.iter().enumerate() {
+            let cl_fid = func_ids[fid.index()];
+            let fref = module.declare_func_in_data(cl_fid, &mut desc);
+            desc.write_function_addr(pyaot_core_defs::layout::vtable_slot_offset(slot) as u32, fref);
+        }
+        module
+            .define_data(data_id, &desc)
+            .map_err(|e| cg_error(format!("define vtable `{name}`: {e}")))?;
+        vtable_ids.insert(c.class_id.0, data_id);
+    }
+
     // Define each function body.
     for (i, mf) in program.funcs.iter().enumerate() {
         define_function(&mut module, mf, func_ids[i], &func_ids, &rt, &data_ids, ptr_ty, call_conv)?;
     }
 
-    emit_main(&mut module, func_ids[program.entry.index()], &rt, ptr_ty, call_conv)?;
-    emit_generator_resume_stub(&mut module, ptr_ty, call_conv)?;
+    // Class registration (`__pyaot_classinit`) runs before `__main__`, so every
+    // class is registered before any instance is created (incl. module-top-level
+    // ones). Emitted only when the program defines classes.
+    let classinit = if program.classes.is_empty() {
+        None
+    } else {
+        Some(emit_classinit(
+            &mut module, program, &rt, &data_ids, &vtable_ids, &func_ids, ptr_ty, call_conv,
+        )?)
+    };
+
+    emit_main(&mut module, func_ids[program.entry.index()], classinit, &rt, ptr_ty, call_conv)?;
+    emit_generator_dispatch(&mut module, program, &func_ids, ptr_ty, call_conv)?;
 
     let product = module.finish();
     let bytes = product
@@ -383,20 +497,28 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Emit a trapping stub for `__pyaot_generator_resume`. The runtime's iterator
-/// factory (reachable from `rt_iter_value`) links against this compiler-provided
-/// symbol — it is the entry point real generators (Phase 6) compile to. Until
-/// then no generator object is ever created, so the stub is never *called*; it
-/// exists solely to satisfy the static linker (PITFALLS B9-adjacent).
-fn emit_generator_resume_stub(module: &mut ObjectModule, ptr_ty: Type, cc: CallConv) -> Result<()> {
+/// Emit `__pyaot_generator_resume(gen) -> gen`: the dispatcher the runtime's
+/// `rt_generator_next/send/close` call (Phase 6E). It loads the generator's
+/// stored `func_id` (a `u32` at the frozen `GENERATOR_FUNC_ID_OFFSET`) and
+/// compare-chains it against each `gen_id` → calls the matching resume fn and
+/// returns its result; an unmatched id (or an empty table) traps. The resume
+/// fns have the compiled signature `(gen: i64) -> i64`, so the dispatcher
+/// reuses the platform pointer type as the `Value` ABI.
+fn emit_generator_dispatch(
+    module: &mut ObjectModule,
+    program: &MirProgram,
+    func_ids: &[FuncId],
+    ptr_ty: Type,
+    cc: CallConv,
+) -> Result<()> {
     let mut sig = Signature::new(cc);
     sig.params.push(AbiParam::new(ptr_ty));
     sig.returns.push(AbiParam::new(ptr_ty));
     let id = module
         .declare_function("__pyaot_generator_resume", Linkage::Export, &sig)
-        .map_err(|e| cg_error(format!("declare generator stub: {e}")))?;
+        .map_err(|e| cg_error(format!("declare generator dispatch: {e}")))?;
     let mut ctx = module.make_context();
-    ctx.func.signature = sig;
+    ctx.func.signature = sig.clone();
     let mut fctx = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
@@ -404,20 +526,216 @@ fn emit_generator_resume_stub(module: &mut ObjectModule, ptr_ty: Type, cc: CallC
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
         builder.seal_block(entry);
-        builder.ins().trap(TrapCode::unwrap_user(2));
-        builder.finalize();
+        let gen = builder.block_params(entry)[0];
+
+        // Empty table → keep today's trap (no generator is ever created).
+        if program.generators.is_empty() {
+            builder.ins().trap(TrapCode::unwrap_user(2));
+            builder.finalize();
+        } else {
+            let offset = pyaot_core_defs::layout::GENERATOR_FUNC_ID_OFFSET;
+            let func_id_val =
+                builder.ins().load(types::I32, MemFlags::trusted(), gen, offset);
+            // Compare-chain: for each gen_id, if func_id == gen_id call its
+            // resume fn and return; else fall to the next test.
+            for (gen_id, resume_fid) in program.generators.iter().enumerate() {
+                let matches = builder.create_block();
+                let next = builder.create_block();
+                let want = builder.ins().iconst(types::I32, gen_id as i64);
+                let eq = builder.ins().icmp(IntCC::Equal, func_id_val, want);
+                builder.ins().brif(eq, matches, &[], next, &[]);
+
+                builder.switch_to_block(matches);
+                builder.seal_block(matches);
+                let fref = module.declare_func_in_func(func_ids[resume_fid.index()], builder.func);
+                let call = builder.ins().call(fref, &[gen]);
+                let res = builder.inst_results(call)[0];
+                builder.ins().return_(&[res]);
+
+                builder.switch_to_block(next);
+                builder.seal_block(next);
+            }
+            // Unmatched func_id → trap (a corrupt generator object).
+            builder.ins().trap(TrapCode::unwrap_user(2));
+            builder.finalize();
+        }
     }
     module
         .define_function(id, &mut ctx)
-        .map_err(|e| cg_error(format!("define generator stub: {e}")))?;
+        .map_err(|e| cg_error(format!("define generator dispatch: {e}")))?;
     module.clear_context(&mut ctx);
     Ok(())
 }
 
-/// `main(argc, argv)` → rt_init → call `__main__` → rt_shutdown → return 0.
+/// Emit `__pyaot_classinit`: register every class (`rt_register_class` with its
+/// real parent, `_field_count`, `_qualname`; 5B adds vtables + method names, 5C
+/// dunders). Called from `main()` between `rt_init` and `__main__` so all classes
+/// are registered before any instance is created.
+#[allow(clippy::too_many_arguments)]
+fn emit_classinit(
+    module: &mut ObjectModule,
+    program: &MirProgram,
+    rt: &RuntimeFns,
+    data_ids: &HashMap<InternedString, (DataId, u32)>,
+    vtable_ids: &HashMap<u32, DataId>,
+    func_ids: &[FuncId],
+    _ptr_ty: Type,
+    cc: CallConv,
+) -> Result<FuncId> {
+    let sig = Signature::new(cc);
+    let id = module
+        .declare_function("__pyaot_classinit", Linkage::Local, &sig)
+        .map_err(|e| cg_error(format!("declare __pyaot_classinit: {e}")))?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut fctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        for c in &program.classes {
+            let cid8 = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+            // 255 = no parent (NO_PARENT sentinel in the runtime registry).
+            let parent = c.parent.map(|p| p.0 as i64).unwrap_or(255);
+            let parent8 = builder.ins().iconst(types::I8, parent);
+            let rc = module.declare_func_in_func(rt.register_class, builder.func);
+            builder.ins().call(rc, &[cid8, parent8]);
+
+            let cid8b = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+            let fc = builder.ins().iconst(types::I64, c.field_count as i64);
+            let rfc = module.declare_func_in_func(rt.register_class_field_count, builder.func);
+            builder.ins().call(rfc, &[cid8b, fc]);
+
+            // qualname: build the StrObj, then register it for the default repr.
+            let (data_id, len) = *data_ids
+                .get(&c.qualname)
+                .ok_or_else(|| cg_error("missing data object for class qualname"))?;
+            let gv = module.declare_data_in_func(data_id, builder.func);
+            let qptr = builder.ins().global_value(_ptr_ty, gv);
+            let qlen = builder.ins().iconst(types::I64, len as i64);
+            let mks = module.declare_func_in_func(rt.make_str, builder.func);
+            let scall = builder.ins().call(mks, &[qptr, qlen]);
+            let str_v = builder.inst_results(scall)[0];
+            let cid64 = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+            let rqn = module.declare_func_in_func(rt.register_class_qualname, builder.func);
+            builder.ins().call(rqn, &[cid64, str_v]);
+
+            // Vtable + per-method name→slot registrations (Phase 5B), so the
+            // dynamic `rt_vtable_lookup_by_name` path always resolves.
+            if let Some(vt_data) = vtable_ids.get(&c.class_id.0) {
+                let gv = module.declare_data_in_func(*vt_data, builder.func);
+                let vptr = builder.ins().global_value(_ptr_ty, gv);
+                let cid8c = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let rv = module.declare_func_in_func(rt.register_vtable, builder.func);
+                builder.ins().call(rv, &[cid8c, vptr]);
+
+                for (name_hash, slot) in &c.method_names {
+                    let cidh = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                    let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
+                    let slotv = builder.ins().iconst(types::I64, *slot as i64);
+                    let rmn = module.declare_func_in_func(rt.register_method_name, builder.func);
+                    builder.ins().call(rmn, &[cidh, hashv, slotv]);
+                }
+            }
+
+            // Dunder function registrations (Phase 5C): so the runtime's
+            // registry-dispatched ops (`rt_obj_add`/`rt_obj_neg`/the default-repr
+            // path) resolve `a + b` / `print(a)` for instances of this class.
+            for (name_hash, fid) in &c.dunders {
+                let cidd = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
+                let fref = module.declare_func_in_func(func_ids[fid.index()], builder.func);
+                let addr = builder.ins().func_addr(_ptr_ty, fref);
+                let rdf = module.declare_func_in_func(rt.register_dunder_func, builder.func);
+                builder.ins().call(rdf, &[cidd, hashv, addr]);
+            }
+
+            // Class-attribute initializers (Phase 5D): materialize each literal and
+            // store it into its (class_id, attr_idx) slot.
+            for (attr_idx, val) in &c.class_attr_inits {
+                let v = materialize_const(&mut builder, module, rt, data_ids, _ptr_ty, val)?;
+                let cida = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let idxa = builder.ins().iconst(types::I32, *attr_idx as i64);
+                let setp = module.declare_func_in_func(rt.class_attr_set_ptr, builder.func);
+                builder.ins().call(setp, &[cida, idxa, v]);
+            }
+        }
+        builder.ins().return_(&[]);
+        builder.finalize();
+    }
+    module
+        .define_function(id, &mut ctx)
+        .map_err(|e| cg_error(format!("define __pyaot_classinit: {e}")))?;
+    module.clear_context(&mut ctx);
+    Ok(id)
+}
+
+/// Materialize a [`Const`] into a Cranelift `Value` in a free builder context
+/// (used by `__pyaot_classinit` for class-attribute initializers). Mirrors
+/// `FnGen::lower_const`, but standalone (no per-function state).
+fn materialize_const(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    rt: &RuntimeFns,
+    data_ids: &HashMap<InternedString, (DataId, u32)>,
+    ptr_ty: Type,
+    val: &Const,
+) -> Result<Value> {
+    let str_data = |module: &mut ObjectModule, builder: &mut FunctionBuilder, id: InternedString| -> Result<(Value, Value)> {
+        let (data_id, len) = *data_ids
+            .get(&id)
+            .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
+        let gv = module.declare_data_in_func(data_id, builder.func);
+        let ptr = builder.ins().global_value(ptr_ty, gv);
+        let len_val = builder.ins().iconst(types::I64, len as i64);
+        Ok((ptr, len_val))
+    };
+    let call1 = |module: &mut ObjectModule, builder: &mut FunctionBuilder, fid: FuncId, args: &[Value]| -> Value {
+        let fref = module.declare_func_in_func(fid, builder.func);
+        let inst = builder.ins().call(fref, args);
+        builder.inst_results(inst)[0]
+    };
+    let v = match val {
+        Const::Int(i) => {
+            let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
+            builder.ins().iconst(types::I64, tagged)
+        }
+        Const::Bool(b) => {
+            let tagged = if *b {
+                ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
+            } else {
+                tag::BOOL_TAG as i64
+            };
+            builder.ins().iconst(types::I64, tagged)
+        }
+        Const::None => builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
+        Const::Float(f) => {
+            let fv = builder.ins().f64const(*f);
+            call1(module, builder, rt.box_float, &[fv])
+        }
+        Const::Str(id) => {
+            let (ptr, len) = str_data(module, builder, *id)?;
+            call1(module, builder, rt.make_str, &[ptr, len])
+        }
+        Const::Bytes(id) => {
+            let (ptr, len) = str_data(module, builder, *id)?;
+            call1(module, builder, rt.make_bytes, &[ptr, len])
+        }
+        Const::BigIntStr(id) => {
+            let (ptr, len) = str_data(module, builder, *id)?;
+            call1(module, builder, rt.bigint_from_str, &[ptr, len])
+        }
+    };
+    Ok(v)
+}
+
+/// `main(argc, argv)` → rt_init → (classinit) → call `__main__` → rt_shutdown → 0.
 fn emit_main(
     module: &mut ObjectModule,
     entry_fn: FuncId,
+    classinit: Option<FuncId>,
     rt: &RuntimeFns,
     ptr_ty: Type,
     cc: CallConv,
@@ -445,6 +763,13 @@ fn emit_main(
 
         let init = module.declare_func_in_func(rt.init, builder.func);
         builder.ins().call(init, &[argc, argv]);
+
+        // Register all classes before running module-body code (which may build
+        // instances at the top level).
+        if let Some(classinit) = classinit {
+            let ci = module.declare_func_in_func(classinit, builder.func);
+            builder.ins().call(ci, &[]);
+        }
 
         let entry_ref = module.declare_func_in_func(entry_fn, builder.func);
         builder.ins().call(entry_ref, &[]);
@@ -536,6 +861,7 @@ fn define_function(
             locals: &mf.locals,
             program_ret: clif_ty(&mf.ret),
             ptr_ty,
+            cc,
             root_slot_of,
             nroots,
             roots_slot,
@@ -584,6 +910,8 @@ struct FnGen<'a, 'b> {
     locals: &'a [LocalDecl],
     program_ret: Type,
     ptr_ty: Type,
+    /// The platform call convention (for `CallVirtual`'s indirect-call signature).
+    cc: CallConv,
     /// Per-local GC roots-array index (`Some` iff the local is a GC root).
     root_slot_of: Vec<Option<u32>>,
     nroots: u32,
@@ -687,13 +1015,236 @@ impl FnGen<'_, '_> {
                 Ok(())
             }
             MirInst::CallContainer { dst, op, args } => self.lower_call_container(dst, *op, args),
+            MirInst::MakeInstance { dst, class_id, field_count } => {
+                let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
+                let fc = self.builder.ins().iconst(types::I64, *field_count);
+                let v = self.call(self.rt.make_instance, &[cid, fc]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::GetField { dst, base, slot } => {
+                let b = self.use_operand(base);
+                let slot_v = self.builder.ins().iconst(types::I64, *slot as i64);
+                let v = self.call(self.rt.instance_get_field, &[b, slot_v]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::SetField { base, slot, value } => {
+                let b = self.use_operand(base);
+                let slot_v = self.builder.ins().iconst(types::I64, *slot as i64);
+                let v = self.use_operand(value);
+                self.call(self.rt.instance_set_field, &[b, slot_v, v]);
+                Ok(())
+            }
+            MirInst::CallVirtual { dst, recv, name_hash, args, ret } => {
+                self.lower_call_virtual(dst, recv, *name_hash, args, ret)
+            }
+            MirInst::IsInstance { dst, value, class_id } => {
+                let v = self.use_operand(value);
+                let cid = self.builder.ins().iconst(types::I64, class_id.0 as i64);
+                let r = self.call(self.rt.isinstance_inherited, &[v, cid]).unwrap();
+                self.def_local(*dst, r);
+                Ok(())
+            }
+            MirInst::GetClassAttr { dst, class_id, attr_idx } => {
+                let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
+                let idx = self.builder.ins().iconst(types::I32, *attr_idx as i64);
+                let v = self.call(self.rt.class_attr_get_ptr, &[cid, idx]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::SetClassAttr { class_id, attr_idx, value } => {
+                let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
+                let idx = self.builder.ins().iconst(types::I32, *attr_idx as i64);
+                let v = self.use_operand(value);
+                self.call(self.rt.class_attr_set_ptr, &[cid, idx, v]);
+                Ok(())
+            }
             MirInst::AssertFail => {
                 let null = self.builder.ins().iconst(self.ptr_ty, 0);
                 self.call(self.rt.assert_fail, &[null]);
                 Ok(())
             }
             MirInst::Print { kind, arg } => self.lower_print(*kind, arg),
+            // ── closures / cells / globals (Phase 6) ──
+            MirInst::MakeClosure { dst, func, captures } => {
+                self.lower_make_closure(*dst, *func, captures)
+            }
+            MirInst::CallIndirect { dst, callee, args, sig } => {
+                self.lower_call_indirect(dst, callee, args, sig)
+            }
+            MirInst::MakeCell { dst, init } => {
+                let iv = self.use_operand(init);
+                let v = self.call(self.rt.make_cell_ptr, &[iv]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::CellGet { dst, cell } => {
+                let c = self.use_operand(cell);
+                let v = self.call(self.rt.cell_get_ptr, &[c]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::CellSet { cell, value } => {
+                let c = self.use_operand(cell);
+                let v = self.use_operand(value);
+                self.call(self.rt.cell_set_ptr, &[c, v]);
+                Ok(())
+            }
+            MirInst::GlobalGet { dst, var_id } => {
+                let id = self.builder.ins().iconst(types::I32, *var_id as i64);
+                let v = self.call(self.rt.global_get_ptr, &[id]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::GlobalSet { var_id, value } => {
+                let id = self.builder.ins().iconst(types::I32, *var_id as i64);
+                let v = self.use_operand(value);
+                self.call(self.rt.global_set_ptr, &[id, v]);
+                Ok(())
+            }
+            // ── generators (Phase 6E) ──
+            MirInst::MakeGenerator { dst, gen_id, num_locals } => {
+                let gid = self.builder.ins().iconst(types::I32, *gen_id as i64);
+                let nl = self.builder.ins().iconst(types::I32, *num_locals as i64);
+                let v = self.call(self.rt.make_generator, &[gid, nl]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::GenOpInst { dst, op, gen, imm, value } => {
+                self.lower_gen_op(dst, *op, gen, *imm, value)
+            }
         }
+    }
+
+    /// Lower a generator state-machine op (Phase 6E) to its runtime call. Slot /
+    /// state immediates are `u32`; `GetState` zero-extends the `u32` result to
+    /// the `Raw(I64)` the verifier expects.
+    fn lower_gen_op(
+        &mut self,
+        dst: &Option<LocalId>,
+        op: GenOp,
+        gen: &Operand,
+        imm: u32,
+        value: &Option<Operand>,
+    ) -> Result<()> {
+        let g = self.use_operand(gen);
+        let imm_v = self.builder.ins().iconst(types::I32, imm as i64);
+        match op {
+            GenOp::GetLocal => {
+                let v = self.call(self.rt.gen_get_local, &[g, imm_v]).unwrap();
+                self.def_local(dst.unwrap(), v);
+            }
+            GenOp::SetLocal => {
+                let val = self.use_operand(value.as_ref().unwrap());
+                self.call(self.rt.gen_set_local, &[g, imm_v, val]);
+            }
+            GenOp::GetState => {
+                let s = self.call(self.rt.gen_get_state, &[g]).unwrap();
+                let wide = self.builder.ins().uextend(types::I64, s);
+                self.def_local(dst.unwrap(), wide);
+            }
+            GenOp::SetState => {
+                self.call(self.rt.gen_set_state, &[g, imm_v]);
+            }
+            GenOp::GetSentValue => {
+                let v = self.call(self.rt.gen_get_sent_value, &[g]).unwrap();
+                self.def_local(dst.unwrap(), v);
+            }
+            GenOp::SetExhausted => {
+                self.call(self.rt.gen_set_exhausted, &[g]);
+            }
+            GenOp::IsClosing => {
+                let v = self.call(self.rt.gen_is_closing, &[g]).unwrap();
+                self.def_local(dst.unwrap(), v);
+            }
+            GenOp::Next => {
+                // `next(x)` raises StopIteration on exhaustion (CPython
+                // semantics) — route through the raising `rt_iter_next`, NOT
+                // `rt_generator_next` (which returns the bare resume result and
+                // would silently surface `None` past the end). The for-loop
+                // path stays on the non-raising `rt_iter_next_no_exc`.
+                let v = self.call(self.rt.iter_next, &[g]).unwrap();
+                self.def_local(dst.unwrap(), v);
+            }
+            GenOp::Send => {
+                let val = self.use_operand(value.as_ref().unwrap());
+                let v = self.call(self.rt.gen_send, &[g, val]).unwrap();
+                self.def_local(dst.unwrap(), v);
+            }
+            GenOp::Close => {
+                self.call(self.rt.gen_close, &[g]);
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower `MakeClosure` (Phase 6A): an ordinary runtime tuple of `1+N` slots.
+    /// Slot 0 holds the target's code address **int-tagged** (`(addr << 3) | 1`)
+    /// so the GC's `is_ptr` check skips it when tracing tuple slots; slots
+    /// `1..=N` hold the captured cells (tagged Values, traced normally).
+    fn lower_make_closure(
+        &mut self,
+        dst: LocalId,
+        func: pyaot_utils::FuncId,
+        captures: &[Operand],
+    ) -> Result<()> {
+        let count = self.builder.ins().iconst(types::I64, 1 + captures.len() as i64);
+        let env = self.call(self.rt.make_tuple, &[count]).unwrap();
+        // Root the env tuple immediately: the capture stores below call into the
+        // runtime, and a later allocation must not collect it.
+        self.def_local(dst, env);
+
+        let fref = self.module.declare_func_in_func(self.func_ids[func.index()], self.builder.func);
+        let addr = self.builder.ins().func_addr(self.ptr_ty, fref);
+        let shifted = self.builder.ins().ishl_imm(addr, tag::INT_SHIFT as i64);
+        let tagged_addr = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
+        let slot0 = self.builder.ins().iconst(types::I64, 0);
+        self.call(self.rt.tuple_set, &[env, slot0, tagged_addr]);
+
+        for (i, cap) in captures.iter().enumerate() {
+            let idx = self.builder.ins().iconst(types::I64, i as i64 + 1);
+            let v = self.use_operand(cap);
+            self.call(self.rt.tuple_set, &[env, idx, v]);
+        }
+        Ok(())
+    }
+
+    /// Lower `CallIndirect` (Phase 6A): read slot 0 of the env tuple, untag the
+    /// code address, and `call_indirect` with the env tuple itself as arg 0.
+    /// The Cranelift signature is `(I64 env, clif_ty(params)…) → clif_ty(ret)` —
+    /// a pure function of the carried `SigRepr` (Invariant 3 / PITFALLS A4).
+    fn lower_call_indirect(
+        &mut self,
+        dst: &Option<LocalId>,
+        callee: &Operand,
+        args: &[Operand],
+        sig: &pyaot_types::SigRepr,
+    ) -> Result<()> {
+        let env = self.use_operand(callee);
+        let slot0 = self.builder.ins().iconst(types::I64, 0);
+        let tagged_addr = self.call(self.rt.tuple_get, &[env, slot0]).unwrap();
+        let fnaddr = self.builder.ins().sshr_imm(tagged_addr, tag::INT_SHIFT as i64);
+
+        let mut csig = Signature::new(self.cc);
+        csig.params.push(AbiParam::new(types::I64)); // env tuple
+        for p in &sig.params {
+            csig.params.push(AbiParam::new(clif_ty(p)));
+        }
+        csig.returns.push(AbiParam::new(clif_ty(&sig.ret)));
+        let sigref = self.builder.import_signature(csig);
+
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(env);
+        for a in args {
+            call_args.push(self.use_operand(a));
+        }
+        let call = self.builder.ins().call_indirect(sigref, fnaddr, &call_args);
+        let res = self.builder.inst_results(call).first().copied();
+        if let (Some(d), Some(v)) = (dst, res) {
+            self.def_local(*d, v);
+        }
+        Ok(())
     }
 
     fn lower_const(&mut self, dst: LocalId, val: &Const) -> Result<()> {
@@ -965,6 +1516,43 @@ impl FnGen<'_, '_> {
             ContainerOp::SetClear => self.rt.set_clear,
         };
         let res = self.call(fid, &vals);
+        if let (Some(d), Some(v)) = (dst, res) {
+            self.def_local(*d, v);
+        }
+        Ok(())
+    }
+
+    /// Lower a `CallVirtual` (Phase 5B): resolve the function pointer for the
+    /// receiver's actual class via `rt_vtable_lookup_by_name`, then `call_indirect`
+    /// with a signature built from the operand reprs + the resolved return repr.
+    fn lower_call_virtual(
+        &mut self,
+        dst: &Option<LocalId>,
+        recv: &Operand,
+        name_hash: u64,
+        args: &[Operand],
+        ret: &Repr,
+    ) -> Result<()> {
+        let recv_v = self.use_operand(recv);
+        let hash_v = self.builder.ins().iconst(types::I64, name_hash as i64);
+        let fnptr = self.call(self.rt.vtable_lookup_by_name, &[recv_v, hash_v]).unwrap();
+
+        // Indirect-call signature: (self: I64, args…) -> ret.
+        let mut sig = Signature::new(self.cc);
+        sig.params.push(AbiParam::new(clif_ty(self.operand_repr(recv))));
+        for a in args {
+            sig.params.push(AbiParam::new(clif_ty(self.operand_repr(a))));
+        }
+        sig.returns.push(AbiParam::new(clif_ty(ret)));
+        let sigref = self.builder.import_signature(sig);
+
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(recv_v);
+        for a in args {
+            call_args.push(self.use_operand(a));
+        }
+        let call = self.builder.ins().call_indirect(sigref, fnptr, &call_args);
+        let res = self.builder.inst_results(call).first().copied();
         if let (Some(d), Some(v)) = (dst, res) {
             self.def_local(*d, v);
         }

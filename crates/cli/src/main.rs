@@ -61,8 +61,9 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // ── front-half ──
     let mut module = pyaot_frontend_python::parse(source, &mut interner)?;
     let resolve = pyaot_semantics::resolve(&mut module, &interner)?;
-    pyaot_typeck::infer(&mut module, &resolve)?;
-    let mut mir = pyaot_lowering::lower(&module, &resolve, &interner)?;
+    let classes = pyaot_semantics::collect_classes(&module, &interner)?;
+    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner)?;
+    let mut mir = pyaot_lowering::lower(&module, &resolve, &interner, &classes)?;
 
     // ── verify after lowering (debug): the first MIR is checked before any pass. ──
     #[cfg(debug_assertions)]

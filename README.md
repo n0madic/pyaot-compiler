@@ -17,7 +17,7 @@ dynamic attribute names, `import *`) are out of scope by design.
 
 ```
 crates/
-  # frozen substrate + contract (a fixed dependency — do not casually edit)
+  # frozen substrate + contract — frozen by default, yields when the plan needs it (e.g. bignum); see ARCHITECTURE.md
   core-defs/  format-shared/  utils/  diagnostics/  linker/  stdlib-defs/  runtime/
   # compiler front-half (built fresh from the design)
   types/             # SemTy (semantic) + Repr (physical) — the two-layer split  [implemented]

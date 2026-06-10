@@ -63,13 +63,6 @@ pub struct SigRepr {
     pub ret: Box<Repr>,
 }
 
-/// A closure tuple: a function pointer plus captured-environment representation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClosureShape {
-    pub sig: SigRepr,
-    pub captures: Vec<Repr>,
-}
-
 /// Physical representation of a value. Mandatory and total.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Repr {
@@ -80,10 +73,17 @@ pub enum Repr {
     Tagged,
     /// Typed heap pointer.
     Heap(HeapShape),
-    /// Bare code address with a typed signature.
+    /// Bare code address with a typed signature (the dunder-pointer shape;
+    /// `repr_of` never produces it for user values).
     FuncPtr(Box<SigRepr>),
-    /// Closure tuple (code address + captures).
-    Closure(Box<ClosureShape>),
+    /// A closure value (Phase 6): physically ONE tagged pointer to an ordinary
+    /// runtime tuple of `1+N` slots — slot 0 the int-tagged target code address,
+    /// slots `1..=N` the captured cells (each a tagged `Value`). The signature is
+    /// the *visible* one (env excluded); the capture count is not part of the
+    /// representation (it lives only on `MakeClosure`), so every closure of the
+    /// same signature shares one `Repr` and one indirect-call ABI (PITFALLS A4:
+    /// no marker bits, no per-function ABI flags).
+    Closure(Box<SigRepr>),
     /// Bottom — produced by unreachable code.
     Never,
 }
@@ -127,7 +127,10 @@ pub fn repr_of(ty: &SemTy) -> Repr {
         SemTy::File { .. } => Repr::Heap(HeapShape::RuntimeObj(TypeTagKind::File)),
         SemTy::Iterator(elem) => Repr::Heap(HeapShape::Iterator(Box::new(repr_of(elem)))),
 
-        SemTy::Callable(sig) => Repr::FuncPtr(Box::new(sig_repr(sig))),
+        // A callable VALUE is always the uniform env-tuple closure (Phase 6) —
+        // never a bare code address, so one indirect-call ABI covers captureless
+        // functions, closures, and thunked top-level functions alike.
+        SemTy::Callable(sig) => Repr::Closure(Box::new(sig_repr(sig))),
 
         // Exception instances are heap objects but flow through tagged slots in
         // handler/raise paths; tagged is the correctness-first choice.
@@ -161,9 +164,47 @@ fn repr_of_generic(base: ClassId, args: &[SemTy]) -> Repr {
     }
 }
 
-fn sig_repr(sig: &Sig) -> SigRepr {
+/// The representation-level signature of a semantic [`Sig`] (the visible
+/// signature — the closure env param is an ABI detail added at lowering).
+pub fn sig_repr(sig: &Sig) -> SigRepr {
     SigRepr {
         params: sig.params.iter().map(repr_of).collect(),
         ret: Box::new(repr_of(&sig.ret)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::TypeLattice;
+
+    fn callable(params: Vec<SemTy>, ret: SemTy) -> SemTy {
+        SemTy::Callable(Box::new(Sig::fixed(params, ret)))
+    }
+
+    #[test]
+    fn repr_of_callable_is_closure() {
+        // A callable VALUE always maps to the env-tuple closure repr (Phase 6A),
+        // never a bare FuncPtr.
+        let c = callable(vec![SemTy::Int], SemTy::Int);
+        match repr_of(&c) {
+            Repr::Closure(sig) => {
+                assert_eq!(sig.params, vec![Repr::Tagged]); // int -> Tagged
+                assert_eq!(*sig.ret, Repr::Tagged);
+            }
+            other => panic!("expected Closure, got {other:?}"),
+        }
+        assert!(repr_of(&c).is_gc_root());
+    }
+
+    #[test]
+    fn join_distinct_callables_is_dyn() {
+        // Two different signatures never merge into one sig nor a union — the
+        // join is the gradual top, so the slot stays Tagged (Phase 6A).
+        let a = callable(vec![SemTy::Int], SemTy::Int);
+        let b = callable(vec![SemTy::Str, SemTy::Str], SemTy::Str);
+        assert_eq!(a.join(&b), SemTy::Dyn);
+        // The same signature joins to itself.
+        assert_eq!(a.join(&a), a);
     }
 }

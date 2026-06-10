@@ -25,8 +25,8 @@
 
 use std::collections::HashMap;
 
-use pyaot_types::{HeapShape, RawKind, Repr};
-use pyaot_utils::{BlockId, FuncId, InternedString, LocalId};
+use pyaot_types::{HeapShape, RawKind, Repr, SigRepr};
+use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
 
 pub mod verify;
 pub use verify::{verify, VerifyError};
@@ -37,6 +37,8 @@ pub use pyaot_core_defs::BuiltinFunctionKind;
 // `ContainerCmpOp` is the HIR comparison operator carried by `ContainerOp`'s
 // ordering variants (aliased to avoid clashing with this crate's own `CmpOp`).
 pub use pyaot_hir::{ContainerArg, ContainerOp, ContainerResult, CmpOp as ContainerCmpOp};
+// Generator op surface (Phase 6E), shared so lowering/codegen name it.
+pub use pyaot_hir::{GenOp, GenResult};
 
 // ============================================================================
 // Program / function structure
@@ -50,6 +52,37 @@ pub struct MirProgram {
     /// The synthetic `__main__` function codegen wraps in C `main`.
     pub entry: FuncId,
     pub str_pool: StrPool,
+    /// User-defined classes (Phase 5). Codegen emits one `__pyaot_classinit`
+    /// from these: `rt_register_class`/`_field_count`/`_qualname` (5A), the static
+    /// vtable + `rt_register_method_name` (5B), and `rt_register_dunder_func` (5C).
+    pub classes: Vec<MirClass>,
+    /// Generator resume functions indexed by dense `gen_id` (Phase 6E). Codegen
+    /// emits `__pyaot_generator_resume` dispatching on the generator's stored
+    /// `func_id` to the matching resume fn.
+    pub generators: Vec<FuncId>,
+}
+
+/// A class's codegen-facing registration data. The lowering-resolved subset of
+/// [`pyaot_hir::ClassInfo`] that `__pyaot_classinit` needs (no field/method *types*
+/// — those were consumed upstream; only identities/slots/FuncIds remain).
+#[derive(Debug, Clone)]
+pub struct MirClass {
+    pub class_id: ClassId,
+    /// The `__main__.Cls` qualified-name string (its bytes are in `str_pool`).
+    pub qualname: InternedString,
+    /// Direct runtime parent (255 = none), for `rt_register_class`.
+    pub parent: Option<ClassId>,
+    pub field_count: usize,
+    /// Vtable layout: `slot → FuncId` (Phase 5B). `vtable[slot]` is the function
+    /// address codegen materializes into the static vtable data object.
+    pub vtable: Vec<FuncId>,
+    /// `(method_name_hash, slot)` for `rt_register_method_name` (Phase 5B).
+    pub method_names: Vec<(u64, usize)>,
+    /// `(dunder_name_hash, FuncId)` for `rt_register_dunder_func` (Phase 5C).
+    pub dunders: Vec<(u64, FuncId)>,
+    /// `(attr_idx, const)` class-attribute initializers — codegen materializes each
+    /// and stores it via `rt_class_attr_set_ptr` in `__pyaot_classinit` (Phase 5D).
+    pub class_attr_inits: Vec<(u32, Const)>,
 }
 
 /// A function. `locals` is the Repr table; every [`LocalId`] indexes it.
@@ -163,11 +196,100 @@ pub enum MirInst {
         op: ContainerOp,
         args: Vec<Operand>,
     },
+    /// Allocate a fresh class instance (Phase 5) — `rt_make_instance(class_id,
+    /// field_count)`. `dst` is `Heap(Class(class_id))` so the instance is
+    /// GC-rooted automatically and accepted as a `GetField`/`SetField`/`Call`-self
+    /// operand. Fields are zero-filled; `__init__` (a normal `Call`) runs after.
+    MakeInstance { dst: LocalId, class_id: ClassId, field_count: i64 },
+    /// Read instance field `slot` — `rt_instance_get_field(base, slot)`. `base` is
+    /// `Heap(Class(_))`/`Tagged`; the result is the uniform tagged field `Value`
+    /// (A5), then legalized to the field's repr by the caller.
+    GetField { dst: LocalId, base: Operand, slot: usize },
+    /// Write instance field `slot` — `rt_instance_set_field(base, slot, value)`.
+    /// `base` is `Heap(Class(_))`/`Tagged`; `value` is coerced to `Tagged` (the A5
+    /// uniform-storage seam) before the store. No result.
+    SetField { base: Operand, slot: usize, value: Operand },
+    /// Polymorphic method dispatch (Phase 5B): `rt_vtable_lookup_by_name(recv,
+    /// name_hash)` → fn ptr → `call_indirect`. Used when a base-typed receiver may
+    /// dispatch to an override (D7). `recv` is the `self` (instance base); `args`
+    /// are the remaining params, already coerced to the resolved method's reprs;
+    /// `ret` is that method's return repr (the indirect-call signature is built
+    /// from the operand reprs + `ret`). A concrete receiver devirtualizes to `Call`.
+    CallVirtual {
+        dst: Option<LocalId>,
+        recv: Operand,
+        name_hash: u64,
+        args: Vec<Operand>,
+        ret: Repr,
+    },
+    /// `isinstance(value, class_id)` with inheritance (Phase 5B) —
+    /// `rt_isinstance_class_inherited`. `value` is `Tagged`; `dst` is `Raw(I8)`.
+    IsInstance { dst: LocalId, value: Operand, class_id: ClassId },
+    /// Read class-level attribute `attr_idx` of `class_id` (Phase 5D) —
+    /// `rt_class_attr_get_ptr`. Uniform tagged storage: `dst` is `Tagged`.
+    GetClassAttr { dst: LocalId, class_id: ClassId, attr_idx: u32 },
+    /// Write class-level attribute `attr_idx` (Phase 5D) — `rt_class_attr_set_ptr`.
+    /// `value` is coerced to `Tagged`.
+    SetClassAttr { class_id: ClassId, attr_idx: u32, value: Operand },
     /// Raise `AssertionError` (no message in Phase 2). Followed by `Unreachable`.
     AssertFail,
     /// A parameterized print op — one variant covers every print form rather
     /// than one runtime-call variant per symbol.
     Print { kind: PrintKind, arg: Option<Operand> },
+
+    // ── closures / cells / globals (Phase 6) ──
+    /// Build a closure env tuple over `func` (Phase 6A): `rt_make_tuple(1+N)`,
+    /// slot 0 = `func`'s code address int-tagged (`(addr << 3) | 1`, so the GC's
+    /// `is_ptr` skips it), slots `1..=N` = `captures` (each `Tagged` — a cell
+    /// pointer, the P6-2 rule). `dst` is `Closure(s)` where `s` is `func`'s
+    /// signature minus its env param 0 (which must itself be `Tagged`).
+    MakeClosure {
+        dst: LocalId,
+        func: FuncId,
+        captures: Vec<Operand>,
+    },
+    /// Indirect call through a closure value (Phase 6A): load slot 0 of
+    /// `callee`, untag (`>> 3`), and `call_indirect` with the env tuple itself
+    /// as arg 0. `callee` is `Closure(sig)`; `args` match `sig.params`; `dst`
+    /// (if present) is `sig.ret`. The Cranelift signature is built from `sig`
+    /// alone — one calling convention, no marker bits (PITFALLS A4).
+    CallIndirect {
+        dst: Option<LocalId>,
+        callee: Operand,
+        args: Vec<Operand>,
+        sig: SigRepr,
+    },
+    /// Allocate a fresh cell holding `init` — `rt_make_cell_ptr` (P6-2: every
+    /// cell is a Ptr-cell of full tagged `Value` bits; the typed int/float/bool
+    /// cell variants are never emitted). `init` and `dst` are `Tagged`.
+    MakeCell { dst: LocalId, init: Operand },
+    /// Read a cell's current value — `rt_cell_get_ptr`. Both `Tagged`.
+    CellGet { dst: LocalId, cell: Operand },
+    /// Store into a cell — `rt_cell_set_ptr`. Both `Tagged`.
+    CellSet { cell: Operand, value: Operand },
+    /// Read promoted module-global `var_id` (Phase 6B) — `rt_global_get_ptr`
+    /// (GC-rooted, full tagged bits). `dst` is `Tagged`.
+    GlobalGet { dst: LocalId, var_id: u32 },
+    /// Write promoted module-global `var_id` — `rt_global_set_ptr`. `value` is
+    /// `Tagged`.
+    GlobalSet { var_id: u32, value: Operand },
+
+    // ── generators (Phase 6E) ──
+    /// Build a generator object — `rt_make_generator(gen_id, num_locals)`. `dst`
+    /// is `Tagged` (the generator is a heap value flowing through tagged slots /
+    /// the iterator protocol).
+    MakeGenerator { dst: LocalId, gen_id: u32, num_locals: u32 },
+    /// A generator state-machine op (Phase 6E). The `gen` operand is `Tagged`;
+    /// `value` (for `SetLocal`) is `Tagged` (P6-3: tagged slot storage); `imm`
+    /// is the slot index / state number; `dst` (if present) carries the op's
+    /// result category. The verifier enforces every repr.
+    GenOpInst {
+        dst: Option<LocalId>,
+        op: GenOp,
+        gen: Operand,
+        imm: u32,
+        value: Option<Operand>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +456,15 @@ pub fn classify_coercion(from: &Repr, to: &Repr) -> Option<Coercion> {
         // A typed heap pointer is bit-identical to a tagged `Value` (both ways).
         (Repr::Heap(_), Repr::Tagged) => Some(Coercion::Noop),
         (Repr::Tagged, Repr::Heap(_)) => Some(Coercion::TaggedToHeap),
+        // A closure value IS a tagged heap pointer (its env tuple), so it
+        // re-types to `Tagged` for free; the reverse is the same guarded
+        // reinterpret as `Tagged → Heap` (proven by typeck's Callable typing /
+        // the indirect-call boundary check). `Closure(a) → Closure(b)` with
+        // `a == b` is the `from == to` Noop fast path above; with `a != b` it
+        // stays ILLEGAL — two different signatures never silently bridge
+        // (that would forge an indirect-call ABI).
+        (Repr::Closure(_), Repr::Tagged) => Some(Coercion::Noop),
+        (Repr::Tagged, Repr::Closure(_)) => Some(Coercion::TaggedToHeap),
         (Repr::Raw(RawKind::F64), Repr::Tagged) => Some(Coercion::BoxFloat),
         (Repr::Tagged, Repr::Raw(RawKind::F64)) => Some(Coercion::UnboxFloat),
         (Repr::Raw(RawKind::I8), Repr::Tagged) => Some(Coercion::TagBool),
@@ -362,6 +493,11 @@ fn same_container_family(a: &HeapShape, b: &HeapShape) -> bool {
         (Set(_), Set(_)) => true,
         (TupleVar(_), TupleVar(_)) => true,
         (Tuple(x), Tuple(y)) => x.len() == y.len(),
+        // A fixed-arity tuple and a variable-length tuple are the SAME physical
+        // runtime object (`TupleObj`); the arity is compile-time metadata only.
+        // Needed for `*args` packing (a call-site `Tuple([...])` literal into a
+        // `tuple[Dyn, ...]` param) — Phase 6C.
+        (Tuple(_), TupleVar(_)) | (TupleVar(_), Tuple(_)) => true,
         (Iterator(_), Iterator(_)) => true,
         _ => false,
     }
@@ -370,6 +506,25 @@ fn same_container_family(a: &HeapShape, b: &HeapShape) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closure_coercion_arms_phase6() {
+        use pyaot_types::SigRepr;
+        let sig =
+            SigRepr { params: vec![Repr::Tagged], ret: Box::new(Repr::Tagged) };
+        let closure = Repr::Closure(Box::new(sig.clone()));
+        // Closure <-> Tagged: free both ways (the env tuple IS a tagged value).
+        assert_eq!(classify_coercion(&closure, &Repr::Tagged), Some(Coercion::Noop));
+        assert_eq!(classify_coercion(&Repr::Tagged, &closure), Some(Coercion::TaggedToHeap));
+        // Same-signature closure -> closure is the identity Noop.
+        assert_eq!(classify_coercion(&closure, &closure), Some(Coercion::Noop));
+        // A *different* signature is an illegal bridge (would forge an ABI).
+        let other = Repr::Closure(Box::new(SigRepr {
+            params: vec![Repr::Tagged, Repr::Tagged],
+            ret: Box::new(Repr::Tagged),
+        }));
+        assert_eq!(classify_coercion(&closure, &other), None);
+    }
 
     #[test]
     fn coercion_table_phase2() {

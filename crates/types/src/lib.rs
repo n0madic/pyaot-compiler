@@ -37,6 +37,6 @@ pub mod sem;
 
 pub use lattice::TypeLattice;
 pub use repr::{
-    repr_of, ClosureShape, HeapShape, RawKind, Repr, SigRepr, RAW_I64_NARROW_BOUND,
+    repr_of, sig_repr, HeapShape, RawKind, Repr, SigRepr, RAW_I64_NARROW_BOUND,
 };
 pub use sem::{SemTy, Sig};

@@ -36,6 +36,34 @@ const PHASE_CORPUS: &[&str] = &[
     // Phase 4 — cross-feature integration + GC soak (B5/B15).
     "p4_integration.py",
     "p4_gc_stress.py",
+    // Phase 5A — core classes: fields, methods, construction.
+    "p5_class_basic.py",
+    // Phase 5B — inheritance, super(), C3 MRO, virtual dispatch, isinstance.
+    "p5_inherit.py",
+    // Phase 5C — dunders: arithmetic / comparison / conversion / container.
+    "p5_dunder_arith.py",
+    "p5_dunder_container.py",
+    // Phase 5D — decorators (@staticmethod/@classmethod/@property) + class attrs.
+    "p5_decorators.py",
+    // Phase 5E — generics: TypeVar / Generic[T] / typed instantiation.
+    "p5_generics.py",
+    // Phase 5 — class-instance-graph GC soak (uniform-tagged field tracing).
+    "p5_gc_stress.py",
+    // Phase 6A — closures, lambdas, functions as values.
+    "p6_closures.py",
+    "p6_lambda_hof.py",
+    // Phase 6B — nonlocal / global.
+    "p6_nonlocal_global.py",
+    // Phase 6C — defaults, keyword args, *args / **kwargs.
+    "p6_varargs.py",
+    "p6_defaults_kwargs.py",
+    // Phase 6D — user decorators (functions).
+    "p6_decorators.py",
+    // Phase 6E — generators, send/close, generator expressions, GC soak.
+    "p6_generators.py",
+    "p6_send_close.py",
+    "p6_genexpr.py",
+    "p6_gc_stress.py",
 ];
 
 #[test]

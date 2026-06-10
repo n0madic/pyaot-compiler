@@ -29,40 +29,122 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp as HBinOp, CmpOp as HCmpOp, ContainerArg, ContainerMethod, ContainerOp, ContainerResult,
-    HirBlock, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirStmt, HirTerminator,
-    ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
+    BinOp as HBinOp, ClassTable, CmpOp as HCmpOp, ContainerArg, ContainerMethod, ContainerOp,
+    ContainerResult, HirBlock, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirStmt,
+    HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
-    BinOp as MBinOp, CmpOp as MCmpOp, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram,
-    MirTerminator, Operand, PrintKind, StrPool, UnaryOp as MUnaryOp,
+    BinOp as MBinOp, CmpOp as MCmpOp, Const, GenOp, LocalDecl, MirBlock, MirClass, MirFunction,
+    MirInst, MirProgram, MirTerminator, Operand, PrintKind, StrPool, UnaryOp as MUnaryOp,
 };
-use pyaot_types::{repr_of, HeapShape, RawKind, Repr, SemTy, RAW_I64_NARROW_BOUND};
-use pyaot_utils::{BlockId, LocalId, StringInterner};
+use pyaot_types::{repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND};
+use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner};
 
 /// Lower a resolved, inferred [`HirModule`] into a [`MirProgram`].
 pub fn lower(
     module: &HirModule,
     resolve: &ResolveResult,
     interner: &StringInterner,
+    classes: &ClassTable,
 ) -> Result<MirProgram> {
     let mut str_pool = StrPool::new();
+    // Dunder method FuncIds: their MIR return is forced to `Tagged` so the
+    // runtime's registry dispatch sees a uniform `fn(Value…) -> Value` ABI even
+    // for `__eq__`/`__lt__`/`__truediv__` (whose declared returns are
+    // `bool`/`float`, repr `Raw`, not i64) — PITFALLS B11.
+    let mut dunder_funcs: std::collections::HashSet<FuncId> = std::collections::HashSet::new();
+    for info in classes.iter() {
+        for m in &info.methods {
+            if is_dunder(interner.resolve(m.name)) {
+                dunder_funcs.insert(m.func_id);
+            }
+        }
+    }
     // Signature table (ABI = f(param Repr)), needed before lowering bodies so
     // calls — including forward / recursive ones — coerce args correctly.
     let sigs: Vec<FnSig> = module
         .functions
         .iter()
-        .map(|f| FnSig {
+        .enumerate()
+        .map(|(i, f)| FnSig {
             params: f.params.iter().map(|p| repr_of(&p.ty)).collect(),
-            ret: repr_of(&f.ret_ty),
+            ret: if dunder_funcs.contains(&FuncId::new(i as u32)) {
+                Repr::Tagged
+            } else {
+                repr_of(&f.ret_ty)
+            },
         })
         .collect();
     let mut funcs = Vec::with_capacity(module.functions.len());
-    for func in &module.functions {
-        let mut fl = FnLower::new(func, resolve, interner, &mut str_pool, &sigs);
+    for (i, func) in module.functions.iter().enumerate() {
+        let ret_repr = sigs[i].ret.clone();
+        let mut fl = FnLower::new(func, resolve, interner, &mut str_pool, &sigs, classes, ret_repr);
         funcs.push(fl.lower()?);
     }
-    Ok(MirProgram { funcs, entry: module.main, str_pool })
+    // The codegen-facing class registration data (`__pyaot_classinit`). Qualname
+    // bytes go into the string pool so codegen can build the `StrObj`.
+    let mir_classes = build_mir_classes(classes, interner, &mut str_pool);
+    Ok(MirProgram {
+        funcs,
+        entry: module.main,
+        str_pool,
+        classes: mir_classes,
+        generators: module.generators.clone(),
+    })
+}
+
+/// Assemble the [`MirClass`] registration records from the resolved [`ClassTable`],
+/// interning each qualname's bytes into `str_pool`. Phase 5A populates identity +
+/// parent + field_count; the vtable / method-name / dunder tables are filled by
+/// 5B/5C (left empty here).
+fn build_mir_classes(
+    classes: &ClassTable,
+    interner: &StringInterner,
+    str_pool: &mut StrPool,
+) -> Vec<MirClass> {
+    let mut out = Vec::new();
+    for info in classes.iter() {
+        str_pool.insert(info.qualname, interner.resolve(info.qualname).as_bytes().to_vec());
+        // Vtable: slot → resolved FuncId (5B). Each distinct method name occupies
+        // a stable slot across the class and its subclasses.
+        let mut vtable = vec![None; info.num_vtable_slots];
+        let mut method_names = Vec::with_capacity(info.methods.len());
+        let mut dunders = Vec::new();
+        for m in &info.methods {
+            vtable[m.slot] = Some(m.func_id);
+            let name = interner.resolve(m.name);
+            method_names.push((pyaot_utils::fnv1a_hash(name), m.slot));
+            // Register every dunder (own or inherited) under THIS class id so the
+            // runtime's registry-dispatched ops (`rt_obj_add`/`rt_obj_neg`/the
+            // default-repr path/…) resolve for instances of this exact class (5C).
+            if is_dunder(name) {
+                dunders.push((pyaot_utils::fnv1a_hash(name), m.func_id));
+            }
+        }
+        let vtable: Vec<_> = vtable
+            .into_iter()
+            .map(|f| f.expect("every vtable slot is filled by a resolved method"))
+            .collect();
+        // Class-attribute initializers → MIR `Const`s (literal bytes interned).
+        let class_attr_inits = info
+            .class_attrs
+            .iter()
+            .map(|a| (a.attr_idx, class_attr_const(&a.init, interner, str_pool)))
+            .collect();
+        out.push(MirClass {
+            class_id: info.class_id,
+            qualname: info.qualname,
+            parent: info.parent,
+            field_count: info.field_count(),
+            vtable,
+            method_names,
+            dunders,
+            class_attr_inits,
+        });
+    }
+    // Deterministic order (the table is a HashMap) so codegen output is stable.
+    out.sort_by_key(|c| c.class_id.0);
+    out
 }
 
 /// A function's representation-level signature (ABI).
@@ -78,6 +160,9 @@ struct FnLower<'a> {
     interner: &'a StringInterner,
     str_pool: &'a mut StrPool,
     sigs: &'a [FnSig],
+    classes: &'a ClassTable,
+    /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
+    ret_repr: Repr,
     locals: Vec<LocalDecl>,
     /// Finalized + reserved MIR blocks (placeholders until sealed).
     blocks: Vec<MirBlock>,
@@ -95,6 +180,8 @@ impl<'a> FnLower<'a> {
         interner: &'a StringInterner,
         str_pool: &'a mut StrPool,
         sigs: &'a [FnSig],
+        classes: &'a ClassTable,
+        ret_repr: Repr,
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
         // temporaries are appended after.
@@ -106,6 +193,8 @@ impl<'a> FnLower<'a> {
             interner,
             str_pool,
             sigs,
+            classes,
+            ret_repr,
             locals,
             blocks: Vec::new(),
             block_map: HashMap::new(),
@@ -139,7 +228,7 @@ impl<'a> FnLower<'a> {
         Ok(MirFunction {
             name: self.func.name,
             params,
-            ret: repr_of(&self.func.ret_ty),
+            ret: self.ret_repr.clone(),
             locals: std::mem::take(&mut self.locals),
             blocks: std::mem::take(&mut self.blocks),
             entry,
@@ -184,6 +273,15 @@ impl<'a> FnLower<'a> {
         if from == to {
             return Ok(src);
         }
+        // A class instance → a *different* class repr is a sub/superclass cast
+        // (`Dog` into an `Animal` slot, `self` into a parent's `self`): route
+        // through the tagged baseline (`Heap→Tagged` Noop, `Tagged→Heap`
+        // reinterpret). Both legs are in the table; the nominal subtype relation
+        // was validated at the typeck boundary (`check_reinterpret`).
+        if is_class_repr(&from) && is_class_repr(&to) {
+            let tagged = self.coerce(src, from, Repr::Tagged)?;
+            return self.coerce(tagged, Repr::Tagged, to);
+        }
         if legalize::coerce(from.clone(), to.clone()).is_none() {
             return Err(cg_illegal(&from, &to));
         }
@@ -195,6 +293,11 @@ impl<'a> FnLower<'a> {
     /// Coerce `src` (`from`) into the *existing* local `dst` (whose declared repr
     /// is `to`) — used for assignment and result-local stores.
     fn coerce_into(&mut self, dst: LocalId, src: LocalId, from: Repr, to: Repr) -> Result<()> {
+        // A sub/superclass cast routes through the tagged baseline (see `coerce`).
+        if from != to && is_class_repr(&from) && is_class_repr(&to) {
+            let tagged = self.coerce(src, from, Repr::Tagged)?;
+            return self.coerce_into(dst, tagged, Repr::Tagged, to);
+        }
         if legalize::coerce(from.clone(), to.clone()).is_none() {
             return Err(cg_illegal(&from, &to));
         }
@@ -259,6 +362,7 @@ impl<'a> FnLower<'a> {
                 Ok(())
             }
             HirStmt::SetItem { base, index, value } => self.lower_setitem(*base, *index, *value),
+            HirStmt::SetAttr { base, name, value } => self.lower_setattr(*base, *name, *value),
             HirStmt::ContainerPush { container, value } => {
                 let cont_repr = self.local_repr(*container);
                 let (vl, vr) = self.lower_expr(*value)?;
@@ -280,7 +384,66 @@ impl<'a> FnLower<'a> {
                 )?;
                 Ok(())
             }
+            HirStmt::CellSet { cell, value } => {
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                let cr = self.local_repr(*cell);
+                let ct = self.coerce(*cell, cr, Repr::Tagged)?;
+                self.emit(MirInst::CellSet {
+                    cell: Operand::Local(ct),
+                    value: Operand::Local(vt),
+                });
+                Ok(())
+            }
+            HirStmt::GlobalSet { var_id, value } => {
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                self.emit(MirInst::GlobalSet { var_id: *var_id, value: Operand::Local(vt) });
+                Ok(())
+            }
+            // ── generators (Phase 6E) ──
+            HirStmt::GenSetLocal { gen, slot, value } => {
+                let g = self.lower_gen_operand(*gen)?;
+                let (vl, vr) = self.lower_expr(*value)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                self.emit(MirInst::GenOpInst {
+                    dst: None,
+                    op: GenOp::SetLocal,
+                    gen: Operand::Local(g),
+                    imm: *slot,
+                    value: Some(Operand::Local(vt)),
+                });
+                Ok(())
+            }
+            HirStmt::GenSetState { gen, state } => {
+                let g = self.lower_gen_operand(*gen)?;
+                self.emit(MirInst::GenOpInst {
+                    dst: None,
+                    op: GenOp::SetState,
+                    gen: Operand::Local(g),
+                    imm: *state,
+                    value: None,
+                });
+                Ok(())
+            }
+            HirStmt::GenSetExhausted { gen } => {
+                let g = self.lower_gen_operand(*gen)?;
+                self.emit(MirInst::GenOpInst {
+                    dst: None,
+                    op: GenOp::SetExhausted,
+                    gen: Operand::Local(g),
+                    imm: 0,
+                    value: None,
+                });
+                Ok(())
+            }
         }
+    }
+
+    /// Lower a generator operand expr to a `Tagged` local (the generator value).
+    fn lower_gen_operand(&mut self, gen: Idx<HirExpr>) -> Result<LocalId> {
+        let (gl, gr) = self.lower_expr(gen)?;
+        self.coerce(gl, gr, Repr::Tagged)
     }
 
     /// Lower `base[index] = value`, dispatching the runtime setter from the static
@@ -292,6 +455,15 @@ impl<'a> FnLower<'a> {
         value: Idx<HirExpr>,
     ) -> Result<()> {
         let span = self.func.exprs[base].span;
+        // Class `__setitem__` (Phase 5C) — a direct devirtualized call.
+        let bt = self.func.exprs[base].ty.clone();
+        if let Some(fid) = self.concrete_dunder(&bt, "__setitem__") {
+            let (bl, br) = self.lower_expr(base)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let (vl, vr) = self.lower_expr(value)?;
+            self.emit_dunder_call(fid, vec![(bl, br), (il, ir), (vl, vr)])?;
+            return Ok(());
+        }
         let kind = sub_kind(&self.func.exprs[base].ty, &repr_of(&self.func.exprs[base].ty));
         let (bl, br) = self.lower_expr(base)?;
         let (il, ir) = self.lower_expr(index)?;
@@ -352,6 +524,19 @@ impl<'a> FnLower<'a> {
     /// Print one argument with the `PrintKind` selected from its `SemTy`.
     fn lower_print_arg(&mut self, arg_idx: Idx<HirExpr>) -> Result<()> {
         let ty = self.func.exprs[arg_idx].ty.clone();
+        // A concrete class with `__str__`/`__repr__` (CPython print precedence):
+        // the runtime's top-level print path renders the *default* repr for
+        // instances, so route to the user dunder directly (5C).
+        if let Some(fid) = self
+            .concrete_dunder(&ty, "__str__")
+            .or_else(|| self.concrete_dunder(&ty, "__repr__"))
+        {
+            let (loc, repr) = self.lower_expr(arg_idx)?;
+            let (res, rrep) = self.emit_dunder_call(fid, vec![(loc, repr)])?;
+            let tagged = self.coerce(res, rrep, Repr::Tagged)?;
+            self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
+            return Ok(());
+        }
         let (loc, repr) = self.lower_expr(arg_idx)?;
         let (kind, want) = print_dispatch(&ty);
         match want {
@@ -385,7 +570,7 @@ impl<'a> FnLower<'a> {
             HirTerminator::Return(None) => Ok(MirTerminator::Return(None)),
             HirTerminator::Return(Some(idx)) => {
                 let (loc, repr) = self.lower_expr(*idx)?;
-                let want = repr_of(&self.func.ret_ty);
+                let want = self.ret_repr.clone();
                 let coerced = self.coerce(loc, repr, want)?;
                 Ok(MirTerminator::Return(Some(Operand::Local(coerced))))
             }
@@ -478,9 +663,701 @@ impl<'a> FnLower<'a> {
             HirExprKind::ContainerExpr { op, args } => {
                 self.lower_container_expr(idx, *op, &args.clone())
             }
-            HirExprKind::MethodCall { recv, method, args } => {
-                self.lower_method_call(idx, *recv, *method, &args.clone())
+            HirExprKind::MethodCall { recv, method_name, args } => {
+                self.lower_method_call(idx, *recv, *method_name, &args.clone())
             }
+            HirExprKind::Attribute { value, name } => self.lower_attribute(idx, *value, *name),
+            HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
+            // `Stack[int](...)` lowers identically to `Stack(...)` — type args are
+            // erased at repr (one shared physical layout for every instantiation).
+            HirExprKind::GenericConstruct { class_id, args, .. } => {
+                self.lower_construct(*class_id, &args.clone(), expr.span)
+            }
+            // `super()` is only valid as a MethodCall receiver (handled before the
+            // receiver is lowered); standalone it is a usage error.
+            HirExprKind::Super(_) => Err(CompilerError::semantic_error(
+                "super() is only supported as `super().method(...)`".to_string(),
+                expr.span,
+            )),
+            // ── closures / cells / globals (Phase 6) ──
+            HirExprKind::MakeClosure { func, captures } => {
+                self.lower_make_closure(*func, &captures.clone())
+            }
+            HirExprKind::MakeCell { init } => {
+                let iv = match init {
+                    Some(e) => {
+                        let e = *e;
+                        let (il, ir) = self.lower_expr(e)?;
+                        self.coerce(il, ir, Repr::Tagged)?
+                    }
+                    None => self.none_temp(),
+                };
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::MakeCell { dst, init: Operand::Local(iv) });
+                Ok((dst, Repr::Tagged))
+            }
+            HirExprKind::CellGet { cell } => {
+                let cell = *cell;
+                let cr = self.local_repr(cell);
+                let ct = self.coerce(cell, cr, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::CellGet { dst, cell: Operand::Local(ct) });
+                // Uniform tagged cell storage: consumers legalize per their own
+                // typed context (the same seam as container reads).
+                Ok((dst, Repr::Tagged))
+            }
+            HirExprKind::GlobalGet { var_id } => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::GlobalGet { dst, var_id: *var_id });
+                Ok((dst, Repr::Tagged))
+            }
+            // ── generators (Phase 6E) ──
+            HirExprKind::MakeGenerator { gen_id, num_locals } => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::MakeGenerator { dst, gen_id: *gen_id, num_locals: *num_locals });
+                Ok((dst, Repr::Tagged))
+            }
+            HirExprKind::GenQuery { op, gen, imm, value } => {
+                self.lower_gen_query(*op, *gen, *imm, *value)
+            }
+        }
+    }
+
+    /// Lower a value-producing generator query (Phase 6E). The `GenState` result
+    /// is normalized from `Raw(I64)` to the tagged int baseline so it flows as
+    /// an ordinary `int` (the state-dispatch compares it against fixnums). A
+    /// `Close` op (result `None`) yields the tagged `None` singleton.
+    fn lower_gen_query(
+        &mut self,
+        op: GenOp,
+        gen: Idx<HirExpr>,
+        imm: u32,
+        value: Option<Idx<HirExpr>>,
+    ) -> Result<(LocalId, Repr)> {
+        let g = self.lower_gen_operand(gen)?;
+        let val_op = match value {
+            Some(v) => {
+                let (vl, vr) = self.lower_expr(v)?;
+                Some(Operand::Local(self.coerce(vl, vr, Repr::Tagged)?))
+            }
+            None => None,
+        };
+        if op.result() == pyaot_mir::GenResult::None {
+            // `Close` — a mutating op used as a statement; yield `None`.
+            self.emit(MirInst::GenOpInst { dst: None, op, gen: Operand::Local(g), imm, value: val_op });
+            return self.none_value();
+        }
+        let (dst, ret) = match op.result() {
+            pyaot_mir::GenResult::Value => (self.alloc_temp(Repr::Tagged), Repr::Tagged),
+            pyaot_mir::GenResult::Int => {
+                (self.alloc_temp(Repr::Raw(RawKind::I64)), Repr::Raw(RawKind::I64))
+            }
+            pyaot_mir::GenResult::Bool => {
+                (self.alloc_temp(Repr::Raw(RawKind::I8)), Repr::Raw(RawKind::I8))
+            }
+            pyaot_mir::GenResult::None => {
+                return Err(CompilerError::semantic_error(
+                    "internal: a mutating generator op cannot be a value".to_string(),
+                    self.func.exprs[gen].span,
+                ))
+            }
+        };
+        self.emit(MirInst::GenOpInst {
+            dst: Some(dst),
+            op,
+            gen: Operand::Local(g),
+            imm,
+            value: val_op,
+        });
+        if ret == Repr::Raw(RawKind::I64) {
+            // Normalize the state to a tagged int.
+            let t = self.coerce(dst, ret, Repr::Tagged)?;
+            Ok((t, Repr::Tagged))
+        } else {
+            Ok((dst, ret))
+        }
+    }
+
+    /// Lower `MakeClosure` (Phase 6A): the dst signature comes from the target
+    /// function's MIR signature minus its env param 0 (the same `repr_of`-derived
+    /// source the verifier checks against).
+    fn lower_make_closure(
+        &mut self,
+        func: FuncId,
+        captures: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
+        let fsig = &self.sigs[func.index()];
+        let sig = SigRepr {
+            params: fsig.params[1..].to_vec(),
+            ret: Box::new(fsig.ret.clone()),
+        };
+        let dst_repr = Repr::Closure(Box::new(sig));
+        let mut caps = Vec::with_capacity(captures.len());
+        for c in captures {
+            let (cl, cr) = self.lower_expr(*c)?;
+            caps.push(Operand::Local(self.coerce(cl, cr, Repr::Tagged)?));
+        }
+        let dst = self.alloc_temp(dst_repr.clone());
+        self.emit(MirInst::MakeClosure { dst, func, captures: caps });
+        Ok((dst, dst_repr))
+    }
+
+    /// Lower an indirect call through a callable value (Phase 6A): coerce the
+    /// callee to the exact `Closure(sig)` representation, coerce every arg to
+    /// the signature's param reprs, and `CallIndirect`.
+    fn lower_indirect_call(
+        &mut self,
+        callee: Idx<HirExpr>,
+        args: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
+        let span = self.func.exprs[callee].span;
+        let SemTy::Callable(sem_sig) = self.func.exprs[callee].ty.clone() else {
+            return Err(CompilerError::type_error(
+                "cannot call a value of unknown type: annotate it (e.g. \
+                 `Callable[[int], int]`)"
+                    .to_string(),
+                span,
+            ));
+        };
+        let srepr = sig_repr(&sem_sig);
+        if args.len() != srepr.params.len() {
+            return Err(CompilerError::semantic_error(
+                "wrong number of arguments in indirect call".to_string(),
+                span,
+            ));
+        }
+        let (cl, cr) = self.lower_expr(callee)?;
+        let closure_repr = Repr::Closure(Box::new(srepr.clone()));
+        let ccl = self.coerce(cl, cr, closure_repr)?;
+        let mut argvals = Vec::with_capacity(args.len());
+        for (a, prepr) in args.iter().zip(&srepr.params) {
+            let (al, ar) = self.lower_expr(*a)?;
+            argvals.push(Operand::Local(self.coerce(al, ar, prepr.clone())?));
+        }
+        let ret = (*srepr.ret).clone();
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::CallIndirect {
+            dst: Some(dst),
+            callee: Operand::Local(ccl),
+            args: argvals,
+            sig: srepr,
+        });
+        Ok((dst, ret))
+    }
+
+    // ── classes (Phase 5) ────────────────────────────────────────────────────
+
+    /// The class id a `Name` expr resolves to (`Symbol::Class`), for
+    /// `ClassName.attr` / `ClassName.method()` class-level access (Phase 5D).
+    fn class_name_ref(&self, idx: Idx<HirExpr>) -> Option<ClassId> {
+        if let HirExprKind::Name(SymbolRef::Resolved(id)) = self.func.exprs[idx].kind {
+            if let Symbol::Class(cid) = self.resolve.symbol(id) {
+                return Some(cid);
+            }
+        }
+        None
+    }
+
+    /// Resolve the field `name` to its slot on `base`'s static class type.
+    fn field_slot(&self, base: Idx<HirExpr>, name: InternedString) -> Result<usize> {
+        let span = self.func.exprs[base].span;
+        let cid = class_of(&self.func.exprs[base].ty, self.classes).ok_or_else(|| {
+            CompilerError::semantic_error(
+                "attribute access requires a statically-known class instance".to_string(),
+                span,
+            )
+        })?;
+        let info = self.classes.get(cid).ok_or_else(|| {
+            CompilerError::semantic_error("internal: unknown class id".to_string(), span)
+        })?;
+        info.field_slot(name).ok_or_else(|| {
+            CompilerError::semantic_error(self.missing_attr_msg(cid, name), span)
+        })
+    }
+
+    /// Diagnostic for an unresolved attribute on class `cid`. Names the Phase-5D
+    /// limitation when the attribute is actually an **inherited** decorated member
+    /// or class attribute (5D resolves those own-only), rather than the generic
+    /// "no field" message.
+    fn missing_attr_msg(&self, cid: ClassId, name: InternedString) -> String {
+        let nm = self.interner.resolve(name);
+        if let Some(info) = self.classes.get(cid) {
+            // Walk the strict ancestors; an own property / class attr / static or
+            // class method there is an inheritance gap, not a typo.
+            for ancestor in info.mro.iter().skip(1) {
+                if let Some(ac) = self.classes.get(*ancestor) {
+                    if ac.property(name).is_some()
+                        || ac.class_attr(name).is_some()
+                        || ac.static_method(name).is_some()
+                        || ac.class_method(name).is_some()
+                    {
+                        return format!(
+                            "`.{nm}` is an inherited decorated member / class attribute — \
+                             inheritance of @property/@staticmethod/@classmethod/class \
+                             attributes is a Phase 5D limitation (define it on this class)"
+                        );
+                    }
+                }
+            }
+        }
+        format!("class has no field `.{nm}`")
+    }
+
+    /// Lower an attribute read `value.name` → `GetField` + legalize the uniform
+    /// tagged field value to the field's representation (the A5 read seam).
+    fn lower_attribute(
+        &mut self,
+        attr_idx: Idx<HirExpr>,
+        value: Idx<HirExpr>,
+        name: InternedString,
+    ) -> Result<(LocalId, Repr)> {
+        let span = self.func.exprs[value].span;
+        let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
+
+        // (a) `ClassName.attr` → a class-level attribute (Phase 5D).
+        if let Some(cid) = self.class_name_ref(value) {
+            let attr = self.classes.get(cid).and_then(|i| i.class_attr(name)).ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!("class has no attribute `.{}`", self.interner.resolve(name)),
+                    span,
+                )
+            })?;
+            return self.read_class_attr(cid, attr.attr_idx, result_repr);
+        }
+
+        let bt = self.func.exprs[value].ty.clone();
+        if let Some(cid) = class_of(&bt, self.classes) {
+            // (b) `instance.prop` → the `@property` getter call (Phase 5D).
+            if let Some(getter) = self.classes.get(cid).and_then(|i| i.property(name)).map(|p| p.getter) {
+                let (bl, br) = self.lower_expr(value)?;
+                return self.emit_dunder_call(getter, vec![(bl, br)]);
+            }
+            // (c) `instance.classattr` (not an instance field) → class attribute.
+            let is_field = self.classes.get(cid).and_then(|i| i.field_slot(name)).is_some();
+            if !is_field {
+                if let Some(idx) = self.classes.get(cid).and_then(|i| i.class_attr(name)).map(|a| a.attr_idx) {
+                    // Evaluate the receiver for side effects, then read the class slot.
+                    let _ = self.lower_expr(value)?;
+                    return self.read_class_attr(cid, idx, result_repr);
+                }
+            }
+        }
+
+        // (d) Instance field read.
+        let slot = self.field_slot(value, name)?;
+        let (bl, _br) = self.lower_expr(value)?;
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::GetField { dst, base: Operand::Local(bl), slot });
+        // The field's static type drives the read's representation; the
+        // Tagged→repr coercion is guarded by `typeck::check_repr_boundaries`.
+        let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+        Ok((coerced, result_repr))
+    }
+
+    /// Read class attribute `attr_idx` of `cid` and legalize to `want` repr.
+    fn read_class_attr(&mut self, cid: ClassId, attr_idx: u32, want: Repr) -> Result<(LocalId, Repr)> {
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::GetClassAttr { dst, class_id: cid, attr_idx });
+        let coerced = self.coerce(dst, Repr::Tagged, want.clone())?;
+        Ok((coerced, want))
+    }
+
+    /// Lower an attribute write `base.name = value` → coerce the value to the
+    /// uniform tagged field slot (A5) + `SetField`.
+    fn lower_setattr(
+        &mut self,
+        base: Idx<HirExpr>,
+        name: InternedString,
+        value: Idx<HirExpr>,
+    ) -> Result<()> {
+        let span = self.func.exprs[base].span;
+
+        // (a) `ClassName.attr = v` → class-level attribute write (Phase 5D).
+        if let Some(cid) = self.class_name_ref(base) {
+            let idx = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.class_attr(name))
+                .map(|a| a.attr_idx)
+                .ok_or_else(|| {
+                    CompilerError::semantic_error(
+                        format!("class has no attribute `.{}`", self.interner.resolve(name)),
+                        span,
+                    )
+                })?;
+            let (vl, vr) = self.lower_expr(value)?;
+            let vt = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit(MirInst::SetClassAttr { class_id: cid, attr_idx: idx, value: Operand::Local(vt) });
+            return Ok(());
+        }
+
+        let bt = self.func.exprs[base].ty.clone();
+        if let Some(cid) = class_of(&bt, self.classes) {
+            // (b) `instance.prop = v` → the `@x.setter` call (Phase 5D).
+            if let Some(setter) =
+                self.classes.get(cid).and_then(|i| i.property(name)).and_then(|p| p.setter)
+            {
+                let (bl, br) = self.lower_expr(base)?;
+                let (vl, vr) = self.lower_expr(value)?;
+                self.emit_dunder_call(setter, vec![(bl, br), (vl, vr)])?;
+                return Ok(());
+            }
+            // (c) `instance.classattr = v` (not an instance field) → class attribute.
+            let is_field = self.classes.get(cid).and_then(|i| i.field_slot(name)).is_some();
+            if !is_field {
+                if let Some(idx) = self.classes.get(cid).and_then(|i| i.class_attr(name)).map(|a| a.attr_idx) {
+                    let _ = self.lower_expr(base)?;
+                    let (vl, vr) = self.lower_expr(value)?;
+                    let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                    self.emit(MirInst::SetClassAttr { class_id: cid, attr_idx: idx, value: Operand::Local(vt) });
+                    return Ok(());
+                }
+            }
+        }
+
+        // (d) Instance field write.
+        let slot = self.field_slot(base, name)?;
+        let (bl, _br) = self.lower_expr(base)?;
+        let (vl, vr) = self.lower_expr(value)?;
+        let vt = self.coerce(vl, vr, Repr::Tagged)?;
+        self.emit(MirInst::SetField {
+            base: Operand::Local(bl),
+            slot,
+            value: Operand::Local(vt),
+        });
+        Ok(())
+    }
+
+    /// Construct `Cls(args)` (D3): `MakeInstance` → (if `__init__`) a direct
+    /// `Call(__init__, [inst, args…])` → yield the instance.
+    fn lower_construct(
+        &mut self,
+        cid: ClassId,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        let info = self.classes.get(cid).ok_or_else(|| {
+            CompilerError::semantic_error("internal: unknown class id".to_string(), span)
+        })?;
+        let field_count = info.field_count() as i64;
+        let inst_repr = Repr::Heap(HeapShape::Class(cid));
+        let inst = self.alloc_temp(inst_repr.clone());
+        self.emit(MirInst::MakeInstance { dst: inst, class_id: cid, field_count });
+
+        let init = info
+            .methods
+            .iter()
+            .find(|m| self.interner.resolve(m.name) == "__init__")
+            .map(|m| m.func_id);
+        if let Some(fid) = init {
+            let params = self.sigs[fid.index()].params.clone();
+            if args.len() + 1 != params.len() {
+                return Err(CompilerError::semantic_error(
+                    "wrong number of arguments to constructor".to_string(),
+                    span,
+                ));
+            }
+            // `self` may target an *inherited* `__init__` whose self repr is a base
+            // class — cast the fresh instance to the parent's self repr.
+            let self_arg = self.coerce(inst, inst_repr.clone(), params[0].clone())?;
+            let mut argvals = vec![Operand::Local(self_arg)];
+            for (a, prepr) in args.iter().zip(&params[1..]) {
+                let (al, ar) = self.lower_expr(*a)?;
+                let at = self.coerce(al, ar, prepr.clone())?;
+                argvals.push(Operand::Local(at));
+            }
+            self.emit(MirInst::Call { dst: None, func: fid, args: argvals });
+        } else if !args.is_empty() {
+            return Err(CompilerError::semantic_error(
+                "class has no __init__ to accept constructor arguments".to_string(),
+                span,
+            ));
+        }
+        Ok((inst, inst_repr))
+    }
+
+    /// Dispatch a `recv.method(args)` call by the receiver's static type.
+    fn lower_method_call(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
+        let span = self.func.exprs[recv].span;
+        // `super().m()` → resolve the parent method from the enclosing MRO and
+        // direct-call with the current `self` (super is statically resolvable).
+        if let HirExprKind::Super(cid) = self.func.exprs[recv].kind {
+            return self.lower_super_call(cid, method_name, args, span);
+        }
+        // `ClassName.m(args)` → a `@staticmethod`/`@classmethod` on the class (5D).
+        if let Some(cid) = self.class_name_ref(recv) {
+            if let Some(res) = self.try_static_or_class_call(cid, None, method_name, args, span)? {
+                return Ok(res);
+            }
+            return Err(CompilerError::semantic_error(
+                format!("class has no static/class method `.{}()`", self.interner.resolve(method_name)),
+                span,
+            ));
+        }
+        let recv_ty = self.func.exprs[recv].ty.clone();
+        // Class receiver: a `@staticmethod`/`@classmethod` called on an instance,
+        // else an instance method (devirtualized unless overridden below — D7).
+        if let Some(cid) = class_of(&recv_ty, self.classes) {
+            if let Some(res) =
+                self.try_static_or_class_call(cid, Some(recv), method_name, args, span)?
+            {
+                return Ok(res);
+            }
+            if self.classes.method_overridden_below(cid, method_name) {
+                return self.lower_virtual_call(cid, recv, method_name, args, span);
+            }
+            return self.lower_class_method_call(cid, recv, method_name, args, span);
+        }
+        // Container receiver → the Phase-4D ContainerMethod path.
+        let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
+            CompilerError::semantic_error(
+                format!("unsupported method `.{}()`", self.interner.resolve(method_name)),
+                span,
+            )
+        })?;
+        self.lower_container_method_call(call_idx, recv, cm, args)
+    }
+
+    /// Devirtualized class-method call: `Call(method_FuncId, [recv, args…])`.
+    fn lower_class_method_call(
+        &mut self,
+        cid: ClassId,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        let fid = self
+            .classes
+            .get(cid)
+            .and_then(|info| info.method(method_name))
+            .map(|m| m.func_id)
+            .ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!("class has no method `.{}()`", self.interner.resolve(method_name)),
+                    span,
+                )
+            })?;
+        let params = self.sigs[fid.index()].params.clone();
+        let ret = self.sigs[fid.index()].ret.clone();
+        if args.len() + 1 != params.len() {
+            return Err(CompilerError::semantic_error(
+                "wrong number of arguments in method call".to_string(),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let self_arg = self.coerce(rl, rr, params[0].clone())?;
+        let mut argvals = vec![Operand::Local(self_arg)];
+        for (a, prepr) in args.iter().zip(&params[1..]) {
+            let (al, ar) = self.lower_expr(*a)?;
+            let at = self.coerce(al, ar, prepr.clone())?;
+            argvals.push(Operand::Local(at));
+        }
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        Ok((dst, ret))
+    }
+
+    /// If `name` is a `@staticmethod` / `@classmethod` on `cid`, lower it as a
+    /// direct call (the `cls` of a classmethod was dropped at the frontend; both
+    /// take just the positional args). `recv` (an instance) is evaluated for side
+    /// effects when present. Returns `None` if `name` is not static/class.
+    fn try_static_or_class_call(
+        &mut self,
+        cid: ClassId,
+        recv: Option<Idx<HirExpr>>,
+        name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<Option<(LocalId, Repr)>> {
+        let fid = match self.classes.get(cid).and_then(|i| {
+            i.static_method(name).or_else(|| i.class_method(name)).map(|m| m.func_id)
+        }) {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        // Evaluate the receiver for side effects (`instance.staticmethod()`).
+        if let Some(r) = recv {
+            let _ = self.lower_expr(r)?;
+        }
+        let params = self.sigs[fid.index()].params.clone();
+        let ret = self.sigs[fid.index()].ret.clone();
+        if args.len() != params.len() {
+            return Err(CompilerError::semantic_error(
+                "wrong number of arguments in static/class method call".to_string(),
+                span,
+            ));
+        }
+        let mut argvals = Vec::with_capacity(args.len());
+        for (a, prepr) in args.iter().zip(&params) {
+            let (al, ar) = self.lower_expr(*a)?;
+            argvals.push(Operand::Local(self.coerce(al, ar, prepr.clone())?));
+        }
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        Ok(Some((dst, ret)))
+    }
+
+    /// Lower `super().m(args)`: resolve the parent method via the enclosing class's
+    /// MRO and direct-`Call` it with the *current* `self` (param 0), cast to the
+    /// parent's `self` repr.
+    fn lower_super_call(
+        &mut self,
+        cid: ClassId,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        let fid = self.classes.resolve_super_method(cid, method_name).ok_or_else(|| {
+            CompilerError::semantic_error(
+                format!("super() has no method `.{}()`", self.interner.resolve(method_name)),
+                span,
+            )
+        })?;
+        let params = self.sigs[fid.index()].params.clone();
+        let ret = self.sigs[fid.index()].ret.clone();
+        if args.len() + 1 != params.len() {
+            return Err(CompilerError::semantic_error(
+                "wrong number of arguments in super() call".to_string(),
+                span,
+            ));
+        }
+        // `self` is parameter 0 of the current method.
+        let self_local = LocalId::new(0);
+        let self_from = self.local_repr(self_local);
+        let self_arg = self.coerce(self_local, self_from, params[0].clone())?;
+        let mut argvals = vec![Operand::Local(self_arg)];
+        for (a, prepr) in args.iter().zip(&params[1..]) {
+            let (al, ar) = self.lower_expr(*a)?;
+            let at = self.coerce(al, ar, prepr.clone())?;
+            argvals.push(Operand::Local(at));
+        }
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        Ok((dst, ret))
+    }
+
+    /// Lower a polymorphic method call → `CallVirtual` (D7). The statically
+    /// resolved method on `cid` provides the indirect-call signature; the runtime
+    /// resolves the actual override from the receiver's class id.
+    fn lower_virtual_call(
+        &mut self,
+        cid: ClassId,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        let fid = self
+            .classes
+            .get(cid)
+            .and_then(|info| info.method(method_name))
+            .map(|m| m.func_id)
+            .ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!("class has no method `.{}()`", self.interner.resolve(method_name)),
+                    span,
+                )
+            })?;
+        let params = self.sigs[fid.index()].params.clone();
+        let ret = self.sigs[fid.index()].ret.clone();
+        if args.len() + 1 != params.len() {
+            return Err(CompilerError::semantic_error(
+                "wrong number of arguments in method call".to_string(),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let self_arg = self.coerce(rl, rr, params[0].clone())?;
+        let mut argvals = Vec::with_capacity(args.len());
+        for (a, prepr) in args.iter().zip(&params[1..]) {
+            let (al, ar) = self.lower_expr(*a)?;
+            let at = self.coerce(al, ar, prepr.clone())?;
+            argvals.push(Operand::Local(at));
+        }
+        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::CallVirtual {
+            dst: Some(dst),
+            recv: Operand::Local(self_arg),
+            name_hash,
+            args: argvals,
+            ret: ret.clone(),
+        });
+        Ok((dst, ret))
+    }
+
+    /// Lower `isinstance(value, Cls)` → the inheritance-aware runtime check.
+    fn lower_isinstance(
+        &mut self,
+        value: Idx<HirExpr>,
+        class_id: ClassId,
+    ) -> Result<(LocalId, Repr)> {
+        let (vl, vr) = self.lower_expr(value)?;
+        let vt = self.coerce(vl, vr, Repr::Tagged)?;
+        let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+        self.emit(MirInst::IsInstance { dst, value: Operand::Local(vt), class_id });
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// If `ty` is a concrete user class defining the dunder `name` (and not
+    /// overridden in a subclass — else the dynamic path is needed), return its
+    /// resolved `FuncId`. Used to compiler-route the dunders the runtime does *not*
+    /// dispatch (`__eq__`/`__len__`/`__getitem__`/…) to a direct devirtualized call.
+    fn concrete_dunder(&self, ty: &SemTy, name: &str) -> Option<FuncId> {
+        let cid = class_of(ty, self.classes)?;
+        let info = self.classes.get(cid)?;
+        let m = info.methods.iter().find(|m| self.interner.resolve(m.name) == name)?;
+        if self.classes.method_overridden_below(cid, m.name) {
+            return None;
+        }
+        Some(m.func_id)
+    }
+
+    /// Emit a direct call to a dunder `FuncId` with already-lowered `(loc, repr)`
+    /// args (coerced to the method's param reprs), returning its result.
+    fn emit_dunder_call(
+        &mut self,
+        fid: FuncId,
+        args: Vec<(LocalId, Repr)>,
+    ) -> Result<(LocalId, Repr)> {
+        let params = self.sigs[fid.index()].params.clone();
+        let ret = self.sigs[fid.index()].ret.clone();
+        let mut argvals = Vec::with_capacity(args.len());
+        for ((loc, repr), prepr) in args.into_iter().zip(&params) {
+            argvals.push(Operand::Local(self.coerce(loc, repr, prepr.clone())?));
+        }
+        let dst = self.alloc_temp(ret.clone());
+        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        Ok((dst, ret))
+    }
+
+    /// Truthy-test a tagged value into a fresh `Raw(I8)` (for `__eq__`/`__contains__`
+    /// / ordering dunder results, which return a Python bool object).
+    fn truthy_i8(&mut self, val: LocalId, repr: Repr) -> Result<LocalId> {
+        let tagged = self.coerce(val, repr, Repr::Tagged)?;
+        let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+        self.emit(MirInst::Truthy { dst, operand: Operand::Local(tagged) });
+        Ok(dst)
+    }
+
+    /// The `__eq__`/`__ne__` dunder to route `==`/`!=` through, plus whether to
+    /// logically negate the result (the `!=`-from-`__eq__` derivation).
+    fn eq_dunder(&self, ty: &SemTy, op: HCmpOp) -> Option<(FuncId, bool)> {
+        match op {
+            HCmpOp::Eq => self.concrete_dunder(ty, "__eq__").map(|f| (f, false)),
+            HCmpOp::NotEq => match self.concrete_dunder(ty, "__ne__") {
+                Some(f) => Some((f, false)),
+                None => self.concrete_dunder(ty, "__eq__").map(|f| (f, true)),
+            },
+            _ => None,
         }
     }
 
@@ -641,6 +1518,13 @@ impl<'a> FnLower<'a> {
     /// base into a uniform-tagged slot) and falling back to its representation. The
     /// result is normalized to the tagged baseline.
     fn lower_subscript(&mut self, base: Idx<HirExpr>, index: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
+        // Class `__getitem__` (Phase 5C) — a direct devirtualized call.
+        let bt = self.func.exprs[base].ty.clone();
+        if let Some(fid) = self.concrete_dunder(&bt, "__getitem__") {
+            let (bl, br) = self.lower_expr(base)?;
+            let (il, ir) = self.lower_expr(index)?;
+            return self.emit_dunder_call(fid, vec![(bl, br), (il, ir)]);
+        }
         let kind = sub_kind(&self.func.exprs[base].ty, &repr_of(&self.func.exprs[base].ty));
         let (bl, br) = self.lower_expr(base)?;
         let (il, ir) = self.lower_expr(index)?;
@@ -666,6 +1550,18 @@ impl<'a> FnLower<'a> {
         op: ContainerOp,
         args: &[Idx<HirExpr>],
     ) -> Result<(LocalId, Repr)> {
+        // `x in obj` on a class with `__contains__` (Phase 5C). `Contains` args are
+        // `[container, elem]`; route a concrete-class container to a direct call.
+        if op == ContainerOp::Contains {
+            let ct = self.func.exprs[args[0]].ty.clone();
+            if let Some(fid) = self.concrete_dunder(&ct, "__contains__") {
+                let (cl, cr) = self.lower_expr(args[0])?;
+                let (el, er) = self.lower_expr(args[1])?;
+                let (res, rrep) = self.emit_dunder_call(fid, vec![(cl, cr), (el, er)])?;
+                let dst = self.truthy_i8(res, rrep)?;
+                return Ok((dst, Repr::Raw(RawKind::I8)));
+            }
+        }
         let mut lowered = Vec::with_capacity(args.len());
         for a in args {
             lowered.push(self.lower_expr(*a)?);
@@ -679,7 +1575,7 @@ impl<'a> FnLower<'a> {
     /// Lower a container method call `recv.method(args)` (Phase 4D), dispatching
     /// the concrete runtime op from the receiver's static type. Args/values are
     /// coerced to `Tagged`; results are normalized from `Tagged`.
-    fn lower_method_call(
+    fn lower_container_method_call(
         &mut self,
         call_idx: Idx<HirExpr>,
         recv: Idx<HirExpr>,
@@ -1021,6 +1917,45 @@ impl<'a> FnLower<'a> {
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
+        // Class comparison dunders the runtime does NOT dispatch: route a
+        // concrete-class left operand to a direct call (5C). `rt_obj_eq` falls to
+        // identity, and `rt_obj_cmp` raises on instances, so this is mandatory.
+        let lt = self.func.exprs[l].ty.clone();
+        if let Some((fid, negate)) = self.eq_dunder(&lt, op) {
+            let (ll, lr) = self.lower_expr(l)?;
+            let (rl, rr) = self.lower_expr(r)?;
+            let (res, rrep) = self.emit_dunder_call(fid, vec![(ll, lr), (rl, rr)])?;
+            if negate {
+                // `!=` derived from `__eq__`: logical-negate the (tagged) result.
+                let tagged = self.coerce(res, rrep, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+                self.emit(MirInst::Unary {
+                    dst,
+                    op: MUnaryOp::Not,
+                    operand: Operand::Local(tagged),
+                });
+                return Ok((dst, Repr::Raw(RawKind::I8)));
+            }
+            let dst = self.truthy_i8(res, rrep)?;
+            return Ok((dst, Repr::Raw(RawKind::I8)));
+        }
+        let ord_name = match op {
+            HCmpOp::Lt => Some("__lt__"),
+            HCmpOp::LtE => Some("__le__"),
+            HCmpOp::Gt => Some("__gt__"),
+            HCmpOp::GtE => Some("__ge__"),
+            _ => None,
+        };
+        if let Some(name) = ord_name {
+            if let Some(fid) = self.concrete_dunder(&lt, name) {
+                let (ll, lr) = self.lower_expr(l)?;
+                let (rl, rr) = self.lower_expr(r)?;
+                let (res, rrep) = self.emit_dunder_call(fid, vec![(ll, lr), (rl, rr)])?;
+                let dst = self.truthy_i8(res, rrep)?;
+                return Ok((dst, Repr::Raw(RawKind::I8)));
+            }
+        }
+
         let (ll, lr) = self.lower_expr(l)?;
         let (rl, rr) = self.lower_expr(r)?;
 
@@ -1073,13 +2008,20 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let span = self.func.exprs[callee].span;
         let sym = match &self.func.exprs[callee].kind {
-            HirExprKind::Name(SymbolRef::Resolved(id)) => self.resolve.symbol(*id),
-            _ => {
+            HirExprKind::Name(SymbolRef::Resolved(id)) => match self.resolve.symbol(*id) {
+                // A local holding a callable VALUE → indirect call (Phase 6A).
+                Symbol::Local(_) => return self.lower_indirect_call(callee, &args),
+                sym => sym,
+            },
+            HirExprKind::Name(SymbolRef::Unresolved(_)) => {
                 return Err(CompilerError::semantic_error(
-                    "only direct calls to a named function or builtin are supported",
+                    "internal: callee name reached lowering unresolved",
                     span,
                 ))
             }
+            // Any other callee expression (a closure read, a call result, …) is
+            // an indirect call through its Callable type (Phase 6A).
+            _ => return self.lower_indirect_call(callee, &args),
         };
         match sym {
             Symbol::Builtin(kind) => {
@@ -1113,13 +2055,13 @@ impl<'a> FnLower<'a> {
                 Ok((dst, ret))
             }
             Symbol::Container(op) => self.lower_container_builtin(call_idx, op, &args),
+            Symbol::Class(cid) => self.lower_construct(cid, &args, span),
             Symbol::BuiltinRange => self.lower_range_value(call_idx, &args, span),
-            Symbol::BuiltinPrint | Symbol::Local(_) => {
-                Err(CompilerError::semantic_error(
-                    "this callee is not usable as a value-returning call here",
-                    span,
-                ))
-            }
+            // `Symbol::Local` was intercepted above (indirect call).
+            Symbol::BuiltinPrint | Symbol::Local(_) => Err(CompilerError::semantic_error(
+                "this callee is not usable as a value-returning call here",
+                span,
+            )),
         }
     }
 
@@ -1138,6 +2080,13 @@ impl<'a> FnLower<'a> {
         let result_heap = repr_of(&self.func.exprs[call_idx].ty);
         match op {
             C::Len => {
+                // `len(obj)` on a class with `__len__` (Phase 5C) — `rt_obj_len`
+                // does not dispatch instances, so route to a direct call.
+                let at = self.func.exprs[args[0]].ty.clone();
+                if let Some(fid) = self.concrete_dunder(&at, "__len__") {
+                    let (l, r) = self.lower_expr(args[0])?;
+                    return self.emit_dunder_call(fid, vec![(l, r)]);
+                }
                 let (l, r) = self.lower_expr(args[0])?;
                 let (dst, ret) = self.emit_container(C::Len, vec![(l, r)], None)?;
                 self.normalize_container_result(dst.unwrap(), ret)
@@ -1332,7 +2281,8 @@ impl<'a> FnLower<'a> {
             | Symbol::BuiltinRange
             | Symbol::Builtin(_)
             | Symbol::Function(_)
-            | Symbol::Container(_) => Err(CompilerError::semantic_error(
+            | Symbol::Container(_)
+            | Symbol::Class(_) => Err(CompilerError::semantic_error(
                 "this name cannot be used as a value here (only call targets are supported)",
                 span,
             )),
@@ -1454,6 +2404,54 @@ fn sub_kind(ty: &SemTy, repr: &Repr) -> SubKind {
         SubKind::Str
     } else {
         SubKind::Generic
+    }
+}
+
+/// True iff `r` is a user class-instance pointer representation.
+fn is_class_repr(r: &Repr) -> bool {
+    matches!(r, Repr::Heap(HeapShape::Class(_)))
+}
+
+/// True iff `name` is a dunder (`__name__`) — a registry-dispatched special method.
+fn is_dunder(name: &str) -> bool {
+    name.len() > 4 && name.starts_with("__") && name.ends_with("__")
+}
+
+/// Convert a class-attribute initializer to a MIR [`Const`], interning literal
+/// bytes (str / bytes / bignum decimal) into the string pool (Phase 5D).
+fn class_attr_const(
+    init: &pyaot_hir::ClassAttrInit,
+    interner: &StringInterner,
+    str_pool: &mut StrPool,
+) -> Const {
+    use pyaot_hir::ClassAttrInit as A;
+    match init {
+        A::Int(v) => Const::Int(*v),
+        A::Float(v) => Const::Float(*v),
+        A::Bool(b) => Const::Bool(*b),
+        A::None => Const::None,
+        A::Str(s) => {
+            str_pool.insert(*s, interner.resolve(*s).as_bytes().to_vec());
+            Const::Str(*s)
+        }
+        A::Bytes(s) => {
+            str_pool.insert(*s, interner.resolve(*s).as_bytes().to_vec());
+            Const::Bytes(*s)
+        }
+        A::BigInt(s) => {
+            str_pool.insert(*s, interner.resolve(*s).as_bytes().to_vec());
+            Const::BigIntStr(*s)
+        }
+    }
+}
+
+/// The class id a receiver type denotes (a nominal `Class`, or a user generic
+/// instance whose base is a user class), else `None`.
+fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
+    match ty {
+        SemTy::Class { class_id, .. } => Some(*class_id),
+        SemTy::Generic { base, .. } if classes.get(*base).is_some() => Some(*base),
+        _ => None,
     }
 }
 

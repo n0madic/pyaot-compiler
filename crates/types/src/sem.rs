@@ -14,10 +14,32 @@ use crate::builtin_classes::{
 };
 
 /// A callable signature at the semantic level.
+///
+/// `params` lists every parameter type IN ABI ORDER, including (when the flags
+/// are set) the trailing `*args` tuple and `**kwargs` dict — each is ONE
+/// parameter (`tuple[Dyn, ...]` / `dict[str, Dyn]`), so the indirect-call
+/// signature stays fixed regardless of how many values a call site spreads
+/// (Phase 6C; this is what makes `def wrapper(*args, **kwargs)` decoratable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sig {
     pub params: Vec<SemTy>,
     pub ret: SemTy,
+    /// The last (or second-to-last, before `kwargs`) param is a `*args` tuple.
+    pub varargs: bool,
+    /// The last param is a `**kwargs` dict.
+    pub kwargs: bool,
+}
+
+impl Sig {
+    /// A plain fixed-arity signature (no `*args` / `**kwargs`).
+    pub fn fixed(params: Vec<SemTy>, ret: SemTy) -> Sig {
+        Sig { params, ret, varargs: false, kwargs: false }
+    }
+
+    /// The number of leading fixed (non-`*args`/`**kwargs`) parameters.
+    pub fn fixed_arity(&self) -> usize {
+        self.params.len() - usize::from(self.varargs) - usize::from(self.kwargs)
+    }
 }
 
 /// The semantic (Python-level) type.
@@ -183,6 +205,8 @@ impl SemTy {
             SemTy::Callable(sig) => SemTy::Callable(Box::new(Sig {
                 params: sig.params.iter().map(|p| p.substitute(subst)).collect(),
                 ret: sig.ret.substitute(subst),
+                varargs: sig.varargs,
+                kwargs: sig.kwargs,
             })),
             other => other.clone(),
         }

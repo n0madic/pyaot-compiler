@@ -42,10 +42,15 @@ modes they prevent are catalogued in `PITFALLS.md`).
   standard optimizer passes) on their own merits.
 - **Do not reintroduce the anti-patterns in `PITFALLS.md`.** They are why the
   invariants exist.
-- **The runtime is a frozen contract.** Its `Value`-level ABI and `rt_*`
-  signatures are the seam the whole compiler targets. Extend it only with a
-  deliberate, documented reason (bignum is the one planned extension) — never to
-  paper over a front-half bug.
+- **The runtime is a frozen contract — but only as long as the freeze serves
+  the plan.** Its `Value`-level ABI and `rt_*` signatures are the seam the whole
+  compiler targets, so it is frozen by default. The freeze is a discipline, not
+  an absolute prohibition: when fully realizing a planned feature genuinely
+  requires a runtime change — as bignum did — the plan wins, and the runtime is
+  extended deliberately (a new `rt_*`/ABI, documented as such, with corpus
+  coverage). What the freeze forbids is papering over a front-half bug in the
+  runtime, or casually editing it to dodge front-half work — never a change the
+  plan actually needs.
 - `#![forbid(unsafe_code)]` in every compiler crate; only `runtime` uses unsafe.
 - After any change: `cargo check --workspace --exclude pyaot-runtime`, and
   `cargo build -p pyaot-runtime` if the runtime was touched.

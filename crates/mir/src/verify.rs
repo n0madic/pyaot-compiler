@@ -11,7 +11,7 @@
 
 use crate::{
     classify_coercion, is_heap_str, BinOp, Const, ContainerArg, ContainerOp, ContainerResult,
-    MirFunction, MirInst, MirTerminator, Operand, PrintKind, UnaryOp,
+    GenOp, GenResult, MirFunction, MirInst, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -45,6 +45,18 @@ pub enum VerifyError {
     ContainerDst { op: ContainerOp, want_dst: bool },
     /// A `CallContainer` result local has the wrong representation for the op.
     ContainerResultRepr { op: ContainerOp, actual: Repr },
+    /// An instance instruction's `base` is neither `Heap(Class(_))` nor `Tagged`
+    /// (PITFALLS B12: only such a value may be handed to `rt_instance_*`).
+    InstanceBaseRepr { ctx: &'static str, actual: Repr },
+    /// A `MakeInstance` `dst` is not `Heap(Class(class_id))`.
+    MakeInstanceDst { class_id: u32, actual: Repr },
+    /// A `MakeClosure` whose `dst` signature does not equal the target
+    /// function's signature minus its env param (or whose target lacks the
+    /// `Tagged` env param 0) — Phase 6A.
+    ClosureSigMismatch { func: usize },
+    /// A `CallIndirect` whose callee repr is not `Closure(sig)` for the carried
+    /// `sig` — Phase 6A.
+    IndirectCalleeRepr { actual: Repr },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -97,6 +109,22 @@ impl std::fmt::Display for VerifyError {
             VerifyError::ContainerResultRepr { op, actual } => {
                 write!(f, "CallContainer {op:?}: dst has the wrong representation {actual:?}")
             }
+            VerifyError::InstanceBaseRepr { ctx, actual } => {
+                write!(f, "{ctx}: instance base must be Heap(Class) or Tagged, got {actual:?}")
+            }
+            VerifyError::MakeInstanceDst { class_id, actual } => {
+                write!(f, "MakeInstance dst must be Heap(Class({class_id})), got {actual:?}")
+            }
+            VerifyError::ClosureSigMismatch { func } => {
+                write!(
+                    f,
+                    "MakeClosure over func {func}: dst Closure signature must equal the \
+                     target's signature minus its Tagged env param 0"
+                )
+            }
+            VerifyError::IndirectCalleeRepr { actual } => {
+                write!(f, "CallIndirect callee must be Closure(sig) matching the carried sig, got {actual:?}")
+            }
         }
     }
 }
@@ -107,6 +135,17 @@ const TAGGED: Repr = Repr::Tagged;
 const RAW_I8: Repr = Repr::Raw(RawKind::I8);
 const RAW_I64: Repr = Repr::Raw(RawKind::I64);
 const RAW_F64: Repr = Repr::Raw(RawKind::F64);
+
+/// A short static context string for a generator op's `dst` repr check.
+fn gen_op_ctx(op: GenOp) -> &'static str {
+    match op {
+        GenOp::GetLocal => "GenOp(GetLocal).dst",
+        GenOp::GetState => "GenOp(GetState).dst",
+        GenOp::GetSentValue => "GenOp(GetSentValue).dst",
+        GenOp::IsClosing => "GenOp(IsClosing).dst",
+        _ => "GenOp.dst",
+    }
+}
 
 fn check_local(f: &MirFunction, id: LocalId) -> Result<(), VerifyError> {
     if id.index() >= f.locals.len() {
@@ -138,6 +177,16 @@ fn want(f: &MirFunction, op: &Operand, w: &Repr, ctx: &'static str) -> Result<()
         return Err(VerifyError::ReprMismatch { ctx, expected: w.clone(), actual: got.clone() });
     }
     Ok(())
+}
+
+/// Require an operand to be a valid instance base: `Heap(Class(_))` or `Tagged`
+/// (PITFALLS B12 — only such a value may be dereferenced by `rt_instance_*`).
+fn want_instance_base(f: &MirFunction, op: &Operand, ctx: &'static str) -> Result<(), VerifyError> {
+    let got = f.operand_repr(op);
+    match got {
+        Repr::Tagged | Repr::Heap(HeapShape::Class(_)) => Ok(()),
+        other => Err(VerifyError::InstanceBaseRepr { ctx, actual: other.clone() }),
+    }
 }
 
 /// Require a destination local's declared repr to equal `w`.
@@ -303,6 +352,161 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             }
         }
         MirInst::CallContainer { dst, op, args } => verify_call_container(f, *op, dst, args)?,
+        MirInst::MakeInstance { dst, class_id, .. } => {
+            check_local(f, *dst)?;
+            let got = f.local_repr(*dst);
+            if *got != Repr::Heap(HeapShape::Class(*class_id)) {
+                return Err(VerifyError::MakeInstanceDst {
+                    class_id: class_id.0,
+                    actual: got.clone(),
+                });
+            }
+        }
+        MirInst::GetField { dst, base, slot: _ } => {
+            check_operand(f, base)?;
+            want_instance_base(f, base, "GetField.base")?;
+            want_local(f, *dst, &TAGGED, "GetField.dst")?;
+        }
+        MirInst::SetField { base, slot: _, value } => {
+            check_operand(f, base)?;
+            want_instance_base(f, base, "SetField.base")?;
+            want(f, value, &TAGGED, "SetField.value")?;
+        }
+        MirInst::CallVirtual { dst, recv, args, ret, .. } => {
+            check_operand(f, recv)?;
+            want_instance_base(f, recv, "CallVirtual.recv")?;
+            for arg in args {
+                check_operand(f, arg)?;
+            }
+            // `dst` (if present) must carry the resolved method's return repr.
+            if let Some(d) = dst {
+                want_local(f, *d, ret, "CallVirtual.dst")?;
+            }
+        }
+        MirInst::IsInstance { dst, value, .. } => {
+            want(f, value, &TAGGED, "IsInstance.value")?;
+            want_local(f, *dst, &RAW_I8, "IsInstance.dst")?;
+        }
+        MirInst::GetClassAttr { dst, .. } => {
+            want_local(f, *dst, &TAGGED, "GetClassAttr.dst")?;
+        }
+        MirInst::SetClassAttr { value, .. } => {
+            want(f, value, &TAGGED, "SetClassAttr.value")?;
+        }
+        // ── closures / cells / globals (Phase 6) ──
+        MirInst::MakeClosure { dst, func, captures } => {
+            if func.index() >= funcs.len() {
+                return Err(VerifyError::FuncOutOfRange { func: func.index(), count: funcs.len() });
+            }
+            let callee = &funcs[func.index()];
+            // The target must carry the Tagged env as explicit param 0, and the
+            // dst Closure signature must be exactly the rest of its signature.
+            check_local(f, *dst)?;
+            let dst_repr = f.local_repr(*dst);
+            let Repr::Closure(sig) = dst_repr else {
+                return Err(VerifyError::ClosureSigMismatch { func: func.index() });
+            };
+            let env_ok = callee.params.first() == Some(&TAGGED);
+            let sig_ok = sig.params[..] == callee.params[1..] && *sig.ret == callee.ret;
+            if !env_ok || !sig_ok {
+                return Err(VerifyError::ClosureSigMismatch { func: func.index() });
+            }
+            // Every capture is a tagged cell pointer (the P6-2 cell rule).
+            for c in captures {
+                want(f, c, &TAGGED, "MakeClosure.capture")?;
+            }
+        }
+        MirInst::CallIndirect { dst, callee, args, sig } => {
+            check_operand(f, callee)?;
+            let callee_repr = f.operand_repr(callee);
+            match callee_repr {
+                Repr::Closure(s) if **s == *sig => {}
+                other => return Err(VerifyError::IndirectCalleeRepr { actual: other.clone() }),
+            }
+            if args.len() != sig.params.len() {
+                return Err(VerifyError::CallArity {
+                    func: usize::MAX,
+                    expected: sig.params.len(),
+                    actual: args.len(),
+                });
+            }
+            for (arg, prepr) in args.iter().zip(&sig.params) {
+                want(f, arg, prepr, "CallIndirect.arg")?;
+            }
+            if let Some(d) = dst {
+                want_local(f, *d, &sig.ret, "CallIndirect.dst")?;
+            }
+        }
+        MirInst::MakeCell { dst, init } => {
+            want(f, init, &TAGGED, "MakeCell.init")?;
+            want_local(f, *dst, &TAGGED, "MakeCell.dst")?;
+        }
+        MirInst::CellGet { dst, cell } => {
+            want(f, cell, &TAGGED, "CellGet.cell")?;
+            want_local(f, *dst, &TAGGED, "CellGet.dst")?;
+        }
+        MirInst::CellSet { cell, value } => {
+            want(f, cell, &TAGGED, "CellSet.cell")?;
+            want(f, value, &TAGGED, "CellSet.value")?;
+        }
+        MirInst::GlobalGet { dst, .. } => {
+            want_local(f, *dst, &TAGGED, "GlobalGet.dst")?;
+        }
+        MirInst::GlobalSet { value, .. } => {
+            want(f, value, &TAGGED, "GlobalSet.value")?;
+        }
+        // ── generators (Phase 6E) ──
+        MirInst::MakeGenerator { dst, .. } => {
+            want_local(f, *dst, &TAGGED, "MakeGenerator.dst")?;
+        }
+        MirInst::GenOpInst { dst, op, gen, value, .. } => {
+            // The generator operand and any stored value are Tagged (P6-3).
+            want(f, gen, &TAGGED, "GenOp.gen")?;
+            match (op.takes_value(), value) {
+                (true, Some(v)) => want(f, v, &TAGGED, "GenOp.value")?,
+                (true, None) => {
+                    return Err(VerifyError::ReprMismatch {
+                        ctx: "GenOp(SetLocal) requires a value",
+                        expected: TAGGED,
+                        actual: Repr::Never,
+                    })
+                }
+                (false, Some(_)) => {
+                    return Err(VerifyError::ReprMismatch {
+                        ctx: "GenOp without a value got one",
+                        expected: Repr::Never,
+                        actual: TAGGED,
+                    })
+                }
+                (false, None) => {}
+            }
+            match (op.result(), dst) {
+                (GenResult::None, Some(_)) => {
+                    return Err(VerifyError::ReprMismatch {
+                        ctx: "GenOp mutating op must have no dst",
+                        expected: Repr::Never,
+                        actual: TAGGED,
+                    })
+                }
+                (GenResult::None, None) => {}
+                (res, Some(d)) => {
+                    let want_repr = match res {
+                        GenResult::Value => TAGGED,
+                        GenResult::Int => RAW_I64,
+                        GenResult::Bool => RAW_I8,
+                        GenResult::None => unreachable!(),
+                    };
+                    want_local(f, *d, &want_repr, gen_op_ctx(*op))?;
+                }
+                (_, None) => {
+                    return Err(VerifyError::ReprMismatch {
+                        ctx: "GenOp value-producing op requires a dst",
+                        expected: TAGGED,
+                        actual: Repr::Never,
+                    })
+                }
+            }
+        }
         MirInst::AssertFail => {}
         MirInst::Print { kind, arg } => match kind {
             PrintKind::Newline | PrintKind::Sep | PrintKind::None_ => {
@@ -602,5 +806,168 @@ mod tests {
             MirTerminator::Return(None),
         );
         assert!(matches!(verify(&f, &[]), Err(VerifyError::IllegalCoercion { .. })));
+    }
+
+    // ── classes (Phase 5) ──
+
+    #[test]
+    fn accepts_well_formed_instance_ops() {
+        let cid = pyaot_utils::ClassId::new(67);
+        let class_repr = Repr::Heap(HeapShape::Class(cid));
+        // local0: instance (Heap(Class)); local1: a Tagged field value/result.
+        let f = single_block(
+            vec![class_repr.clone(), Repr::Tagged],
+            vec![
+                MirInst::MakeInstance { dst: LocalId::new(0), class_id: cid, field_count: 2 },
+                MirInst::SetField {
+                    base: Operand::Local(LocalId::new(0)),
+                    slot: 0,
+                    value: Operand::Local(LocalId::new(1)),
+                },
+                MirInst::GetField {
+                    dst: LocalId::new(1),
+                    base: Operand::Local(LocalId::new(0)),
+                    slot: 1,
+                },
+            ],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&f, &[]), Ok(()));
+    }
+
+    #[test]
+    fn rejects_getfield_non_instance_base() {
+        // base = Raw(F64) is not a valid instance base (PITFALLS B12).
+        let f = single_block(
+            vec![Repr::Raw(RawKind::F64), Repr::Tagged],
+            vec![MirInst::GetField {
+                dst: LocalId::new(1),
+                base: Operand::Local(LocalId::new(0)),
+                slot: 0,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::InstanceBaseRepr { .. })));
+    }
+
+    #[test]
+    fn rejects_getfield_non_tagged_dst() {
+        let cid = pyaot_utils::ClassId::new(67);
+        let f = single_block(
+            vec![Repr::Heap(HeapShape::Class(cid)), Repr::Raw(RawKind::F64)],
+            vec![MirInst::GetField {
+                dst: LocalId::new(1),
+                base: Operand::Local(LocalId::new(0)),
+                slot: 0,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn rejects_make_instance_non_class_dst() {
+        let cid = pyaot_utils::ClassId::new(67);
+        // dst declared Tagged, not Heap(Class) → rejected.
+        let f = single_block(
+            vec![Repr::Tagged],
+            vec![MirInst::MakeInstance { dst: LocalId::new(0), class_id: cid, field_count: 0 }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::MakeInstanceDst { .. })));
+    }
+
+    // ── closures / generators (Phase 6) ──
+
+    #[test]
+    fn rejects_non_tagged_closure_capture() {
+        use pyaot_types::SigRepr;
+        // MakeClosure captures must be Tagged cell pointers (P6-2). A Raw(F64)
+        // capture is structurally rejected.
+        let sig = SigRepr { params: vec![Repr::Tagged], ret: Box::new(Repr::Tagged) };
+        // funcs[0] = the target: (env: Tagged, p0: Tagged) -> Tagged.
+        let target = MirFunction {
+            name: interned("f"),
+            params: vec![Repr::Tagged, Repr::Tagged],
+            ret: Repr::Tagged,
+            locals: vec![LocalDecl { repr: Repr::Tagged }],
+            blocks: vec![MirBlock { insts: vec![], term: MirTerminator::Return(None) }],
+            entry: BlockId::new(0),
+        };
+        let caller = single_block(
+            vec![Repr::Closure(Box::new(sig)), Repr::Raw(RawKind::F64)],
+            vec![MirInst::MakeClosure {
+                dst: LocalId::new(0),
+                func: pyaot_utils::FuncId::new(0),
+                captures: vec![Operand::Local(LocalId::new(1))],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(
+            verify(&caller, &[target]),
+            Err(VerifyError::ReprMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_call_indirect_arg_mismatch() {
+        use pyaot_types::SigRepr;
+        let sig = SigRepr { params: vec![Repr::Tagged], ret: Box::new(Repr::Tagged) };
+        // callee is Closure(sig); the single arg is Raw(F64) but sig wants Tagged.
+        let f = single_block(
+            vec![Repr::Closure(Box::new(sig.clone())), Repr::Raw(RawKind::F64), Repr::Tagged],
+            vec![MirInst::CallIndirect {
+                dst: Some(LocalId::new(2)),
+                callee: Operand::Local(LocalId::new(0)),
+                args: vec![Operand::Local(LocalId::new(1))],
+                sig,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn rejects_raw_gen_set_local_value() {
+        use crate::GenOp;
+        // GenOp::SetLocal value must be Tagged (P6-3 tagged slot storage).
+        let f = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
+            vec![MirInst::GenOpInst {
+                dst: None,
+                op: GenOp::SetLocal,
+                gen: Operand::Local(LocalId::new(0)),
+                imm: 0,
+                value: Some(Operand::Local(LocalId::new(1))),
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn rejects_make_generator_non_tagged_dst() {
+        // MakeGenerator dst must be Tagged.
+        let f = single_block(
+            vec![Repr::Raw(RawKind::F64)],
+            vec![MirInst::MakeGenerator { dst: LocalId::new(0), gen_id: 0, num_locals: 2 }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
+    }
+
+    #[test]
+    fn rejects_setfield_non_tagged_value() {
+        let cid = pyaot_utils::ClassId::new(67);
+        let f = single_block(
+            vec![Repr::Heap(HeapShape::Class(cid)), Repr::Raw(RawKind::F64)],
+            vec![MirInst::SetField {
+                base: Operand::Local(LocalId::new(0)),
+                slot: 0,
+                value: Operand::Local(LocalId::new(1)),
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&f, &[]), Err(VerifyError::ReprMismatch { .. })));
     }
 }

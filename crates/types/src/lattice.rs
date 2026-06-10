@@ -210,6 +210,13 @@ impl TypeLattice for SemTy {
         if let Some(t) = numeric_promote(self, other) {
             return t;
         }
+        // Two different callable signatures never merge into one sig (a merged
+        // sig would fabricate an indirect-call ABI nothing satisfies) and never
+        // form a union (Phase 6): the join is the gradual top, so the slot goes
+        // `Tagged` and a later call gets the loud Dyn-callee diagnostic.
+        if matches!((self, other), (SemTy::Callable(_), SemTy::Callable(_))) {
+            return SemTy::Dyn;
+        }
         // Covariant element-wise join for same-base Generic containers.
         if let (SemTy::Generic { base: b1, args: a1 }, SemTy::Generic { base: b2, args: a2 }) =
             (self, other)
@@ -413,9 +420,13 @@ impl SemTy {
                 *a == SemTy::Dyn || Self::is_subtype_of_inner(a, b)
             }
             (SemTy::Callable(s1), SemTy::Callable(s2)) => {
-                let (Sig { params: p1, ret: r1 }, Sig { params: p2, ret: r2 }) =
-                    (s1.as_ref(), s2.as_ref());
-                p1.len() == p2.len()
+                let (
+                    Sig { params: p1, ret: r1, varargs: v1, kwargs: k1 },
+                    Sig { params: p2, ret: r2, varargs: v2, kwargs: k2 },
+                ) = (s1.as_ref(), s2.as_ref());
+                v1 == v2
+                    && k1 == k2
+                    && p1.len() == p2.len()
                     && p2
                         .iter()
                         .zip(p1.iter())
