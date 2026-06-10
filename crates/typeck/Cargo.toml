@@ -8,6 +8,8 @@ description = "Constraint-based type inference + bidirectional checking (replace
 pyaot-utils = { path = "../utils" }
 pyaot-hir = { path = "../hir" }
 pyaot-types = { path = "../types" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-core-defs = { path = "../core-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
 la-arena = { workspace = true }
 

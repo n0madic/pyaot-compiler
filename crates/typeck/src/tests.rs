@@ -641,3 +641,30 @@ print(apply(lambda x: x))
 ";
     assert!(try_infer(src).is_err());
 }
+
+#[test]
+fn stdlib_raw_param_rejects_gradual_arg() {
+    // A stdlib descriptor's raw-ABI Float param (Phase 8B) must reject a
+    // gradual `Dyn` argument — lowering would otherwise emit an unchecked
+    // `Tagged → Raw(F64)` reinterpret of a possibly-non-float Value.
+    let src = "\
+import math
+def f(x):
+    return x
+print(math.sqrt(f(2)))
+";
+    assert!(try_infer(src).is_err());
+}
+
+#[test]
+fn stdlib_call_types_from_descriptor() {
+    // `math.sqrt` types as Float, `math.ceil` as Int — straight from the
+    // descriptors' return TypeSpecs, so annotated slots accept them.
+    let src = "\
+import math
+a: float = math.sqrt(4.0)
+b: int = math.ceil(3.2)
+print(a, b)
+";
+    assert!(try_infer(src).is_ok());
+}

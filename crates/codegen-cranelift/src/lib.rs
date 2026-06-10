@@ -778,6 +778,9 @@ fn materialize_const(
             builder.ins().iconst(types::I64, tagged)
         }
         Const::None => builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
+        // Never produced for class-attr initializers; materialize the raw null
+        // Value for exhaustiveness.
+        Const::NullPtr => builder.ins().iconst(types::I64, 0),
         Const::Float(f) => {
             let fv = builder.ins().f64const(*f);
             call1(module, builder, rt.box_float, &[fv])
@@ -1130,6 +1133,30 @@ impl FnGen<'_, '_> {
         results.first().copied()
     }
 
+    /// Declare (idempotently) the import for a stdlib runtime descriptor and
+    /// return its `FuncId` (Phase 8B). The Cranelift signature comes straight
+    /// from the descriptor's register classes; `declare_function` with
+    /// `Linkage::Import` returns the same id on repeat declarations, so no
+    /// separate cache is needed.
+    fn runtime_fn(&mut self, def: &'static pyaot_core_defs::RuntimeFuncDef) -> Result<FuncId> {
+        use pyaot_core_defs::runtime_func_def::{ParamType, ReturnType};
+        let pt = |p: &ParamType| match p {
+            ParamType::I64 => types::I64,
+            ParamType::F64 => types::F64,
+            ParamType::I8 => types::I8,
+            ParamType::I32 => types::I32,
+        };
+        let params: Vec<Type> = def.params.iter().map(pt).collect();
+        let returns: Vec<Type> = match def.returns {
+            Some(ReturnType::I64) => vec![types::I64],
+            Some(ReturnType::F64) => vec![types::F64],
+            Some(ReturnType::I8) => vec![types::I8],
+            Some(ReturnType::I32) => vec![types::I32],
+            None => vec![],
+        };
+        declare_import(self.module, self.cc, def.symbol, &params, &returns)
+    }
+
     fn lower_inst(&mut self, inst: &MirInst) -> Result<()> {
         match inst {
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
@@ -1162,6 +1189,15 @@ impl FnGen<'_, '_> {
                 Ok(())
             }
             MirInst::CallContainer { dst, op, args } => self.lower_call_container(dst, *op, args),
+            MirInst::CallRuntime { dst, def, args } => {
+                let vals: Vec<Value> = args.iter().map(|a| self.use_operand(a)).collect();
+                let fid = self.runtime_fn(def)?;
+                let res = self.call(fid, &vals);
+                if let (Some(d), Some(v)) = (dst, res) {
+                    self.def_local(*d, v);
+                }
+                Ok(())
+            }
             MirInst::MakeInstance { dst, class_id, field_count } => {
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let fc = self.builder.ins().iconst(types::I64, *field_count);
@@ -1494,9 +1530,20 @@ impl FnGen<'_, '_> {
     fn lower_const(&mut self, dst: LocalId, val: &Const) -> Result<()> {
         let v = match val {
             Const::Int(i) => {
-                let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
-                self.builder.ins().iconst(types::I64, tagged)
+                // A raw-repr destination takes the plain integer in its register
+                // class (Phase 8B descriptor-ABI immediates — field indexes, arg
+                // counts); a Tagged one takes the int-tagged Value bits.
+                if let Repr::Raw(_) = &self.locals[dst.index()].repr {
+                    let ty = clif_ty(&self.locals[dst.index()].repr);
+                    self.builder.ins().iconst(ty, *i)
+                } else {
+                    let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
+                    self.builder.ins().iconst(types::I64, tagged)
+                }
             }
+            // The null-pointer `Value` — raw bits 0 (pointer tag, null payload):
+            // the stdlib "absent optional object" sentinel (Phase 8B).
+            Const::NullPtr => self.builder.ins().iconst(types::I64, 0),
             Const::Bool(b) => {
                 let tagged = if *b {
                     ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)

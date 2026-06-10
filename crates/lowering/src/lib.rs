@@ -804,6 +804,12 @@ impl<'a> FnLower<'a> {
             }
             HirExprKind::Attribute { value, name } => self.lower_attribute(idx, *value, *name),
             HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
+            HirExprKind::IsInstanceBuiltin { value, target } => {
+                self.lower_isinstance_builtin(*value, target)
+            }
+            HirExprKind::CallRuntime { target, args, provided } => {
+                self.lower_call_runtime(idx, target, args, *provided)
+            }
             // `Stack[int](...)` lowers identically to `Stack(...)` — type args are
             // erased at repr (one shared physical layout for every instantiation).
             HirExprKind::GenericConstruct { class_id, args, .. } => {
@@ -1061,6 +1067,124 @@ impl<'a> FnLower<'a> {
 
     /// Lower an attribute read `value.name` → `GetField` + legalize the uniform
     /// tagged field value to the field's representation (the A5 read seam).
+    /// `isinstance(value, str|int|float|bool)` (Phase 8B): folded statically
+    /// from `value`'s inferred type. The corpus only asks about values whose
+    /// type inference already proves; a gradual `Dyn` receiver would need a
+    /// runtime tag query the frozen runtime does not expose — loud error.
+    fn lower_isinstance_builtin(
+        &mut self,
+        value: Idx<HirExpr>,
+        target: &SemTy,
+    ) -> Result<(LocalId, Repr)> {
+        let got = &self.func.exprs[value].ty;
+        let span = self.func.exprs[value].span;
+        let verdict = match got {
+            SemTy::Dyn | SemTy::Union(_) => {
+                return Err(CompilerError::type_error(
+                    "isinstance() against a builtin type requires a statically-typed \
+                     value (a runtime type query on a gradual value is out of scope)",
+                    span,
+                ));
+            }
+            // bool ⊂ int in Python: `isinstance(True, int)` is True.
+            SemTy::Bool if *target == SemTy::Int => true,
+            t => t == target,
+        };
+        // Evaluate the receiver for side effects, then materialize the verdict.
+        let _ = self.lower_expr(value)?;
+        let tagged = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const { dst: tagged, val: Const::Bool(verdict) });
+        let dst = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I8))?;
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// Lower a stdlib runtime call through its declarative descriptor (Phase
+    /// 8B) — the ONE generic seam. Each provided arg is legalized to the repr
+    /// its `(TypeSpec, ParamType)` pair demands via the standard `coerce` path;
+    /// an absent optional slot becomes the null-pointer `Value` sentinel; the
+    /// user-written arg count rides as a trailing raw immediate when the hints
+    /// say `pass_arg_count`. NOTE on raw `Int` params (`rt_math_gcd(i64, i64)`):
+    /// the `UntagInt` coercion truncates a heap `BigInt` to its low word —
+    /// accepted divergence beyond ±2^62 (plan risk #4), as CPython-exact bignum
+    /// handling would need per-function runtime entry points.
+    fn lower_call_runtime(
+        &mut self,
+        expr_idx: Idx<HirExpr>,
+        target: &pyaot_hir::RuntimeCallTarget,
+        args: &[Option<Idx<HirExpr>>],
+        provided: u32,
+    ) -> Result<(LocalId, Repr)> {
+        use pyaot_hir::RuntimeCallTarget;
+        let def = target.codegen();
+        let (params, ret_spec, pass_arg_count): (
+            &[pyaot_stdlib_defs::ParamDef],
+            &pyaot_stdlib_defs::TypeSpec,
+            bool,
+        ) = match target {
+            RuntimeCallTarget::Func(f) => (f.params, &f.return_type, f.hints.pass_arg_count),
+            RuntimeCallTarget::Attr(a) => (&[], &a.ty, false),
+            // Field reads are built directly in `lower_attribute`.
+            RuntimeCallTarget::Field(f) => (&[], &f.field_type, false),
+        };
+
+        let mut ops: Vec<Operand> = Vec::with_capacity(def.params.len());
+        for (i, slot) in args.iter().enumerate() {
+            let want = runtime_param_repr(def.params[i], params.get(i).map(|p| &p.ty));
+            match slot {
+                Some(arg) => {
+                    // An integer literal headed for a raw i64 register slot
+                    // materializes directly — no tagged round-trip. Required
+                    // for sentinel defaults (`i64::MIN`) outside the 61-bit
+                    // tagged range, where tagging would wrap.
+                    if want == Repr::Raw(RawKind::I64) {
+                        if let HirExprKind::IntLit(v) = self.func.exprs[*arg].kind {
+                            let dst = self.alloc_temp(Repr::Raw(RawKind::I64));
+                            self.emit(MirInst::Const { dst, val: Const::Int(v) });
+                            ops.push(Operand::Local(dst));
+                            continue;
+                        }
+                    }
+                    let (al, ar) = self.lower_expr(*arg)?;
+                    let coerced = self.coerce(al, ar, want)?;
+                    ops.push(Operand::Local(coerced));
+                }
+                None => {
+                    // Absent optional object param → the null-pointer sentinel.
+                    let null = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::Const { dst: null, val: Const::NullPtr });
+                    ops.push(Operand::Local(null));
+                }
+            }
+        }
+        if pass_arg_count {
+            let count_repr = match def.params.last() {
+                Some(pt) => runtime_param_repr(*pt, None),
+                None => Repr::Raw(RawKind::I64),
+            };
+            let c = self.alloc_temp(count_repr);
+            self.emit(MirInst::Const { dst: c, val: Const::Int(provided as i64) });
+            ops.push(Operand::Local(c));
+        }
+
+        match def.returns {
+            Some(_) => {
+                let ret_repr = runtime_return_repr(def, ret_spec);
+                let dst = self.alloc_temp(ret_repr.clone());
+                self.emit(MirInst::CallRuntime { dst: Some(dst), def, args: ops });
+                let result_repr = repr_of(&self.func.exprs[expr_idx].ty);
+                let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
+                Ok((coerced, result_repr))
+            }
+            None => {
+                self.emit(MirInst::CallRuntime { dst: None, def, args: ops });
+                // A void call used as an expression yields `None`.
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const { dst, val: Const::None });
+                Ok((dst, Repr::Tagged))
+            }
+        }
+    }
+
     fn lower_attribute(
         &mut self,
         attr_idx: Idx<HirExpr>,
@@ -1091,6 +1215,42 @@ impl<'a> FnLower<'a> {
             let dst = self.alloc_temp(Repr::Tagged);
             self.emit(MirInst::GetField { dst, base: Operand::Local(bt), slot: 0 });
             let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+            return Ok((coerced, result_repr));
+        }
+
+        // A stdlib runtime object's field (`t.tm_year`, Phase 8B): the
+        // `ObjectFieldDef` descriptor selects the getter; its constant
+        // `field_index` rides as a trailing raw i64 when present.
+        if let SemTy::RuntimeObject(tag) = &self.func.exprs[value].ty {
+            let field = pyaot_stdlib_defs::object_types::lookup_object_type(*tag)
+                .and_then(|obj| obj.get_field(self.interner.resolve(name)))
+                .ok_or_else(|| {
+                    CompilerError::semantic_error(
+                        format!(
+                            "runtime object has no attribute `.{}`",
+                            self.interner.resolve(name)
+                        ),
+                        span,
+                    )
+                })?;
+            let (bl, br) = self.lower_expr(value)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let mut args = vec![Operand::Local(recv)];
+            if let Some(fi) = field.field_index {
+                // The constant index in the register class the descriptor's
+                // trailing param demands (e.g. `rt_struct_time_get_field`'s u8).
+                let idx_repr = match field.codegen.params.get(args.len()) {
+                    Some(pt) => runtime_param_repr(*pt, None),
+                    None => Repr::Raw(RawKind::I64),
+                };
+                let idx_const = self.alloc_temp(idx_repr);
+                self.emit(MirInst::Const { dst: idx_const, val: Const::Int(fi) });
+                args.push(Operand::Local(idx_const));
+            }
+            let ret_repr = runtime_return_repr(&field.codegen, &field.field_type);
+            let dst = self.alloc_temp(ret_repr.clone());
+            self.emit(MirInst::CallRuntime { dst: Some(dst), def: &field.codegen, args });
+            let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
 
@@ -1293,6 +1453,31 @@ impl<'a> FnLower<'a> {
                 return self.lower_virtual_call(cid, recv, method_name, args, span);
             }
             return self.lower_class_method_call(cid, recv, method_name, args, span);
+        }
+        // A str-receiver method routed through its runtime descriptor (Phase
+        // 8B; the full str-method surface lands with 8E). Zero-arg, str → str.
+        if matches!(recv_ty, SemTy::Str) && args.is_empty() {
+            use pyaot_core_defs::runtime_func_def::{RT_STR_LOWER, RT_STR_STRIP, RT_STR_UPPER};
+            let def: Option<&'static pyaot_core_defs::RuntimeFuncDef> =
+                match self.interner.resolve(method_name) {
+                    "upper" => Some(&RT_STR_UPPER),
+                    "lower" => Some(&RT_STR_LOWER),
+                    "strip" => Some(&RT_STR_STRIP),
+                    _ => None,
+                };
+            if let Some(def) = def {
+                let (rl, rr) = self.lower_expr(recv)?;
+                let rv = self.coerce(rl, rr, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(dst),
+                    def,
+                    args: vec![Operand::Local(rv)],
+                });
+                let result_repr = repr_of(&self.func.exprs[call_idx].ty);
+                let c = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+                return Ok((c, result_repr));
+            }
         }
         // Container receiver → the Phase-4D ContainerMethod path.
         let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
@@ -2724,6 +2909,51 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
 
 /// True for the repeatable sequence representations (`list` / `tuple` / `bytes`)
 /// — the `*`-repeat operands.
+/// The repr a `CallRuntime` arg slot must carry (Phase 8B), from the
+/// descriptor's Cranelift register class disambiguated by the declarative
+/// `TypeSpec`: an `I64` register holds a raw integer for `Int` params and a
+/// tagged `Value` for everything else (strings, containers, objects, `Any`).
+/// `F64`/`I8`/`I32` registers are always raw.
+fn runtime_param_repr(
+    pt: pyaot_core_defs::runtime_func_def::ParamType,
+    spec: Option<&pyaot_stdlib_defs::TypeSpec>,
+) -> Repr {
+    use pyaot_core_defs::runtime_func_def::ParamType;
+    use pyaot_stdlib_defs::TypeSpec;
+    match pt {
+        ParamType::F64 => Repr::Raw(RawKind::F64),
+        ParamType::I8 => Repr::Raw(RawKind::I8),
+        ParamType::I32 => Repr::Raw(RawKind::I32),
+        // `None` spec = a descriptor-internal immediate (field index, arg
+        // count) — always raw.
+        ParamType::I64 => match spec {
+            Some(TypeSpec::Int) | None => Repr::Raw(RawKind::I64),
+            Some(_) => Repr::Tagged,
+        },
+    }
+}
+
+/// The repr a `CallRuntime` result lands in (Phase 8B), mirroring
+/// [`runtime_param_repr`]: an `I64` return is a raw integer for `Int` specs and
+/// a tagged `Value` otherwise.
+fn runtime_return_repr(
+    def: &pyaot_core_defs::RuntimeFuncDef,
+    spec: &pyaot_stdlib_defs::TypeSpec,
+) -> Repr {
+    use pyaot_core_defs::runtime_func_def::ReturnType;
+    use pyaot_stdlib_defs::TypeSpec;
+    match def.returns {
+        Some(ReturnType::F64) => Repr::Raw(RawKind::F64),
+        Some(ReturnType::I8) => Repr::Raw(RawKind::I8),
+        Some(ReturnType::I32) => Repr::Raw(RawKind::I32),
+        Some(ReturnType::I64) => match spec {
+            TypeSpec::Int => Repr::Raw(RawKind::I64),
+            _ => Repr::Tagged,
+        },
+        None => Repr::Tagged,
+    }
+}
+
 fn is_sequence_repr(r: &Repr) -> bool {
     matches!(
         r,

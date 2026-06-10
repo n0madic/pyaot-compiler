@@ -206,6 +206,20 @@ pub enum MirInst {
         op: ContainerOp,
         args: Vec<Operand>,
     },
+    /// Call a stdlib runtime function through its declarative descriptor
+    /// (Phase 8B). The single generic seam for the frozen runtime's stdlib
+    /// surface: the descriptor carries the symbol, the Cranelift register
+    /// classes ([`pyaot_core_defs::runtime_func_def::ParamType`]), and per-slot
+    /// [`pyaot_core_defs::runtime_func_def::MirSemantic`] when annotated.
+    /// Lowering has already coerced each arg to the repr the descriptor's
+    /// `(TypeSpec, ParamType)` pair demands; the verifier re-checks every slot
+    /// against the descriptor's register class (and semantic, when annotated).
+    /// An opaque side-effecting barrier for the optimizer.
+    CallRuntime {
+        dst: Option<LocalId>,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        args: Vec<Operand>,
+    },
     /// Allocate a fresh class instance (Phase 5) — `rt_make_instance(class_id,
     /// field_count)`. `dst` is `Heap(Class(class_id))` so the instance is
     /// GC-rooted automatically and accepted as a `GetField`/`SetField`/`Call`-self
@@ -414,6 +428,12 @@ pub enum Const {
     Float(f64),
     Bool(bool),
     None,
+    /// A null-pointer `Value` (raw bits 0 — the pointer tag with a null
+    /// payload). The "absent optional object" sentinel for stdlib runtime
+    /// calls (Phase 8B): descriptors whose optional object params carry no
+    /// `ConstValue` default receive this, and the runtime checks `is_null()`.
+    /// Distinct from [`Const::None`] (`Value::NONE` has a non-zero tag).
+    NullPtr,
 }
 
 #[derive(Debug, Clone)]

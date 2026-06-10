@@ -93,6 +93,30 @@ pub(crate) struct AnnCtx<'a> {
     /// `"M.VAR"` → the exporter module's promoted global slot, for live reads of
     /// an aliased module's module-level variable (Phase 8).
     alias_vars: &'a HashMap<String, u32>,
+    /// Stdlib bindings (Phase 8B): names bound to frozen-runtime descriptors by
+    /// `import math` / `from math import sqrt` when no user module shadows them.
+    stdlib: &'a StdlibBindings,
+}
+
+/// Per-module stdlib bindings (Phase 8B), collected during the import scan.
+/// A user module on the search path always wins over a same-named stdlib
+/// module (CPython script-dir-first), so these are only populated when the
+/// loader had no match. Lookup keys: the bound name for `from M import f
+/// [as g]`, the qualified `"M.f"` for `import M [as A]` accesses.
+#[derive(Default)]
+pub(crate) struct StdlibBindings {
+    /// `import M` alias names whose target is a stdlib module.
+    aliases: HashSet<String>,
+    /// Callable name → its function descriptor.
+    funcs: HashMap<String, &'static pyaot_stdlib_defs::StdlibFunctionDef>,
+    /// Constant name (`math.pi` / from-imported `pi`) → its descriptor; folds
+    /// to a literal at every use site.
+    consts: HashMap<String, &'static pyaot_stdlib_defs::StdlibConstDef>,
+    /// Module attribute (`sys.argv`) → its getter descriptor.
+    attrs: HashMap<String, &'static pyaot_stdlib_defs::StdlibAttrDef>,
+    /// Stdlib class name in annotation position (`time.struct_time`) → its
+    /// semantic type (`RuntimeObject(tag)`).
+    classes: HashMap<String, SemTy>,
 }
 
 /// A decorated module-level function's runtime facts (Phase 6D): the promoted
@@ -200,6 +224,9 @@ struct ImportCollect {
     /// API. Funcs/classes only; re-exported variables already ride `promoted`.
     reexport_funcs: Vec<(String, FuncId, TopDefInfo)>,
     reexport_classes: Vec<(String, ClassId, InternedString)>,
+    /// Stdlib bindings (Phase 8B), populated when the loader has no user
+    /// module for an imported name.
+    stdlib: StdlibBindings,
     /// Import-statement body index → its precomputed runtime effect.
     actions: HashMap<usize, ImportAction>,
 }
@@ -270,33 +297,36 @@ impl<'a> ProgramLowerer<'a> {
         Ok(HirProgram { module, namespaces })
     }
 
-    /// Load module `path` (and its parent packages) if not already loaded. A
-    /// genuine import cycle on the primary target is a loud error; a parent
+    /// Load module `path` (and its parent packages) if not already loaded.
+    /// Returns `false` when the loader has no such user module — the caller
+    /// then falls back to the stdlib registry (a user module on the search
+    /// path wins over a same-named stdlib module, CPython script-dir-first).
+    /// A genuine import cycle on the primary target is a loud error; a parent
     /// package mid-initialization (`implicit`) is normal partial-init.
-    fn ensure_loaded(&mut self, path: &[String], implicit: bool, span: Span) -> Result<()> {
+    fn ensure_loaded(&mut self, path: &[String], implicit: bool, span: Span) -> Result<bool> {
         if path.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let dotted = path.join(".");
         if self.loaded.contains_key(&dotted) {
-            return Ok(());
+            return Ok(true);
         }
         if self.loading.iter().any(|m| m == &dotted) {
             if implicit {
-                return Ok(());
+                return Ok(true);
             }
             return Err(parse_error(
                 format!("circular import detected involving module `{dotted}`"),
                 span,
             ));
         }
+        let Some((src, is_package)) = self.loader.load(path) else {
+            return Ok(false);
+        };
         // CPython initializes a package before its submodules.
         if path.len() > 1 {
             self.ensure_loaded(&path[..path.len() - 1], true, span)?;
         }
-        let (src, is_package) = self.loader.load(path).ok_or_else(|| {
-            parse_error(format!("no module named `{dotted}`"), span)
-        })?;
         let body = crate::parse_module_body(&src)?;
         let ns = self.namespace_imports.len() as u32;
         self.namespace_imports.push(NamespaceImports::default());
@@ -308,7 +338,7 @@ impl<'a> ProgramLowerer<'a> {
         self.loading.pop();
         self.shared.current_ns = saved_ns;
         self.loaded.insert(dotted, exports);
-        Ok(())
+        Ok(true)
     }
 
     /// Schedule the `<init>` calls for `target`'s package chain (parent packages
@@ -372,7 +402,20 @@ impl<'a> ProgramLowerer<'a> {
                 continue;
             }
             let target: Vec<String> = dotted_name.split('.').map(|s| s.to_string()).collect();
-            self.ensure_loaded(&target, false, span)?;
+            if !self.ensure_loaded(&target, false, span)? {
+                // No user module on the search path → the stdlib registry
+                // (Phase 8B). `import a.b.c` without `as` binds `a`; with `as`
+                // it binds the full dotted target.
+                let (bind, lookup) = match &alias.asname {
+                    Some(n) => (n.as_str(), dotted_name),
+                    None => (target[0].as_str(), target[0].as_str()),
+                };
+                let module = pyaot_stdlib_defs::get_module(lookup).ok_or_else(|| {
+                    parse_error(format!("no module named `{dotted_name}`"), span)
+                })?;
+                register_stdlib_alias(bind, module, &mut col.stdlib);
+                continue;
+            }
             let mut action = ImportAction::default();
             self.emit_init_chain(&target, my_ns, &mut action);
             // `import a.b.c` binds the top package `a`; `import x as y` binds `y`.
@@ -422,7 +465,23 @@ impl<'a> ProgramLowerer<'a> {
         } else {
             resolve_relative(importer, is_package, level, module_name, span)?
         };
-        self.ensure_loaded(&target, false, span)?;
+        if !self.ensure_loaded(&target, false, span)? {
+            // No user module on the search path → stdlib `from M import …`
+            // (Phase 8B). Relative imports never reach here (`level == 0`).
+            let dotted = target.join(".");
+            let module = pyaot_stdlib_defs::get_module(&dotted).ok_or_else(|| {
+                parse_error(format!("no module named `{dotted}`"), span)
+            })?;
+            for alias in &i.names {
+                let name = alias.name.as_str();
+                if name == "*" {
+                    return Err(parse_error("`from … import *` is out of scope", span));
+                }
+                let bind = alias.asname.as_ref().map(|n| n.as_str()).unwrap_or(name);
+                bind_stdlib_item(bind, name, &dotted, module, &mut col.stdlib, span)?;
+            }
+            return Ok(());
+        }
         let mut action = ImportAction::default();
         self.emit_init_chain(&target, my_ns, &mut action);
         let dotted = target.join(".");
@@ -572,6 +631,7 @@ impl<'a> ProgramLowerer<'a> {
             alias_vars: HashMap::new(),
             reexport_funcs: Vec::new(),
             reexport_classes: Vec::new(),
+            stdlib: StdlibBindings::default(),
             actions: HashMap::new(),
         };
         for (idx, stmt) in body.iter().enumerate() {
@@ -596,6 +656,7 @@ impl<'a> ProgramLowerer<'a> {
             decorated: &decorated_names,
             aliases: &col.aliases,
             alias_vars: &col.alias_vars,
+            stdlib: &col.stdlib,
         };
         let mut top_defs: TopDefMap = HashMap::new();
         for def in &defs {
@@ -627,6 +688,7 @@ impl<'a> ProgramLowerer<'a> {
             decorated: &decorated_names,
             aliases: &col.aliases,
             alias_vars: &col.alias_vars,
+            stdlib: &col.stdlib,
         };
 
         // ── Phase B: lower own functions, the module-init body, and classes. ──
@@ -811,6 +873,63 @@ impl<'a> ProgramLowerer<'a> {
             var_slots: col.promoted,
         })
     }
+}
+
+/// Register `import M [as A]` against a stdlib module (Phase 8B): every
+/// function / constant / attr / class of `M` becomes reachable as a qualified
+/// `"A.name"` key. Submodule chains (`os.path.join`) are Phase 8D.
+fn register_stdlib_alias(
+    alias: &str,
+    module: &'static pyaot_stdlib_defs::StdlibModuleDef,
+    stdlib: &mut StdlibBindings,
+) {
+    stdlib.aliases.insert(alias.to_string());
+    for f in module.functions {
+        stdlib.funcs.insert(format!("{alias}.{}", f.name), f);
+    }
+    for c in module.constants {
+        stdlib.consts.insert(format!("{alias}.{}", c.name), c);
+    }
+    for a in module.attrs {
+        stdlib.attrs.insert(format!("{alias}.{}", a.name), a);
+    }
+    for cls in module.classes {
+        if let Some(spec) = &cls.type_spec {
+            stdlib
+                .classes
+                .insert(format!("{alias}.{}", cls.name), pyaot_hir::semty_from_typespec(spec));
+        }
+    }
+    // TODO(phase8D): walk `module.submodules` so `import os` exposes
+    // `os.path.join(...)` chains.
+}
+
+/// Bind one `from M import name [as bind]` stdlib item (Phase 8B).
+fn bind_stdlib_item(
+    bind: &str,
+    name: &str,
+    module_dotted: &str,
+    module: &'static pyaot_stdlib_defs::StdlibModuleDef,
+    stdlib: &mut StdlibBindings,
+    span: Span,
+) -> Result<()> {
+    if let Some(f) = module.functions.iter().find(|f| f.name == name) {
+        stdlib.funcs.insert(bind.to_string(), f);
+    } else if let Some(c) = module.constants.iter().find(|c| c.name == name) {
+        stdlib.consts.insert(bind.to_string(), c);
+    } else if let Some(a) = module.attrs.iter().find(|a| a.name == name) {
+        stdlib.attrs.insert(bind.to_string(), a);
+    } else if let Some(spec) =
+        module.classes.iter().find(|c| c.name == name).and_then(|c| c.type_spec.as_ref())
+    {
+        stdlib.classes.insert(bind.to_string(), pyaot_hir::semty_from_typespec(spec));
+    } else {
+        return Err(parse_error(
+            format!("cannot import name `{name}` from `{module_dotted}`"),
+            span,
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve a relative `from`-import (`level` leading dots + optional `module`)
@@ -3003,6 +3122,21 @@ impl<'a> FnLowerer<'a> {
                     Ok(self.alloc(HirExprKind::GlobalGet { var_id }, SemTy::Dyn, span))
                 } else if self.ctx.top_defs.contains_key(n.id.as_str()) {
                     self.lower_top_fn_value(n.id.as_str(), span)
+                } else if let Some(c) = self.ctx.stdlib.consts.get(n.id.as_str()).copied() {
+                    // A from-imported stdlib constant (`from math import pi`)
+                    // folds to its literal at every use site (Phase 8B).
+                    Ok(self.lower_stdlib_const(&c.value, span))
+                } else if let Some(attr) = self.ctx.stdlib.attrs.get(n.id.as_str()).copied() {
+                    // A from-imported module attribute (`from sys import argv`).
+                    Ok(self.alloc(
+                        HirExprKind::CallRuntime {
+                            target: pyaot_hir::RuntimeCallTarget::Attr(attr),
+                            args: vec![],
+                            provided: 0,
+                        },
+                        SemTy::Dyn,
+                        span,
+                    ))
                 } else {
                     Ok(self.alloc(HirExprKind::Name(SymbolRef::Unresolved(name)), SemTy::Dyn, span))
                 }
@@ -3073,6 +3207,37 @@ impl<'a> FnLowerer<'a> {
                             }
                         }
                     }
+                    // `M.pi` / `M.argv` through an `import M` stdlib alias
+                    // (Phase 8B): a constant folds to its literal; a module
+                    // attribute becomes its getter call.
+                    if self.ctx.stdlib.aliases.contains(m.id.as_str()) {
+                        let mname = self.intern(m.id.as_str());
+                        if !self.scope.contains_key(&mname) {
+                            let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
+                            if let Some(c) = self.ctx.stdlib.consts.get(&qual).copied() {
+                                return Ok(self.lower_stdlib_const(&c.value, span));
+                            }
+                            if let Some(attr) = self.ctx.stdlib.attrs.get(&qual).copied() {
+                                return Ok(self.alloc(
+                                    HirExprKind::CallRuntime {
+                                        target: pyaot_hir::RuntimeCallTarget::Attr(attr),
+                                        args: vec![],
+                                        provided: 0,
+                                    },
+                                    SemTy::Dyn,
+                                    span,
+                                ));
+                            }
+                            return Err(parse_error(
+                                format!(
+                                    "stdlib module `{}` has no attribute `{}`",
+                                    m.id.as_str(),
+                                    a.attr.as_str()
+                                ),
+                                span,
+                            ));
+                        }
+                    }
                 }
                 let value = self.lower_expr(a.value.as_ref())?;
                 let name = self.intern(a.attr.as_str());
@@ -3082,6 +3247,10 @@ impl<'a> FnLowerer<'a> {
             Expr::SetComp(c) => self.lower_setcomp(c, span),
             Expr::DictComp(c) => self.lower_dictcomp(c, span),
             Expr::GeneratorExp(g) => self.lower_genexpr(g, span),
+            // f-string interpolation (Phase 8B, minimal): each `{expr}` part
+            // desugars to `str(expr)` and the parts concatenate left-to-right.
+            // Format specs / conversions (`{x:.4f}`, `{x!r}`) are Phase 8E.
+            Expr::JoinedStr(j) => self.lower_joined_str(j, span),
             other => Err(parse_error(
                 "unsupported expression for this milestone",
                 to_span(other.range()),
@@ -3108,6 +3277,60 @@ impl<'a> FnLowerer<'a> {
 
     /// `[elt for … if …]` → an empty list built by nesting an iterator loop per
     /// `for` clause; each `if` clause branches past the element push.
+    /// Minimal f-string lowering (Phase 8B): literal parts are `StrLit`s, each
+    /// `{expr}` part becomes `str(expr)` (the builtin, resolved by
+    /// `semantics`), and parts fold left-to-right with string `+`. Format
+    /// specs and `!r`/`!a` conversions are out of scope until Phase 8E.
+    fn lower_joined_str(
+        &mut self,
+        j: &rustpython_parser::ast::ExprJoinedStr,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        let mut parts: Vec<Idx<HirExpr>> = Vec::with_capacity(j.values.len());
+        for part in &j.values {
+            match part {
+                Expr::Constant(c) => {
+                    let Constant::Str(s) = &c.value else {
+                        return Err(parse_error("unsupported f-string literal part", span));
+                    };
+                    let id = self.intern(s);
+                    parts.push(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+                }
+                Expr::FormattedValue(fv) => {
+                    if fv.format_spec.is_some() || fv.conversion.to_byte().is_some() {
+                        return Err(parse_error(
+                            "f-string format specs / `!r` conversions are out of scope \
+                             (Phase 8E)",
+                            span,
+                        ));
+                    }
+                    let v = self.lower_expr(fv.value.as_ref())?;
+                    let str_name = self.intern("str");
+                    let callee = self.alloc(
+                        HirExprKind::Name(SymbolRef::Unresolved(str_name)),
+                        SemTy::Dyn,
+                        span,
+                    );
+                    parts.push(self.alloc(
+                        HirExprKind::Call { callee, args: vec![v] },
+                        SemTy::Dyn,
+                        span,
+                    ));
+                }
+                _ => return Err(parse_error("unsupported f-string part", span)),
+            }
+        }
+        let mut iter = parts.into_iter();
+        let Some(mut acc) = iter.next() else {
+            let id = self.intern("");
+            return Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+        };
+        for p in iter {
+            acc = self.alloc(HirExprKind::BinOp { op: BinOp::Add, l: acc, r: p }, SemTy::Dyn, span);
+        }
+        Ok(acc)
+    }
+
     fn lower_listcomp(&mut self, c: &ExprListComp, span: Span) -> Result<Idx<HirExpr>> {
         let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
         let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
@@ -3926,7 +4149,8 @@ impl<'a> FnLowerer<'a> {
             }
         }
         // `isinstance(value, Cls)` against a known user class → the runtime
-        // inheritance-aware check (Phase 5B). Other forms fall through.
+        // inheritance-aware check (Phase 5B). `isinstance(value, str|int|
+        // float|bool)` → the static fold (Phase 8B). Other forms fall through.
         if let Expr::Name(n) = c.func.as_ref() {
             if n.id.as_str() == "isinstance" && c.args.len() == 2 && c.keywords.is_empty() {
                 if let Expr::Name(cls) = &c.args[1] {
@@ -3938,6 +4162,32 @@ impl<'a> FnLowerer<'a> {
                             span,
                         ));
                     }
+                    let target = match cls.id.as_str() {
+                        "str" => Some(SemTy::Str),
+                        "int" => Some(SemTy::Int),
+                        "float" => Some(SemTy::Float),
+                        "bool" => Some(SemTy::Bool),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        let value = self.lower_expr(&c.args[0])?;
+                        return Ok(self.alloc(
+                            HirExprKind::IsInstanceBuiltin { value, target },
+                            SemTy::Bool,
+                            span,
+                        ));
+                    }
+                }
+            }
+        }
+        // A from-imported stdlib function called by its bound name (Phase 8B):
+        // `sqrt(2.0)` after `from math import sqrt`. A local/param of the same
+        // name shadows the binding.
+        if let Expr::Name(n) = c.func.as_ref() {
+            let iname = self.intern(n.id.as_str());
+            if !self.scope.contains_key(&iname) {
+                if let Some(def) = self.ctx.stdlib.funcs.get(n.id.as_str()).copied() {
+                    return self.lower_stdlib_call(def, c, span);
                 }
             }
         }
@@ -3965,6 +4215,23 @@ impl<'a> FnLowerer<'a> {
                     }
                     return Err(parse_error(
                         format!("module `{}` has no callable attribute `{}`", m.id.as_str(), attr.attr.as_str()),
+                        span,
+                    ));
+                }
+                // `M.f(args)` through an `import M` stdlib alias (Phase 8B).
+                if self.ctx.stdlib.aliases.contains(m.id.as_str())
+                    && !self.scope.contains_key(&mname)
+                {
+                    let qual = format!("{}.{}", m.id.as_str(), attr.attr.as_str());
+                    if let Some(def) = self.ctx.stdlib.funcs.get(&qual).copied() {
+                        return self.lower_stdlib_call(def, c, span);
+                    }
+                    return Err(parse_error(
+                        format!(
+                            "stdlib module `{}` has no callable attribute `{}`",
+                            m.id.as_str(),
+                            attr.attr.as_str()
+                        ),
                         span,
                     ));
                 }
@@ -4459,6 +4726,132 @@ impl<'a> FnLowerer<'a> {
     /// args, fill constant defaults, and pack `*args` / `**kwargs` — producing
     /// the positional argument vector matching the callee's MIR parameter order
     /// (fixed → keyword-only → `*args` tuple → `**kwargs` dict).
+    /// Adapt a Python-level stdlib call against its declarative descriptor and
+    /// emit [`HirExprKind::CallRuntime`] (Phase 8B). Positional args fill param
+    /// slots in order; keywords match by `ParamDef.name`; an absent optional
+    /// param takes its `ConstValue` default as a literal, or stays an empty
+    /// slot (the null-pointer sentinel) when it has none. The user-written arg
+    /// count is recorded for `pass_arg_count` descriptors.
+    fn lower_stdlib_call(
+        &mut self,
+        def: &'static pyaot_stdlib_defs::StdlibFunctionDef,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        if def.hints.variadic_to_list {
+            return Err(parse_error(
+                format!("TODO: variadic stdlib function `{}` is not yet supported", def.name),
+                span,
+            ));
+        }
+        if c.args.iter().any(|a| matches!(a, Expr::Starred(_))) {
+            return Err(parse_error("`*` spreading into a stdlib call is out of scope", span));
+        }
+        let provided = c.args.len() + c.keywords.len();
+        if provided < def.min_args || (def.max_args != usize::MAX && provided > def.max_args) {
+            return Err(parse_error(
+                format!(
+                    "`{}()` takes {}..={} argument(s) but {provided} were given",
+                    def.name, def.min_args, def.max_args,
+                ),
+                span,
+            ));
+        }
+        let mut keywords: Vec<(String, &Expr, bool)> = Vec::new();
+        for kw in &c.keywords {
+            let Some(name) = &kw.arg else {
+                return Err(parse_error("`**kwargs` spreading is out of scope here", span));
+            };
+            keywords.push((name.as_str().to_string(), &kw.value, false));
+        }
+
+        let mut slots: Vec<Option<Idx<HirExpr>>> = Vec::with_capacity(def.params.len());
+        for (i, p) in def.params.iter().enumerate() {
+            let v = if i < c.args.len() {
+                Some(self.lower_stdlib_arg(&c.args[i], &p.ty)?)
+            } else if let Some(kv) = take_keyword(&mut keywords, p.name) {
+                Some(self.lower_stdlib_arg(kv, &p.ty)?)
+            } else if let Some(cv) = &p.default {
+                Some(self.lower_stdlib_const(cv, span))
+            } else if p.optional {
+                None
+            } else {
+                return Err(parse_error(
+                    format!("`{}()` missing required argument `{}`", def.name, p.name),
+                    span,
+                ));
+            };
+            slots.push(v);
+        }
+        if let Some((k, _, _)) = keywords.iter().find(|(_, _, used)| !used) {
+            return Err(parse_error(
+                format!("`{}()` got an unexpected keyword argument `{k}`", def.name),
+                span,
+            ));
+        }
+        Ok(self.alloc(
+            HirExprKind::CallRuntime {
+                target: pyaot_hir::RuntimeCallTarget::Func(def),
+                args: slots,
+                provided: provided as u32,
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// Lower one stdlib-call argument. An integer literal headed for a `Float`
+    /// param becomes a float literal (CPython's int→float coercion, performed
+    /// at the only place it is statically certain — implicit conversion of a
+    /// runtime int at a raw-ABI boundary stays a typeck error).
+    fn lower_stdlib_arg(
+        &mut self,
+        e: &Expr,
+        spec: &pyaot_stdlib_defs::TypeSpec,
+    ) -> Result<Idx<HirExpr>> {
+        if matches!(spec, pyaot_stdlib_defs::TypeSpec::Float) {
+            let int_lit = |expr: &Expr| -> Option<f64> {
+                if let Expr::Constant(k) = expr {
+                    if let Constant::Int(i) = &k.value {
+                        return i.to_string().parse::<f64>().ok();
+                    }
+                }
+                None
+            };
+            let span = to_span(e.range());
+            if let Some(f) = int_lit(e) {
+                return Ok(self.alloc(HirExprKind::FloatLit(f), SemTy::Float, span));
+            }
+            // `-5` parses as USub(Constant) — fold it too.
+            if let Expr::UnaryOp(u) = e {
+                if matches!(u.op, PyUnaryOp::USub) {
+                    if let Some(f) = int_lit(u.operand.as_ref()) {
+                        return Ok(self.alloc(HirExprKind::FloatLit(-f), SemTy::Float, span));
+                    }
+                }
+            }
+        }
+        self.lower_expr(e)
+    }
+
+    /// Materialize a descriptor's `ConstValue` default as a literal expr.
+    fn lower_stdlib_const(
+        &mut self,
+        cv: &pyaot_stdlib_defs::ConstValue,
+        span: Span,
+    ) -> Idx<HirExpr> {
+        use pyaot_stdlib_defs::ConstValue;
+        match cv {
+            ConstValue::Int(i) => self.alloc(HirExprKind::IntLit(*i), SemTy::Int, span),
+            ConstValue::Float(f) => self.alloc(HirExprKind::FloatLit(*f), SemTy::Float, span),
+            ConstValue::Bool(b) => self.alloc(HirExprKind::BoolLit(*b), SemTy::Bool, span),
+            ConstValue::Str(s) => {
+                let id = self.intern(s);
+                self.alloc(HirExprKind::StrLit(id), SemTy::Str, span)
+            }
+        }
+    }
+
     fn lower_direct_known_call(
         &mut self,
         info: &TopDefInfo,
@@ -4973,13 +5366,20 @@ fn annotation_to_semty(ann: &Expr, ctx: &AnnCtx) -> SemTy {
     match ann {
         Expr::Name(n) => named_annotation(n.id.as_str(), ctx),
         // A qualified class annotation through an `import M` alias (Phase 8):
-        // `math_utils.Point` resolves via the `"M.Cls"` key in `class_map`.
+        // `math_utils.Point` resolves via the `"M.Cls"` key in `class_map`;
+        // a stdlib class (`time.struct_time`) via the stdlib bindings (8B).
         Expr::Attribute(a) => {
             if let Expr::Name(m) = a.value.as_ref() {
                 if ctx.aliases.contains(m.id.as_str()) {
                     let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
                     if let Some((class_id, name)) = ctx.class_map.get(&qual) {
                         return SemTy::Class { class_id: *class_id, name: *name };
+                    }
+                }
+                if ctx.stdlib.aliases.contains(m.id.as_str()) {
+                    let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
+                    if let Some(ty) = ctx.stdlib.classes.get(&qual) {
+                        return ty.clone();
                     }
                 }
             }
@@ -5016,10 +5416,14 @@ fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
                 return SemTy::Var(*id);
             }
             // A user-defined class name annotates an instance of that class.
-            match ctx.class_map.get(other) {
-                Some((class_id, name)) => SemTy::Class { class_id: *class_id, name: *name },
-                None => SemTy::Dyn,
+            if let Some((class_id, name)) = ctx.class_map.get(other) {
+                return SemTy::Class { class_id: *class_id, name: *name };
             }
+            // A from-imported stdlib class (`from time import struct_time`).
+            if let Some(ty) = ctx.stdlib.classes.get(other) {
+                return ty.clone();
+            }
+            SemTy::Dyn
         }
     }
 }
@@ -5464,6 +5868,7 @@ fn lower_class(
         decorated: ctx.decorated,
         aliases: ctx.aliases,
         alias_vars: ctx.alias_vars,
+        stdlib: ctx.stdlib,
     };
 
     let name = interner.intern(cdef.name.as_str());

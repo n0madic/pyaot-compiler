@@ -313,6 +313,23 @@ pub enum HirExprKind {
     /// `isinstance(value, Cls)` (Phase 5B) → `Bool`. The class is resolved by the
     /// frontend; lowering emits the inheritance-aware runtime check.
     IsInstance { value: Idx<HirExpr>, class_id: ClassId },
+    /// `isinstance(value, str|int|float|bool)` (Phase 8B) → `Bool`. Folded
+    /// statically at lowering from `value`'s inferred `SemTy` — a `Dyn` value is
+    /// a loud compile error (a runtime tag check is out of scope).
+    IsInstanceBuiltin { value: Idx<HirExpr>, target: SemTy },
+    /// A call to a frozen-runtime stdlib function/attr/field through its
+    /// declarative descriptor (Phase 8B). `args` is positionally aligned with
+    /// the descriptor's params: the frontend's call adaptation fills optional
+    /// params that carry a `ConstValue` default with literal exprs; an optional
+    /// param with NO default stays `None` and lowers to a null-pointer `Value`
+    /// (the runtime's "absent object" sentinel). `provided` is the user-written
+    /// arg count, appended as a trailing raw i64 when the descriptor's hints say
+    /// `pass_arg_count`.
+    CallRuntime {
+        target: RuntimeCallTarget,
+        args: Vec<Option<Idx<HirExpr>>>,
+        provided: u32,
+    },
     /// A subscripted generic construction `Stack[int](args)` (Phase 5E). Lowers
     /// identically to `Stack(args)` (type args are erased at repr — every
     /// instantiation shares one physical layout); the `type_args` only refine the
@@ -364,6 +381,93 @@ pub enum HirExprKind {
     /// `str(e)` / `print(e)` of a caught exception instance (Phase 7B) —
     /// `rt_exc_instance_str(value)` → the message `StrObj`.
     ExcInstanceStr { value: Idx<HirExpr> },
+}
+
+// ============================================================================
+// Stdlib runtime calls (Phase 8B)
+// ============================================================================
+
+/// What a [`HirExprKind::CallRuntime`] targets — a `&'static` descriptor from
+/// the frozen `stdlib-defs` substrate. The descriptor is the single source of
+/// truth across the pipeline: the frontend adapts the Python-level call against
+/// its `params`, typeck types the result from its `TypeSpec`s, lowering derives
+/// per-arg `Repr`s from `(TypeSpec, ParamType)`, and codegen builds the
+/// Cranelift signature from its `codegen: RuntimeFuncDef`.
+#[derive(Clone, Copy)]
+pub enum RuntimeCallTarget {
+    /// A module-level function (`math.sqrt`, `random.seed`).
+    Func(&'static pyaot_stdlib_defs::StdlibFunctionDef),
+    /// A module attribute read (`sys.argv`) — a zero/fixed-arg getter.
+    Attr(&'static pyaot_stdlib_defs::StdlibAttrDef),
+    /// A runtime-object field read (`t.tm_year`) — receiver is arg 0, plus the
+    /// descriptor's constant `field_index` when present.
+    Field(&'static pyaot_stdlib_defs::object_types::ObjectFieldDef),
+}
+
+impl RuntimeCallTarget {
+    /// The codegen descriptor (symbol + Cranelift ABI) for this target.
+    pub fn codegen(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        match self {
+            RuntimeCallTarget::Func(f) => &f.codegen,
+            RuntimeCallTarget::Attr(a) => &a.codegen,
+            RuntimeCallTarget::Field(f) => &f.codegen,
+        }
+    }
+
+    /// The semantic result type, via [`semty_from_typespec`].
+    pub fn result_semty(&self) -> SemTy {
+        match self {
+            RuntimeCallTarget::Func(f) => semty_from_typespec(&f.return_type),
+            RuntimeCallTarget::Attr(a) => semty_from_typespec(&a.ty),
+            RuntimeCallTarget::Field(f) => semty_from_typespec(&f.field_type),
+        }
+    }
+}
+
+impl std::fmt::Debug for RuntimeCallTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeCallTarget::Func(d) => write!(f, "Func({})", d.runtime_name),
+            RuntimeCallTarget::Attr(d) => write!(f, "Attr({})", d.runtime_getter),
+            RuntimeCallTarget::Field(d) => write!(f, "Field({})", d.runtime_getter),
+        }
+    }
+}
+
+/// Map a declarative stdlib [`TypeSpec`](pyaot_stdlib_defs::TypeSpec) to a
+/// semantic type. Lives in `hir` so frontend / typeck / lowering share one
+/// mapping while `types` stays stdlib-free. Object specs map to
+/// `SemTy::RuntimeObject` with their `TypeTagKind`; `Any` and `Optional` are
+/// gradual (`Dyn`) — always-correct `Tagged`.
+pub fn semty_from_typespec(spec: &pyaot_stdlib_defs::TypeSpec) -> SemTy {
+    use pyaot_core_defs::TypeTagKind;
+    use pyaot_stdlib_defs::TypeSpec;
+    match spec {
+        TypeSpec::Int => SemTy::Int,
+        TypeSpec::Float => SemTy::Float,
+        TypeSpec::Bool => SemTy::Bool,
+        TypeSpec::Str => SemTy::Str,
+        TypeSpec::Bytes => SemTy::Bytes,
+        TypeSpec::None => SemTy::NoneTy,
+        TypeSpec::List(elem) => SemTy::list_of(semty_from_typespec(elem)),
+        TypeSpec::Set(elem) => SemTy::set_of(semty_from_typespec(elem)),
+        TypeSpec::Tuple(elem) => SemTy::tuple_var_of(semty_from_typespec(elem)),
+        TypeSpec::Dict(k, v) => SemTy::dict_of(semty_from_typespec(k), semty_from_typespec(v)),
+        TypeSpec::Iterator(elem) => SemTy::Iterator(Box::new(semty_from_typespec(elem))),
+        TypeSpec::Optional(_) | TypeSpec::Any => SemTy::Dyn,
+        TypeSpec::File => SemTy::File { binary: false },
+        TypeSpec::Match => SemTy::RuntimeObject(TypeTagKind::Match),
+        TypeSpec::StructTime => SemTy::RuntimeObject(TypeTagKind::StructTime),
+        TypeSpec::CompletedProcess => SemTy::RuntimeObject(TypeTagKind::CompletedProcess),
+        TypeSpec::ParseResult => SemTy::RuntimeObject(TypeTagKind::ParseResult),
+        TypeSpec::HttpResponse => SemTy::RuntimeObject(TypeTagKind::HttpResponse),
+        TypeSpec::Request => SemTy::RuntimeObject(TypeTagKind::Request),
+        TypeSpec::Hash => SemTy::RuntimeObject(TypeTagKind::Hash),
+        TypeSpec::StringIO => SemTy::RuntimeObject(TypeTagKind::StringIO),
+        TypeSpec::BytesIO => SemTy::RuntimeObject(TypeTagKind::BytesIO),
+        TypeSpec::Deque => SemTy::RuntimeObject(TypeTagKind::Deque),
+        TypeSpec::Counter => SemTy::RuntimeObject(TypeTagKind::Counter),
+    }
 }
 
 // ============================================================================

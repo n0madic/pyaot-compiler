@@ -1,16 +1,23 @@
 //! Differential harness — the Phase-1 gate.
 //!
-//! For each file in [`PHASE1_CORPUS`] (an explicit **allowlist**, NOT a glob, so
+//! For each file in [`PHASE_CORPUS`] (an explicit **allowlist**, NOT a glob, so
 //! the full-feature corpus files cannot break this phase's gate): compile it with
 //! `pyaot`, run the resulting executable, run the same file under `python3`, and
-//! assert the two stdouts are byte-for-byte identical. CPython is the live oracle
-//! (no `.expected` fixtures).
+//! compare the two stdouts per the entry's [`DiffMode`]. CPython is the live
+//! oracle (no `.expected` fixtures).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Entries whose intermediate output is inherently run-dependent (live
+/// timestamps), compared in self-checking mode instead of byte-diff: both
+/// runs must exit 0 and end with the same final line — the file's own
+/// "…passed!" marker, which only prints when every internal assert held.
+const SELF_CHECKING: &[&str] = &["test_stdlib_time.py"];
+
 /// The phase spec entries — an explicit allowlist that grows one feature at a
-/// time. Each file's compiled stdout must match CPython byte-for-byte.
+/// time. Each file's compiled stdout must match CPython byte-for-byte
+/// (except the [`SELF_CHECKING`] few).
 const PHASE_CORPUS: &[&str] = &[
     "test_hello.py",
     "p2_scalars_print.py",
@@ -94,6 +101,14 @@ const PHASE_CORPUS: &[&str] = &[
     // it imported from a submodule (`from .circle import Circle`). The canonical
     // facade — `from shapes import Circle` and `import shapes; shapes.Circle`.
     "test_reexport.py",
+    // Phase 8B — the descriptor-driven stdlib `CallRuntime` path: math (raw
+    // f64/i64 ABI + constants), random (CPython-exact MT19937, kwargs,
+    // pass_arg_count, absent-optional sentinel), sys (attr getters, argv/path
+    // singletons), time (struct_time fields; self-checking — live timestamps).
+    "test_stdlib_math.py",
+    "test_stdlib_random.py",
+    "test_stdlib_sys.py",
+    "test_stdlib_time.py",
 ];
 
 #[test]
@@ -159,12 +174,29 @@ fn phase_corpus_matches_cpython() {
             String::from_utf8_lossy(&oracle.stderr),
         );
 
-        // ── Diff stdout byte-for-byte. ──
-        assert_eq!(
-            String::from_utf8_lossy(&compiled.stdout),
-            String::from_utf8_lossy(&oracle.stdout),
-            "stdout mismatch for {entry} (pyaot vs CPython)",
-        );
+        // ── Compare stdout: byte-for-byte, or final-line for self-checking
+        // entries (both already exited 0 above). ──
+        if SELF_CHECKING.contains(entry) {
+            let last = |out: &[u8]| -> String {
+                String::from_utf8_lossy(out)
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            assert_eq!(
+                last(&compiled.stdout),
+                last(&oracle.stdout),
+                "final self-check line mismatch for {entry} (pyaot vs CPython)",
+            );
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&compiled.stdout),
+                String::from_utf8_lossy(&oracle.stdout),
+                "stdout mismatch for {entry} (pyaot vs CPython)",
+            );
+        }
     }
 }
 

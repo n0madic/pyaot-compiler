@@ -398,6 +398,15 @@ fn check_repr_boundaries(
                         None => continue,
                     }
                 }
+                // A stdlib runtime call (Phase 8B): every provided arg must
+                // satisfy its declarative param `TypeSpec`. Raw-register params
+                // (NO_AUTO_BOX float/int/bool) reject gradual values loudly —
+                // lowering's `Tagged → Raw` coercion would mis-read a
+                // mismatched `Value` (PITFALLS A2).
+                HirExprKind::CallRuntime { target, args, .. } => {
+                    check_call_runtime_args(func, target, args)?;
+                    continue;
+                }
                 _ => continue,
             };
             for (arg, param) in args.iter().zip(params) {
@@ -405,6 +414,70 @@ fn check_repr_boundaries(
                     check_reinterpret(&func.exprs[*arg], &param.ty, kind, "passed to", classes)?;
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Validate a stdlib runtime call's args against the descriptor's declarative
+/// param `TypeSpec`s (Phase 8B). The frontend's call adaptation has already
+/// aligned `args` positionally with the descriptor params (filling defaults);
+/// absent optional slots (`None`) lower to the null-pointer sentinel and need
+/// no check. The rule per param spec:
+/// * `Float` / `Int` / `Bool` / `Str` (raw or typed-pointer ABI slots) require
+///   the exact semantic type (`Bool` is admitted where `Int` is expected,
+///   matching Python's bool ⊂ int) — a gradual `Dyn` here would make lowering
+///   emit an unchecked `Tagged → Raw` reinterpret (A2).
+/// * Object specs (`StructTime`, `Match`, …) require the matching
+///   `RuntimeObject` (or gradual `Dyn`, carried Tagged).
+/// * `Any` / `Optional` / containers are uniform tagged storage — any type.
+fn check_call_runtime_args(
+    func: &HirFunction,
+    target: &pyaot_hir::RuntimeCallTarget,
+    args: &[Option<Idx<HirExpr>>],
+) -> Result<()> {
+    use pyaot_stdlib_defs::TypeSpec;
+    let params: &[pyaot_stdlib_defs::ParamDef] = match target {
+        pyaot_hir::RuntimeCallTarget::Func(f) => f.params,
+        // Attr getters take no Python-level args; Field receivers are checked
+        // by the attribute-typing path that produced them.
+        pyaot_hir::RuntimeCallTarget::Attr(_) | pyaot_hir::RuntimeCallTarget::Field(_) => &[],
+    };
+    for (slot, param) in args.iter().zip(params) {
+        let Some(arg_idx) = slot else { continue };
+        let got = &func.exprs[*arg_idx].ty;
+        if matches!(got, SemTy::Never) {
+            continue;
+        }
+        let ok = match &param.ty {
+            TypeSpec::Float => matches!(got, SemTy::Float),
+            TypeSpec::Int => matches!(got, SemTy::Int | SemTy::Bool),
+            TypeSpec::Bool => matches!(got, SemTy::Bool),
+            TypeSpec::Str => matches!(got, SemTy::Str),
+            spec => {
+                let want = pyaot_hir::semty_from_typespec(spec);
+                match want {
+                    SemTy::Dyn => true,
+                    SemTy::RuntimeObject(tag) => {
+                        matches!(got, SemTy::RuntimeObject(t) if *t == tag)
+                            || matches!(got, SemTy::Dyn)
+                    }
+                    // Container params travel Tagged — gradual by design.
+                    _ => true,
+                }
+            }
+        };
+        if !ok {
+            let symbol = target.codegen().symbol;
+            return Err(CompilerError::type_error(
+                format!(
+                    "stdlib call `{symbol}`: parameter `{}` expects {:?} but the \
+                     argument is `{got:?}` (annotate the value — implicit \
+                     conversion at a raw-ABI boundary is not performed)",
+                    param.name, param.ty,
+                ),
+                func.exprs[*arg_idx].span,
+            ));
         }
     }
     Ok(())
@@ -901,6 +974,11 @@ impl<'a> Solver<'a> {
                 .map(|info| SemTy::Class { class_id: *cid, name: info.name })
                 .unwrap_or(SemTy::Dyn),
             HirExprKind::IsInstance { .. } => SemTy::Bool,
+            HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
+            // A stdlib runtime call types as its descriptor's declared return
+            // `TypeSpec` (Phase 8B); arg/param compatibility is enforced in
+            // `check_repr_boundaries` (the contract seam, like calls).
+            HirExprKind::CallRuntime { target, .. } => target.result_semty(),
             // `Stack[int](...)` → the generic instance type (args drive precise
             // field/method substitution; erased at repr to one shared layout). A
             // bare construction of a *non-generic* class (no type args, no type
@@ -1027,6 +1105,13 @@ impl<'a> Solver<'a> {
                 None => SemTy::Dyn,
             };
         }
+        // str-receiver methods routed through runtime descriptors (Phase 8B;
+        // the full str-method surface lands with 8E).
+        if matches!(recv, SemTy::Str)
+            && matches!(self.interner.resolve(method_name), "upper" | "lower" | "strip")
+        {
+            return SemTy::Str;
+        }
         match ContainerMethod::from_name(self.interner.resolve(method_name)) {
             Some(cm) => method_ty(&recv, cm),
             None => SemTy::Dyn,
@@ -1050,6 +1135,16 @@ impl<'a> Solver<'a> {
             _ => false,
         };
         if builtin_exc {
+            return SemTy::Dyn;
+        }
+        // A stdlib runtime object's field (`t.tm_year`, Phase 8B): declared by
+        // its `ObjectFieldDef` in `stdlib-defs`.
+        if let SemTy::RuntimeObject(tag) = &recv {
+            if let Some(obj) = pyaot_stdlib_defs::object_types::lookup_object_type(*tag) {
+                if let Some(field) = obj.get_field(self.interner.resolve(name)) {
+                    return pyaot_hir::semty_from_typespec(&field.field_type);
+                }
+            }
             return SemTy::Dyn;
         }
         let Some(cid) = class_of(&recv, self.classes) else { return SemTy::Dyn };

@@ -5,7 +5,10 @@ import sys
 # Test sys.argv
 args: list[str] = sys.argv
 assert len(args) >= 1, "len(args) should be greater than = 1"
-print(args[0])  # Should print program name
+# argv[0] is the program name — its VALUE differs between an interpreter and a
+# compiled binary by definition, so assert its shape instead of printing it.
+assert len(args[0]) > 0, "argv[0] should be a non-empty program name"
+print("argv[0] is a non-empty str")
 
 # Test argv length is at least 1
 print("argv length:", len(args))

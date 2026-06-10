@@ -41,6 +41,11 @@ pub enum VerifyError {
     BadBinOpRepr { op: BinOp, repr: Repr },
     /// A `CallContainer` arity disagrees with the op's argument signature.
     ContainerArity { op: ContainerOp, expected: usize, actual: usize },
+    /// `CallRuntime` arg count must equal the descriptor's param count.
+    RuntimeArity { symbol: &'static str, expected: usize, actual: usize },
+    /// `CallRuntime` dst presence must match the descriptor's `returns`, and
+    /// an arg/dst repr must match the descriptor's register class + semantic.
+    RuntimeShape { symbol: &'static str, detail: &'static str, actual: Option<Repr> },
     /// A `CallContainer` carries a `dst` for a mutating op, or omits it for a
     /// value-producing op.
     ContainerDst { op: ContainerOp, want_dst: bool },
@@ -105,6 +110,13 @@ impl std::fmt::Display for VerifyError {
             VerifyError::ContainerArity { op, expected, actual } => {
                 write!(f, "CallContainer {op:?}: expected {expected} args, got {actual}")
             }
+            VerifyError::RuntimeArity { symbol, expected, actual } => {
+                write!(f, "CallRuntime {symbol}: expected {expected} args, got {actual}")
+            }
+            VerifyError::RuntimeShape { symbol, detail, actual } => match actual {
+                Some(repr) => write!(f, "CallRuntime {symbol}: {detail}, got {repr:?}"),
+                None => write!(f, "CallRuntime {symbol}: {detail}"),
+            },
             VerifyError::ContainerDst { op, want_dst } => {
                 if *want_dst {
                     write!(f, "CallContainer {op:?} requires a dst but none was supplied")
@@ -280,7 +292,20 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                     matches!(repr, Repr::Heap(HeapShape::BigInt)),
                     Repr::Heap(HeapShape::BigInt),
                 ),
-                Const::Int(_) | Const::Bool(_) | Const::None => (*repr == TAGGED, TAGGED),
+                // An integer const materializes tagged by default, but may also
+                // target a raw integer register slot directly (Phase 8B:
+                // descriptor-ABI immediates — field indexes, arg counts).
+                Const::Int(_) => (
+                    matches!(
+                        repr,
+                        Repr::Tagged
+                            | Repr::Raw(RawKind::I64)
+                            | Repr::Raw(RawKind::I8)
+                            | Repr::Raw(RawKind::I32)
+                    ),
+                    TAGGED,
+                ),
+                Const::Bool(_) | Const::None | Const::NullPtr => (*repr == TAGGED, TAGGED),
                 Const::Float(_) => (*repr == RAW_F64, RAW_F64),
             };
             if !ok {
@@ -383,6 +408,7 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             }
         }
         MirInst::CallContainer { dst, op, args } => verify_call_container(f, *op, dst, args)?,
+        MirInst::CallRuntime { dst, def, args } => verify_call_runtime(f, def, dst, args)?,
         MirInst::MakeInstance { dst, class_id, .. } => {
             check_local(f, *dst)?;
             let got = f.local_repr(*dst);
@@ -605,6 +631,92 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
 /// the structural form of PITFALLS A5: every `Val` argument position is required
 /// to be `Tagged`, so a non-tagged element can never reach container storage; only
 /// `Idx` positions (indices, counts, sizes) are `Raw(I64)`.
+/// Verify a [`MirInst::CallRuntime`] against its descriptor (Phase 8B).
+///
+/// Per-slot rule, from the descriptor's Cranelift register class plus its
+/// `MirSemantic` annotation when present:
+/// * `F64` / `I8` / `I32` → the matching `Raw` exactly.
+/// * `I64` + `MirSemantic::Tagged` / `Heap` → a GC-rootable repr
+///   (`Tagged`/`Heap`) — never a raw integer misread as a pointer.
+/// * `I64` + `MirSemantic::Raw` (incl. the un-annotated default) → `Raw(I64)`
+///   or a rootable repr. The class stays wide here because many stdlib
+///   descriptors are built with the bare `RuntimeFuncDef::new` constructor
+///   (no semantics annotated) yet pass tagged `Value`s — lowering derives the
+///   precise repr from the stdlib `TypeSpec`, which this verifier cannot see.
+fn verify_call_runtime(
+    f: &MirFunction,
+    def: &'static pyaot_core_defs::RuntimeFuncDef,
+    dst: &Option<LocalId>,
+    args: &[Operand],
+) -> Result<(), VerifyError> {
+    use pyaot_core_defs::runtime_func_def::{MirSemantic, ParamType, ReturnType};
+    if args.len() != def.params.len() {
+        return Err(VerifyError::RuntimeArity {
+            symbol: def.symbol,
+            expected: def.params.len(),
+            actual: args.len(),
+        });
+    }
+    for (i, (arg, pt)) in args.iter().zip(def.params).enumerate() {
+        check_operand(f, arg)?;
+        let got = f.operand_repr(arg);
+        let ok = match pt {
+            ParamType::F64 => *got == RAW_F64,
+            ParamType::I8 => *got == RAW_I8,
+            ParamType::I32 => *got == Repr::Raw(RawKind::I32),
+            ParamType::I64 => match def.param_semantic(i) {
+                MirSemantic::Tagged | MirSemantic::Heap(_) => {
+                    matches!(got, Repr::Tagged | Repr::Heap(_))
+                }
+                MirSemantic::Raw => {
+                    matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
+                }
+            },
+        };
+        if !ok {
+            return Err(VerifyError::RuntimeShape {
+                symbol: def.symbol,
+                detail: "arg repr does not match the descriptor's register class",
+                actual: Some(got.clone()),
+            });
+        }
+    }
+    match (def.returns, dst) {
+        (None, Some(_)) => Err(VerifyError::RuntimeShape {
+            symbol: def.symbol,
+            detail: "void descriptor must not have a dst",
+            actual: None,
+        }),
+        (Some(_), None) => Err(VerifyError::RuntimeShape {
+            symbol: def.symbol,
+            detail: "returning descriptor requires a dst",
+            actual: None,
+        }),
+        (None, None) => Ok(()),
+        (Some(rt), Some(d)) => {
+            check_local(f, *d)?;
+            let got = f.local_repr(*d);
+            let ok = match rt {
+                ReturnType::F64 => *got == RAW_F64,
+                ReturnType::I8 => *got == RAW_I8,
+                ReturnType::I32 => *got == Repr::Raw(RawKind::I32),
+                ReturnType::I64 => {
+                    matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
+                }
+            };
+            if ok {
+                Ok(())
+            } else {
+                Err(VerifyError::RuntimeShape {
+                    symbol: def.symbol,
+                    detail: "dst repr does not match the descriptor's return class",
+                    actual: Some(got.clone()),
+                })
+            }
+        }
+    }
+}
+
 fn verify_call_container(
     f: &MirFunction,
     op: ContainerOp,

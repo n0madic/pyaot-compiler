@@ -740,3 +740,117 @@ for x in count(3):
     assert!(count_insts(&p, |i| matches!(i, MirInst::GenOpInst { .. })) >= 1);
     assert_eq!(p.generators.len(), 1, "one registered resume fn");
 }
+
+// ── Phase 8B: descriptor-driven stdlib CallRuntime ──────────────────────────
+
+/// Every `CallRuntime` in the program as (symbol, arg reprs, dst repr).
+fn runtime_calls(p: &MirProgram) -> Vec<(&'static str, Vec<Repr>, Option<Repr>)> {
+    p.funcs
+        .iter()
+        .flat_map(|f| {
+            f.blocks.iter().flat_map(|b| &b.insts).filter_map(move |i| match i {
+                MirInst::CallRuntime { dst, def, args } => Some((
+                    def.symbol,
+                    args.iter()
+                        .map(|a| match a {
+                            Operand::Local(id) => f.locals[id.index()].repr.clone(),
+                        })
+                        .collect(),
+                    dst.map(|d| f.locals[d.index()].repr.clone()),
+                )),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn stdlib_math_sqrt_is_raw_f64_call_runtime() {
+    // `math.sqrt(2.0)` rides the descriptor path: a raw-f64 arg, a raw-f64
+    // result — no tagged round-trip at the call itself (Phase 8B).
+    let p = lowered("import math\nx: float = math.sqrt(2.0)\nprint(x)\n");
+    let calls = runtime_calls(&p);
+    let sqrt = calls.iter().find(|(s, _, _)| *s == "rt_math_sqrt").expect("sqrt call");
+    assert_eq!(sqrt.1, vec![Repr::Raw(RawKind::F64)]);
+    assert_eq!(sqrt.2, Some(Repr::Raw(RawKind::F64)));
+}
+
+#[test]
+fn stdlib_math_ceil_returns_raw_i64() {
+    // `math.ceil` returns a raw i64 (descriptor R_I64 + TypeSpec::Int), then
+    // legalizes to the Tagged int slot.
+    let p = lowered("import math\nn: int = math.ceil(3.2)\nprint(n)\n");
+    let calls = runtime_calls(&p);
+    let ceil = calls.iter().find(|(s, _, _)| *s == "rt_math_ceil").expect("ceil call");
+    assert_eq!(ceil.1, vec![Repr::Raw(RawKind::F64)]);
+    assert_eq!(ceil.2, Some(Repr::Raw(RawKind::I64)));
+}
+
+#[test]
+fn stdlib_random_seed_appends_arg_count() {
+    // `random.seed(42)` is a pass_arg_count descriptor: the descriptor's two
+    // raw-i64 params are the seed plus the user-written arg count (1).
+    let p = lowered("import random\nrandom.seed(42)\nprint(random.random())\n");
+    let calls = runtime_calls(&p);
+    let seed = calls.iter().find(|(s, _, _)| *s == "rt_random_seed").expect("seed call");
+    assert_eq!(seed.1, vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)]);
+    assert_eq!(seed.2, None, "void descriptor has no dst");
+}
+
+#[test]
+fn stdlib_absent_optional_passes_null_sentinel() {
+    // `random.choices(xs, k=2)` leaves the no-default optional `weights` slot
+    // absent → the null-pointer Value sentinel (a Tagged const), k filled by
+    // keyword.
+    let src = "\
+import random
+random.seed(1)
+xs: list[int] = [1, 2, 3]
+print(len(random.choices(xs, k=2)))
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    let choices =
+        calls.iter().find(|(s, _, _)| *s == "rt_random_choices").expect("choices call");
+    assert_eq!(choices.1.len(), 3, "population, weights sentinel, k");
+    assert_eq!(choices.1[1], Repr::Tagged, "absent weights rides Tagged (null Value)");
+    assert_eq!(choices.1[2], Repr::Raw(RawKind::I64), "k is a raw i64");
+}
+
+#[test]
+fn stdlib_struct_time_field_uses_descriptor_getter() {
+    // `t.tm_year` on a `RuntimeObject(StructTime)` value routes through the
+    // ObjectFieldDef getter with its constant field index (a raw i8).
+    let src = "\
+import time
+t: time.struct_time = time.localtime(0.0)
+print(t.tm_year)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    let field = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_struct_time_get_field")
+        .expect("field getter call");
+    assert_eq!(field.1, vec![Repr::Tagged, Repr::Raw(RawKind::I8)]);
+    assert_eq!(field.2, Some(Repr::Raw(RawKind::I64)));
+}
+
+#[test]
+fn stdlib_isinstance_builtin_folds_statically() {
+    // `isinstance(s, str)` on a statically-Str value folds to a constant —
+    // no runtime call of any kind.
+    let p = lowered("s: str = \"x\"\nprint(isinstance(s, str))\n");
+    assert_eq!(runtime_calls(&p).len(), 0);
+}
+
+#[test]
+fn stdlib_isinstance_on_dyn_rejected() {
+    // A gradual receiver cannot answer a builtin-type isinstance statically.
+    let src = "\
+def f(x):
+    return x
+print(isinstance(f(1), str))
+";
+    assert!(try_lower(src).is_err());
+}
