@@ -18,6 +18,7 @@ use clap::ValueEnum;
 use pyaot_codegen_cranelift::{CodegenOptions, OptLevel};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_frontend_python::ModuleSource;
+use pyaot_mir::MirProgram;
 use pyaot_utils::StringInterner;
 
 /// Resolves `import` targets against the entry script's directory (Phase 8): a
@@ -150,15 +151,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     passes.run(&mut mir).map_err(verify_to_error)?;
 
     // ── mandatory pre-codegen verify (release-safe, PLAN #2). ──
-    // The per-pass-boundary verifier above is `#[cfg(debug_assertions)]`; this
-    // one is NOT, so release builds also reject any representation mismatch right
-    // before codegen. It is the safety net for the Phase-3c raw-division surface:
-    // a wrong interval that produced a raw divide of a value that is actually a
-    // bignum surfaces here as a verify error, not a silent miscompile or SEGV.
-    // Linear in MIR — negligible cost.
-    for func in &mir.funcs {
-        pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
-    }
+    verify_pre_codegen(&mir)?;
 
     // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
     if cli.emit_mir {
@@ -188,6 +181,22 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
     linker.link(&object_path, output, &[])?;
 
+    Ok(())
+}
+
+/// The mandatory, release-safe pre-codegen representation gate (PLAN #2).
+///
+/// Runs in ALL build profiles — never wrap this call, or this function, in
+/// `#[cfg(debug_assertions)]`. The per-pass-boundary verifier in `optimizer`
+/// and the post-lowering verify above are debug-only; this one is NOT, so a
+/// representation mismatch surfaces here as a hard `CompilerError` right before
+/// codegen rather than a silent miscompile or SEGV — e.g. a wrong Phase-3c
+/// interval that produced a raw divide of a value that is actually a bignum.
+/// Linear in MIR — negligible cost.
+fn verify_pre_codegen(mir: &MirProgram) -> Result<()> {
+    for func in &mir.funcs {
+        pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
+    }
     Ok(())
 }
 
@@ -242,5 +251,78 @@ fn locate_runtime_lib(cli: &Cli) -> Result<PathBuf> {
              set PYAOT_RUNTIME_LIB.",
             candidate.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_pre_codegen;
+    use pyaot_diagnostics::CompilerError;
+    use pyaot_mir::{
+        Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator, StrPool,
+    };
+    use pyaot_types::{HeapShape, Repr};
+    use pyaot_utils::{BlockId, FuncId, LocalId, StringInterner};
+
+    /// One-block function: `locals` declares the Repr table, `insts` the body,
+    /// `term` the terminator. Mirrors `verify.rs`'s `single_block` test helper.
+    fn single_block(locals: Vec<Repr>, insts: Vec<MirInst>, term: MirTerminator) -> MirFunction {
+        MirFunction {
+            name: StringInterner::new().intern("__main__"),
+            params: Vec::new(),
+            ret: Repr::Tagged,
+            locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
+            blocks: vec![MirBlock { insts, term }],
+            entry: BlockId::new(0),
+        }
+    }
+
+    /// Wrap one function as a whole program — the shape the CLI gate consumes.
+    fn program(f: MirFunction) -> MirProgram {
+        MirProgram {
+            funcs: vec![f],
+            entry: FuncId::new(0),
+            str_pool: StrPool::new(),
+            classes: Vec::new(),
+            generators: Vec::new(),
+        }
+    }
+
+    /// A program that materializes a string constant into `locals[0]`. `slot` is
+    /// that local's Repr: `Heap(Str)` is well-formed; anything else is a
+    /// representation mismatch the pre-codegen gate must reject.
+    fn const_str_into(slot: Repr) -> MirProgram {
+        let f = single_block(
+            vec![slot],
+            vec![MirInst::Const {
+                dst: LocalId::new(0),
+                val: Const::Str(StringInterner::new().intern("x")),
+            }],
+            MirTerminator::Return(None),
+        );
+        program(f)
+    }
+
+    #[test]
+    fn pre_codegen_gate_accepts_well_formed() {
+        // `Const::Str` into a `Heap(Str)` slot is the canonical good shape.
+        assert!(verify_pre_codegen(&const_str_into(Repr::Heap(HeapShape::Str))).is_ok());
+    }
+
+    #[test]
+    fn pre_codegen_gate_rejects_broken_repr() {
+        // `Const::Str` into a `Tagged` slot is a representation mismatch. This
+        // test is NOT `#[cfg]`-gated, so it also runs — and must pass — under
+        // `cargo test --release`, proving the gate fires in release builds and
+        // is wired to a hard `CompilerError`, not a debug-only assertion.
+        let err = verify_pre_codegen(&const_str_into(Repr::Tagged))
+            .expect_err("the pre-codegen gate must reject representation-broken MIR");
+        match err {
+            CompilerError::CodegenError { message, .. } => assert!(
+                message.contains("MIR verification failed"),
+                "unexpected error message: {message}"
+            ),
+            other => panic!("expected CodegenError, got {other:?}"),
+        }
     }
 }
