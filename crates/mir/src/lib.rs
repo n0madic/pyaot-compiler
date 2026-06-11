@@ -600,6 +600,141 @@ impl MirInst {
         }
     }
 
+    /// Rewrite every `LocalId` this instruction mentions — `dst`s and operand
+    /// reads alike — through `f`. The inliner's splice remap (callee locals
+    /// shift by the caller's local count). Lives here because
+    /// [`CoerceInst`]'s fields are crate-private by design.
+    pub fn map_locals(&mut self, mut f: impl FnMut(LocalId) -> LocalId) {
+        let map_op = |op: &mut Operand, f: &mut dyn FnMut(LocalId) -> LocalId| {
+            let Operand::Local(id) = op;
+            *id = f(*id);
+        };
+        match self {
+            MirInst::Const { dst, .. } => *dst = f(*dst),
+            MirInst::Coerce(c) => {
+                c.dst = f(c.dst);
+                map_op(&mut c.src, &mut f);
+            }
+            MirInst::BinOp { dst, l, r, .. } | MirInst::Compare { dst, l, r, .. } => {
+                *dst = f(*dst);
+                map_op(l, &mut f);
+                map_op(r, &mut f);
+            }
+            MirInst::Unary { dst, operand, .. } | MirInst::Truthy { dst, operand } => {
+                *dst = f(*dst);
+                map_op(operand, &mut f);
+            }
+            MirInst::Call { dst, args, .. }
+            | MirInst::CallBuiltin { dst, args, .. }
+            | MirInst::CallContainer { dst, args, .. }
+            | MirInst::CallRuntime { dst, args, .. } => {
+                if let Some(d) = dst {
+                    *d = f(*d);
+                }
+                args.iter_mut().for_each(|a| map_op(a, &mut f));
+            }
+            MirInst::CallVirtual { dst, recv, args, .. } => {
+                if let Some(d) = dst {
+                    *d = f(*d);
+                }
+                map_op(recv, &mut f);
+                args.iter_mut().for_each(|a| map_op(a, &mut f));
+            }
+            MirInst::CallIndirect { dst, callee, args, .. } => {
+                if let Some(d) = dst {
+                    *d = f(*d);
+                }
+                map_op(callee, &mut f);
+                args.iter_mut().for_each(|a| map_op(a, &mut f));
+            }
+            MirInst::MakeInstance { dst, .. }
+            | MirInst::GetClassAttr { dst, .. }
+            | MirInst::GlobalGet { dst, .. }
+            | MirInst::MakeGenerator { dst, .. } => *dst = f(*dst),
+            MirInst::GetField { dst, base, .. } | MirInst::GetFieldNamed { dst, base, .. } => {
+                *dst = f(*dst);
+                map_op(base, &mut f);
+            }
+            MirInst::SetField { base, value, .. }
+            | MirInst::SetFieldNamed { base, value, .. } => {
+                map_op(base, &mut f);
+                map_op(value, &mut f);
+            }
+            MirInst::IsInstance { dst, value, .. } => {
+                *dst = f(*dst);
+                map_op(value, &mut f);
+            }
+            MirInst::SetClassAttr { value, .. } | MirInst::GlobalSet { value, .. } => {
+                map_op(value, &mut f);
+            }
+            MirInst::AssertFail => {}
+            MirInst::Print { arg, .. } => {
+                if let Some(a) = arg {
+                    map_op(a, &mut f);
+                }
+            }
+            MirInst::MakeClosure { dst, captures, .. } => {
+                *dst = f(*dst);
+                captures.iter_mut().for_each(|c| map_op(c, &mut f));
+            }
+            MirInst::MakeCell { dst, init } => {
+                *dst = f(*dst);
+                map_op(init, &mut f);
+            }
+            MirInst::CellGet { dst, cell } => {
+                *dst = f(*dst);
+                map_op(cell, &mut f);
+            }
+            MirInst::CellSet { cell, value } => {
+                map_op(cell, &mut f);
+                map_op(value, &mut f);
+            }
+            MirInst::GenOpInst { dst, gen, value, .. } => {
+                if let Some(d) = dst {
+                    *d = f(*d);
+                }
+                map_op(gen, &mut f);
+                if let Some(v) = value {
+                    map_op(v, &mut f);
+                }
+            }
+            MirInst::ExcOp(_) => {}
+            MirInst::ExcQuery { dst, .. } => *dst = f(*dst),
+            MirInst::ExcInstanceStr { dst, value } => {
+                *dst = f(*dst);
+                map_op(value, &mut f);
+            }
+            MirInst::Raise(raise) => match raise {
+                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
+                    if let Some(m) = msg {
+                        map_op(m, &mut f);
+                    }
+                }
+                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
+                    if let Some(m) = msg {
+                        map_op(m, &mut f);
+                    }
+                    if let Some(m) = cause_msg {
+                        map_op(m, &mut f);
+                    }
+                }
+                MirRaise::CustomWithInstance { msg, instance, .. } => {
+                    if let Some(m) = msg {
+                        map_op(m, &mut f);
+                    }
+                    map_op(instance, &mut f);
+                }
+                MirRaise::Stdlib { msg, .. } => {
+                    if let Some(m) = msg {
+                        map_op(m, &mut f);
+                    }
+                }
+                MirRaise::Instance { value } => map_op(value, &mut f),
+                MirRaise::Reraise => {}
+            },
+        }
+    }
+
     /// Visit every operand this instruction reads (NOT its `dst`). The shared
     /// traversal for the optimizer's use-counting and rewriting.
     pub fn for_each_operand(&self, mut f: impl FnMut(&Operand)) {

@@ -23,6 +23,7 @@
 pub mod analysis;
 pub mod constfold;
 pub mod dce;
+pub mod inline;
 pub mod peephole;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -54,11 +55,19 @@ impl PassManager {
         Self { passes: Vec::new() }
     }
 
-    /// The Phase 9 pipeline (grows as the passes land; final order:
-    /// inline → constfold → peephole → dce → constfold → peephole → dce).
+    /// The Phase 9 pipeline. The cleanup trio (constfold → peephole → dce)
+    /// runs BEFORE inline so the inliner's size eligibility judges cleaned
+    /// bodies — raw lowered MIR carries box/unbox churn that nearly doubles
+    /// a small dunder's instruction count and would mis-refuse exactly the
+    /// functions the inliner exists for. The second trio then cleans the
+    /// round-trips the splices themselves expose.
     pub fn phase9() -> Self {
         Self {
             passes: vec![
+                Box::new(constfold::ConstFold),
+                Box::new(peephole::Peephole),
+                Box::new(dce::Dce),
+                Box::new(inline::Inline::default()),
                 Box::new(constfold::ConstFold),
                 Box::new(peephole::Peephole),
                 Box::new(dce::Dce),
