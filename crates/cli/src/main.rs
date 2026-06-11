@@ -13,6 +13,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use clap::ValueEnum;
+
+use pyaot_codegen_cranelift::{CodegenOptions, OptLevel};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_frontend_python::ModuleSource;
 use pyaot_utils::StringInterner;
@@ -53,14 +56,44 @@ struct Cli {
     /// Path to `libpyaot_runtime.a` (overrides auto-detection).
     #[arg(long = "runtime-lib")]
     runtime_lib: Option<PathBuf>,
-    /// Keep debug symbols / DWARF (no stripping).
+    /// Keep debug symbols / DWARF (no stripping). Also defaults the
+    /// optimization level to `none` (predictable stepping) unless an explicit
+    /// `--opt-level` overrides it.
     #[arg(long)]
     debug: bool,
+    /// Optimization level: `none` (fully conservative — empty MIR pipeline +
+    /// Cranelift opt_level=none), `speed` (default), or `speed-and-size`.
+    #[arg(long = "opt-level", value_enum)]
+    opt_level: Option<OptLevelArg>,
+    /// Escape hatch for PITFALLS B17: disable Cranelift alias analysis under
+    /// `--opt-level speed` (see CodegenOptions in pyaot-codegen-cranelift).
+    #[arg(long = "no-alias-analysis", hide = true)]
+    no_alias_analysis: bool,
     /// Print the lowered, verified MIR to stdout and exit (a debug aid for
     /// confirming representation specialization — e.g. unboxed `Raw(F64)`
     /// arithmetic — that the differential gate cannot distinguish by output).
     #[arg(long = "emit-mir")]
     emit_mir: bool,
+}
+
+/// `--opt-level` values (clap-facing mirror of [`OptLevel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OptLevelArg {
+    None,
+    Speed,
+    SpeedAndSize,
+}
+
+impl Cli {
+    /// Resolve the effective optimization level: explicit `--opt-level` wins;
+    /// otherwise `--debug` means `none` and the default is `speed`.
+    fn effective_opt_level(&self) -> OptLevelArg {
+        match self.opt_level {
+            Some(level) => level,
+            None if self.debug => OptLevelArg::None,
+            None => OptLevelArg::Speed,
+        }
+    }
 }
 
 fn main() {
@@ -107,8 +140,13 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         }
     }
 
-    // ── optimizer (empty Phase 1 pipeline; verifies at the boundary). ──
-    let passes = pyaot_optimizer::PassManager::phase1();
+    // ── optimizer: `--opt-level none` is the single conservative switch (empty
+    // MIR pipeline + Cranelift opt_level=none). ──
+    let opt_level = cli.effective_opt_level();
+    let passes = match opt_level {
+        OptLevelArg::None => pyaot_optimizer::PassManager::phase1(),
+        OptLevelArg::Speed | OptLevelArg::SpeedAndSize => pyaot_optimizer::PassManager::phase1(),
+    };
     passes.run(&mut mir).map_err(verify_to_error)?;
 
     // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
@@ -125,7 +163,15 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         CompilerError::codegen_error("an output path (-o) is required unless --emit-mir is set", None)
     })?;
     let object_path = output.with_extension("o");
-    pyaot_codegen_cranelift::compile(&mir, &object_path)?;
+    let codegen_opts = CodegenOptions {
+        opt_level: match opt_level {
+            OptLevelArg::None => OptLevel::None,
+            OptLevelArg::Speed => OptLevel::Speed,
+            OptLevelArg::SpeedAndSize => OptLevel::SpeedAndSize,
+        },
+        alias_analysis: !cli.no_alias_analysis,
+    };
+    pyaot_codegen_cranelift::compile(&mir, &object_path, &codegen_opts)?;
 
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);

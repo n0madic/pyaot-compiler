@@ -449,8 +449,46 @@ fn declare_import(
         .map_err(|e| cg_error(format!("declare import `{name}`: {e}")))
 }
 
+/// Cranelift optimization level for [`compile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptLevel {
+    /// No Cranelift optimization (`opt_level=none`) — the always-sound mode
+    /// the whole corpus was brought up on.
+    None,
+    /// `opt_level=speed` — egraph optimization.
+    Speed,
+    /// `opt_level=speed_and_size`.
+    SpeedAndSize,
+}
+
+/// Codegen knobs threaded from the CLI into [`compile`].
+///
+/// PITFALLS B17: locals of `has_try` functions are memory-backed (stack
+/// slots), and the soundness of that under `opt_level=speed` rests on
+/// Cranelift's alias analysis treating every call as a potential clobber of
+/// memory — so a load of a stack slot after `rt_exc_try_enter` (a call) can
+/// never be forwarded from a store that preceded the call. If a Cranelift
+/// upgrade ever sharpens alias analysis across calls, the fallback ladder is:
+/// (1) the differential corpus run in release pins the invariant and catches
+/// the divergence; (2) set `alias_analysis: false` (the `--no-alias-analysis`
+/// escape hatch — disables the redundant-load pass while keeping the rest of
+/// `speed`); (3) compile `has_try` functions in a separate `opt_level=none`
+/// module.
+#[derive(Debug, Clone, Copy)]
+pub struct CodegenOptions {
+    pub opt_level: OptLevel,
+    /// `enable_alias_analysis` Cranelift flag (only meaningful at `Speed`+).
+    pub alias_analysis: bool,
+}
+
+impl Default for CodegenOptions {
+    fn default() -> Self {
+        Self { opt_level: OptLevel::Speed, alias_analysis: true }
+    }
+}
+
 /// Compile a [`MirProgram`] to a native object file at `out_obj`.
-pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
+pub fn compile(program: &MirProgram, out_obj: &Path, opts: &CodegenOptions) -> Result<()> {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("is_pic", "true")
@@ -458,6 +496,20 @@ pub fn compile(program: &MirProgram, out_obj: &Path) -> Result<()> {
     flag_builder
         .set("use_colocated_libcalls", "false")
         .map_err(|e| cg_error(format!("set use_colocated_libcalls: {e}")))?;
+    let opt_level = match opts.opt_level {
+        OptLevel::None => "none",
+        OptLevel::Speed => "speed",
+        OptLevel::SpeedAndSize => "speed_and_size",
+    };
+    flag_builder
+        .set("opt_level", opt_level)
+        .map_err(|e| cg_error(format!("set opt_level: {e}")))?;
+    flag_builder
+        .set(
+            "enable_alias_analysis",
+            if opts.alias_analysis { "true" } else { "false" },
+        )
+        .map_err(|e| cg_error(format!("set enable_alias_analysis: {e}")))?;
     let flags = settings::Flags::new(flag_builder);
 
     let isa_builder =
