@@ -203,6 +203,16 @@ pub unsafe fn rt_reduce(
         initial
     };
 
+    // GC-rooting caveat: `acc` is NOT rooted across the inner nexts here.
+    // It cannot be, soundly: in this legacy raw ABI the callback's return is
+    // raw bits for primitive-typed lambdas (including raw f64, which can
+    // masquerade as a pointer in a root slot and send the GC chasing
+    // garbage), and nothing in the encoding distinguishes a raw-f64 `acc`
+    // from a tagged heap one. The heap-accumulator path through this legacy
+    // entry is currently unreachable from the compiler (string/float
+    // accumulators are broken before GC even matters); `rt_reduce_tagged`
+    // — whose `acc` is invariantly tagged — carries the rooting.
+    //
     // Iterate through remaining elements
     loop {
         let elem = rt_iter_next_internal(iter, false);
@@ -274,7 +284,7 @@ pub unsafe fn rt_reduce_tagged(
         }
     };
 
-    let mut acc = if has_initial == 0 {
+    let acc = if has_initial == 0 {
         let first_elem = rt_iter_next_internal(iter, false);
         let inner_iter = iter as *mut IteratorObj;
         if (*inner_iter).exhausted {
@@ -294,10 +304,29 @@ pub unsafe fn rt_reduce_tagged(
         rewrap(initial)
     };
 
+    // Root the (always-tagged here) accumulator across every inner next —
+    // same hazard as the legacy variant: a fresh-element source allocates
+    // inside `rt_iter_next_internal` and `acc` is otherwise reachable only
+    // from this Rust frame. Tagged immediates in the slot are skipped by
+    // the GC mark.
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    let mut roots: [*mut Obj; 1] = [acc];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
     loop {
         let elem = rt_iter_next_internal(iter, false);
         let inner_iter = iter as *mut IteratorObj;
         if (*inner_iter).exhausted {
+            // Read the accumulator back THROUGH the root slot — the reads
+            // keep the root stores live (a store the compiler deems dead
+            // would un-root the accumulator during an inner collection).
+            let acc = roots[0];
+            gc_pop();
             // Final return: unwrap the tagged accumulator back to the
             // caller's primitive shape. The caller's dest local was
             // allocated with the callback's declared return type
@@ -311,9 +340,11 @@ pub unsafe fn rt_reduce_tagged(
         }
         // Callback returns raw primitive for primitive-typed lambdas;
         // re-wrap before the next iteration so the callback's tagged
-        // ABI contract for `acc` is honoured.
-        let raw_result = call_reduce_with_captures(func_ptr, captures, cc_byte, acc, elem);
-        acc = rewrap(raw_result);
+        // ABI contract for `acc` is honoured. `acc` is read through the
+        // root slot (see above).
+        let raw_result =
+            call_reduce_with_captures(func_ptr, captures, cc_byte, roots[0], elem);
+        roots[0] = rewrap(raw_result);
     }
 }
 #[export_name = "rt_reduce_tagged"]

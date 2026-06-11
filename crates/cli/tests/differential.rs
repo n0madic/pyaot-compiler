@@ -195,6 +195,12 @@ const PHASE_CORPUS: &[&str] = &[
     // promotion as an allocating tagged BinOp. Run under the gc_stress
     // runtime to surface any missed root as a use-after-free.
     "p9_root_narrowing_gc_stress.py",
+    // Runtime ShadowFrame audit — zip over fresh-element sources (string /
+    // generator / enumerate): the zip nexts must root already-obtained items
+    // across the remaining inner nexts and the result-tuple allocation
+    // (internal ShadowFrame, the rt_list_from_iter pattern). Crashes the
+    // unfixed runtime under gc_stress.
+    "p9_zip_fresh_elems_gc_stress.py",
     // B10 — field-type inference as solver variables: unannotated fields are
     // joined over every module-wide write (the autograd pattern:
     // `child.grad = child.grad + local * out.grad` through non-self

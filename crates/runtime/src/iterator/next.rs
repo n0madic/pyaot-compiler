@@ -399,6 +399,8 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     // Use internal version to avoid longjmp issues
     let item1 = rt_iter_next_internal((*zip_iter).iter1, false);
     if item1 == EXHAUSTED_SENTINEL {
@@ -409,54 +411,38 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
+    // One shadow frame, filled progressively: `item1` must survive the SECOND
+    // inner next (a string / enumerate / map / generator source ALLOCATES its
+    // element, so a collection there would free the fresh, otherwise-unrooted
+    // `item1`), and both items must survive `rt_make_tuple`. Null slots are
+    // fine — the GC mark skips non-pointers.
+    let mut roots: [*mut Obj; 2] = [item1, std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
     let item2 = rt_iter_next_internal((*zip_iter).iter2, false);
     if item2 == EXHAUSTED_SENTINEL {
+        gc_pop();
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
             raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
+    roots[1] = item2;
 
-    // rt_make_tuple calls gc_alloc — root all live heap pointers before each allocation.
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-
-    // Step 1: box item1; root item2 (item1 itself may be raw, boxed result needs rooting
-    // before next alloc, but item2 is the unrooted heap value that matters).
-    let mut r1: [*mut Obj; 1] = [item2];
-    let mut f1 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 1,
-        roots: r1.as_mut_ptr(),
-    };
-    gc_push(&mut f1);
-    let boxed_item1 = item1;
-    gc_pop();
-
-    // Step 2: box item2; root boxed_item1.
-    let mut r2: [*mut Obj; 1] = [boxed_item1];
-    let mut f2 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 1,
-        roots: r2.as_mut_ptr(),
-    };
-    gc_push(&mut f2);
-    let boxed_item2 = item2;
-    gc_pop();
-
-    // Step 3: allocate tuple; root both boxed items.
-    let mut r3: [*mut Obj; 2] = [boxed_item1, boxed_item2];
-    let mut f3 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 2,
-        roots: r3.as_mut_ptr(),
-    };
-    gc_push(&mut f3);
     let tuple = crate::tuple::rt_make_tuple(2);
     gc_pop();
 
-    crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
-    crate::tuple::rt_tuple_set(tuple, 1, boxed_item2);
+    // Read the items back THROUGH the roots array — the reads keep the root
+    // stores live (a store the compiler deems dead would un-root the item
+    // during `rt_make_tuple`'s collection).
+    crate::tuple::rt_tuple_set(tuple, 0, roots[0]);
+    crate::tuple::rt_tuple_set(tuple, 1, roots[1]);
     tuple
 }
 
@@ -473,6 +459,8 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         return EXHAUSTED_SENTINEL;
     }
 
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     let item1 = rt_iter_next_internal((*zip_iter).iter1, false);
     if item1 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
@@ -482,74 +470,47 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         return EXHAUSTED_SENTINEL;
     }
 
+    // One shadow frame, filled progressively: each already-obtained item must
+    // survive the remaining inner nexts (fresh-element sources allocate) and
+    // `rt_make_tuple`. Null slots are skipped by the GC mark.
+    let mut roots: [*mut Obj; 3] = [item1, std::ptr::null_mut(), std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
     let item2 = rt_iter_next_internal((*zip_iter).iter2, false);
     if item2 == EXHAUSTED_SENTINEL {
+        gc_pop();
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
             raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
+    roots[1] = item2;
 
     let item3 = rt_iter_next_internal((*zip_iter).iter3, false);
     if item3 == EXHAUSTED_SENTINEL {
+        gc_pop();
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
             raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
+    roots[2] = item3;
 
-    // rt_make_tuple calls gc_alloc — root all live heap pointers before each allocation.
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-
-    // Step 1: box item1; root the two remaining raw items.
-    let mut r1: [*mut Obj; 2] = [item2, item3];
-    let mut f1 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 2,
-        roots: r1.as_mut_ptr(),
-    };
-    gc_push(&mut f1);
-    let boxed_item1 = item1;
-    gc_pop();
-
-    // Step 2: box item2; root boxed_item1 and the remaining raw item.
-    let mut r2: [*mut Obj; 2] = [boxed_item1, item3];
-    let mut f2 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 2,
-        roots: r2.as_mut_ptr(),
-    };
-    gc_push(&mut f2);
-    let boxed_item2 = item2;
-    gc_pop();
-
-    // Step 3: box item3; root the two already-boxed items.
-    let mut r3: [*mut Obj; 2] = [boxed_item1, boxed_item2];
-    let mut f3 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 2,
-        roots: r3.as_mut_ptr(),
-    };
-    gc_push(&mut f3);
-    let boxed_item3 = item3;
-    gc_pop();
-
-    // Step 4: allocate tuple; root all three boxed items.
-    let mut r4: [*mut Obj; 3] = [boxed_item1, boxed_item2, boxed_item3];
-    let mut f4 = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 3,
-        roots: r4.as_mut_ptr(),
-    };
-    gc_push(&mut f4);
     let tuple = crate::tuple::rt_make_tuple(3);
     gc_pop();
 
-    crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
-    crate::tuple::rt_tuple_set(tuple, 1, boxed_item2);
-    crate::tuple::rt_tuple_set(tuple, 2, boxed_item3);
+    // Read the items back THROUGH the roots array — the reads keep the root
+    // stores live (a store the compiler deems dead would un-root the item).
+    crate::tuple::rt_tuple_set(tuple, 0, roots[0]);
+    crate::tuple::rt_tuple_set(tuple, 1, roots[1]);
+    crate::tuple::rt_tuple_set(tuple, 2, roots[2]);
     tuple
 }
 
@@ -566,28 +527,41 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         return EXHAUSTED_SENTINEL;
     }
 
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     let count = (*zip_iter).count as usize;
     let iters_list = (*zip_iter).iters as *mut ListObj;
-    // Collect all items first (no allocations during rt_iter_next_internal for raw iterators).
-    // We need a fixed-size scratch area; use a Vec for simplicity — it lives on the heap
-    // but is not a GC object, so it won't be collected.
-    let mut items: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(count); // (iter, item)
+    // The collected items live only in this Rust frame, and every inner next
+    // after the first — plus `rt_make_tuple` — may allocate (fresh-element
+    // sources: string / enumerate / map / generator). Root the scratch area
+    // itself as a shadow frame, filled progressively; null slots are skipped
+    // by the GC mark. The Vec's buffer is malloc-backed, so its address is
+    // stable for the frame's lifetime (no pushes after `gc_push`).
+    let mut items: Vec<*mut Obj> = vec![std::ptr::null_mut(); count];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: count,
+        roots: items.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
     for i in 0..count {
         let iter_i = (*(*iters_list).data.add(i)).0 as *mut Obj;
         let item = rt_iter_next_internal(iter_i, false);
         if item == EXHAUSTED_SENTINEL {
+            gc_pop();
             (*zip_iter).exhausted = true;
             if raise_on_exhausted {
                 raise_exc!(exceptions::ExceptionType::StopIteration, "");
             }
             return EXHAUSTED_SENTINEL;
         }
-        items.push((iter_i, item));
+        items[i] = item;
     }
 
     let root_tuple: *mut Obj = crate::tuple::rt_make_tuple(count as i64);
+    gc_pop();
 
-    for (i, &(_iter_i, item)) in items.iter().enumerate() {
+    for (i, &item) in items.iter().enumerate() {
         crate::tuple::rt_tuple_set(root_tuple, i as i64, item);
     }
 

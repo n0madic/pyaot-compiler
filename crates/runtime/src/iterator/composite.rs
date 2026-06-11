@@ -474,6 +474,8 @@ pub fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
             return std::ptr::null_mut();
         }
 
+        use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
         // Use rt_iter_next_no_exc to avoid longjmp issues
         // rt_iter_next raises StopIteration via longjmp, making null checks unreachable
         let item1 = rt_iter_next_no_exc((*zip_iter).iter1);
@@ -482,16 +484,33 @@ pub fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
             return std::ptr::null_mut();
         }
 
+        // Root `item1` across the second inner next and both items across
+        // `rt_make_tuple` (fresh-element sources allocate; the items are
+        // otherwise reachable only from this Rust frame). Mirrors
+        // `iter_next_zip`; null slots are skipped by the GC mark.
+        let mut roots: [*mut Obj; 2] = [item1, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let item2 = rt_iter_next_no_exc((*zip_iter).iter2);
         if item2.is_null() {
+            gc_pop();
             (*zip_iter).exhausted = true;
             return std::ptr::null_mut();
         }
+        roots[1] = item2;
 
         // Create tuple with both items
         let tuple = rt_make_tuple(2);
-        rt_tuple_set(tuple, 0, item1);
-        rt_tuple_set(tuple, 1, item2);
+        gc_pop();
+        // Read back THROUGH the roots array — the reads keep the root stores
+        // live (a store the compiler deems dead would un-root the item).
+        rt_tuple_set(tuple, 0, roots[0]);
+        rt_tuple_set(tuple, 1, roots[1]);
 
         tuple
     }
