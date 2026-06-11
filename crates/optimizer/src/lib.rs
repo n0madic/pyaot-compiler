@@ -21,7 +21,9 @@
 #![forbid(unsafe_code)]
 
 pub mod analysis;
+pub mod constfold;
 pub mod dce;
+pub mod peephole;
 #[cfg(test)]
 pub(crate) mod testutil;
 
@@ -55,7 +57,13 @@ impl PassManager {
     /// The Phase 9 pipeline (grows as the passes land; final order:
     /// inline → constfold → peephole → dce → constfold → peephole → dce).
     pub fn phase9() -> Self {
-        Self { passes: vec![Box::new(dce::Dce)] }
+        Self {
+            passes: vec![
+                Box::new(constfold::ConstFold),
+                Box::new(peephole::Peephole),
+                Box::new(dce::Dce),
+            ],
+        }
     }
 
     /// Append a pass (used as the pipeline grows in later phases).
