@@ -1087,14 +1087,50 @@ pub static RT_STR_TITLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_titl
 pub static RT_STR_CAPITALIZE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_capitalize");
 /// rt_str_swapcase(s: *mut Obj) -> *mut Obj
 pub static RT_STR_SWAPCASE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_swapcase");
+// Alignment ABIs (`rt_str_center`/`ljust`/`rjust`/`zfill`): a tagged str
+// receiver, a RAW i64 width, and (except zfill) a tagged fillchar. The width
+// is read as a machine integer by the runtime, so the generic
+// `ptr_ternary`/`ptr_binary` all-Tagged default is wrong here (Phase 8H).
+const ALIGN_TERNARY: &[MirSemantic] =
+    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged];
+const ALIGN_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
+
 /// rt_str_center(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
-pub static RT_STR_CENTER: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_center");
+pub static RT_STR_CENTER: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_center",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    ALIGN_TERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_ljust(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
-pub static RT_STR_LJUST: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_ljust");
+pub static RT_STR_LJUST: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_ljust",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    ALIGN_TERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_rjust(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
-pub static RT_STR_RJUST: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_rjust");
+pub static RT_STR_RJUST: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_rjust",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    ALIGN_TERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_zfill(s: *mut Obj, width: i64) -> *mut Obj
-pub static RT_STR_ZFILL: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_zfill");
+pub static RT_STR_ZFILL: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_zfill",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    ALIGN_BINARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_isdigit(s: *mut Obj) -> i8
 pub static RT_STR_ISDIGIT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isdigit");
 /// rt_str_isalpha(s: *mut Obj) -> i8

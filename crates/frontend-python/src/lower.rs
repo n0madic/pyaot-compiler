@@ -547,6 +547,11 @@ impl<'a> ProgramLowerer<'a> {
         my_ns: u32,
         init_fid: FuncId,
     ) -> Result<ModuleExports> {
+        // `name = lambda ... (with defaults)` → synthetic `def` (Phase 8H, #9),
+        // BEFORE partitioning so the def joins `top_defs` (known-callee
+        // defaults/kwargs adaptation).
+        let mut body = body;
+        desugar_module_lambda_defs(&mut body);
         // Partition top-level statements (as the single-module lowering did).
         let mut defs: Vec<&StmtFunctionDef> = Vec::new();
         let mut decorated: Vec<&StmtFunctionDef> = Vec::new();
@@ -1341,8 +1346,70 @@ impl<'a> FnLowerer<'a> {
         self.exprs.alloc(HirExpr { kind, ty, span })
     }
 
+    /// Synthesize `lit0 + str(e0) + lit1 + str(e1) + ... + tail` — the
+    /// left-folded string concatenation used for stdlib-exception messages.
+    /// Each expression is wrapped in `str(...)` (resolved by `semantics`),
+    /// matching the f-string lowering idiom.
+    fn synth_concat_str(
+        &mut self,
+        parts: &[(&str, Idx<HirExpr>)],
+        tail: &str,
+        span: Span,
+    ) -> Idx<HirExpr> {
+        let mut acc: Option<Idx<HirExpr>> = None;
+        let mut push = |this: &mut Self, e: Idx<HirExpr>| {
+            acc = Some(match acc {
+                Some(a) => {
+                    this.alloc(HirExprKind::BinOp { op: BinOp::Add, l: a, r: e }, SemTy::Dyn, span)
+                }
+                None => e,
+            });
+        };
+        for (lit, expr) in parts {
+            if !lit.is_empty() {
+                let id = self.intern(lit);
+                let lit_e = self.alloc(HirExprKind::StrLit(id), SemTy::Str, span);
+                push(self, lit_e);
+            }
+            let fn_name = self.intern("str");
+            let callee =
+                self.alloc(HirExprKind::Name(SymbolRef::Unresolved(fn_name)), SemTy::Dyn, span);
+            let wrapped =
+                self.alloc(HirExprKind::Call { callee, args: vec![*expr] }, SemTy::Str, span);
+            push(self, wrapped);
+        }
+        if !tail.is_empty() {
+            let id = self.intern(tail);
+            let tail_e = self.alloc(HirExprKind::StrLit(id), SemTy::Str, span);
+            push(self, tail_e);
+        }
+        acc.unwrap_or_else(|| {
+            let id = self.intern("");
+            self.alloc(HirExprKind::StrLit(id), SemTy::Str, span)
+        })
+    }
+
     fn intern(&mut self, s: &str) -> InternedString {
         self.interner.intern(s)
+    }
+
+    /// True iff `dotted` (`"module.attr"`) names ANY known stdlib surface: a
+    /// function, const, module attr, class, or a submodule (a prefix of a
+    /// longer registered name, e.g. `os.path` for `os.path.join`).
+    fn stdlib_module_attr_exists(&self, dotted: &str) -> bool {
+        let s = &self.ctx.stdlib;
+        if s.funcs.contains_key(dotted)
+            || s.consts.contains_key(dotted)
+            || s.attrs.contains_key(dotted)
+            || s.classes.contains_key(dotted)
+        {
+            return true;
+        }
+        let prefix = format!("{dotted}.");
+        s.funcs.keys().any(|k| k.starts_with(&prefix))
+            || s.consts.keys().any(|k| k.starts_with(&prefix))
+            || s.attrs.keys().any(|k| k.starts_with(&prefix))
+            || s.classes.keys().any(|k| k.starts_with(&prefix))
     }
 
     /// True iff the current block is still open (no terminator emitted yet).
@@ -1669,6 +1736,35 @@ impl<'a> FnLowerer<'a> {
                 let span = to_span(s.range());
                 if matches!(s.slice.as_ref(), Expr::Slice(_)) {
                     return Err(parse_error("slice assignment is not yet supported", span));
+                }
+                // `os.environ[k] = v` (Phase 8H): a SetItem into the environ
+                // attr would write into a FRESH dict snapshot (the getter
+                // rebuilds it on every read) and be silently lost. Route to the
+                // `rt_os_environ_set` setter, which mutates the real process
+                // environment.
+                // TODO: `del os.environ[k]` needs a delete-subscript statement
+                // path (none exists yet) plus an `rt_os_environ_del` (remove_var).
+                if let Some((leftmost, dotted)) = flatten_attr_chain(s.value.as_ref()) {
+                    let lname = self.intern(leftmost);
+                    if dotted == "os.environ"
+                        && self.ctx.stdlib.aliases.contains(leftmost)
+                        && !self.scope.contains_key(&lname)
+                    {
+                        let key = self.lower_expr(s.slice.as_ref())?;
+                        let call = self.alloc(
+                            HirExprKind::CallRuntime {
+                                target: pyaot_hir::RuntimeCallTarget::Func(
+                                    &pyaot_stdlib_defs::modules::os::OS_ENVIRON_SET,
+                                ),
+                                args: vec![Some(key), Some(value)],
+                                provided: 2,
+                            },
+                            SemTy::NoneTy,
+                            span,
+                        );
+                        self.push_stmt(HirStmt::Expr(call));
+                        return Ok(());
+                    }
                 }
                 let base = self.lower_expr(s.value.as_ref())?;
                 let index = self.lower_expr(s.slice.as_ref())?;
@@ -2038,23 +2134,14 @@ impl<'a> FnLowerer<'a> {
     /// (`iter` → `next` → `is_exhausted`), binding the target (a name or a tuple
     /// pattern) each iteration. `for`-else / `break` / `continue` reuse the loop
     /// stack exactly as the `while`/range paths do.
-    /// Lower a for-loop / comprehension iterable. The frozen runtime cannot
-    /// iterate a File object (PITFALLS), so a syntactic `open(...)` iterable is
-    /// desugared to `open(...).readlines()` — iterating the eager line list is
+    /// Lower a for-loop / comprehension iterable. A File iterable (syntactic
+    /// `open(...)` and File variables alike) is handled at lowering: the frozen
+    /// runtime cannot iterate a File object (PITFALLS), so `lowering` expands
+    /// `Iter(file)` to `rt_file_readlines` + list iteration (Phase 8H) —
     /// line-for-line identical to CPython's lazy file iteration on the small
-    /// corpus inputs (Phase 8C). A File first stored in a variable then iterated
-    /// is out of scope — call `.readlines()` explicitly.
-    fn lower_iterable_expr(&mut self, e: &Expr, span: Span) -> Result<Idx<HirExpr>> {
-        let lowered = self.lower_expr(e)?;
-        if is_open_call(e) {
-            let readlines = self.intern("readlines");
-            return Ok(self.alloc(
-                HirExprKind::MethodCall { recv: lowered, method_name: readlines, args: vec![] },
-                SemTy::Dyn,
-                span,
-            ));
-        }
-        Ok(lowered)
+    /// corpus inputs.
+    fn lower_iterable_expr(&mut self, e: &Expr, _span: Span) -> Result<Idx<HirExpr>> {
+        self.lower_expr(e)
     }
 
     fn lower_for_iter(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
@@ -2605,19 +2692,40 @@ impl<'a> FnLowerer<'a> {
                     if let Some((class_id, parent_tag)) =
                         self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
                     {
-                        // `raise HTTPError(url, code, ...)` (Phase 8D): the first
-                        // positional arg is the message; the rest are ignored
-                        // (the corpus never inspects them, and they are
-                        // side-effect-free literals).
                         if cause.is_some() {
                             return Err(parse_error(
                                 "`raise StdlibError(...) from ...` is out of scope",
                                 span,
                             ));
                         }
-                        let msg = match c.args.first() {
-                            Some(a) => Some(self.lower_expr(a)?),
-                            None => None,
+                        // Synthesize the CPython __str__ for the exceptions
+                        // whose message is not the first positional arg:
+                        // HTTPError(url, code, msg, hdrs, fp) prints
+                        // "HTTP Error {code}: {msg}"; URLError(reason) prints
+                        // "<urlopen error {reason}>". Everything else keeps
+                        // the first positional arg as the message.
+                        let msg = match (n.id.as_str(), c.args.len()) {
+                            ("HTTPError", 3..) => {
+                                let code = self.lower_expr(&c.args[1])?;
+                                let msg_arg = self.lower_expr(&c.args[2])?;
+                                Some(self.synth_concat_str(
+                                    &[("HTTP Error ", code), (": ", msg_arg)],
+                                    "",
+                                    span,
+                                ))
+                            }
+                            ("URLError", 1..) => {
+                                let reason = self.lower_expr(&c.args[0])?;
+                                Some(self.synth_concat_str(
+                                    &[("<urlopen error ", reason)],
+                                    ">",
+                                    span,
+                                ))
+                            }
+                            _ => match c.args.first() {
+                                Some(a) => Some(self.lower_expr(a)?),
+                                None => None,
+                            },
                         };
                         return Ok(HirRaise::Stdlib { class_id, exc_type_tag: parent_tag, msg });
                     }
@@ -3503,7 +3611,9 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_listcomp(&mut self, c: &ExprListComp, span: Span) -> Result<Idx<HirExpr>> {
-        let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        // `Dyn` (non-authoritative) so typeck infers the ELEMENT type from the
+        // desugared pushes (Phase 8H, D1) instead of pinning `list[Dyn]`.
+        let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
         self.push_stmt(HirStmt::Assign { target: result, value: empty });
         let kind = CompKind::List { result, elt: c.elt.as_ref() };
@@ -3513,7 +3623,8 @@ impl<'a> FnLowerer<'a> {
 
     /// `{elt for … if …}` → an empty set filled the same way.
     fn lower_setcomp(&mut self, c: &ExprSetComp, span: Span) -> Result<Idx<HirExpr>> {
-        let result = self.fresh_local(SemTy::set_of(SemTy::Dyn));
+        // `Dyn` for push-driven element inference (Phase 8H, D1).
+        let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
         self.push_stmt(HirStmt::Assign { target: result, value: empty });
         let kind = CompKind::Set { result, elt: c.elt.as_ref() };
@@ -3523,7 +3634,8 @@ impl<'a> FnLowerer<'a> {
 
     /// `{k: v for … if …}` → an empty dict filled key/value-wise.
     fn lower_dictcomp(&mut self, c: &ExprDictComp, span: Span) -> Result<Idx<HirExpr>> {
-        let result = self.fresh_local(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn));
+        // `Dyn` for insert-driven key/value inference (Phase 8H, D1).
+        let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
         self.push_stmt(HirStmt::Assign { target: result, value: empty });
         let kind = CompKind::Dict { result, key: c.key.as_ref(), val: c.value.as_ref() };
@@ -3680,29 +3792,33 @@ impl<'a> FnLowerer<'a> {
         self.switch(lp.exit);
     }
 
-    /// `sum(iterable[, start])` → `acc = start; for x in iterable: acc = acc + x`.
+    /// `sum(iterable[, start])` → [`HirExprKind::Sum`] (Phase 8H, D2): typeck
+    /// types the accumulator precisely (numeric promotion / inferred dunder
+    /// returns), lowering expands the iterator loop. A generator-expression
+    /// argument is MATERIALIZED into a list comprehension here — eager, not
+    /// lazy, which is observationally identical for sum (the corpus inputs are
+    /// finite and side-effect-free).
     fn lower_sum(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
         if args.is_empty() || args.len() > 2 {
             return Err(parse_error("sum() takes 1 or 2 arguments", span));
         }
-        let acc = self.fresh_local(SemTy::Dyn);
-        let start = match args.get(1) {
-            Some(s) => self.lower_expr(s)?,
-            None => self.alloc(HirExprKind::IntLit(0), SemTy::Int, span),
+        let iterable = if let Expr::GeneratorExp(g) = &args[0] {
+            // Same desugar as a list comprehension, driven by the genexpr's
+            // elt/generators.
+            let result = self.fresh_local(SemTy::Dyn);
+            let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+            self.push_stmt(HirStmt::Assign { target: result, value: empty });
+            let kind = CompKind::List { result, elt: g.elt.as_ref() };
+            self.lower_comp_clauses(&g.generators, 0, &kind, span)?;
+            self.local_ref(result, span)
+        } else {
+            self.lower_expr(&args[0])?
         };
-        self.push_stmt(HirStmt::Assign { target: acc, value: start });
-        let iterable = self.lower_expr(&args[0])?;
-        let lp = self.begin_iter_loop(iterable, span)?;
-        let acc_ref = self.local_ref(acc, span);
-        let elem_ref = self.local_ref(lp.elem, span);
-        let add = self.alloc(
-            HirExprKind::BinOp { op: BinOp::Add, l: acc_ref, r: elem_ref },
-            SemTy::Dyn,
-            span,
-        );
-        self.push_stmt(HirStmt::Assign { target: acc, value: add });
-        self.end_iter_loop(lp);
-        Ok(self.local_ref(acc, span))
+        let start = match args.get(1) {
+            Some(s) => Some(self.lower_expr(s)?),
+            None => None,
+        };
+        Ok(self.alloc(HirExprKind::Sum { iterable, start }, SemTy::Dyn, span))
     }
 
     /// `min`/`max` over a single iterable, or over 2+ positional args (wrapped in a
@@ -4450,9 +4566,20 @@ impl<'a> FnLowerer<'a> {
                 if let Some(def) = self.ctx.stdlib.funcs.get(&dotted).copied() {
                     return self.lower_stdlib_call(def, c, span);
                 }
-                // Not a stdlib function — fall through to the normal method-call
-                // path. E.g. `sys.path.append(...)` is a list method on the
-                // `sys.path` attr, not a module function.
+                // Not a stdlib function. A LONGER chain whose 2-link prefix is a
+                // known module attr (`sys.path.append(...)` — a list method on
+                // the `sys.path` attr) falls through to the method-call path.
+                // An unknown 2-link `module.attr(...)` (e.g. `re.findall`) is a
+                // loud CPython-style AttributeError diagnostic instead of the
+                // misleading "undefined name" from the generic path.
+                if let Some((module, attr)) = dotted.split_once('.') {
+                    if !attr.contains('.') && !self.stdlib_module_attr_exists(&dotted) {
+                        return Err(parse_error(
+                            format!("module '{module}' has no attribute '{attr}'"),
+                            span,
+                        ));
+                    }
+                }
             }
         }
         // `M.f(args)` / `M.Cls(args)` through an `import M` user-module alias
@@ -5452,13 +5579,6 @@ fn flatten_attr_chain(e: &Expr) -> Option<(&str, String)> {
 /// Phase 8D).
 fn is_none_lit(e: &Expr) -> bool {
     matches!(e, Expr::Constant(c) if matches!(c.value, Constant::None))
-}
-
-/// True if `e` is a syntactic `open(...)` call — the File-iteration desugar
-/// trigger (Phase 8C).
-fn is_open_call(e: &Expr) -> bool {
-    matches!(e, Expr::Call(c)
-        if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "open"))
 }
 
 /// If `stmt` is `Name = TypeVar(...)` (or `ParamSpec`/`TypeVarTuple`), return the
@@ -6475,6 +6595,160 @@ fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassA
 /// Collect the simple `Name` identifiers bound by a `for`-target (Phase 8E),
 /// descending into tuple / list unpacking. Used to shadow comprehension loop
 /// variables so they do not leak into the enclosing scope.
+/// Count how many times `name` is bound in one SCOPE's statement list (Phase
+/// 8H, #9). Descends into control-flow bodies (same scope) but NOT into
+/// `def`/`class` (new scopes). A `global`/`nonlocal` declaration disqualifies
+/// (returns 2+) — the name is not a plain single-bound local.
+fn count_scope_bindings(stmts: &[Stmt], name: &str) -> usize {
+    let mut count = 0usize;
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign(a) => {
+                for t in &a.targets {
+                    let mut names = Vec::new();
+                    collect_target_names(t, &mut names);
+                    count += names.iter().filter(|n| **n == name).count();
+                }
+            }
+            Stmt::AugAssign(a) => {
+                let mut names = Vec::new();
+                collect_target_names(a.target.as_ref(), &mut names);
+                count += names.iter().filter(|n| **n == name).count();
+            }
+            Stmt::AnnAssign(a) => {
+                let mut names = Vec::new();
+                collect_target_names(a.target.as_ref(), &mut names);
+                count += names.iter().filter(|n| **n == name).count();
+            }
+            Stmt::For(f) => {
+                let mut names = Vec::new();
+                collect_target_names(f.target.as_ref(), &mut names);
+                count += names.iter().filter(|n| **n == name).count();
+                count += count_scope_bindings(&f.body, name);
+                count += count_scope_bindings(&f.orelse, name);
+            }
+            Stmt::While(w) => {
+                count += count_scope_bindings(&w.body, name);
+                count += count_scope_bindings(&w.orelse, name);
+            }
+            Stmt::If(i) => {
+                count += count_scope_bindings(&i.body, name);
+                count += count_scope_bindings(&i.orelse, name);
+            }
+            Stmt::With(w) => {
+                for item in &w.items {
+                    if let Some(v) = &item.optional_vars {
+                        let mut names = Vec::new();
+                        collect_target_names(v.as_ref(), &mut names);
+                        count += names.iter().filter(|n| **n == name).count();
+                    }
+                }
+                count += count_scope_bindings(&w.body, name);
+            }
+            Stmt::Try(t) => {
+                count += count_scope_bindings(&t.body, name);
+                for h in &t.handlers {
+                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    if h.name.as_ref().is_some_and(|n| n.as_str() == name) {
+                        count += 1;
+                    }
+                    count += count_scope_bindings(&h.body, name);
+                }
+                count += count_scope_bindings(&t.orelse, name);
+                count += count_scope_bindings(&t.finalbody, name);
+            }
+            Stmt::FunctionDef(d) => {
+                if d.name.as_str() == name {
+                    count += 1;
+                }
+            }
+            Stmt::ClassDef(c) => {
+                if c.name.as_str() == name {
+                    count += 1;
+                }
+            }
+            Stmt::Import(im) => {
+                for a in &im.names {
+                    let bound = a.asname.as_ref().unwrap_or(&a.name);
+                    if bound.as_str() == name {
+                        count += 1;
+                    }
+                }
+            }
+            Stmt::ImportFrom(im) => {
+                for a in &im.names {
+                    let bound = a.asname.as_ref().unwrap_or(&a.name);
+                    if bound.as_str() == name {
+                        count += 1;
+                    }
+                }
+            }
+            Stmt::Global(g) => {
+                if g.names.iter().any(|n| n.as_str() == name) {
+                    return 2; // disqualify outright
+                }
+            }
+            Stmt::Nonlocal(g) => {
+                if g.names.iter().any(|n| n.as_str() == name) {
+                    return 2; // disqualify outright
+                }
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
+/// Rewrite module-level `name = lambda ... (with DEFAULTS)` into a synthetic
+/// `def name(...)` (Phase 8H, #9) — the def machinery provides the default
+/// materialization and known-callee keyword adaptation that the closure path
+/// rejects. Applies only when `name` is bound EXACTLY once at module scope
+/// (rebinding keeps CPython's late-binding closure semantics) and the lambda
+/// has no *args/**kwargs. Lambdas without defaults keep the closure path; a
+/// lambda with defaults anywhere else still gets the loud rejection.
+pub(crate) fn desugar_module_lambda_defs(body: &mut [Stmt]) {
+    for i in 0..body.len() {
+        let replacement = {
+            let Stmt::Assign(a) = &body[i] else { continue };
+            if a.targets.len() != 1 {
+                continue;
+            }
+            let Expr::Name(n) = &a.targets[0] else { continue };
+            let Expr::Lambda(l) = a.value.as_ref() else { continue };
+            let args = l.args.as_ref();
+            let has_defaults = args
+                .posonlyargs
+                .iter()
+                .chain(args.args.iter())
+                .any(|x| x.default.is_some());
+            if !has_defaults
+                || args.vararg.is_some()
+                || args.kwarg.is_some()
+                || !args.kwonlyargs.is_empty()
+            {
+                continue;
+            }
+            if count_scope_bindings(body, n.id.as_str()) != 1 {
+                continue;
+            }
+            Stmt::FunctionDef(StmtFunctionDef {
+                range: a.range,
+                name: n.id.clone(),
+                args: l.args.clone(),
+                body: vec![Stmt::Return(rustpython_parser::ast::StmtReturn {
+                    range: l.range,
+                    value: Some(l.body.clone()),
+                })],
+                decorator_list: vec![],
+                returns: None,
+                type_comment: None,
+                type_params: vec![],
+            })
+        };
+        body[i] = replacement;
+    }
+}
+
 fn collect_target_names<'a>(target: &'a Expr, out: &mut Vec<&'a str>) {
     match target {
         Expr::Name(n) => out.push(n.id.as_str()),

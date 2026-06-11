@@ -132,6 +132,24 @@ fn build_mir_classes(
             .into_iter()
             .map(|f| f.expect("every vtable slot is filled by a resolved method"))
             .collect();
+        // Field-name registry (Phase 8H, D4): `(fnv1a(name), slot)` in the
+        // SAME slot order as the static `GetField` path (`field_slot` =
+        // position in `info.fields`). A 64-bit FNV-1a collision between two
+        // field names of one class would silently alias them — check here
+        // (cheap; classes have few fields).
+        let mut field_names = Vec::with_capacity(info.fields.len());
+        for (slot, fld) in info.fields.iter().enumerate() {
+            let name = interner.resolve(fld.name);
+            let hash = pyaot_utils::fnv1a_hash(name);
+            if field_names.iter().any(|(h, _)| *h == hash) {
+                panic!(
+                    "FNV-1a-64 hash collision between fields of class `{}` (field `{}`)",
+                    interner.resolve(info.name),
+                    name
+                );
+            }
+            field_names.push((hash, slot));
+        }
         // Class-attribute initializers → MIR `Const`s (literal bytes interned).
         let class_attr_inits = info
             .class_attrs
@@ -147,6 +165,7 @@ fn build_mir_classes(
             field_count: info.field_count(),
             vtable,
             method_names,
+            field_names,
             dunders,
             class_attr_inits,
         });
@@ -304,7 +323,7 @@ impl<'a> FnLower<'a> {
             return Err(cg_illegal(&from, &to));
         }
         let dst = self.alloc_temp(to.clone());
-        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to });
+        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to, checked: false });
         Ok(dst)
     }
 
@@ -319,7 +338,7 @@ impl<'a> FnLower<'a> {
         if legalize::coerce(from.clone(), to.clone()).is_none() {
             return Err(cg_illegal(&from, &to));
         }
-        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to });
+        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to, checked: false });
         Ok(())
     }
 
@@ -817,6 +836,7 @@ impl<'a> FnLower<'a> {
             HirExprKind::ContainerExpr { op, args } => {
                 self.lower_container_expr(idx, *op, &args.clone())
             }
+            HirExprKind::Sum { iterable, start } => self.lower_sum_expr(idx, *iterable, *start),
             HirExprKind::MethodCall { recv, method_name, args } => {
                 self.lower_method_call(idx, *recv, *method_name, &args.clone())
             }
@@ -1176,7 +1196,33 @@ impl<'a> FnLower<'a> {
                         }
                     }
                     let (al, ar) = self.lower_expr(*arg)?;
-                    let coerced = self.coerce(al, ar, want)?;
+                    // A gradual argument headed for a raw register slot takes
+                    // the CHECKED unbox (Phase 8H, D3): `rt_unbox_float` /
+                    // `rt_unbox_int` validate the tag at runtime (TypeError on
+                    // mismatch) instead of reinterpreting bits. Statically
+                    // proven types keep the unchecked fast path.
+                    let arg_ty = &self.func.exprs[*arg].ty;
+                    let needs_check = match &want {
+                        Repr::Raw(RawKind::F64) => *arg_ty != SemTy::Float,
+                        Repr::Raw(RawKind::I64) => {
+                            matches!(arg_ty, SemTy::Dyn | SemTy::Union(_))
+                        }
+                        _ => false,
+                    };
+                    let coerced = if needs_check {
+                        let tagged = self.coerce(al, ar, Repr::Tagged)?;
+                        let dst = self.alloc_temp(want.clone());
+                        self.emit(MirInst::Coerce {
+                            dst,
+                            src: Operand::Local(tagged),
+                            from: Repr::Tagged,
+                            to: want.clone(),
+                            checked: true,
+                        });
+                        dst
+                    } else {
+                        self.coerce(al, ar, want)?
+                    };
                     ops.push(Operand::Local(coerced));
                 }
                 None => {
@@ -1296,44 +1342,86 @@ impl<'a> FnLower<'a> {
     ) -> Result<Option<(LocalId, Repr)>> {
         use pyaot_core_defs::runtime_func_def as rf;
         use pyaot_stdlib_defs::TypeSpec;
+        /// Wanted repr for a str-method argument: a tagged heap value, or a
+        /// raw i64 (widths like `zfill(6)` / `center(5, '-')`).
+        #[derive(Clone, Copy)]
+        enum ArgWant {
+            Tagged,
+            RawI64,
+        }
+        use ArgWant::{RawI64, Tagged as TaggedArg};
         let name = self.interner.resolve(method_name);
-        // (descriptor, arg count, trailing op_tag if any, return spec). The
-        // return spec disambiguates the I64 ABI: `find` returns a RAW index
-        // (Int → Raw(I64), then tagged), the case ops a heap str (Tagged).
-        let plan: Option<(&'static pyaot_core_defs::RuntimeFuncDef, usize, Option<i64>, TypeSpec)> =
-            match name {
-                "upper" => Some((&rf::RT_STR_UPPER, 0, None, TypeSpec::Str)),
-                "lower" => Some((&rf::RT_STR_LOWER, 0, None, TypeSpec::Str)),
-                "strip" => Some((&rf::RT_STR_STRIP, 0, None, TypeSpec::Str)),
-                "startswith" => Some((&rf::RT_STR_STARTSWITH, 1, None, TypeSpec::Bool)),
-                "endswith" => Some((&rf::RT_STR_ENDSWITH, 1, None, TypeSpec::Bool)),
-                "find" => Some((&rf::RT_STR_FIND, 1, Some(0), TypeSpec::Int)),
-                // `sep.join(iterable)` → `rt_str_join(sep, list)` (Phase 8E). The
-                // argument is coerced to Tagged (a list/tuple of strings).
-                "join" => Some((&rf::RT_STR_JOIN, 1, None, TypeSpec::Str)),
-                _ => None,
-            };
-        let Some((def, want_args, op_tag, ret_spec)) = plan else { return Ok(None) };
-        if args.len() != want_args {
+        // (descriptor, arg reprs, min args, trailing op_tag if any, return
+        // spec). Args past `min` are optional — an absent one lowers to the
+        // null-pointer object sentinel. The return spec disambiguates the I64
+        // ABI: `find` returns a RAW index (Int → Raw(I64), then tagged), the
+        // case ops a heap str (Tagged).
+        type StrPlan = (
+            &'static pyaot_core_defs::RuntimeFuncDef,
+            &'static [ArgWant],
+            usize,
+            Option<i64>,
+            TypeSpec,
+        );
+        let plan: Option<StrPlan> = match name {
+            "upper" => Some((&rf::RT_STR_UPPER, &[], 0, None, TypeSpec::Str)),
+            "lower" => Some((&rf::RT_STR_LOWER, &[], 0, None, TypeSpec::Str)),
+            "title" => Some((&rf::RT_STR_TITLE, &[], 0, None, TypeSpec::Str)),
+            "capitalize" => Some((&rf::RT_STR_CAPITALIZE, &[], 0, None, TypeSpec::Str)),
+            "swapcase" => Some((&rf::RT_STR_SWAPCASE, &[], 0, None, TypeSpec::Str)),
+            "strip" => Some((&rf::RT_STR_STRIP, &[], 0, None, TypeSpec::Str)),
+            "startswith" => Some((&rf::RT_STR_STARTSWITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
+            "endswith" => Some((&rf::RT_STR_ENDSWITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
+            "find" => Some((&rf::RT_STR_FIND, &[TaggedArg], 1, Some(0), TypeSpec::Int)),
+            "rfind" => Some((&rf::RT_STR_RFIND, &[TaggedArg], 1, Some(1), TypeSpec::Int)),
+            "index" => Some((&rf::RT_STR_INDEX, &[TaggedArg], 1, Some(2), TypeSpec::Int)),
+            "count" => Some((&rf::RT_STR_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
+            "zfill" => Some((&rf::RT_STR_ZFILL, &[RawI64], 1, None, TypeSpec::Str)),
+            "center" => Some((&rf::RT_STR_CENTER, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
+            "ljust" => Some((&rf::RT_STR_LJUST, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
+            "rjust" => Some((&rf::RT_STR_RJUST, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
+            // `sep.join(iterable)` → `rt_str_join(sep, list)` (Phase 8E). The
+            // argument is coerced to Tagged (a list/tuple of strings).
+            "join" => Some((&rf::RT_STR_JOIN, &[TaggedArg], 1, None, TypeSpec::Str)),
+            _ => None,
+        };
+        let Some((def, wants, min_args, op_tag, ret_spec)) = plan else { return Ok(None) };
+        if args.len() < min_args || args.len() > wants.len() {
             return Err(CompilerError::semantic_error(
-                format!("`str.{name}()` takes {want_args} argument(s), got {}", args.len()),
+                format!(
+                    "`str.{name}()` takes {min_args}..={} argument(s), got {}",
+                    wants.len(),
+                    args.len()
+                ),
                 span,
             ));
         }
         let (rl, rr) = self.lower_expr(recv)?;
         let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
-        for a in args {
-            // `sep.join(iterable)` accepts ANY iterable in CPython (str, tuple,
-            // generator, …), but `rt_str_join` reads a `ListObj`. Materialize the
-            // argument into a list first — passing a non-list straight through has
-            // the runtime cast a mismatched heap object and SEGV (the gradual
-            // heap-param exemption does not guard the shape at the seam).
-            let (al, ar) = if name == "join" {
-                self.materialize_list(*a)?
+        for (i, want) in wants.iter().enumerate() {
+            let op = if let Some(a) = args.get(i) {
+                // `sep.join(iterable)` accepts ANY iterable in CPython (str, tuple,
+                // generator, …), but `rt_str_join` reads a `ListObj`. Materialize the
+                // argument into a list first — passing a non-list straight through has
+                // the runtime cast a mismatched heap object and SEGV (the gradual
+                // heap-param exemption does not guard the shape at the seam).
+                let (al, ar) = if name == "join" {
+                    self.materialize_list(*a)?
+                } else {
+                    self.lower_expr(*a)?
+                };
+                let want_repr = match want {
+                    ArgWant::Tagged => Repr::Tagged,
+                    ArgWant::RawI64 => Repr::Raw(RawKind::I64),
+                };
+                self.coerce(al, ar, want_repr)?
             } else {
-                self.lower_expr(*a)?
+                // Absent optional arg — the null-pointer object sentinel.
+                let d = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const { dst: d, val: Const::NullPtr });
+                d
             };
-            ops.push(Operand::Local(self.coerce(al, ar, Repr::Tagged)?));
+            ops.push(Operand::Local(op));
         }
         if let Some(tag) = op_tag {
             let t = self.alloc_temp(Repr::Raw(RawKind::I8));
@@ -1503,7 +1591,20 @@ impl<'a> FnLower<'a> {
             }
         }
 
-        // (d) Instance field read.
+        // (d) Instance field read. A `Dyn` receiver resolves the slot at
+        // RUNTIME by name hash (Phase 8H, D4) — `rt_getattr_name` raises
+        // AttributeError on a miss/non-instance. Method-calls on `Dyn` stay a
+        // loud compile error (no generic thunk for an unknown signature).
+        // Other unknown receivers keep the loud `field_slot` error.
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+            let (bl, br) = self.lower_expr(value)?;
+            let base = self.coerce(bl, br, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
+            self.emit(MirInst::GetFieldNamed { dst, base: Operand::Local(base), name_hash });
+            let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+            return Ok((coerced, result_repr));
+        }
         let slot = self.field_slot(value, name)?;
         let (bl, _br) = self.lower_expr(value)?;
         let dst = self.alloc_temp(Repr::Tagged);
@@ -1575,7 +1676,21 @@ impl<'a> FnLower<'a> {
             }
         }
 
-        // (d) Instance field write.
+        // (d) Instance field write. A `Dyn` receiver writes by name hash at
+        // runtime (Phase 8H, D4) — AttributeError on a miss/non-instance.
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+            let (bl, br) = self.lower_expr(base)?;
+            let bt = self.coerce(bl, br, Repr::Tagged)?;
+            let (vl, vr) = self.lower_expr(value)?;
+            let vt = self.coerce(vl, vr, Repr::Tagged)?;
+            let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
+            self.emit(MirInst::SetFieldNamed {
+                base: Operand::Local(bt),
+                name_hash,
+                value: Operand::Local(vt),
+            });
+            return Ok(());
+        }
         let slot = self.field_slot(base, name)?;
         let (bl, _br) = self.lower_expr(base)?;
         let (vl, vr) = self.lower_expr(value)?;
@@ -1805,7 +1920,7 @@ impl<'a> FnLower<'a> {
         // Container receiver → the Phase-4D ContainerMethod path.
         let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
             CompilerError::semantic_error(
-                format!("unsupported method `.{}()`", self.interner.resolve(method_name)),
+                format!("unsupported method `.{}()` (receiver type {:?})", self.interner.resolve(method_name), recv_ty),
                 span,
             )
         })?;
@@ -2404,6 +2519,33 @@ impl<'a> FnLower<'a> {
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
         }
+        // `for line in f:` where `f` is a File VARIABLE (Phase 8H): there is no
+        // runtime File iterator kind, so materialize the lines list via
+        // `rt_file_readlines` first, then iterate that list. (The syntactic
+        // `for line in open(...)` form takes this same path now.)
+        if op == ContainerOp::Iter
+            && args.len() == 1
+            && matches!(self.func.exprs[args[0]].ty, SemTy::File { .. })
+        {
+            let (fl, fr) = self.lower_expr(args[0])?;
+            let ft = self.coerce(fl, fr, Repr::Tagged)?;
+            use pyaot_core_defs::runtime_func_def as rf;
+            let lines = self.alloc_temp(Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))));
+            self.emit(MirInst::CallRuntime {
+                dst: Some(lines),
+                def: &rf::RT_FILE_READLINES,
+                args: vec![Operand::Local(ft)],
+            });
+            let heap = (op.result() == ContainerResult::Heap)
+                .then(|| repr_of(&self.func.exprs[idx].ty));
+            let (dst, ret) = self.emit_container(
+                op,
+                vec![(lines, Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))))],
+                heap,
+            )?;
+            return self
+                .normalize_container_result(dst.expect("container expr produces a value"), ret);
+        }
         let mut lowered = Vec::with_capacity(args.len());
         for a in args {
             lowered.push(self.lower_expr(*a)?);
@@ -2939,6 +3081,103 @@ impl<'a> FnLower<'a> {
                 span,
             )),
         }
+    }
+
+    /// Expand `sum(iterable[, start])` (Phase 8H, D2) into a Tagged-accumulator
+    /// iterator loop:
+    /// ```text
+    ///   acc = start (Tagged; default tagged 0, or boxed 0.0 when typeck
+    ///                solved the node Float — keeps the final unbox legal)
+    ///   it  = Iter(iterable)
+    /// header:
+    ///   elem = IterNext(it); done = IterExhausted(it)
+    ///   if done -> exit else -> body
+    /// body:
+    ///   acc = acc + elem    (Tagged BinOp — runtime dunder dispatch)
+    ///   -> header
+    /// exit:
+    ///   result = coerce(acc, Tagged -> repr_of(node.ty))
+    /// ```
+    /// Documented divergences: (1) `sum([])` over Float-typed elements yields
+    /// `0.0` where CPython yields `0` (the boxed-Float seed); (2) float sums
+    /// are a naive left fold, while CPython >= 3.12 uses Neumaier compensated
+    /// summation — results can differ in the last ULP for non-binary-exact
+    /// fractions.
+    fn lower_sum_expr(
+        &mut self,
+        idx: Idx<HirExpr>,
+        iterable: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+    ) -> Result<(LocalId, Repr)> {
+        let node_ty = self.func.exprs[idx].ty.clone();
+        let result_repr = repr_of(&node_ty);
+
+        // Accumulator seed.
+        let acc = self.alloc_temp(Repr::Tagged);
+        match start {
+            Some(s) => {
+                let (sl, sr) = self.lower_expr(s)?;
+                self.coerce_into(acc, sl, sr, Repr::Tagged)?;
+            }
+            None if node_ty == SemTy::Float => {
+                let raw = self.alloc_temp(Repr::Raw(RawKind::F64));
+                self.emit(MirInst::Const { dst: raw, val: Const::Float(0.0) });
+                self.coerce_into(acc, raw, Repr::Raw(RawKind::F64), Repr::Tagged)?;
+            }
+            None => {
+                let raw = self.alloc_temp(Repr::Raw(RawKind::I64));
+                self.emit(MirInst::Const { dst: raw, val: Const::Int(0) });
+                self.coerce_into(acc, raw, Repr::Raw(RawKind::I64), Repr::Tagged)?;
+            }
+        }
+
+        // it = Iter(iterable)
+        let iter_repr = Repr::Heap(HeapShape::Iterator(Box::new(Repr::Tagged)));
+        let (il, ir) = self.lower_expr(iterable)?;
+        let (it, _) =
+            self.emit_container(ContainerOp::Iter, vec![(il, ir)], Some(iter_repr.clone()))?;
+        let it = it.expect("Iter produces a value");
+
+        let header = self.reserve_block();
+        let body = self.reserve_block();
+        let exit = self.reserve_block();
+        self.seal(MirTerminator::Jump(header));
+
+        // header: elem = next(it); done = is_exhausted(it) (the runtime call
+        // order contract: next advances and sets the exhausted flag).
+        self.switch(header);
+        let (elem, _) = self.emit_container(
+            ContainerOp::IterNext,
+            vec![(it, iter_repr.clone())],
+            None,
+        )?;
+        let elem = elem.expect("IterNext produces a value");
+        let (done, _) =
+            self.emit_container(ContainerOp::IterExhausted, vec![(it, iter_repr)], None)?;
+        let done = done.expect("IterExhausted produces a value");
+        self.seal(MirTerminator::Branch {
+            cond: Operand::Local(done),
+            then: exit,
+            else_: body,
+        });
+
+        // body: acc = acc + elem (both Tagged — runtime dispatch covers
+        // int/float/bignum and user dunders alike).
+        self.switch(body);
+        let tmp = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::BinOp {
+            dst: tmp,
+            op: MBinOp::Add,
+            l: Operand::Local(acc),
+            r: Operand::Local(elem),
+        });
+        self.coerce_into(acc, tmp, Repr::Tagged, Repr::Tagged)?;
+        self.seal(MirTerminator::Jump(header));
+
+        // exit: one reinterpreting coercion to the solved repr.
+        self.switch(exit);
+        let res = self.coerce(acc, Repr::Tagged, result_repr.clone())?;
+        Ok((res, result_repr))
     }
 
     /// Lower a container / iteration builtin resolved to `Symbol::Container`. Each

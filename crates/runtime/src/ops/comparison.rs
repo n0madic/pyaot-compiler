@@ -535,6 +535,14 @@ pub extern "C" fn rt_obj_slice_abi(obj: Value, start: i64, end: i64) -> Value {
 /// Runtime-dispatched slicing with step: `obj[start:end:step]`. See
 /// `rt_obj_slice` for the Any-typed motivation.
 pub fn rt_obj_slice_step(obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
+    if step == 0 {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "slice step cannot be zero"
+            );
+        }
+    }
     if obj.is_null() {
         return std::ptr::null_mut();
     }

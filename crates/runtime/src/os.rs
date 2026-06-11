@@ -97,6 +97,30 @@ pub extern "C" fn rt_os_get_environ_abi() -> Value {
     Value::from_ptr(rt_os_get_environ())
 }
 
+/// Set an environment variable: os.environ["KEY"] = "value" (Phase 8H).
+/// Mutates the real process environment, so subsequent `rt_os_get_environ`
+/// snapshots (rebuilt on every read) observe the write.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_os_environ_set(key: *mut Obj, value: *mut Obj) {
+    unsafe {
+        let (Some(key_str), Some(value_str)) = (
+            crate::utils::extract_str_checked(key),
+            crate::utils::extract_str_checked(value),
+        ) else {
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "str expected for environment variable name and value"
+            );
+        };
+        // SAFETY: single-threaded runtime — no concurrent getenv readers.
+        env::set_var(&key_str, &value_str);
+    }
+}
+#[export_name = "rt_os_environ_set"]
+pub extern "C" fn rt_os_environ_set_abi(key: Value, value: Value) {
+    rt_os_environ_set(key.unwrap_ptr(), value.unwrap_ptr());
+}
+
 /// Join path components: os.path.join(path1, path2, ...)
 /// Takes a list of string path components and joins them
 pub fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
@@ -457,6 +481,21 @@ pub extern "C" fn rt_os_path_isfile_abi(path: Value) -> i8 {
     rt_os_path_isfile(path.unwrap_ptr())
 }
 
+/// Split a path into (head, tail) following CPython's posixpath.split:
+/// `i = p.rfind('/') + 1; head, tail = p[:i], p[i:]`, then rstrip '/' from
+/// head unless head is all slashes. This matches posixpath on edge cases
+/// where std::path::Path diverges: split("/x/y/") == ("/x/y", ""),
+/// dirname("/") == "/".
+fn posix_split(p: &str) -> (&str, &str) {
+    let i = p.rfind('/').map(|pos| pos + 1).unwrap_or(0);
+    let (head, tail) = p.split_at(i);
+    if !head.is_empty() && head.bytes().any(|b| b != b'/') {
+        (head.trim_end_matches('/'), tail)
+    } else {
+        (head, tail)
+    }
+}
+
 /// Get basename of path: os.path.basename(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_path_basename(path: *mut Obj) -> *mut Obj {
@@ -466,12 +505,8 @@ pub fn rt_os_path_basename(path: *mut Obj) -> *mut Obj {
         }
 
         let result = if let Some(path_str) = crate::utils::extract_str_checked(path) {
-            let path_buf = std::path::Path::new(&path_str);
-            path_buf
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string()
+            let i = path_str.rfind('/').map(|pos| pos + 1).unwrap_or(0);
+            path_str[i..].to_string()
         } else {
             String::new()
         };
@@ -493,12 +528,7 @@ pub fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
         }
 
         let result = if let Some(path_str) = crate::utils::extract_str_checked(path) {
-            let path_buf = std::path::Path::new(&path_str);
-            path_buf
-                .parent()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string()
+            posix_split(&path_str).0.to_string()
         } else {
             String::new()
         };
@@ -518,18 +548,8 @@ pub fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
         let (dirname, basename) = if path.is_null() {
             (String::new(), String::new())
         } else if let Some(path_str) = crate::utils::extract_str_checked(path) {
-            let path_buf = std::path::Path::new(&path_str);
-            let dirname = path_buf
-                .parent()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            let basename = path_buf
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            (dirname, basename)
+            let (head, tail) = posix_split(&path_str);
+            (head.to_string(), tail.to_string())
         } else {
             (String::new(), String::new())
         };

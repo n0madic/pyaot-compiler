@@ -429,6 +429,154 @@ pub extern "C" fn rt_obj_has_method(obj_ptr: *mut u8, name_hash: i64) -> i8 {
     }
 }
 
+// ==================== Field Name Registry (Phase 8H, D4) ====================
+// Maps (class_id, field_name_hash) → field slot for by-name attribute access
+// on a receiver whose static type is gradual (`Dyn`). Mirrors
+// METHOD_NAME_REGISTRY (FNV-1a-64 hashes, populated during class init).
+
+const MAX_FIELDS_PER_CLASS: usize = 64;
+
+#[derive(Copy, Clone)]
+struct FieldNameEntry {
+    name_hash: u64,
+    slot: usize,
+}
+
+#[derive(Copy, Clone)]
+struct FieldNameTable {
+    entries: [FieldNameEntry; MAX_FIELDS_PER_CLASS],
+    count: usize,
+}
+
+impl FieldNameTable {
+    const fn new() -> Self {
+        Self {
+            entries: [FieldNameEntry {
+                name_hash: 0,
+                slot: 0,
+            }; MAX_FIELDS_PER_CLASS],
+            count: 0,
+        }
+    }
+}
+
+static FIELD_NAME_REGISTRY: RegistryStorage<FieldNameTable, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new({
+        const EMPTY: FieldNameTable = FieldNameTable::new();
+        [EMPTY; MAX_CLASSES]
+    }));
+
+/// Register a field name → slot mapping for a class.
+/// Called during class initialization for every instance field.
+#[no_mangle]
+pub extern "C" fn rt_register_field_name(class_id: i64, name_hash: i64, slot: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_field_name: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
+    unsafe {
+        let registry = &mut *FIELD_NAME_REGISTRY.0.get();
+        let table = &mut registry[class_id as usize];
+        if table.count >= MAX_FIELDS_PER_CLASS {
+            eprintln!(
+                "WARNING: class {} exceeds maximum fields per class ({}), field with hash {} dropped",
+                class_id, MAX_FIELDS_PER_CLASS, name_hash
+            );
+            return;
+        }
+        table.entries[table.count] = FieldNameEntry {
+            name_hash: name_hash as u64,
+            slot: slot as usize,
+        };
+        table.count += 1;
+    }
+}
+
+/// Resolve `(instance, field name hash)` to the field slot, validating that
+/// the object really is an instance (the same guards as
+/// `rt_vtable_lookup_by_name`). `Err` carries the CPython-style message.
+unsafe fn resolve_field_slot(obj: *mut u8, name_hash: i64) -> Result<(usize, u8), ()> {
+    if obj.is_null() || (obj as usize) & 0b111 != 0 {
+        return Err(());
+    }
+    let type_tag_byte = *obj;
+    if pyaot_core_defs::TypeTagKind::from_tag(type_tag_byte)
+        != Some(pyaot_core_defs::TypeTagKind::Instance)
+    {
+        return Err(());
+    }
+    let instance = obj as *const crate::object::InstanceObj;
+    let class_id = (*instance).class_id;
+    if class_id as usize >= MAX_CLASSES {
+        return Err(());
+    }
+    let registry = &*FIELD_NAME_REGISTRY.0.get();
+    let table = &registry[class_id as usize];
+    let target_hash = name_hash as u64;
+    for i in 0..table.count {
+        if table.entries[i].name_hash == target_hash {
+            return Ok((table.entries[i].slot, class_id));
+        }
+    }
+    Err(())
+}
+
+/// Read field `name_hash` of a (dynamically-typed) instance by name.
+/// Raises `AttributeError` when the object is not an instance or has no such
+/// field — matching CPython's failure mode for `obj.missing`.
+#[no_mangle]
+pub extern "C" fn rt_getattr_name(obj: pyaot_core_defs::Value, name_hash: i64) -> pyaot_core_defs::Value {
+    unsafe {
+        let ptr = obj.0 as *mut u8;
+        match resolve_field_slot(ptr, name_hash) {
+            Ok((slot, _)) => {
+                let raw = crate::instance::rt_instance_get_field(
+                    ptr as *mut crate::object::Obj,
+                    slot as i64,
+                );
+                pyaot_core_defs::Value(raw as u64)
+            }
+            Err(()) => {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::AttributeError,
+                    "object has no attribute (by-name lookup failed)"
+                );
+            }
+        }
+    }
+}
+
+/// Write field `name_hash` of a (dynamically-typed) instance by name.
+/// Raises `AttributeError` on a non-instance or unknown field.
+#[no_mangle]
+pub extern "C" fn rt_setattr_name(
+    obj: pyaot_core_defs::Value,
+    name_hash: i64,
+    value: pyaot_core_defs::Value,
+) {
+    unsafe {
+        let ptr = obj.0 as *mut u8;
+        match resolve_field_slot(ptr, name_hash) {
+            Ok((slot, _)) => {
+                crate::instance::rt_instance_set_field(
+                    ptr as *mut crate::object::Obj,
+                    slot as i64,
+                    value.0 as i64,
+                );
+            }
+            Err(()) => {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::AttributeError,
+                    "object has no attribute (by-name assignment failed)"
+                );
+            }
+        }
+    }
+}
+
 // ==================== Dunder Function Registry ====================
 // Maps (class_id, dunder_name_hash) → function pointer. Distinct from
 // METHOD_NAME_REGISTRY (Protocol dispatch via vtable slot) because

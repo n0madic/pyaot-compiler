@@ -1,10 +1,27 @@
 //! Case conversion operations: upper, lower, title, capitalize, swapcase
+//!
+//! All conversions are Unicode-aware (Rust `char` full case mappings), which
+//! matches CPython for the common cases (Cyrillic, Greek, Latin-1, 'ß' → "SS").
+//! The source bytes are copied into a Rust `String` BEFORE any allocation, so
+//! no GC rooting is needed.
 
-use crate::gc;
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;
+
+/// Decode a StrObj's bytes to a Rust `String` (lossy on malformed UTF-8).
+unsafe fn str_obj_to_string(str_obj: *mut Obj) -> String {
+    let src = str_obj as *mut StrObj;
+    debug_assert!((*src).header.type_tag == TypeTagKind::Str);
+    let bytes = std::slice::from_raw_parts((*src).data.as_ptr(), (*src).len);
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// True iff `c` is a cased character (approximates CPython's Lu/Ll/Lt check).
+fn is_cased(c: char) -> bool {
+    c.is_lowercase() || c.is_uppercase()
+}
 
 /// Convert string to uppercase
 /// Returns: pointer to new allocated StrObj
@@ -12,27 +29,9 @@ pub fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-
-        // Allocate new string first — gc_alloc may trigger collection
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-        let new_str = obj as *mut StrObj;
-        (*new_str).len = len;
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free if src was moved
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        let dst_data = (*new_str).data.as_mut_ptr();
-        for i in 0..len {
-            let c = *src_data.add(i);
-            *dst_data.add(i) = if c.is_ascii_lowercase() { c - 32 } else { c };
-        }
-
-        obj
+        let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_uppercase()).collect();
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_upper"]
@@ -47,27 +46,9 @@ pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-
-        // Allocate new string first — gc_alloc may trigger collection
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-        let new_str = obj as *mut StrObj;
-        (*new_str).len = len;
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free if src was moved
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        let dst_data = (*new_str).data.as_mut_ptr();
-        for i in 0..len {
-            let c = *src_data.add(i);
-            *dst_data.add(i) = if c.is_ascii_uppercase() { c + 32 } else { c };
-        }
-
-        obj
+        let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_lowercase()).collect();
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_lower"]
@@ -76,41 +57,26 @@ pub extern "C" fn rt_str_lower_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_lower(str_obj.unwrap_ptr()))
 }
 
-/// Title case: first letter of each word capitalized
+/// Title case: uppercase each character that follows a non-cased character,
+/// lowercase the rest (CPython's word-boundary rule — "hello-world" →
+/// "Hello-World", not whitespace-only boundaries).
 /// Returns: new string
 pub fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = len;
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        let dst_data = (*result).data.as_mut_ptr();
-        let mut word_start = true;
-
-        for i in 0..len {
-            let c = *src_data.add(i);
-            if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
-                *dst_data.add(i) = c;
-                word_start = true;
-            } else if word_start {
-                *dst_data.add(i) = c.to_ascii_uppercase();
-                word_start = false;
+        let mut result = String::new();
+        let mut prev_cased = false;
+        for c in str_obj_to_string(str_obj).chars() {
+            if prev_cased {
+                result.extend(c.to_lowercase());
             } else {
-                *dst_data.add(i) = c.to_ascii_lowercase();
+                result.extend(c.to_uppercase());
             }
+            prev_cased = is_cased(c);
         }
-
-        obj
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_title"]
@@ -125,30 +91,16 @@ pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = len;
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        let dst_data = (*result).data.as_mut_ptr();
-
-        for i in 0..len {
-            let c = *src_data.add(i);
+        let mut result = String::new();
+        for (i, c) in str_obj_to_string(str_obj).chars().enumerate() {
             if i == 0 {
-                *dst_data.add(i) = c.to_ascii_uppercase();
+                result.extend(c.to_uppercase());
             } else {
-                *dst_data.add(i) = c.to_ascii_lowercase();
+                result.extend(c.to_lowercase());
             }
         }
-
-        obj
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_capitalize"]
@@ -163,32 +115,18 @@ pub fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = len;
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        let dst_data = (*result).data.as_mut_ptr();
-
-        for i in 0..len {
-            let c = *src_data.add(i);
-            if c.is_ascii_uppercase() {
-                *dst_data.add(i) = c.to_ascii_lowercase();
-            } else if c.is_ascii_lowercase() {
-                *dst_data.add(i) = c.to_ascii_uppercase();
+        let mut result = String::new();
+        for c in str_obj_to_string(str_obj).chars() {
+            if c.is_uppercase() {
+                result.extend(c.to_lowercase());
+            } else if c.is_lowercase() {
+                result.extend(c.to_uppercase());
             } else {
-                *dst_data.add(i) = c;
+                result.push(c);
             }
         }
-
-        obj
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_swapcase"]

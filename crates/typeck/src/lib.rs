@@ -219,7 +219,7 @@ pub fn infer(
     // **collect** — exactly once per function; only the solution (expr / local
     // types) is recomputed across rounds, never the constraint tables.
     let mut states: Vec<FuncState> =
-        module.functions.iter().map(|f| FuncState::collect(f, n_globals)).collect();
+        module.functions.iter().map(|f| FuncState::collect(f, n_globals, interner)).collect();
 
     // **solve** — chaotic iteration of the module variables (see the module
     // docs). Each round re-solves every DIRTY function FROM BOTTOM against the
@@ -588,15 +588,27 @@ fn check_repr_boundaries(
     Ok(())
 }
 
+/// True iff `t` is a Union with at least one numeric member — admissible at a
+/// checked raw-ABI boundary (Phase 8H, D3).
+fn union_has_numeric(t: &SemTy) -> bool {
+    match t {
+        SemTy::Union(ms) => {
+            ms.iter().any(|m| matches!(m, SemTy::Float | SemTy::Int | SemTy::Bool))
+        }
+        _ => false,
+    }
+}
+
 /// Validate a stdlib runtime call's args against the descriptor's declarative
 /// param `TypeSpec`s (Phase 8B). The frontend's call adaptation has already
 /// aligned `args` positionally with the descriptor params (filling defaults);
 /// absent optional slots (`None`) lower to the null-pointer sentinel and need
 /// no check. The rule per param spec:
-/// * `Float` / `Int` / `Bool` / `Str` (raw or typed-pointer ABI slots) require
-///   the exact semantic type (`Bool` is admitted where `Int` is expected,
-///   matching Python's bool ⊂ int) — a gradual `Dyn` here would make lowering
-///   emit an unchecked `Tagged → Raw` reinterpret (A2).
+/// * `Float` / `Int` (raw ABI slots) admit the numeric types, gradual `Dyn`,
+///   and numeric-containing Unions — lowering emits a CHECKED unbox for the
+///   gradual cases (Phase 8H, D3); `Bool` / `Str` require the exact semantic
+///   type (`Bool` is admitted where `Int` is expected, matching Python's
+///   bool ⊂ int).
 /// * Object specs (`StructTime`, `Match`, …) require the matching
 ///   `RuntimeObject` (or gradual `Dyn`, carried Tagged).
 /// * `Any` / `Optional` / containers are uniform tagged storage — any type.
@@ -622,8 +634,19 @@ fn check_call_runtime_args(
             continue;
         }
         let ok = match &param.ty {
-            TypeSpec::Float => matches!(got, SemTy::Float),
-            TypeSpec::Int => matches!(got, SemTy::Int | SemTy::Bool),
+            // Float/Int raw-ABI params admit gradual (`Dyn`), numeric, and
+            // numeric-containing-Union arguments (Phase 8H, D3): lowering
+            // emits a CHECKED unbox (`rt_unbox_float`/`rt_unbox_int` —
+            // TypeError on a bad tag), so the seam stays safe without an
+            // annotation. A union with NO numeric member stays a loud
+            // compile-time error.
+            TypeSpec::Float => {
+                matches!(got, SemTy::Float | SemTy::Int | SemTy::Bool | SemTy::Dyn)
+                    || union_has_numeric(got)
+            }
+            TypeSpec::Int => {
+                matches!(got, SemTy::Int | SemTy::Bool | SemTy::Dyn) || union_has_numeric(got)
+            }
             TypeSpec::Bool => matches!(got, SemTy::Bool),
             TypeSpec::Str => matches!(got, SemTy::Str),
             spec => {
@@ -916,6 +939,22 @@ struct ReadSet {
     globals: HashSet<usize>,
 }
 
+/// One write into a local slot (Phase 8H, D1). Beyond plain assignments, the
+/// element-level container writes contribute to an inferred local's type:
+/// `xs.append(v)` / comprehension pushes constrain `xs` to `list[type(v)]`.
+#[derive(Clone, Copy)]
+enum Write {
+    /// `x = value` — a whole-value assignment.
+    Val(Idx<HirExpr>),
+    /// `x.append(v)` / `x.add(v)` / `x.insert(i, v)` / comprehension
+    /// `ContainerPush` — one element pushed into the container held by `x`.
+    Push(Idx<HirExpr>),
+    /// `x.extend(it)` — every element of an iterable pushed.
+    PushIter(Idx<HirExpr>),
+    /// `x[k] = v` / dict-comprehension `ContainerInsert` — a keyed write.
+    Insert(Idx<HirExpr>, Idx<HirExpr>),
+}
+
 /// Per-function constraint state. Built ONCE by [`FuncState::collect`]; the
 /// constraint tables (`authoritative` / `assignments` / `cell_writes` /
 /// `global_writes`) are immutable afterwards, while the solution (`expr_ty` /
@@ -927,8 +966,9 @@ struct FuncState {
     /// The solution bottom per local: the declared type for authoritative
     /// locals, `Never` otherwise — what `reset` restores before a re-solve.
     local_bottom: Vec<SemTy>,
-    /// Value expressions assigned to each local, indexed by `LocalId`.
-    assignments: Vec<Vec<Idx<HirExpr>>>,
+    /// Writes into each local, indexed by `LocalId`: whole-value assignments
+    /// plus element-level container writes (Phase 8H, D1).
+    assignments: Vec<Vec<Write>>,
     /// Value expressions written into the cell held by each local (`CellSet`
     /// plus the `MakeCell` init), indexed by the cell local's `LocalId` — the
     /// per-cell constraint of Phase 6A (the B10 field-join shape).
@@ -949,7 +989,7 @@ struct FuncState {
 
 impl FuncState {
     /// **collect** — seed the assignment tables and the authoritative-local set.
-    fn collect(func: &HirFunction, n_globals: usize) -> Self {
+    fn collect(func: &HirFunction, n_globals: usize, interner: &StringInterner) -> Self {
         let n = func.locals.len();
         // A frontend type other than `Dyn` is authoritative: it comes from a
         // parameter annotation, a `name: T` annotation, or a synthetic local the
@@ -964,14 +1004,24 @@ impl FuncState {
             .map(|(i, l)| if authoritative[i] { l.ty.clone() } else { SemTy::Never })
             .collect();
 
-        let mut assignments: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n];
+        // A direct read of a local — the only receiver shape whose container
+        // writes can soundly be attributed back to the slot (an alias through
+        // another local contributes to THAT local instead).
+        let direct_local = |e: Idx<HirExpr>| -> Option<usize> {
+            match func.exprs[e].kind {
+                HirExprKind::Local(lid) => Some(lid.index()),
+                _ => None,
+            }
+        };
+
+        let mut assignments: Vec<Vec<Write>> = vec![Vec::new(); n];
         let mut cell_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n];
         let mut global_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n_globals];
         for (_bidx, block) in func.blocks.iter() {
             for stmt in &block.stmts {
                 match stmt {
                     HirStmt::Assign { target, value } => {
-                        assignments[target.index()].push(*value);
+                        assignments[target.index()].push(Write::Val(*value));
                         // A `MakeCell` init is the cell's first write.
                         if let HirExprKind::MakeCell { init: Some(i) } = func.exprs[*value].kind {
                             cell_writes[target.index()].push(i);
@@ -982,6 +1032,40 @@ impl FuncState {
                     }
                     HirStmt::GlobalSet { var_id, value } => {
                         global_writes[*var_id as usize].push(*value);
+                    }
+                    // ── element-level container writes (Phase 8H, D1) ──
+                    HirStmt::ContainerPush { container, value } => {
+                        assignments[container.index()].push(Write::Push(*value));
+                    }
+                    HirStmt::ContainerInsert { container, key, value } => {
+                        assignments[container.index()].push(Write::Insert(*key, *value));
+                    }
+                    HirStmt::SetItem { base, index, value } => {
+                        if let Some(i) = direct_local(*base) {
+                            assignments[i].push(Write::Insert(*index, *value));
+                        }
+                    }
+                    // `xs.append(v)` / `s.add(v)` / `xs.insert(i, v)` /
+                    // `xs.extend(it)` as a statement-expression on a direct local.
+                    HirStmt::Expr(e) => {
+                        if let HirExprKind::MethodCall { recv, method_name, args } =
+                            &func.exprs[*e].kind
+                        {
+                            if let Some(i) = direct_local(*recv) {
+                                match (interner.resolve(*method_name), args.as_slice()) {
+                                    ("append" | "add", [v]) => {
+                                        assignments[i].push(Write::Push(*v));
+                                    }
+                                    ("insert", [_, v]) => {
+                                        assignments[i].push(Write::Push(*v));
+                                    }
+                                    ("extend", [it]) => {
+                                        assignments[i].push(Write::PushIter(*it));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1047,6 +1131,68 @@ impl FuncState {
             if !uniform {
                 return SemTy::Dyn;
             }
+        }
+        joined
+    }
+
+    /// Join a local's writes — whole-value assignments plus the element-level
+    /// container writes (Phase 8H, D1). The base comes from the `Val` writes
+    /// (with the Raw-uniformity guard); each push then contributes
+    /// `list_of/set_of/dict_of(elem)` in the base's container family. A
+    /// `Never` base (seed literal not evaluated yet) stays bottom — monotone;
+    /// a `Dyn` base absorbs the pushes outright.
+    fn join_local_writes(&self, writes: &[Write]) -> SemTy {
+        let vals: Vec<Idx<HirExpr>> =
+            writes.iter().filter_map(|w| match w { Write::Val(v) => Some(*v), _ => None }).collect();
+        let base = self.join_writes(&vals);
+        if base == SemTy::Never || base == SemTy::Dyn {
+            return base;
+        }
+        let is_list = base.list_elem().is_some();
+        let is_set = base.set_elem().is_some();
+        let is_dict = base.dict_kv().is_some();
+        // A non-container base ignores the element writes outright: a `.add()`
+        // / `.append()` on a class instance is a USER method, and a `[k] = v`
+        // on it is `__setitem__` — neither says anything about the slot type.
+        if !is_list && !is_set && !is_dict {
+            return base;
+        }
+        let mut joined = base;
+        for w in writes {
+            let contrib = match w {
+                Write::Val(_) => continue,
+                Write::Push(v) => {
+                    let e = self.ety(*v);
+                    if is_list {
+                        SemTy::list_of(e)
+                    } else if is_set {
+                        SemTy::set_of(e)
+                    } else {
+                        continue; // dict has no push
+                    }
+                }
+                Write::PushIter(it) => {
+                    let e = iter_elem_ty(&self.ety(*it));
+                    if is_list {
+                        SemTy::list_of(e)
+                    } else if is_set {
+                        SemTy::set_of(e)
+                    } else {
+                        continue;
+                    }
+                }
+                Write::Insert(k, v) => {
+                    if is_dict {
+                        SemTy::dict_of(self.ety(*k), self.ety(*v))
+                    } else if is_list {
+                        // `xs[i] = v` constrains the element type only.
+                        SemTy::list_of(self.ety(*v))
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            joined = joined.join(&contrib);
         }
         joined
     }
@@ -1116,7 +1262,7 @@ impl<'a> Sweeper<'a> {
                 }
                 // Recompute the local from its assigned values, applying the
                 // `Raw`-repr soundness guard (see the module docs).
-                let new = self.st.join_writes(&self.st.assignments[i]);
+                let new = self.st.join_local_writes(&self.st.assignments[i]);
                 if self.st.local_ty[i] != new {
                     self.st.local_ty[i] = new;
                     changed = true;
@@ -1164,6 +1310,44 @@ impl<'a> Sweeper<'a> {
             HirExprKind::BinOp { op, l, r } => self.binop_ty(*op, self.ety(*l), self.ety(*r)),
             HirExprKind::Call { callee, args } => self.call_ty(*callee, args),
             // ── containers (Phase 4) ──
+            // `sum(iterable[, start])` (Phase 8H, D2). Class elements with
+            // `__add__`/`__radd__` take the join of the inferred dunder returns
+            // (rides the ret_ty fixpoint via `callee_ret_ty`); numeric elements
+            // promote (any Float contributor → Float, else Int); anything else
+            // is gradual `Dyn`. `Never` propagates while operands are unsolved.
+            HirExprKind::Sum { iterable, start } => {
+                let it = self.ety(*iterable);
+                if it == SemTy::Never {
+                    return SemTy::Never;
+                }
+                let elem = iter_elem_ty(&it);
+                let start_ty = match start {
+                    Some(s) => self.ety(*s),
+                    None => SemTy::Int,
+                };
+                if elem == SemTy::Never || start_ty == SemTy::Never {
+                    return SemTy::Never;
+                }
+                if class_of(&elem, self.classes).is_some() {
+                    let mut joined = SemTy::Never;
+                    for d in ["__add__", "__radd__"] {
+                        if let Some(t) = self.class_dunder_ret(&elem, d) {
+                            joined = joined.join(&t);
+                        }
+                    }
+                    return if joined == SemTy::Never { SemTy::Dyn } else { joined };
+                }
+                let numeric = |t: &SemTy| matches!(t, SemTy::Int | SemTy::Float | SemTy::Bool);
+                if numeric(&elem) && numeric(&start_ty) {
+                    if elem == SemTy::Float || start_ty == SemTy::Float {
+                        SemTy::Float
+                    } else {
+                        SemTy::Int
+                    }
+                } else {
+                    SemTy::Dyn
+                }
+            }
             HirExprKind::ListLit { elems } => SemTy::list_of(self.join_all(elems)),
             HirExprKind::SetLit { elems } => SemTy::set_of(self.join_all(elems)),
             HirExprKind::TupleLit { elems } => {
@@ -1353,6 +1537,13 @@ impl<'a> Sweeper<'a> {
     /// (instance / static / class) declared return; a container receiver resolves
     /// the name to a [`ContainerMethod`] and reuses the Phase-4D [`method_ty`].
     fn method_call_ty(&self, recv: SemTy, method_name: InternedString) -> SemTy {
+        // `Never` is the in-progress bottom (the receiver's type is not yet
+        // solved this sweep) — stay `Never`; jumping to `Dyn` here would
+        // absorb through a self-referential constraint (`x = [xi.m() for xi
+        // in x]`) and poison the receiver irreversibly (PITFALLS A2/B6).
+        if recv == SemTy::Never {
+            return SemTy::Never;
+        }
         if let Some(cid) = class_of(&recv, self.classes) {
             let ret = self
                 .classes
@@ -1373,9 +1564,10 @@ impl<'a> Sweeper<'a> {
         // the full str-method surface lands with 8E).
         if matches!(recv, SemTy::Str) {
             match self.interner.resolve(method_name) {
-                "upper" | "lower" | "strip" => return SemTy::Str,
+                "upper" | "lower" | "strip" | "title" | "capitalize" | "swapcase" | "zfill"
+                | "center" | "ljust" | "rjust" => return SemTy::Str,
                 "startswith" | "endswith" => return SemTy::Bool,
-                "find" => return SemTy::Int,
+                "find" | "rfind" | "index" | "count" => return SemTy::Int,
                 _ => {}
             }
         }
@@ -1408,6 +1600,10 @@ impl<'a> Sweeper<'a> {
     /// `@property` getter's return, an instance field's best-effort type (D5), or
     /// a class attribute's type; `Dyn` for an unknown receiver/attribute.
     fn attribute_ty(&self, recv: SemTy, name: InternedString) -> SemTy {
+        // In-progress bottom receiver: propagate `Never` (see method_call_ty).
+        if recv == SemTy::Never {
+            return SemTy::Never;
+        }
         // `e.args` on a caught builtin exception — or a tuple clause of only
         // builtins — (Phase 7B): the args tuple. Typed `Dyn` (not
         // `tuple[Dyn, ...]`) so a user annotation like `args: tuple[str]` is
@@ -1863,6 +2059,9 @@ fn iter_elem_raw(t: &SemTy) -> SemTy {
         SemTy::Str => SemTy::Str,
         SemTy::Bytes => SemTy::Int,
         SemTy::Iterator(e) => (**e).clone(),
+        // Iterating a file yields its lines (Phase 8H). Binary mode is out of
+        // scope — `for b in open(p, "rb")` would need bytes lines.
+        SemTy::File { binary: false } => SemTy::Str,
         SemTy::Never => SemTy::Never,
         _ => SemTy::Dyn,
     }

@@ -6,8 +6,23 @@ use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::slice_utils::{normalize_slice_indices, slice_length};
 use pyaot_core_defs::Value;
 
+/// Collect the byte offset of every codepoint start in `data[..byte_len]`.
+/// `offsets[i]` is where the i-th character begins; a trailing `byte_len`
+/// entry is appended so `offsets[i+1]` is always the exclusive byte end.
+unsafe fn codepoint_offsets(data: *const u8, byte_len: usize) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(byte_len + 1);
+    let mut i = 0usize;
+    while i < byte_len {
+        offsets.push(i);
+        i += utf8_char_width(*data.add(i));
+    }
+    offsets.push(byte_len);
+    offsets
+}
+
 /// Slice a string: s[start:end]
-/// Negative indices are supported (counted from end)
+/// `start`/`end` are Unicode codepoint indices (CPython semantics); negative
+/// indices are supported (counted from the end in characters).
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated StrObj
 pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
@@ -19,11 +34,20 @@ pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
 
     unsafe {
         let src = str_obj as *mut StrObj;
-        let len = (*src).len as i64;
+        let byte_len = (*src).len;
+        let data = (*src).data.as_ptr();
 
-        // Normalize indices using shared utility (step=1 for simple slice)
-        let (start, end) = normalize_slice_indices(start, end, len, 1);
-        let slice_len = slice_length(start, end);
+        let offsets = codepoint_offsets(data, byte_len);
+        let char_len = (offsets.len() - 1) as i64;
+
+        // Normalize indices in CHARACTER space (step=1 for simple slice).
+        let (start, end) = normalize_slice_indices(start, end, char_len, 1);
+        let char_count = slice_length(start, end);
+
+        // Convert the character range to a byte range.
+        let byte_start = offsets[start as usize];
+        let byte_end = offsets[(start as usize) + char_count];
+        let slice_len = byte_end - byte_start;
 
         // Root str_obj across gc_alloc which may trigger a collection.
         let mut roots: [*mut Obj; 1] = [str_obj];
@@ -45,7 +69,7 @@ pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
         if slice_len > 0 {
             let src = str_obj as *mut StrObj;
             ptr::copy_nonoverlapping(
-                (*src).data.as_ptr().add(start as usize),
+                (*src).data.as_ptr().add(byte_start),
                 (*new_str).data.as_mut_ptr(),
                 slice_len,
             );
@@ -69,32 +93,38 @@ pub extern "C" fn rt_str_slice_abi(str_obj: Value, start: i64, end: i64) -> Valu
 ///
 /// Returns: pointer to new allocated StrObj
 pub fn rt_str_slice_step(str_obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
-    if str_obj.is_null() || step == 0 {
+    if step == 0 {
+        unsafe {
+            raise_exc!(
+                exceptions::ExceptionType::ValueError,
+                "slice step cannot be zero"
+            );
+        }
+    }
+    if str_obj.is_null() {
         return std::ptr::null_mut();
     }
 
     unsafe {
         let src = str_obj as *mut StrObj;
-        let len = (*src).len as i64;
-
-        // Normalize indices using shared utility
-        let (start, end) = normalize_slice_indices(start, end, len, step);
-
-        // Collect characters at step indices (pre-copy data before gc_alloc)
-        let mut result_chars = Vec::new();
+        let byte_len = (*src).len;
         let src_data = (*src).data.as_ptr();
 
-        if step > 0 {
-            let mut i = start;
-            while i < end {
-                result_chars.push(*src_data.add(i as usize));
-                i += step;
-            }
-        } else {
-            let mut i = start;
-            while i > end {
-                result_chars.push(*src_data.add(i as usize));
-                i += step;
+        // Step over CODEPOINTS, not bytes (CPython semantics — covers [::-1]
+        // reversal of multi-byte text).
+        let offsets = codepoint_offsets(src_data, byte_len);
+        let char_len = (offsets.len() - 1) as i64;
+
+        let (start, end) = normalize_slice_indices(start, end, char_len, step);
+        let char_indices = crate::slice_utils::collect_step_indices(start, end, step);
+
+        // Pre-copy the selected codepoints' bytes before gc_alloc.
+        let mut result_chars = Vec::new();
+        for ci in char_indices {
+            let b0 = offsets[ci];
+            let b1 = offsets[ci + 1];
+            for b in b0..b1 {
+                result_chars.push(*src_data.add(b));
             }
         }
 

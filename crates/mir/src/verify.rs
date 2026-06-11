@@ -312,7 +312,7 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 return Err(VerifyError::ReprMismatch { ctx: "Const dst", expected, actual: repr.clone() });
             }
         }
-        MirInst::Coerce { dst, src, from, to } => {
+        MirInst::Coerce { dst, src, from, to, checked } => {
             check_local(f, *dst)?;
             check_operand(f, src)?;
             let src_repr = f.operand_repr(src);
@@ -331,7 +331,18 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                     actual: dst_repr.clone(),
                 });
             }
-            if classify_coercion(from, to).is_none() {
+            if *checked {
+                // A checked (runtime-validated) unbox is legal ONLY for the two
+                // stdlib raw-ABI boundary shapes (Phase 8H, D3).
+                let legal = *from == Repr::Tagged
+                    && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
+                if !legal {
+                    return Err(VerifyError::IllegalCoercion {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
+            } else if classify_coercion(from, to).is_none() {
                 return Err(VerifyError::IllegalCoercion { from: from.clone(), to: to.clone() });
             }
         }
@@ -428,6 +439,18 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             check_operand(f, base)?;
             want_instance_base(f, base, "SetField.base")?;
             want(f, value, &TAGGED, "SetField.value")?;
+        }
+        // By-name field access on a `Dyn` receiver (Phase 8H, D4): everything
+        // rides Tagged — the runtime validates the instance shape itself.
+        MirInst::GetFieldNamed { dst, base, name_hash: _ } => {
+            check_operand(f, base)?;
+            want(f, base, &TAGGED, "GetFieldNamed.base")?;
+            want_local(f, *dst, &TAGGED, "GetFieldNamed.dst")?;
+        }
+        MirInst::SetFieldNamed { base, name_hash: _, value } => {
+            check_operand(f, base)?;
+            want(f, base, &TAGGED, "SetFieldNamed.base")?;
+            want(f, value, &TAGGED, "SetFieldNamed.value")?;
         }
         MirInst::CallVirtual { dst, recv, args, ret, .. } => {
             check_operand(f, recv)?;
@@ -796,6 +819,7 @@ mod tests {
                     src: Operand::Local(LocalId::new(0)),
                     from: Repr::Heap(HeapShape::Str),
                     to: Repr::Tagged,
+                    checked: false,
                 },
                 MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(LocalId::new(1))) },
                 MirInst::Print { kind: PrintKind::Newline, arg: None },
@@ -972,6 +996,68 @@ mod tests {
     }
 
     #[test]
+    fn checked_coerce_legal_only_for_raw_unbox_shapes() {
+        // Phase 8H, D3: `checked: true` is legal for (Tagged, Raw(F64)) /
+        // (Tagged, Raw(I64)) and nothing else.
+        let ok = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
+            vec![MirInst::Coerce {
+                dst: LocalId::new(1),
+                src: Operand::Local(LocalId::new(0)),
+                from: Repr::Tagged,
+                to: Repr::Raw(RawKind::F64),
+                checked: true,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&ok, &[]), Ok(()));
+        let bad = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::I8)],
+            vec![MirInst::Coerce {
+                dst: LocalId::new(1),
+                src: Operand::Local(LocalId::new(0)),
+                from: Repr::Tagged,
+                to: Repr::Raw(RawKind::I8),
+                checked: true,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(verify(&bad, &[]), Err(VerifyError::IllegalCoercion { .. })));
+    }
+
+    #[test]
+    fn named_field_insts_ride_tagged() {
+        // Phase 8H, D4: GetFieldNamed/SetFieldNamed take Tagged base/dst/value.
+        let ok = single_block(
+            vec![Repr::Tagged, Repr::Tagged],
+            vec![
+                MirInst::GetFieldNamed {
+                    dst: LocalId::new(1),
+                    base: Operand::Local(LocalId::new(0)),
+                    name_hash: 42,
+                },
+                MirInst::SetFieldNamed {
+                    base: Operand::Local(LocalId::new(0)),
+                    name_hash: 42,
+                    value: Operand::Local(LocalId::new(1)),
+                },
+            ],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&ok, &[]), Ok(()));
+        let bad = single_block(
+            vec![Repr::Raw(RawKind::I64), Repr::Tagged],
+            vec![MirInst::GetFieldNamed {
+                dst: LocalId::new(1),
+                base: Operand::Local(LocalId::new(0)),
+                name_hash: 42,
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(verify(&bad, &[]).is_err());
+    }
+
+    #[test]
     fn rejects_illegal_coercion() {
         // A raw float ↔ raw int reinterpretation is not in the legality table.
         let f = single_block(
@@ -981,6 +1067,7 @@ mod tests {
                 src: Operand::Local(LocalId::new(0)),
                 from: Repr::Raw(RawKind::F64),
                 to: Repr::Raw(RawKind::I64),
+                checked: false,
             }],
             MirTerminator::Return(None),
         );

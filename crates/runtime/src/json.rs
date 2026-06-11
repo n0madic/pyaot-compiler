@@ -200,7 +200,8 @@ pub unsafe extern "C" fn rt_json_dumps(obj: *mut Obj) -> *mut Obj {
             // Note: This simple approach only works for JSON without strings containing , or :
             // but serde_json's compact output is predictable enough for this to work
             let formatted = add_json_spaces(&s);
-            make_str_from_rust(&formatted)
+            let escaped = escape_non_ascii(&formatted);
+            make_str_from_rust(&escaped)
         }
         Err(e) => {
             raise_exc!(
@@ -241,6 +242,27 @@ fn add_json_spaces(s: &str) -> String {
         }
     }
 
+    result
+}
+
+/// Escape non-ASCII characters as \uXXXX (CPython json.dumps ensure_ascii=True).
+/// Codepoints above U+FFFF are emitted as UTF-16 surrogate pairs.
+/// Non-ASCII can only occur inside JSON string literals, so a global pass is safe.
+fn escape_non_ascii(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_string();
+    }
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) <= 0x7F {
+            result.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                result.push_str(&format!("\\u{:04x}", unit));
+            }
+        }
+    }
     result
 }
 

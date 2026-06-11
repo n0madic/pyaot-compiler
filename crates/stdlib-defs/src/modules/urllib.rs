@@ -51,7 +51,7 @@ pub static QUOTE: StdlibFunctionDef = StdlibFunctionDef {
     runtime_name: "rt_quote",
     params: &[
         ParamDef::required("string", TypeSpec::Str),
-        ParamDef::optional_with_default("safe", TypeSpec::Str, ConstValue::Str("")),
+        ParamDef::optional_with_default("safe", TypeSpec::Str, ConstValue::Str("/")),
     ],
     return_type: TypeSpec::Str,
     min_args: 1,

@@ -84,10 +84,20 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
                 }
 
                 let result = rt_str_getchar((*iter).source, idx);
+                let data = (*str_obj).data.as_ptr();
                 if reversed {
-                    (*iter).index -= 1;
+                    // Step back to the start of the previous codepoint, skipping
+                    // UTF-8 continuation bytes (10xxxxxx). Index -1 marks exhaustion.
+                    let mut prev = idx - 1;
+                    while prev > 0 && (*data.add(prev as usize) & 0xC0) == 0x80 {
+                        prev -= 1;
+                    }
+                    (*iter).index = prev;
                 } else {
-                    (*iter).index += 1;
+                    // Advance by the full UTF-8 width of the current codepoint.
+                    let width =
+                        crate::string::slice::utf8_char_width(*data.add(idx as usize)) as i64;
+                    (*iter).index = idx + width;
                 }
                 result
             }

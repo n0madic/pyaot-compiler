@@ -51,13 +51,29 @@ pub unsafe fn rt_format(value: *mut Obj, spec: *mut Obj) -> *mut Obj {
     };
 
     let v = Value(value as u64);
+    // An int/bool with a float presentation type formats as a float in CPython
+    // (f"{3:.2f}" == "3.00", f"{True:.2f}" == "1.00").
+    let float_type_char = matches!(
+        format_spec.type_spec,
+        Some('e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%')
+    );
     let formatted = if v.is_int() {
-        match fmt::format_int(v.unwrap_int(), &format_spec) {
+        let r = if float_type_char {
+            fmt::format_float(v.unwrap_int() as f64, &format_spec)
+        } else {
+            fmt::format_int(v.unwrap_int(), &format_spec)
+        };
+        match r {
             Ok(s) => s,
             Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
         }
     } else if v.is_bool() {
-        match fmt::format_bool(v.unwrap_bool(), &format_spec) {
+        let r = if float_type_char {
+            fmt::format_float(if v.unwrap_bool() { 1.0 } else { 0.0 }, &format_spec)
+        } else {
+            fmt::format_bool(v.unwrap_bool(), &format_spec)
+        };
+        match r {
             Ok(s) => s,
             Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
         }

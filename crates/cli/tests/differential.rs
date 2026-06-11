@@ -143,6 +143,44 @@ const PHASE_CORPUS: &[&str] = &[
     // frozen runtime, which dereferenced it without a guard — SEGVs + silent
     // wrong values. Also `list.index(missing)` now raises `ValueError`.
     "p8g_seam_safety.py",
+    // Phase 8H stage A — stdlib edge-case parity: urlencode str()-ifies non-str
+    // values (was a tagged-int deref SEGV), posixpath-exact basename/dirname,
+    // quote's safe="/" default, json.dumps ensure_ascii, slice step=0 ->
+    // ValueError, int/bool with float presentation types, and the CPython
+    // __str__ of HTTPError/URLError.
+    "p8h_stdlib_edges.py",
+    // Phase 8H stage B — codepoint-correct string model: len/subscript/slices/
+    // step-slices/iteration/reversed walk Unicode codepoints (not bytes),
+    // upper/lower/title/capitalize/swapcase use full char case mappings, and
+    // center/ljust/rjust/zfill widths count characters.
+    "p8h_unicode.py",
+    // Phase 8H stage C — front-half: module-level lambda defaults via the
+    // synthetic-def desugar (known-callee kwargs/defaults for free), `for line
+    // in f:` over a File VARIABLE (lowering expands Iter(File) through
+    // rt_file_readlines), and os.environ writes through rt_os_environ_set
+    // (visible to getenv / environ reads; a plain SetItem wrote into a fresh
+    // snapshot and was lost).
+    "p8h_lang.py",
+    // Phase 8H D1 — element-type inference from container pushes: comprehension
+    // results and append/add/insert/extend/setitem-built containers solve to
+    // precise element types (list[float], dict[int, float], …) instead of
+    // pinning `…[Dyn]`, keeping downstream numeric code specialized.
+    "p8h_comp_elem.py",
+    // Phase 8H D2 — sum() through the typed HIR node: numeric promotion
+    // (int/float/bool), inferred __add__/__radd__ returns for class elements,
+    // generator arguments materialized as list comprehensions, and a single
+    // Tagged-accumulator loop expanded at lowering.
+    "p8h_sum.py",
+    // Phase 8H D3 — checked Dyn->Raw unbox at stdlib raw-ABI boundaries:
+    // gradual/numeric args reach math.* raw params through rt_unbox_float /
+    // rt_unbox_int (TypeError on a bad tag) while proven types keep the
+    // unchecked fast path.
+    "p8h_checked_unbox.py",
+    // Phase 8H D4 — by-name field access on a Dyn receiver: fields resolve at
+    // runtime through the FIELD_NAME_REGISTRY (rt_getattr_name/rt_setattr_name,
+    // AttributeError on a miss/non-instance); sum() over class elements rides
+    // the inferred __add__ returns. Method calls on Dyn stay a loud error.
+    "p8h_dyn_attr.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

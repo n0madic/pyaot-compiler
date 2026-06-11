@@ -300,6 +300,15 @@ pub enum HirExprKind {
     /// Lowers to `rt_format(value, spec)`; the result is always a `str`. Any
     /// `!s`/`!r` conversion is already applied to `value` by the frontend.
     FormatValue { value: Idx<HirExpr>, spec: InternedString },
+    /// `sum(iterable[, start])` (Phase 8H, D2). Typed by `typeck` (numeric
+    /// promotion / inferred `__add__`/`__radd__` dunder returns ride the
+    /// fixpoint); EXPANDED by `lowering` into a Tagged-accumulator iterator
+    /// loop — never reaches MIR. A generator-expression argument was already
+    /// materialized into a list comprehension by the frontend.
+    Sum {
+        iterable: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+    },
     /// A frontend-synthesized container operation (`x in y` → `Contains`; the
     /// for-loop iterator protocol → `Iter`/`IterNext`/`IterExhausted`). Container
     /// *builtins* called by name (`len`/`enumerate`/`zip`/…) instead flow through

@@ -643,17 +643,23 @@ print(apply(lambda x: x))
 }
 
 #[test]
-fn stdlib_raw_param_rejects_gradual_arg() {
-    // A stdlib descriptor's raw-ABI Float param (Phase 8B) must reject a
-    // gradual `Dyn` argument — lowering would otherwise emit an unchecked
-    // `Tagged → Raw(F64)` reinterpret of a possibly-non-float Value.
-    let src = "\
+fn stdlib_raw_param_admits_gradual_arg_via_checked_unbox() {
+    // Phase 8H, D3: a gradual argument at a raw-ABI Float param is ADMITTED —
+    // lowering emits the CHECKED `rt_unbox_float` (TypeError on a bad tag)
+    // instead of a blind reinterpret. A statically NON-numeric argument is
+    // still a loud compile error.
+    let ok = "\
 import math
 def f(x):
     return x
 print(math.sqrt(f(2)))
 ";
-    assert!(try_infer(src).is_err());
+    assert!(try_infer(ok).is_ok());
+    let bad = "\
+import math
+print(math.sqrt(\"nope\"))
+";
+    assert!(try_infer(bad).is_err());
 }
 
 // ── cross-function return / global variables of the constraint system ──
@@ -830,6 +836,54 @@ import math
 a: float = math.sqrt(4.0)
 b: int = math.ceil(3.2)
 print(a, b)
+";
+    assert!(try_infer(src).is_ok());
+}
+
+#[test]
+fn container_element_types_infer_from_pushes() {
+    // Phase 8H, D1: `acc = []` + `acc.append(<float>)` solves the local to
+    // list[float] — pushes constrain the element type.
+    let src = "\
+acc = []
+for i in range(3):
+    acc.append(i * 0.5)
+print(acc[1])
+";
+    let mut interner = StringInterner::new();
+    let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
+    let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
+    let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
+    let classes =
+        pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
+    infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    let main = main_fn(&module);
+    assert!(
+        main.locals.iter().any(|l| l.ty == SemTy::list_of(SemTy::Float)),
+        "append-built list solves to list[float], got {:?}",
+        main.locals.iter().map(|l| l.ty.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn sum_types_from_numeric_promotion() {
+    // Phase 8H, D2: sum over floats solves Float; over ints solves Int — so
+    // annotated consumers accept the results without casts.
+    let src = "\
+a: float = sum([0.5, 1.5])
+b: int = sum([1, 2, 3])
+print(a, b)
+";
+    assert!(try_infer(src).is_ok());
+}
+
+#[test]
+fn comp_element_type_infers_from_pushes() {
+    // Phase 8H, D1: a list comprehension's element type comes from the
+    // desugared pushes, so the result feeds an annotated list[float] slot.
+    let src = "\
+xs: list[float] = [i * 0.5 for i in range(4)]
+print(xs[2])
 ";
     assert!(try_infer(src).is_ok());
 }

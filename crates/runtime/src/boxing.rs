@@ -66,6 +66,42 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
     rt_unbox_float(obj.unwrap_ptr())
 }
 
+/// Unbox an int from a Tagged Value at a CHECKED stdlib raw-ABI boundary
+/// (Phase 8H, D3): a tagged fixnum unwraps, a bool converts to 0/1, a heap
+/// `BigInt` truncates to its low 64 bits (the same wrapping semantics a
+/// fixnum `UntagInt` shift would give), anything else raises `TypeError`.
+#[export_name = "rt_unbox_int"]
+pub extern "C" fn rt_unbox_int_abi(v: Value) -> i64 {
+    use crate::object::BigIntObj;
+    if v.is_int() {
+        return v.unwrap_int();
+    }
+    if v.is_bool() {
+        return if v.unwrap_bool() { 1 } else { 0 };
+    }
+    let obj: *mut Obj = v.unwrap_ptr();
+    unsafe {
+        if obj.is_null() {
+            raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "an integer is required, got NoneType"
+            );
+        }
+        let tag = (*obj).header.type_tag;
+        if tag == TypeTagKind::BigInt {
+            let big = &(*(obj as *mut BigIntObj)).value;
+            let (sign, digits) = big.to_u64_digits();
+            let low = digits.first().copied().unwrap_or(0) as i64;
+            return if sign == num_bigint::Sign::Minus { low.wrapping_neg() } else { low };
+        }
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "an integer is required, got {}",
+            tag.type_name()
+        );
+    }
+}
+
 /// Box None as a heap-allocated NoneObj
 /// Used for Union types when the value is None
 pub fn rt_box_none() -> *mut Obj {

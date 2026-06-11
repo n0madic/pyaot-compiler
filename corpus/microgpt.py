@@ -8,12 +8,11 @@ CPython, so the differential gate stays byte-exact):
   * the dataset is a fixed in-file list instead of a downloaded names.txt
     (drops the network branch);
   * `random.choices(list(range(n)), ...)` (list population, not a bare range);
-  * the autograd `matrix` lambda is a `def`, and `backward` uses an explicit
-    work-stack instead of a nested recursive helper;
-  * reductions that must stay typed `Value` (for a later `.backward()` /
-    attribute access) are written as annotated loops rather than `sum(...)`;
-  * loop/sequence locals carry `Value` annotations so attribute/method access
-    type-checks.
+  * `backward` uses an explicit work-stack instead of a nested recursive
+    helper.
+Reductions are plain `sum(...)`, `matrix` is the original lambda with a
+default, and locals are unannotated — element types, sum results, and
+dynamic field access are inferred/dispatched by the compiler (Phase 8H).
 Everything numeric is real stdlib (`math.log/exp`, `random.gauss/shuffle/
 choices` — the runtime MT19937 + libm match CPython bit-for-bit).
 """
@@ -60,10 +59,10 @@ class Value:
         return Value(self.data ** other, (self,), (other * self.data ** (other - 1), ))
 
     def log(self):
-        return Value(math.log(float(self.data)), (self,), (1.0 / self.data, ))
+        return Value(math.log(self.data), (self,), (1.0 / self.data, ))
 
     def exp(self):
-        ev = math.exp(float(self.data))
+        ev = math.exp(self.data)
         return Value(ev, (self,), (ev, ))
 
     def relu(self):
@@ -93,13 +92,13 @@ class Value:
     def backward(self):
         # Topological order via an explicit work-stack (states: 0 = entered,
         # 1 = children pushed → emit on the way up).
-        topo: list[Value] = []
-        visited: set[Value] = set()
-        stack: list[Value] = [self]
-        states: list[int] = [0]
+        topo = []
+        visited = set()
+        stack = [self]
+        states = [0]
         while len(stack) > 0:
-            top: int = len(stack) - 1
-            node: Value = stack[top]
+            top = len(stack) - 1
+            node = stack[top]
             if states[top] == 0:
                 if node in visited:
                     stack.pop()
@@ -109,7 +108,7 @@ class Value:
                 states[top] = 1
                 kids = node._children
                 for ki in range(len(kids)):
-                    child: Value = kids[ki]
+                    child = kids[ki]
                     if child not in visited:
                         stack.append(child)
                         states.append(0)
@@ -119,12 +118,12 @@ class Value:
                 topo.append(node)
         self.grad = 1.0
         for ti in range(len(topo) - 1, -1, -1):
-            v: Value = topo[ti]
+            v = topo[ti]
             kids2 = v._children
             grads = v._local_grads
             for ci in range(len(kids2)):
-                child2: Value = kids2[ci]
-                child2.grad = child2.grad + float(grads[ci]) * v.grad
+                child2 = kids2[ci]
+                child2.grad = child2.grad + grads[ci] * v.grad
 
 
 # Parameters. (A small config keeps the differential gate fast under the debug
@@ -137,8 +136,7 @@ n_head = 2
 head_dim = n_embd // n_head
 
 
-def matrix(nout: int, nin: int, std: float = 0.08) -> list[list[Value]]:
-    return [[Value(random.gauss(0.0, std)) for _ in range(nin)] for _ in range(nout)]
+matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0.0, std)) for _ in range(nin)] for _ in range(nout)]
 
 
 state_dict: dict[str, list[list[Value]]] = {
@@ -164,13 +162,7 @@ print(f"num params: {len(params)}")
 
 # Model: tokens + parameters -> logits over what comes next.
 def linear(x: list[Value], w: list[list[Value]]) -> list[Value]:
-    out: list[Value] = []
-    for wo in w:
-        acc: Value = wo[0] * x[0]
-        for j in range(1, len(x)):
-            acc = acc + wo[j] * x[j]
-        out.append(acc)
-    return out
+    return [sum(wo[j] * x[j] for j in range(len(x))) for wo in w]
 
 
 def softmax(logits: list[Value]) -> list[Value]:
@@ -178,20 +170,13 @@ def softmax(logits: list[Value]) -> list[Value]:
     for lv in logits:
         if lv.data > max_val:
             max_val = lv.data
-    exps: list[Value] = []
-    for val in logits:
-        exps.append((val - max_val).exp())
-    total: Value = exps[0]
-    for ei in range(1, len(exps)):
-        total = total + exps[ei]
+    exps = [(val - max_val).exp() for val in logits]
+    total = sum(exps)
     return [e / total for e in exps]
 
 
 def rmsnorm(x: list[Value]) -> list[Value]:
-    ms_sum: Value = x[0] * x[0]
-    for mi in range(1, len(x)):
-        ms_sum = ms_sum + x[mi] * x[mi]
-    ms = ms_sum * (1.0 / len(x))
+    ms = sum(xi * xi for xi in x) * (1.0 / len(x))
     scale = (ms + 1e-5) ** -0.5
     return [xi * scale for xi in x]
 
@@ -200,9 +185,7 @@ def gpt(token_id: int, pos_id: int,
         keys: list[list[list[Value]]], values: list[list[list[Value]]]) -> list[Value]:
     tok_emb = state_dict["wte"][token_id]
     pos_emb = state_dict["wpe"][pos_id]
-    x: list[Value] = []
-    for ei in range(len(tok_emb)):
-        x.append(tok_emb[ei] + pos_emb[ei])
+    x = [tok_emb[ei] + pos_emb[ei] for ei in range(len(tok_emb))]
     x = rmsnorm(x)
 
     for li in range(n_layer):
@@ -213,41 +196,27 @@ def gpt(token_id: int, pos_id: int,
         v = linear(x, state_dict["layer" + str(li) + ".attn_wv"])
         keys[li].append(k)
         values[li].append(v)
-        x_attn: list[Value] = []
+        x_attn = []
         for h in range(n_head):
             hs = h * head_dim
-            q_h: list[Value] = q[hs:hs + head_dim]
-            k_h: list[list[Value]] = [ki[hs:hs + head_dim] for ki in keys[li]]
-            v_h: list[list[Value]] = [vi[hs:hs + head_dim] for vi in values[li]]
-            attn_logits: list[Value] = []
-            for t in range(len(k_h)):
-                acc: Value = q_h[0] * k_h[t][0]
-                for j in range(1, head_dim):
-                    acc = acc + q_h[j] * k_h[t][j]
-                attn_logits.append(acc * (head_dim ** -0.5))
+            q_h = q[hs:hs + head_dim]
+            k_h = [ki[hs:hs + head_dim] for ki in keys[li]]
+            v_h = [vi[hs:hs + head_dim] for vi in values[li]]
+            attn_logits = [
+                sum(q_h[j] * k_h[t][j] for j in range(head_dim)) * (head_dim ** -0.5)
+                for t in range(len(k_h))
+            ]
             attn_weights = softmax(attn_logits)
             for j in range(head_dim):
-                acc2: Value = attn_weights[0] * v_h[0][j]
-                for t in range(1, len(v_h)):
-                    acc2 = acc2 + attn_weights[t] * v_h[t][j]
-                x_attn.append(acc2)
+                x_attn.append(sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))))
         x = linear(x_attn, state_dict["layer" + str(li) + ".attn_wo"])
-        x2: list[Value] = []
-        for ri in range(len(x)):
-            x2.append(x[ri] + x_residual[ri])
-        x = x2
+        x = [x[ri] + x_residual[ri] for ri in range(len(x))]
         x_residual = x
         x = rmsnorm(x)
         x = linear(x, state_dict["layer" + str(li) + ".mlp_fc1"])
-        x3: list[Value] = []
-        for xi in range(len(x)):
-            x3.append(x[xi].relu())
-        x = x3
+        x = [xi.relu() for xi in x]
         x = linear(x, state_dict["layer" + str(li) + ".mlp_fc2"])
-        x4: list[Value] = []
-        for ri2 in range(len(x)):
-            x4.append(x[ri2] + x_residual[ri2])
-        x = x4
+        x = [x[ri2] + x_residual[ri2] for ri2 in range(len(x))]
 
     return linear(x, state_dict["lm_head"])
 
@@ -260,7 +229,7 @@ v_buf: list[float] = [0.0] * len(params)
 num_steps = 2
 for step in range(num_steps):
     doc = docs[step % len(docs)]
-    tokens: list[int] = [BOS]
+    tokens = [BOS]
     for ch in doc:
         tokens.append(uchars.index(ch))
     tokens.append(BOS)
@@ -268,24 +237,20 @@ for step in range(num_steps):
 
     keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
-    losses: list[Value] = []
+    losses = []
     for pos_id in range(n):
         token_id = tokens[pos_id]
         target_id = tokens[pos_id + 1]
         logits = gpt(token_id, pos_id, keys, values)
         probs = softmax(logits)
-        loss_t: Value = -probs[target_id].log()
-        losses.append(loss_t)
-    loss_sum: Value = losses[0]
-    for li2 in range(1, len(losses)):
-        loss_sum = loss_sum + losses[li2]
-    loss: Value = loss_sum * (1.0 / n)
+        losses.append(-probs[target_id].log())
+    loss = sum(losses) * (1.0 / n)
 
     loss.backward()
 
     lr_t = learning_rate * (1.0 - step / num_steps)
     for i in range(len(params)):
-        p: Value = params[i]
+        p = params[i]
         m[i] = beta1 * m[i] + (1.0 - beta1) * p.grad
         v_buf[i] = beta2 * v_buf[i] + (1.0 - beta2) * p.grad ** 2
         m_hat = m[i] / (1.0 - beta1 ** (step + 1))
@@ -302,12 +267,12 @@ for sample_idx in range(3):
     keys2: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     values2: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     token_id = BOS
-    sample: list[str] = []
+    sample = []
     for pos_id in range(block_size):
         logits = gpt(token_id, pos_id, keys2, values2)
-        scaled: list[Value] = [lo * (1.0 / temperature) for lo in logits]
+        scaled = [lo * (1.0 / temperature) for lo in logits]
         probs = softmax(scaled)
-        weights: list[float] = [pr.data for pr in probs]
+        weights = [pr.data for pr in probs]
         token_id = random.choices(list(range(vocab_size)), weights=weights)[0]
         if token_id == BOS:
             break

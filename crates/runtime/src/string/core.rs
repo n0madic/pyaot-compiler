@@ -113,7 +113,9 @@ pub extern "C" fn rt_str_len_abi(str_obj: Value) -> usize {
     rt_str_len(str_obj.unwrap_ptr())
 }
 
-/// Get the length of a string (as i64 for Python's len())
+/// Get the length of a string (as i64 for Python's len()).
+/// Counts Unicode codepoints (non-continuation UTF-8 bytes), matching
+/// CPython's character-based len. Internal byte length is `rt_str_len`.
 pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     if str_obj.is_null() {
         return 0;
@@ -121,7 +123,15 @@ pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_len_int");
         let str_obj = str_obj as *mut StrObj;
-        (*str_obj).len as i64
+        let byte_len = (*str_obj).len;
+        let data = (*str_obj).data.as_ptr();
+        let mut count: i64 = 0;
+        for i in 0..byte_len {
+            if (*data.add(i)) & 0xC0 != 0x80 {
+                count += 1;
+            }
+        }
+        count
     }
 }
 #[export_name = "rt_str_len_int"]

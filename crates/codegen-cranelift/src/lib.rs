@@ -64,6 +64,8 @@ struct RuntimeFns {
     make_str: FuncId,
     bigint_from_str: FuncId,
     box_float: FuncId,
+    unbox_float_checked: FuncId,
+    unbox_int_checked: FuncId,
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
@@ -92,6 +94,8 @@ struct RuntimeFns {
     builtin_repr: FuncId,
     builtin_bool: FuncId,
     builtin_len: FuncId,
+    builtin_ord: FuncId,
+    builtin_chr: FuncId,
     assert_fail: FuncId,
     print_int: FuncId,
     print_float: FuncId,
@@ -181,6 +185,9 @@ struct RuntimeFns {
     // ── inheritance / dispatch (Phase 5B) ──
     register_vtable: FuncId,
     register_method_name: FuncId,
+    register_field_name: FuncId,
+    getattr_name: FuncId,
+    setattr_name: FuncId,
     vtable_lookup_by_name: FuncId,
     isinstance_inherited: FuncId,
     // ── dunders (Phase 5C) ──
@@ -245,6 +252,8 @@ impl RuntimeFns {
             make_str: d("rt_make_str", &[ptr, ti], &[ti])?,
             bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
             box_float: d("rt_box_float", &[tf], &[ti])?,
+            unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
+            unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
             // Raw i64 arithmetic (Phase 3c): used only on range-proven cursors.
             // These RAISE OverflowError on i64 overflow (unlike CPython's bignum
             // promotion), so they are correct only where overflow provably cannot
@@ -277,6 +286,8 @@ impl RuntimeFns {
             builtin_repr: d("rt_builtin_repr", &[ti], &[ti])?,
             builtin_bool: d("rt_builtin_bool", &[ti], &[ti])?,
             builtin_len: d("rt_builtin_len", &[ti], &[ti])?,
+            builtin_ord: d("rt_builtin_ord", &[ti], &[ti])?,
+            builtin_chr: d("rt_builtin_chr", &[ti], &[ti])?,
             assert_fail: d("rt_assert_fail", &[ptr], &[])?,
             print_int: d("rt_print_int_value", &[ti], &[])?,
             print_float: d("rt_print_float_value", &[tf], &[])?,
@@ -366,6 +377,9 @@ impl RuntimeFns {
             // `rt_vtable_lookup_by_name` takes the instance Value + name hash → fn ptr.
             register_vtable: d("rt_register_vtable", &[t8, ti], &[])?,
             register_method_name: d("rt_register_method_name", &[ti, ti, ti], &[])?,
+            register_field_name: d("rt_register_field_name", &[ti, ti, ti], &[])?,
+            getattr_name: d("rt_getattr_name", &[ti, ti], &[ti])?,
+            setattr_name: d("rt_setattr_name", &[ti, ti, ti], &[])?,
             vtable_lookup_by_name: d("rt_vtable_lookup_by_name", &[ti, ti], &[ti])?,
             isinstance_inherited: d("rt_isinstance_class_inherited", &[ti, ti], &[t8])?,
             register_dunder_func: d("rt_register_dunder_func", &[ti, ti, ti], &[])?,
@@ -709,6 +723,17 @@ fn emit_classinit(
                     let rmn = module.declare_func_in_func(rt.register_method_name, builder.func);
                     builder.ins().call(rmn, &[cidh, hashv, slotv]);
                 }
+            }
+
+            // Field name→slot registrations (Phase 8H, D4) — OUTSIDE the
+            // vtable if-let: classes without a vtable still have fields, and
+            // the by-name `rt_getattr_name` path must resolve them.
+            for (name_hash, slot) in &c.field_names {
+                let cidh = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
+                let slotv = builder.ins().iconst(types::I64, *slot as i64);
+                let rfn = module.declare_func_in_func(rt.register_field_name, builder.func);
+                builder.ins().call(rfn, &[cidh, hashv, slotv]);
             }
 
             // Dunder function registrations (Phase 5C): so the runtime's
@@ -1164,7 +1189,9 @@ impl FnGen<'_, '_> {
     fn lower_inst(&mut self, inst: &MirInst) -> Result<()> {
         match inst {
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
-            MirInst::Coerce { dst, src, from, to } => self.lower_coerce(*dst, src, from, to),
+            MirInst::Coerce { dst, src, from, to, checked } => {
+                self.lower_coerce(*dst, src, from, to, *checked)
+            }
             MirInst::BinOp { dst, op, l, r } => self.lower_binop(*dst, *op, l, r),
             MirInst::Unary { dst, op, operand } => self.lower_unary(*dst, *op, operand),
             MirInst::Compare { dst, op, l, r } => self.lower_compare(*dst, *op, l, r),
@@ -1221,6 +1248,20 @@ impl FnGen<'_, '_> {
                 let slot_v = self.builder.ins().iconst(types::I64, *slot as i64);
                 let v = self.use_operand(value);
                 self.call(self.rt.instance_set_field, &[b, slot_v, v]);
+                Ok(())
+            }
+            MirInst::GetFieldNamed { dst, base, name_hash } => {
+                let b = self.use_operand(base);
+                let h = self.builder.ins().iconst(types::I64, *name_hash as i64);
+                let v = self.call(self.rt.getattr_name, &[b, h]).unwrap();
+                self.def_local(*dst, v);
+                Ok(())
+            }
+            MirInst::SetFieldNamed { base, name_hash, value } => {
+                let b = self.use_operand(base);
+                let h = self.builder.ins().iconst(types::I64, *name_hash as i64);
+                let v = self.use_operand(value);
+                self.call(self.rt.setattr_name, &[b, h, v]);
                 Ok(())
             }
             MirInst::CallVirtual { dst, recv, name_hash, args, ret } => {
@@ -1593,7 +1634,30 @@ impl FnGen<'_, '_> {
         Ok((ptr, len_val))
     }
 
-    fn lower_coerce(&mut self, dst: LocalId, src: &Operand, from: &Repr, to: &Repr) -> Result<()> {
+    fn lower_coerce(
+        &mut self,
+        dst: LocalId,
+        src: &Operand,
+        from: &Repr,
+        to: &Repr,
+        checked: bool,
+    ) -> Result<()> {
+        // A checked unbox (Phase 8H, D3) validates the tag at runtime —
+        // `rt_unbox_float` / `rt_unbox_int` raise TypeError on mismatch.
+        if checked {
+            let s = self.use_operand(src);
+            let v = match to {
+                Repr::Raw(RawKind::F64) => {
+                    self.call(self.rt.unbox_float_checked, &[s]).unwrap()
+                }
+                Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
+                other => {
+                    return Err(cg_error(format!("illegal checked coercion to {other:?}")))
+                }
+            };
+            self.def_local(dst, v);
+            return Ok(());
+        }
         let kind = classify_coercion(from, to)
             .ok_or_else(|| cg_error(format!("illegal coercion {from:?} -> {to:?}")))?;
         let s = self.use_operand(src);
@@ -1870,6 +1934,8 @@ impl FnGen<'_, '_> {
             K::Repr => self.rt.builtin_repr,
             K::Bool => self.rt.builtin_bool,
             K::Len => self.rt.builtin_len,
+            K::Ord => self.rt.builtin_ord,
+            K::Chr => self.rt.builtin_chr,
             other => return Err(cg_error(format!("builtin {other:?} not supported in Phase 2"))),
         })
     }

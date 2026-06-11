@@ -1101,3 +1101,89 @@ print(str(p))
     });
     assert!(!has_builtin_str, "str(instance) must route to __str__, not CallBuiltin{{Str}}");
 }
+
+#[test]
+fn sum_expands_to_tagged_accumulator_loop() {
+    // `sum(xs)` (Phase 8H, D2) expands at lowering into an Iter/IterNext/
+    // IterExhausted loop with a Tagged `BinOp Add` — the Sum HIR node never
+    // reaches MIR as a builtin/runtime call.
+    let src = "\
+xs = [1.5, 2.5]
+print(sum(xs))
+";
+    let p = lowered(src);
+    let main = main_fn(&p);
+    let ops = container_ops(main);
+    assert!(ops.contains(&ContainerOp::Iter), "sum lowers through Iter");
+    assert!(ops.contains(&ContainerOp::IterNext), "sum lowers through IterNext");
+    assert!(ops.contains(&ContainerOp::IterExhausted), "sum lowers through IterExhausted");
+    let has_tagged_add = main.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+        matches!(i, MirInst::BinOp { op: pyaot_mir::BinOp::Add, .. })
+    });
+    assert!(has_tagged_add, "sum body adds on the tagged baseline");
+}
+
+#[test]
+fn dyn_stdlib_float_arg_takes_checked_unbox() {
+    // A Dyn argument into a raw-f64 stdlib param (Phase 8H, D3) takes the
+    // CHECKED Coerce (runtime-validated rt_unbox_float), not a blind unbox.
+    let src = "\
+import math
+
+
+def pick(flag):
+    if flag:
+        return 2.0
+    return \"oops\"
+
+
+print(math.sqrt(pick(True)))
+";
+    let p = lowered(src);
+    let has_checked = p.funcs.iter().any(|f| {
+        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(
+                i,
+                MirInst::Coerce { checked: true, to: Repr::Raw(RawKind::F64), .. }
+            )
+        })
+    });
+    assert!(has_checked, "Dyn -> Raw(F64) stdlib arg must be a checked Coerce");
+}
+
+#[test]
+fn dyn_receiver_field_access_uses_named_insts() {
+    // Field reads/writes on a Dyn receiver (Phase 8H, D4) lower to the
+    // by-name GetFieldNamed/SetFieldNamed instructions.
+    let src = "\
+class N:
+    def __init__(self, d: float):
+        self.d = d
+
+
+def pick(flag):
+    if flag:
+        return N(1.0)
+    return \"oops\"
+
+
+n = pick(True)
+print(n.d)
+n.d = 3.0
+";
+    let p = lowered(src);
+    let all_insts = || p.funcs.iter().flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts));
+    assert!(
+        all_insts().any(|i| matches!(i, MirInst::GetFieldNamed { .. })),
+        "Dyn receiver field read lowers to GetFieldNamed"
+    );
+    assert!(
+        all_insts().any(|i| matches!(i, MirInst::SetFieldNamed { .. })),
+        "Dyn receiver field write lowers to SetFieldNamed"
+    );
+    // The classes carry the field-name registry for the runtime resolution.
+    assert!(
+        p.classes.iter().any(|c| !c.field_names.is_empty()),
+        "MirClass.field_names populated for by-name registration"
+    );
+}

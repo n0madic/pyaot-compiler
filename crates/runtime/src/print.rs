@@ -31,9 +31,25 @@ pub extern "C" fn rt_print_flush() {
     }
 }
 
-/// Print a StrObj (heap-allocated string)
+/// Print a StrObj (heap-allocated string).
+/// A `None` value (immediate tag or heap None object) prints "None" — an
+/// `Optional[str]` narrowed to `str` for static dispatch (Phase 8C) routes a
+/// stdlib miss here, and CPython prints "None", not nothing (Phase 8H).
 pub fn rt_print_str_obj(str_obj: *mut Obj) {
     if str_obj.is_null() {
+        return;
+    }
+    let v = Value(str_obj as u64);
+    let is_none = v.is_none()
+        || (!v.is_int() && !v.is_bool() && unsafe {
+            (*str_obj).header.type_tag == TypeTagKind::None
+        });
+    if is_none {
+        if is_stderr_target() {
+            eprint!("None");
+        } else {
+            print!("None");
+        }
         return;
     }
     unsafe {

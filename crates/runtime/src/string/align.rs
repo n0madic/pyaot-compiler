@@ -1,8 +1,29 @@
 //! Alignment operations: center, ljust, rjust, zfill
+//!
+//! Widths are measured in Unicode codepoints (CPython semantics), and the
+//! fill character may be multi-byte. Source bytes are copied into Rust
+//! `String`s BEFORE any allocation, so no GC rooting is needed.
 
-use crate::gc;
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
+
+use super::core::rt_make_str;
+
+/// Decode a StrObj's bytes to a Rust `String` (lossy on malformed UTF-8).
+unsafe fn str_obj_to_string(str_obj: *mut Obj) -> String {
+    let src = str_obj as *mut StrObj;
+    debug_assert!((*src).header.type_tag == TypeTagKind::Str);
+    let bytes = std::slice::from_raw_parts((*src).data.as_ptr(), (*src).len);
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Extract the fill character (first codepoint of `fillchar`, default ' ').
+unsafe fn fill_char(fillchar: *mut Obj) -> char {
+    if fillchar.is_null() {
+        return ' ';
+    }
+    str_obj_to_string(fillchar).chars().next().unwrap_or(' ')
+}
 
 /// Center string with fill character
 /// Returns: new string
@@ -10,55 +31,25 @@ pub fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut 
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let src_len = (*src).len;
-        let width = width as usize;
-
-        if src_len >= width {
+        let s = str_obj_to_string(str_obj);
+        let chars = s.chars().count() as i64;
+        if chars >= width {
             return str_obj;
         }
-
-        let fill = if fillchar.is_null() {
-            b' '
-        } else {
-            let fill_str = fillchar as *mut StrObj;
-            if (*fill_str).len > 0 {
-                *(*fill_str).data.as_ptr()
-            } else {
-                b' '
-            }
-        };
-
-        let padding = width - src_len;
-        let left_pad = padding / 2;
-        let right_pad = padding - left_pad;
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
-        // gc_alloc may trigger a collection, which would invalidate any raw pointer
-        // derived from str_obj before this call. Re-derive src_data afterwards.
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = width;
-
-        let dst_data = (*result).data.as_mut_ptr();
-
-        // Left padding
-        for i in 0..left_pad {
-            *dst_data.add(i) = fill;
+        let fill = fill_char(fillchar);
+        let marg = width - chars;
+        // CPython's stringlib pad: left = marg/2 + (marg & width & 1).
+        let left = marg / 2 + (marg & width & 1);
+        let mut result = String::with_capacity(s.len() + marg as usize * fill.len_utf8());
+        for _ in 0..left {
+            result.push(fill);
         }
-
-        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        std::ptr::copy_nonoverlapping(src_data, dst_data.add(left_pad), src_len);
-
-        // Right padding
-        for i in 0..right_pad {
-            *dst_data.add(left_pad + src_len + i) = fill;
+        result.push_str(&s);
+        for _ in 0..(marg - left) {
+            result.push(fill);
         }
-
-        obj
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_center"]
@@ -77,46 +68,18 @@ pub fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let src_len = (*src).len;
-        let width = width as usize;
-
-        if src_len >= width {
+        let s = str_obj_to_string(str_obj);
+        let chars = s.chars().count() as i64;
+        if chars >= width {
             return str_obj;
         }
-
-        let fill = if fillchar.is_null() {
-            b' '
-        } else {
-            let fill_str = fillchar as *mut StrObj;
-            if (*fill_str).len > 0 {
-                *(*fill_str).data.as_ptr()
-            } else {
-                b' '
-            }
-        };
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
-        // gc_alloc may trigger a collection, which would invalidate any raw pointer
-        // derived from str_obj before this call. Re-derive src_data afterwards.
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = width;
-
-        let dst_data = (*result).data.as_mut_ptr();
-
-        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        std::ptr::copy_nonoverlapping(src_data, dst_data, src_len);
-
-        // Right padding
-        for i in src_len..width {
-            *dst_data.add(i) = fill;
+        let fill = fill_char(fillchar);
+        let mut result = s;
+        for _ in 0..(width - chars) {
+            result.push(fill);
         }
-
-        obj
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_ljust"]
@@ -135,48 +98,19 @@ pub fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let src_len = (*src).len;
-        let width = width as usize;
-
-        if src_len >= width {
+        let s = str_obj_to_string(str_obj);
+        let chars = s.chars().count() as i64;
+        if chars >= width {
             return str_obj;
         }
-
-        let fill = if fillchar.is_null() {
-            b' '
-        } else {
-            let fill_str = fillchar as *mut StrObj;
-            if (*fill_str).len > 0 {
-                *(*fill_str).data.as_ptr()
-            } else {
-                b' '
-            }
-        };
-
-        let padding = width - src_len;
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
-        // gc_alloc may trigger a collection, which would invalidate any raw pointer
-        // derived from str_obj before this call. Re-derive src_data afterwards.
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = width;
-
-        let dst_data = (*result).data.as_mut_ptr();
-
-        // Left padding
-        for i in 0..padding {
-            *dst_data.add(i) = fill;
+        let fill = fill_char(fillchar);
+        let mut result = String::with_capacity(s.len());
+        for _ in 0..(width - chars) {
+            result.push(fill);
         }
-
-        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-        std::ptr::copy_nonoverlapping(src_data, dst_data.add(padding), src_len);
-
-        obj
+        result.push_str(&s);
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_rjust"]
@@ -195,57 +129,26 @@ pub fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
-
     unsafe {
-        let src = str_obj as *mut StrObj;
-        let src_len = (*src).len;
-        let width = width as usize;
-
-        if src_len >= width {
+        let s = str_obj_to_string(str_obj);
+        let chars = s.chars().count() as i64;
+        if chars >= width {
             return str_obj;
         }
-
-        let padding = width - src_len;
-
-        // Read has_sign from src_data before gc_alloc; no collection can occur yet.
-        let has_sign = if src_len > 0 {
-            let first = *(*src).data.as_ptr();
-            first == b'+' || first == b'-'
-        } else {
-            false
-        };
-
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
-        // gc_alloc may trigger a collection, which would invalidate any raw pointer
-        // derived from str_obj before this call. Re-derive src_data afterwards.
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-        let result = obj as *mut StrObj;
-        (*result).len = width;
-
-        let dst_data = (*result).data.as_mut_ptr();
-
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
-        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
-
-        if has_sign {
-            // Copy sign first
-            *dst_data = *src_data;
-            // Zero padding after sign
-            for i in 0..padding {
-                *dst_data.add(1 + i) = b'0';
+        let padding = (width - chars) as usize;
+        let mut result = String::with_capacity(s.len() + padding);
+        let mut rest: &str = &s;
+        if let Some(first) = s.chars().next() {
+            if first == '+' || first == '-' {
+                result.push(first);
+                rest = &s[1..];
             }
-            // Copy rest of string
-            std::ptr::copy_nonoverlapping(src_data.add(1), dst_data.add(1 + padding), src_len - 1);
-        } else {
-            // Zero padding at start
-            for i in 0..padding {
-                *dst_data.add(i) = b'0';
-            }
-            // Copy string
-            std::ptr::copy_nonoverlapping(src_data, dst_data.add(padding), src_len);
         }
-
-        obj
+        for _ in 0..padding {
+            result.push('0');
+        }
+        result.push_str(rest);
+        rt_make_str(result.as_ptr(), result.len())
     }
 }
 #[export_name = "rt_str_zfill"]

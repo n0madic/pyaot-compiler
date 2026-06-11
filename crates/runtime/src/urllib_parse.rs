@@ -303,6 +303,22 @@ pub extern "C" fn rt_unquote_abi(string: Value) -> Value {
     Value::from_ptr(rt_unquote(string.unwrap_ptr()))
 }
 
+/// str()-ify a dict key/value like CPython's urlencode does for non-str
+/// inputs (`quote_via(str(v), ...)`): True -> "True", 5 -> "5", floats use repr.
+/// Checks the Value tag BEFORE any heap dereference.
+unsafe fn urlencode_component_to_string(v: Value) -> String {
+    let is_str_obj = !v.is_int() && !v.is_bool() && !v.is_none() && {
+        let p = v.0 as *mut Obj;
+        !p.is_null() && (*p).header.type_tag == TypeTagKind::Str
+    };
+    let str_obj = if is_str_obj {
+        v.0 as *mut Obj
+    } else {
+        crate::conversions::rt_obj_to_str(v.0 as *mut Obj)
+    };
+    str_obj_to_rust_string(str_obj)
+}
+
 /// urllib.parse.urlencode(params) - Encode a dict as a query string
 /// Example: {"key": "value", "a": "b"} -> "key=value&a=b"
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -316,30 +332,28 @@ pub fn rt_urlencode(params: *mut Obj) -> *mut Obj {
             return make_str_from_rust("");
         }
 
+        // Root params across rt_obj_to_str calls, which may allocate and
+        // trigger a collection.
+        let mut roots: [*mut Obj; 1] = [params];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         let dict = params as *const DictObj;
         let entries_len = (*dict).entries_len;
-        let entries = (*dict).entries;
 
         let mut pairs: Vec<String> = Vec::new();
 
         for i in 0..entries_len {
-            let entry = entries.add(i);
+            let entry = (*dict).entries.add(i);
             let key = (*entry).key;
 
             if key.0 != 0 {
-                let key_ptr = key.0 as *mut Obj;
-                let key_str = str_obj_to_rust_string(key_ptr);
-                let value = (*entry).value;
-                let value_ptr = value.0 as *mut Obj;
-                if value_ptr.is_null()
-                    || (*value_ptr).header.type_tag != crate::object::TypeTagKind::Str
-                {
-                    raise_exc!(
-                        pyaot_core_defs::BuiltinExceptionKind::TypeError,
-                        "urlencode values must be strings"
-                    );
-                }
-                let value_str = str_obj_to_rust_string(value_ptr);
+                let key_str = urlencode_component_to_string(key);
+                let value_str = urlencode_component_to_string((*entry).value);
 
                 let encoded_key = percent_encode_plus(&key_str);
                 let encoded_value = percent_encode_plus(&value_str);
@@ -347,6 +361,8 @@ pub fn rt_urlencode(params: *mut Obj) -> *mut Obj {
                 pairs.push(format!("{}={}", encoded_key, encoded_value));
             }
         }
+
+        gc::gc_pop();
 
         let result = pairs.join("&");
         make_str_from_rust(&result)

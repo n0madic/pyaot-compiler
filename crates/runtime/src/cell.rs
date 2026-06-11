@@ -294,8 +294,18 @@ pub extern "C" fn rt_cell_set_ptr_abi(cell: Value, value: Value) {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn cell_get_ptr_for_gc(cell: *mut CellObj) -> Option<*mut Obj> {
     unsafe {
-        if (*cell).value_tag == CellValueTag::Ptr as u8 && (*cell).value != 0 {
-            Some((*cell).value as *mut Obj)
+        // `rt_cell_set_ptr` stores RAW Value bits under the Ptr tag, so the
+        // slot may hold a tagged IMMEDIATE (None/int/bool — low tag bits
+        // non-zero), e.g. a `MakeCell { init: None }` cell before its first
+        // real write. Dereferencing that as an object pointer is a SEGV
+        // (Phase 8H) — filter to genuinely pointer-shaped values, exactly
+        // like `mark_object`'s `is_ptr` root filter.
+        let v = (*cell).value;
+        if (*cell).value_tag == CellValueTag::Ptr as u8
+            && v != 0
+            && (v as u64) & pyaot_core_defs::tag::TAG_MASK == pyaot_core_defs::tag::PTR_TAG
+        {
+            Some(v as *mut Obj)
         } else {
             None
         }

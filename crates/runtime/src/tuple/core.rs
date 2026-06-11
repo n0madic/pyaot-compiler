@@ -261,7 +261,15 @@ pub extern "C" fn rt_tuple_slice_to_list_abi(tuple: Value, start: i64, end: i64)
 ///
 /// Returns: pointer to new allocated TupleObj (shallow copy)
 pub fn rt_tuple_slice_step(tuple: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
-    if tuple.is_null() || step == 0 {
+    if step == 0 {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "slice step cannot be zero"
+            );
+        }
+    }
+    if tuple.is_null() {
         return rt_make_tuple(0);
     }
 

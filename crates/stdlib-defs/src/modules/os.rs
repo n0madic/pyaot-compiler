@@ -164,6 +164,23 @@ pub static OS_GETENV: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::new("rt_os_getenv", &[P_I64, P_I64], Some(R_I64), false),
 };
 
+/// `os.environ[key] = value` setter (Phase 8H). NOT registered in the module's
+/// function list — there is no Python-callable `os.environ_set`; the frontend
+/// routes subscript-assignment on the `os.environ` attr chain here directly.
+pub static OS_ENVIRON_SET: StdlibFunctionDef = StdlibFunctionDef {
+    name: "environ_set",
+    runtime_name: "rt_os_environ_set",
+    params: &[
+        ParamDef::required("key", TypeSpec::Str),
+        ParamDef::required("value", TypeSpec::Str),
+    ],
+    return_type: TypeSpec::None,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::void("rt_os_environ_set", &[P_I64, P_I64]),
+};
+
 /// os module definition
 pub static OS_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "os",

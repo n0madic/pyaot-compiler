@@ -69,7 +69,15 @@ pub extern "C" fn rt_list_slice_abi(list: Value, start: i64, end: i64) -> Value 
 ///
 /// Returns: pointer to new allocated ListObj (shallow copy)
 pub fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
-    if list.is_null() || step == 0 {
+    if step == 0 {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "slice step cannot be zero"
+            );
+        }
+    }
+    if list.is_null() {
         return rt_make_list(0);
     }
 

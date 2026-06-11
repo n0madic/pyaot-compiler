@@ -345,7 +345,12 @@ pub extern "C" fn rt_bytes_slice_abi(bytes: Value, start: i64, end: i64) -> Valu
 pub fn rt_bytes_slice_step(bytes: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
-    if bytes.is_null() || step == 0 {
+    if step == 0 {
+        unsafe {
+            raise_exc!(ExceptionType::ValueError, "slice step cannot be zero");
+        }
+    }
+    if bytes.is_null() {
         return rt_make_bytes_zero(0);
     }
 

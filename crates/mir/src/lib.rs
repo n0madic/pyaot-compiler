@@ -88,6 +88,10 @@ pub struct MirClass {
     pub vtable: Vec<FuncId>,
     /// `(method_name_hash, slot)` for `rt_register_method_name` (Phase 5B).
     pub method_names: Vec<(u64, usize)>,
+    /// `(field_name_hash, slot)` for `rt_register_field_name` (Phase 8H, D4) —
+    /// the by-name attribute path for `Dyn` receivers. Same slot order as the
+    /// static `GetField`/`SetField` path.
+    pub field_names: Vec<(u64, usize)>,
     /// `(dunder_name_hash, FuncId)` for `rt_register_dunder_func` (Phase 5C).
     pub dunders: Vec<(u64, FuncId)>,
     /// `(attr_idx, const)` class-attribute initializers — codegen materializes each
@@ -147,11 +151,19 @@ pub enum MirInst {
     /// Bridge a value's representation from `from` to `to`. **Only**
     /// `lowering::legalize` emits this, and only when [`classify_coercion`]
     /// accepts `(from, to)`; the verifier re-checks both facts.
+    ///
+    /// `checked: true` (Phase 8H, D3) marks a RUNTIME-validated unbox at a
+    /// stdlib raw-ABI boundary: a `Tagged` value whose static type is gradual
+    /// (`Dyn`, or int-where-float-expected) unboxes through
+    /// `rt_unbox_float`/`rt_unbox_int`, which raise `TypeError` on a
+    /// mismatched tag instead of silently reinterpreting bits. Only legal for
+    /// `(Tagged, Raw(F64))` and `(Tagged, Raw(I64))`.
     Coerce {
         dst: LocalId,
         src: Operand,
         from: Repr,
         to: Repr,
+        checked: bool,
     },
     /// A binary op on the tagged baseline. ALL ops (arithmetic *and* bitwise /
     /// shift) take and produce `Tagged` and dispatch on the tag in the runtime
@@ -233,6 +245,16 @@ pub enum MirInst {
     /// `base` is `Heap(Class(_))`/`Tagged`; `value` is coerced to `Tagged` (the A5
     /// uniform-storage seam) before the store. No result.
     SetField { base: Operand, slot: usize, value: Operand },
+    /// Read instance field by NAME hash (Phase 8H, D4) —
+    /// `rt_getattr_name(base, name_hash)`. Used when the receiver's static
+    /// type is `Dyn`: the slot is resolved at runtime through the
+    /// FIELD_NAME_REGISTRY (AttributeError on a miss/non-instance). `base`
+    /// and `dst` are `Tagged`.
+    GetFieldNamed { dst: LocalId, base: Operand, name_hash: u64 },
+    /// Write instance field by NAME hash (Phase 8H, D4) —
+    /// `rt_setattr_name(base, name_hash, value)`. `base` and `value` are
+    /// `Tagged`. No result.
+    SetFieldNamed { base: Operand, name_hash: u64, value: Operand },
     /// Polymorphic method dispatch (Phase 5B): `rt_vtable_lookup_by_name(recv,
     /// name_hash)` → fn ptr → `call_indirect`. Used when a base-typed receiver may
     /// dispatch to an override (D7). `recv` is the `self` (instance base); `args`
