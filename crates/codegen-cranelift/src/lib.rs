@@ -1778,9 +1778,11 @@ impl FnGen<'_, '_> {
         let a = self.use_operand(l);
         let b = self.use_operand(r);
         // The verifier guarantees both operands and `dst` share `lrepr`, and that
-        // a `Raw` operand only ever carries `Add`/`Sub`/`Mul`. Dispatch on it:
-        // `Raw(F64)` inlines IEEE float arithmetic (no box, no call); `Tagged`
-        // calls the tag-dispatched, bignum-safe `rt_obj_*` shims.
+        // a `Raw` operand carries only the ops its kind supports (`Raw(F64)`:
+        // `Add`/`Sub`/`Mul`; `Raw(I64)`: those plus `Mod`/`FloorDiv`). Dispatch on
+        // it: `Raw(F64)` inlines IEEE float arithmetic (no box, no call);
+        // `Raw(I64)` inlines machine integer arithmetic; `Tagged` calls the
+        // tag-dispatched, bignum-safe `rt_obj_*` shims.
         let v = match (&lrepr, op) {
             (Repr::Raw(RawKind::F64), BinOp::Add) => self.builder.ins().fadd(a, b),
             (Repr::Raw(RawKind::F64), BinOp::Sub) => self.builder.ins().fsub(a, b),
@@ -1790,6 +1792,12 @@ impl FnGen<'_, '_> {
             (Repr::Raw(RawKind::I64), BinOp::Add) => self.call(self.rt.add_int, &[a, b]).unwrap(),
             (Repr::Raw(RawKind::I64), BinOp::Sub) => self.call(self.rt.sub_int, &[a, b]).unwrap(),
             (Repr::Raw(RawKind::I64), BinOp::Mul) => self.call(self.rt.mul_int, &[a, b]).unwrap(),
+            // Raw i64 `% //` (Phase 3c): inline `srem`/`sdiv` with the Python
+            // floor-toward-−∞ correction. typeck's interval pass proved the
+            // divisor statically positive (hence nonzero and never `INT_MIN/-1`),
+            // so the machine ops cannot trap and no zero-check branch is needed.
+            (Repr::Raw(RawKind::I64), BinOp::Mod) => self.raw_floor_mod(a, b),
+            (Repr::Raw(RawKind::I64), BinOp::FloorDiv) => self.raw_floor_div(a, b),
             (_, BinOp::Add) => self.call(self.rt.obj_add, &[a, b]).unwrap(),
             (_, BinOp::Sub) => self.call(self.rt.obj_sub, &[a, b]).unwrap(),
             (_, BinOp::Mul) => self.call(self.rt.obj_mul, &[a, b]).unwrap(),
@@ -1807,6 +1815,39 @@ impl FnGen<'_, '_> {
         };
         self.def_local(dst, v);
         Ok(())
+    }
+
+    /// Branchless Python floor modulo on raw i64 (`a % b`, result takes the sign
+    /// of the divisor). `srem` truncates toward zero; when the remainder is
+    /// nonzero and its sign differs from the divisor's, add the divisor to floor
+    /// toward −∞. The divisor is proven statically positive by typeck, so `srem`
+    /// never traps.
+    fn raw_floor_mod(&mut self, a: Value, b: Value) -> Value {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let r = self.builder.ins().srem(a, b);
+        let r_ne = self.builder.ins().icmp(IntCC::NotEqual, r, zero);
+        let xor = self.builder.ins().bxor(r, b);
+        let diff_sign = self.builder.ins().icmp(IntCC::SignedLessThan, xor, zero);
+        let adjust = self.builder.ins().band(r_ne, diff_sign);
+        let addend = self.builder.ins().select(adjust, b, zero);
+        self.builder.ins().iadd(r, addend)
+    }
+
+    /// Branchless Python floor division on raw i64 (`a // b`, rounds toward −∞).
+    /// `sdiv` truncates toward zero; subtract 1 when the (truncated) remainder is
+    /// nonzero and its sign differs from the divisor's. Divisor proven positive,
+    /// so `sdiv`/`srem` never trap.
+    fn raw_floor_div(&mut self, a: Value, b: Value) -> Value {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let q = self.builder.ins().sdiv(a, b);
+        let r = self.builder.ins().srem(a, b);
+        let r_ne = self.builder.ins().icmp(IntCC::NotEqual, r, zero);
+        let xor = self.builder.ins().bxor(r, b);
+        let diff_sign = self.builder.ins().icmp(IntCC::SignedLessThan, xor, zero);
+        let adjust = self.builder.ins().band(r_ne, diff_sign);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let dec = self.builder.ins().select(adjust, one, zero);
+        self.builder.ins().isub(q, dec)
     }
 
     fn lower_unary(&mut self, dst: LocalId, op: UnaryOp, operand: &Operand) -> Result<()> {

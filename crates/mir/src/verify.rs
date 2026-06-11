@@ -359,14 +359,22 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
         MirInst::BinOp { dst, op, l, r } => {
             // Repr-consistent: operands and dst share one representation `R`, and
             // `R` must support `op`. `Tagged` handles every op via tag dispatch
-            // (`rt_obj_*`, bignum-safe); the unboxed `Raw(F64)` / `Raw(I64)` fast
-            // paths carry only `Add`/`Sub`/`Mul`, which lowering proves safe (both
-            // operands statically float, or a no-overflow range proof for int).
+            // (`rt_obj_*`, bignum-safe). The unboxed fast paths are RawKind-aware:
+            // `Raw(F64)` carries `Add`/`Sub`/`Mul` (exception-free IEEE);
+            // `Raw(I64)` additionally carries `Mod`/`FloorDiv` (Phase 3c), all
+            // proven by typeck's interval pass (no overflow, divisor > 0).
             check_operand(f, l)?;
             let lhs = f.operand_repr(l).clone();
             want(f, r, &lhs, "BinOp.r")?;
             want_local(f, *dst, &lhs, "BinOp.dst")?;
-            let raw_ok = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul);
+            let raw_ok = match lhs {
+                Repr::Raw(RawKind::F64) => matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul),
+                Repr::Raw(RawKind::I64) => matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::FloorDiv
+                ),
+                _ => false,
+            };
             match lhs {
                 Repr::Tagged => {}
                 Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) if raw_ok => {}
@@ -912,22 +920,34 @@ mod tests {
 
     #[test]
     fn accepts_repr_consistent_binops() {
-        // Tagged supports every op; Raw(F64)/Raw(I64) support Add/Sub/Mul.
+        // Tagged supports every op; Raw(F64) supports Add/Sub/Mul; Raw(I64) those
+        // plus Mod/FloorDiv (the Phase-3c raw division surface).
         assert_eq!(verify(&binop_block(Repr::Tagged, BinOp::Div), &[]), Ok(()));
         assert_eq!(verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Add), &[]), Ok(()));
         assert_eq!(verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Mul), &[]), Ok(()));
         assert_eq!(verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Sub), &[]), Ok(()));
+        assert_eq!(verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Mod), &[]), Ok(()));
+        assert_eq!(verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::FloorDiv), &[]), Ok(()));
     }
 
     #[test]
     fn rejects_unsupported_raw_binops() {
-        // Div / Mod / bitwise must stay tagged — never on a Raw fast path.
+        // Raw(F64) carries only Add/Sub/Mul; Raw division/mod and all bitwise/shift
+        // and `Pow` stay tagged — never on a Raw fast path.
         assert!(matches!(
             verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Div), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
         assert!(matches!(
-            verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Mod), &[]),
+            verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Mod), &[]),
+            Err(VerifyError::BadBinOpRepr { .. })
+        ));
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Div), &[]),
+            Err(VerifyError::BadBinOpRepr { .. })
+        ));
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::Pow), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
         assert!(matches!(

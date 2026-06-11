@@ -149,6 +149,17 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     };
     passes.run(&mut mir).map_err(verify_to_error)?;
 
+    // ── mandatory pre-codegen verify (release-safe, PLAN #2). ──
+    // The per-pass-boundary verifier above is `#[cfg(debug_assertions)]`; this
+    // one is NOT, so release builds also reject any representation mismatch right
+    // before codegen. It is the safety net for the Phase-3c raw-division surface:
+    // a wrong interval that produced a raw divide of a value that is actually a
+    // bignum surfaces here as a verify error, not a silent miscompile or SEGV.
+    // Linear in MIR — negligible cost.
+    for func in &mir.funcs {
+        pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
+    }
+
     // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
     if cli.emit_mir {
         for (i, func) in mir.funcs.iter().enumerate() {

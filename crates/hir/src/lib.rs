@@ -156,11 +156,16 @@ pub struct HirLocal {
     pub ty: SemTy,
     /// Proof-gated representation override (Phase 3c): when `true` **and** the
     /// inferred [`Self::ty`] is `int`, lowering stores this slot as an unboxed
-    /// `Raw(I64)` instead of the tagged default. Set only where a range proof
-    /// guarantees the value cannot overflow i64 *or* promote to a heap `BigInt`
-    /// (a literal-bounded `range()` cursor) — the soundness obligation of
-    /// PITFALLS A6/B16. It is **not** a `SemTy` change: the slot stays
-    /// semantically `int`. Default `false` (the always-correct tagged baseline).
+    /// `Raw(I64)` instead of the tagged default. Set by typeck's interval pass
+    /// ([`crate`]-external) where a range proof guarantees every value written
+    /// to the slot cannot overflow i64 *or* promote to a heap `BigInt` (a
+    /// literal-bounded `range()` cursor, its induction variable, or any local
+    /// whose writers are all provably within `±RAW_I64_NARROW_BOUND`) — the
+    /// soundness obligation of PITFALLS A6/B16. Never set for a parameter slot
+    /// (its entry value comes from an unbounded caller). It is **not** a `SemTy`
+    /// change: the slot stays semantically `int`. The per-expression analogue is
+    /// [`HirExpr::raw_int_ok`]. Default `false` (the always-correct tagged
+    /// baseline).
     pub raw_int_ok: bool,
     /// Pin this slot to the `Tagged` representation regardless of inference. Set
     /// for the local that directly receives an `iter_next` result: that result is
@@ -225,6 +230,18 @@ pub struct HirExpr {
     pub kind: HirExprKind,
     pub ty: SemTy,
     pub span: Span,
+    /// Proof-gated (typeck's interval pass): when `true` **and** [`Self::ty`] is
+    /// `int`, this expression's value provably stays within
+    /// `±RAW_I64_NARROW_BOUND` with no i64 overflow, so lowering MAY produce it
+    /// directly as `Raw(I64)` (a raw `Mul`/`Mod`/`FloorDiv`) instead of the
+    /// tagged baseline. The interval pass guarantees a **bottom-up closure
+    /// invariant**: a flagged `BinOp` has every operand itself flagged-raw, a
+    /// fixnum `IntLit` within bound, or a `raw_int_ok` local — so lowering can
+    /// request each operand as `Raw(I64)` with no untag of a possibly-bignum
+    /// value (closing PITFALLS B16 for the derived-expr path). Mirrors
+    /// [`HirLocal::raw_int_ok`]. Default `false` (the always-correct tagged
+    /// baseline).
+    pub raw_int_ok: bool,
 }
 
 #[derive(Debug, Clone)]

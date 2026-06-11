@@ -29,6 +29,12 @@ const PHASE_CORPUS: &[&str] = &[
     "test_main.py",
     "p2_bignum.py",
     "p3_numeric.py",
+    // Phase 3c — raw-int loop specialization via typeck's interval proof: a
+    // narrowed induction variable + derived i*3 % k / i*3 // k running raw, the
+    // negative-operand floor correction (srem/sdiv → Python //, %), and the
+    // proof correctly REFUSING (a doubling-to-bignum accumulator and a
+    // collatz-shaped while stay tagged → bignum-safe and byte-exact).
+    "p3c_raw_int_loops.py",
     // Phase 4A — container literals, indexed read/write, len/in, operators.
     "p4_literals.py",
     "p4_subscript.py",

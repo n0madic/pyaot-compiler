@@ -812,7 +812,7 @@ impl<'a> FnLower<'a> {
             }
             HirExprKind::Name(symref) => self.lower_name(*symref, expr.span),
             HirExprKind::Local(lid) => Ok((*lid, self.local_repr(*lid))),
-            HirExprKind::BinOp { op, l, r } => self.lower_binop(*op, *l, *r),
+            HirExprKind::BinOp { op, l, r } => self.lower_binop(idx, *op, *l, *r),
             HirExprKind::Unary { op, operand } => self.lower_unary(*op, *operand),
             HirExprKind::Compare { op, l, r } => self.lower_compare(*op, *l, *r),
             HirExprKind::Call { callee, args } => self.lower_call(idx, *callee, args.clone()),
@@ -2772,8 +2772,16 @@ impl<'a> FnLower<'a> {
     /// (`rt_obj_*`), so it is bignum-safe — an `int` operand may dynamically be a
     /// heap `BigInt`, and unboxing it to raw `i64` would silently miscompile
     /// (Invariant 2). The proof-gated raw `int` fast path is Phase 3c.
+    ///
+    /// `idx` is this `BinOp` node, carrying typeck's per-expr `raw_int_ok`
+    /// certificate (the interval proof). It gates the raw `Mul`/`Mod`/`FloorDiv`
+    /// path: those ops can leave the proven fixnum range (`*`) or carry
+    /// floor/sign semantics (`% //`), so unlike raw `Add`/`Sub` they fire only
+    /// when the result is provably in-bound *and* the operand-closure invariant
+    /// holds (each operand lowers to `Raw(I64)` or is a small fixnum literal).
     fn lower_binop(
         &mut self,
+        idx: Idx<HirExpr>,
         op: HBinOp,
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
@@ -2802,13 +2810,22 @@ impl<'a> FnLower<'a> {
             return Ok((dst, f64));
         }
 
-        // Raw int fast path (Phase 3c): when one operand is a range-proven
-        // `Raw(I64)` cursor, emit a raw machine `Add`/`Sub`. The other operand is
-        // supplied as `Raw(I64)` too (another cursor, or a fixnum literal small
-        // enough to untag soundly). `Mul` is deliberately excluded — a raw product
-        // of two bounded values could leave the proven fixnum range and overflow.
+        // Raw int fast path (Phase 3c). `Add`/`Sub` fire whenever an operand is a
+        // range-proven `Raw(I64)` (a bounded cursor / flagged sub-expr) — the
+        // result of `a±b` with `|a|,|b| ≤ 2^48` cannot overflow i64. `Mul`/`Mod`/
+        // `FloorDiv` additionally require this node's `raw_int_ok` certificate
+        // (typeck proved the result stays in `±2^48` and, for `% //`, the divisor
+        // is statically positive), so a possibly-overflowing or possibly-zero
+        // divisor case stays tagged and the runtime handles it correctly. In
+        // every case the other operand is supplied as `Raw(I64)` too (a flagged
+        // sub-expr already lowered to `Raw(I64)`, or a fixnum literal small enough
+        // to untag soundly).
         let i64r = Repr::Raw(RawKind::I64);
-        if matches!(mop, MBinOp::Add | MBinOp::Sub) && (lr == i64r || rr == i64r) {
+        let raw_addsub = matches!(mop, MBinOp::Add | MBinOp::Sub) && (lr == i64r || rr == i64r);
+        let proven = self.func.exprs[idx].raw_int_ok && self.func.exprs[idx].ty == SemTy::Int;
+        let raw_muldivmod =
+            proven && matches!(mop, MBinOp::Mul | MBinOp::Mod | MBinOp::FloorDiv);
+        if raw_addsub || raw_muldivmod {
             if let (Some(la), Some(ra)) =
                 (self.raw_i64_operand(l, ll, &lr)?, self.raw_i64_operand(r, rl, &rr)?)
             {

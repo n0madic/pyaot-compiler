@@ -30,8 +30,9 @@ for d in range(20, 0, -3):
     t = t + d
 print(t)
 
-# Loop variable used in body arithmetic: the cursor is raw, but `n` is re-tagged
-# so `n * n` runs on the tagged baseline (a derived value could leave the range).
+# Loop variable used in body arithmetic. typeck's interval pass proves `n ∈ [1,5]`
+# and `n * n ∈ [1,25]`, so BOTH the cursor and `n * n` now run on the raw machine
+# path; the accumulator `sq` has no static bound and stays tagged (bignum-safe).
 sq = 0
 for n in range(1, 6):
     sq = sq + n * n

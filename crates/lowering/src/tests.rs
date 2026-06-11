@@ -104,13 +104,17 @@ fn float_division_stays_tagged() {
 }
 
 #[test]
-fn int_arithmetic_stays_tagged() {
-    // Plain int arithmetic remains tagged (bignum-safe) — no Raw specialization
-    // in 3b; the proof-gated raw int path is 3c (range cursors only).
-    let p = lowered("print(1 + 2 * 3)\n");
-    let f = main_fn(&p);
-    for (op, r) in binops_with_repr(f) {
-        assert_eq!(r, Repr::Tagged, "int BinOp {op:?} should be tagged");
+fn unprovable_int_arithmetic_stays_tagged() {
+    // Int arithmetic with no provable bound (here on function parameters, whose
+    // values come from an unbounded caller) stays tagged so bignum is correct.
+    // The 3c interval pass narrows only provably-bounded ints to Raw(I64).
+    let p = lowered("def f(a: int, b: int) -> int:\n    return a * b + a\nprint(f(3, 4))\n");
+    for f in &p.funcs {
+        for (op, r) in binops_with_repr(f) {
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+                assert_eq!(r, Repr::Tagged, "unbounded int BinOp {op:?} should be tagged");
+            }
+        }
     }
 }
 
@@ -352,15 +356,18 @@ fn list_insert_index_is_raw_i64() {
 }
 
 #[test]
-fn non_literal_range_stays_tagged() {
-    // A non-literal bound (`range(1, n)` with `n` a variable) is not range-proven,
+fn unprovable_range_bound_stays_tagged() {
+    // A range bound with no provable value (here a function parameter, unbounded
+    // by construction since param inference is out of scope) cannot be narrowed,
     // so the cursor must stay tagged — soundness over completeness (PITFALLS A6).
+    // (A module-level `n = 6` WOULD now narrow: the interval pass is strictly more
+    // precise than the deleted literal-only heuristic.)
     let i64r = Repr::Raw(RawKind::I64);
-    let p = lowered("n = 6\nfor i in range(1, n):\n    print(i)\n");
-    let f = main_fn(&p);
-    assert_eq!(locals_with_repr(f, &i64r), 0, "non-literal range cursor must stay tagged");
-    // And the guard compares tagged operands.
-    assert!(compare_operand_reprs(f).iter().all(|r| *r == Repr::Tagged));
+    let p = lowered("def f(n: int) -> None:\n    for i in range(1, n):\n        print(i)\nf(6)\n");
+    for f in &p.funcs {
+        assert_eq!(locals_with_repr(f, &i64r), 0, "an unprovable range cursor must stay tagged");
+        assert!(compare_operand_reprs(f).iter().all(|r| *r == Repr::Tagged));
+    }
 }
 
 // ── classes (Phase 5A) ──

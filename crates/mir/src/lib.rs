@@ -167,12 +167,16 @@ pub enum MirInst {
     /// mismatched tag instead of silently reinterpreting bits. Only legal for
     /// `(Tagged, Raw(F64))` and `(Tagged, Raw(I64))`.
     Coerce(CoerceInst),
-    /// A binary op on the tagged baseline. ALL ops (arithmetic *and* bitwise /
+    /// A binary op. On the tagged baseline ALL ops (arithmetic *and* bitwise /
     /// shift) take and produce `Tagged` and dispatch on the tag in the runtime
     /// (`rt_obj_*`), so they are bignum-safe: an `int` operand may dynamically be
     /// a heap `BigInt`, and unboxing it to a raw `i64` would be a silent
-    /// miscompile (Invariant 2). A range-proven raw fast path for bitwise/shift
-    /// is a Phase-3 optimization, not the correct default.
+    /// miscompile (Invariant 2). The unboxed fast paths (operands and `dst` share
+    /// one `Raw` repr, the verifier enforces it) are: `Raw(F64)` for
+    /// `Add`/`Sub`/`Mul`, and `Raw(I64)` for `Add`/`Sub`/`Mul`/`Mod`/`FloorDiv`
+    /// (Phase 3c) — each proven by typeck's interval pass (no i64 overflow, and a
+    /// statically-positive divisor for `Mod`/`FloorDiv`). A range-proven raw fast
+    /// path for bitwise/shift is a future optimization, not the correct default.
     BinOp {
         dst: LocalId,
         op: BinOp,

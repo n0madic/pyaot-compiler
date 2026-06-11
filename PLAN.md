@@ -203,6 +203,87 @@ lowering during Phase 5; benchmarks in `benchmarks/`, results in
 
 ---
 
+## Post-Phase-9 hardening backlog — lessons from the previous compiler
+
+Phase 9 closed the plan's definition of "working". What remains is a ranked
+backlog of items where the *previous* compiler is known to have gone wrong
+after this exact point — each entry names the old failure it guards against.
+None of these are gates; all of them are the places to be deliberate.
+
+1. **Raw-int loop specialization must be a `typeck` proof, never an optimizer
+   demotion pass.** The biggest remaining performance lever (`bench_int_loop`
+   0.47x, `bench_containers` 0.74x vs CPython) is Principle 3's narrowing (a):
+   `Tagged` int → `Raw(I64)` under a range/no-overflow proof. The old compiler
+   attempted this as post-lowering `mir_ty` narrowing in the optimizer four
+   times; three attempts caused mass regressions (198+ unbox mismatches) and
+   the surviving one needed a producer-proof side-set plus an `abi_immutable`
+   guard flag — both PITFALLS Part A smells. The proof (loop-bound range
+   analysis) belongs in `typeck` *before* lowering, so `legalize` emits the
+   raw representation natively and the verifier sees consistent `Repr` from
+   the start. If the implementation ever needs a "repair" sweep after the
+   fact, that is the signal the design is wrong — stop and move the proof
+   earlier.
+
+2. **Promote the MIR verifier to release builds at the final pre-codegen
+   boundary.** Today the verifier is `#[cfg(debug_assertions)]`-only
+   (`cli/main.rs`, `optimizer/lib.rs`); release builds compile with zero
+   representation checking. The old compiler started the same way and ended
+   with hard-error verification in *both* build profiles after release-only
+   miscompiles slipped through (its Stage G.1). Per-boundary verification can
+   stay debug-only; one mandatory hard-error pass at final-pre-codegen is
+   cheap (linear in MIR) and catches optimizer bugs where they are introduced
+   rather than as corpus SEGVs.
+
+3. **Defence-in-depth at the proof-trusted `Tagged → Heap` seam.** The
+   `TaggedToHeap` coercion is a bit-identical no-op justified entirely by a
+   `typeck` proof — which means any future inference bug surfaces as a SEGV
+   in the frozen runtime, not as a `TypeError`. This already happened once
+   (the Phase 8B–8F gradual-seam SEGV family: `join` on a non-list,
+   `urlencode` with non-str values, `environ.get` miss) and was fixed
+   correctly via checked coercions. Two cheap guards remain worth adding:
+   (a) a debug-runtime tag assert in the hot `rt_*` shape-dereferencing
+   entry points (the old compiler's `rt_*_abi` guards exist in the substrate
+   for exactly this reason — extend the pattern to the stdlib seam);
+   (b) keep every *new* gradual admission at a raw/heap ABI boundary on the
+   checked-`Coerce` path — never widen the verifier's two legal checked
+   shapes without a matching runtime guard.
+
+4. **Land MRO-aware nominal subtyping in the lattice before anything depends
+   on equality-only class joins.** `lattice.rs` still compares classes by
+   `id1 == id2` (TODO in-tree). In the old compiler the equivalent gap — class
+   joins collapsing to `Union`/`Any` instead of the common base — seeded the
+   entire class-field-widening cascade (six-pass harvester fixes, per-function
+   overlays). The C3 linearization already computed in `semantics` is the
+   single source of truth; wire `join(Class(a), Class(b))` to the nearest
+   common MRO ancestor while the consumer surface is still small.
+
+5. **String performance work must not re-open the byte/char model.**
+   `rt_str_len_int` and slicing are codepoint-correct but O(n) per call
+   (`bench_str` 0.36x). The acceptable fix is a cached char-length (and/or an
+   is-ASCII bit) in `StrObj` — a deliberate substrate extension under
+   Principle 8, like bignum. The unacceptable fix is any fast path that
+   reverts an operation to byte indexing: the old compiler shipped byte-`len`
+   / byte-slices / char-`s[i]` simultaneously, and the three-way inconsistency
+   was worse than either consistent model.
+
+6. **Exception hot path (0.15x) waits for table-based unwinding — not for a
+   faster setjmp.** The deferred Phase 7 follow-up (zero-cost unwinding +
+   real tracebacks) is the only fix that pays. Caching or hoisting setjmp
+   frames breaks the two documented constraints that already bit once
+   (PITFALLS B2 owned-message leaks, B3 dead-frame longjmp) for a constant
+   factor on a path that needs an asymptotic change.
+
+7. **Benchmark-gap pressure is the named adversary of Part A.** Every
+   side-table, marker bit, and parallel `rt_*_tagged` variant in the old
+   compiler was born as a quick win against a benchmark or a failing corpus
+   entry. The remaining gaps (`int_loop`, `str`, `containers`,
+   `exc_hotpath`) will generate exactly that pressure. The existing rule
+   stands and is restated here at the point of maximum temptation: before
+   adding a flag, side-table, or special case to win a benchmark, re-read
+   PITFALLS Part A — fix the representation or the constraint instead.
+
+---
+
 ## Cross-cutting
 
 - **Differential harness (Phase 1, used forever):** every corpus file is the

@@ -54,3 +54,15 @@
 |---|---|---|
 | libpyaot_runtime.a | 32042496 | 19267728 |
 | hello executable | 404808 | 355208 |
+
+## 2026-06-11 20:41 — 7770f1c — phase3c-raw-int
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.717110s | 0.338049s | 0.47x |
+| bench_float_kernel | 0.159214s | 0.364347s | 2.29x |
+| bench_calls | 0.568831s | 0.914232s | 1.61x |
+| bench_str | 0.337062s | 0.118460s | 0.35x |
+| bench_containers | 0.093405s | 0.169267s | 1.81x |
+| bench_exc_hotpath | 0.627176s | 0.116622s | 0.19x |
+| microgpt | 0.040722s | 0.044863s | 1.10x |

@@ -1343,7 +1343,9 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn alloc(&mut self, kind: HirExprKind, ty: SemTy, span: Span) -> Idx<HirExpr> {
-        self.exprs.alloc(HirExpr { kind, ty, span })
+        // `raw_int_ok` defaults to the always-correct tagged baseline; typeck's
+        // interval pass proves and sets it where sound (Phase 3c).
+        self.exprs.alloc(HirExpr { kind, ty, span, raw_int_ok: false })
     }
 
     /// Synthesize `lit0 + str(e0) + lit1 + str(e1) + ... + tail` — the
@@ -2233,18 +2235,13 @@ impl<'a> FnLowerer<'a> {
         let cursor = self.fresh_local(SemTy::Dyn);
         let stop_l = self.fresh_local(SemTy::Dyn);
 
-        // Phase 3c: a literal-bounded `range()` cursor provably stays in a small
-        // i64 sub-range, so the loop compare and increment can run on raw machine
-        // i64 (no tagging, no `rt_obj_*` call). Flag the cursor + stop slot; the
-        // loop variable `i` stays tagged (it is read in the body, where derived
-        // expressions like `i * i` could leave the proven range — PITFALLS A6).
-        // Lowering narrows the flagged slots to `Raw(I64)` only after typeck
-        // confirms they are `int`. Non-literal or out-of-bounds ranges stay
-        // tagged (the always-correct baseline).
-        if range_is_raw_int_eligible(&start, &stop, step) {
-            self.locals[cursor.index()].raw_int_ok = true;
-            self.locals[stop_l.index()].raw_int_ok = true;
-        }
+        // Phase 3c: the cursor / stop slot / induction variable `i` / derived
+        // body expressions are all left as plain tagged locals here. typeck's
+        // interval pass (`narrow_raw_ints`) runs a sound forward range analysis
+        // over the materialized CFG and flags every `int` slot — and every
+        // derived `int` BinOp — that provably stays within `±RAW_I64_NARROW_BOUND`
+        // with no i64 overflow, subsuming the old literal-`range()` heuristic and
+        // additionally narrowing `i` itself and body expressions like `i * 3 % k`.
 
         // cursor = start; stop_l = stop  (range args evaluated once).
         let s_idx = self.lower_range_arg(&start, span)?;
@@ -5754,24 +5751,6 @@ fn parse_range(iter: &Expr, span: Span) -> Result<(RangeArg<'_>, RangeArg<'_>, i
             Ok((RangeArg::Expr(&call.args[0]), RangeArg::Expr(&call.args[1]), step))
         }
         _ => Err(parse_error("range() takes 1 to 3 arguments", span)),
-    }
-}
-
-/// True iff `range(start, stop, step)` is a proof-gated `Raw(I64)`-eligible loop
-/// (Phase 3c): every bound is an integer literal whose magnitude is well within
-/// the conservative narrowing bound, so the cursor cannot overflow i64 or
-/// promote to a heap `BigInt`. Conservative and sound — any non-literal bound
-/// (or one out of range) makes the whole loop ineligible (stays tagged).
-fn range_is_raw_int_eligible(start: &RangeArg, stop: &RangeArg, step: i64) -> bool {
-    let bound = pyaot_types::RAW_I64_NARROW_BOUND;
-    let in_bound = |v: i64| v >= -bound && v <= bound;
-    let lit = |a: &RangeArg| match a {
-        RangeArg::Zero => Some(0i64),
-        RangeArg::Expr(e) => literal_int(e),
-    };
-    match (lit(start), lit(stop)) {
-        (Some(lo), Some(hi)) => in_bound(lo) && in_bound(hi) && in_bound(step),
-        _ => false,
     }
 }
 
