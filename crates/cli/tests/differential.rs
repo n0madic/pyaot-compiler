@@ -54,6 +54,9 @@ const PHASE_CORPUS: &[&str] = &[
     "p5_class_basic.py",
     // Phase 5B — inheritance, super(), C3 MRO, virtual dispatch, isinstance.
     "p5_inherit.py",
+    // MRO-aware nominal joins in the lattice (PLAN item 4): unannotated sibling
+    // joins resolve to the nearest common C3 ancestor instead of a Union.
+    "p5_mro_join.py",
     // Phase 5C — dunders: arithmetic / comparison / conversion / container.
     "p5_dunder_arith.py",
     "p5_dunder_container.py",

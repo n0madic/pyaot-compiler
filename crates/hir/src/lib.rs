@@ -1442,8 +1442,9 @@ impl ClassTable {
         self.get(cid).is_some_and(ClassInfo::is_exception_class)
     }
 
-    /// Nominal subtyping (D8): `a <: b` iff `b` appears in `a`'s MRO. Consulted in
-    /// `typeck`, never baked into the sealed `types` lattice.
+    /// Nominal subtyping (D8): `a <: b` iff `b` appears in `a`'s MRO. The lattice
+    /// consults this through the [`pyaot_types::ClassHierarchy`] env — the MRO
+    /// data lives only here, never duplicated into `types`.
     pub fn is_subclass(&self, a: ClassId, b: ClassId) -> bool {
         if a == b {
             return true;
@@ -1480,5 +1481,17 @@ impl ClassTable {
                 && d.mro.contains(&cid)
                 && d.own_methods.iter().any(|(n, _)| *n == name)
         })
+    }
+}
+
+/// The lattice's view of the class hierarchy: the C3 MRO computed by
+/// `semantics`. Unknown ids (e.g. builtin container `ClassId`s, which never
+/// enter the table) get an empty MRO, so they stay nominally unrelated.
+impl pyaot_types::ClassHierarchy for ClassTable {
+    fn mro(&self, c: ClassId) -> &[ClassId] {
+        self.get(c).map(|info| info.mro.as_slice()).unwrap_or(&[])
+    }
+    fn class_name(&self, c: ClassId) -> Option<InternedString> {
+        self.get(c).map(|info| info.name)
     }
 }

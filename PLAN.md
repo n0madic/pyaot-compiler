@@ -257,6 +257,15 @@ None of these are gates; all of them are the places to be deliberate.
    single source of truth; wire `join(Class(a), Class(b))` to the nearest
    common MRO ancestor while the consumer surface is still small.
 
+   **Status: DONE.** Every lattice operation now takes a `ClassHierarchy` env
+   (implemented by `ClassTable`, so the MRO data still lives only in `hir`):
+   `Class(a) <: Class(b)` iff `b ∈ mro(a)`, and union canonicalization merges
+   class members to their nearest common C3 ancestor (commutativity-guarded
+   under multiple inheritance; no-common-ancestor pairs still form a `Union`).
+   typeck's `nominal_subtype` shim is gone — the lattice covers its cases.
+   Corpus: `p5_mro_join.py` (unannotated sibling joins, diamond, base-typed
+   virtual dispatch).
+
 5. **String performance work must not re-open the byte/char model.**
    `rt_str_len_int` and slicing are codepoint-correct but O(n) per call
    (`bench_str` 0.36x). The acceptable fix is a cached char-length (and/or an

@@ -103,8 +103,10 @@ const WIDEN_LIMIT: usize = 16;
 /// One constraint system (see the module docs): per-function expr/local types,
 /// cross-function inferred return types, and promoted-global slot types are
 /// variables of the same lattice, solved by one round loop to convergence.
-/// Class field/method/return types and nominal subtyping are consulted through
-/// the [`ClassTable`] oracle (D4/D8), never baked into the sealed lattice.
+/// Class field/method/return types are consulted through the [`ClassTable`]
+/// oracle (D4); nominal subtyping is MRO-aware inside the lattice itself, which
+/// consults the same table through the `ClassHierarchy` env (D8) — the MRO data
+/// still lives only in [`ClassTable`].
 pub fn infer(
     module: &mut HirModule,
     resolve: &ResolveResult,
@@ -308,6 +310,7 @@ pub fn infer(
                     &main_writes,
                     &mut vars,
                     &mut moved_globals,
+                    classes,
                 );
             }
         }
@@ -318,8 +321,8 @@ pub fn infer(
             if *annotated || !dirty[i] {
                 continue;
             }
-            let lifted =
-                vars.ret_ty[i].join(&inferred_return_ty(&module.functions[i], &states[i]));
+            let lifted = vars.ret_ty[i]
+                .join(&inferred_return_ty(&module.functions[i], &states[i], classes), classes);
             if lifted != vars.ret_ty[i] {
                 vars.ret_moves[i] += 1;
                 // Widening: a return still climbing after WIDEN_LIMIT strict
@@ -432,7 +435,7 @@ pub fn infer(
     }
 
     for (idx, st) in states.iter().enumerate() {
-        materialize(&mut module.functions[idx], st);
+        materialize(&mut module.functions[idx], st, classes);
     }
     // Types are now materialized on every node; validate the unboxed-slot
     // boundaries before lowering can emit an unsound coercion.
@@ -495,7 +498,7 @@ fn move_field_tys(
             let Some(cid) = class_of(&bt, classes) else { continue };
             let Some(d) = defining_class(classes, cid, *name) else { continue };
             let Some(&vi) = field_vars.get(&(d, *name)) else { continue };
-            let vt = erase_vars(&st.ety(*value));
+            let vt = erase_vars(&st.ety(*value), classes);
             if vt == SemTy::Never {
                 continue;
             }
@@ -515,7 +518,8 @@ fn move_field_tys(
             continue;
         }
         let tys = &contribs[vi];
-        let joined = raw_uniform(tys.iter().fold(SemTy::Never, |acc, t| acc.join(t)), tys);
+        let joined =
+            raw_uniform(tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes)), tys);
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the variable stays at bottom
         }
@@ -553,12 +557,14 @@ fn move_global_tys(
     main_writes: &[bool],
     vars: &mut ModuleVars,
     moved: &mut [bool],
+    classes: &ClassTable,
 ) {
     for vid in 0..vars.global_ty.len() {
         if vars.global_pinned[vid] || demoted[vid] || authoritative[vid] || !main_writes[vid] {
             continue;
         }
-        let joined = erase_vars(&main_st.join_writes(&main_st.global_writes[vid]));
+        let joined =
+            erase_vars(&main_st.join_writes(&main_st.global_writes[vid], classes), classes);
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the slot stays at bottom
         }
@@ -607,16 +613,16 @@ fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
 /// result is [`raw_uniform`]-guarded: a function returning both `2.25` and
 /// `16` must NOT get a `Raw(F64)` return ABI (the int return would be
 /// blindly unboxed at the boundary) — it demotes to `Dyn`.
-fn inferred_return_ty(func: &HirFunction, st: &FuncState) -> SemTy {
+fn inferred_return_ty(func: &HirFunction, st: &FuncState, classes: &ClassTable) -> SemTy {
     let mut contribs: Vec<SemTy> = Vec::new();
     for (_b, block) in func.blocks.iter() {
         match &block.term {
-            HirTerminator::Return(Some(v)) => contribs.push(erase_vars(&st.ety(*v))),
+            HirTerminator::Return(Some(v)) => contribs.push(erase_vars(&st.ety(*v), classes)),
             HirTerminator::Return(None) => contribs.push(SemTy::NoneTy),
             _ => {}
         }
     }
-    let joined = contribs.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+    let joined = contribs.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes));
     raw_uniform(joined, &contribs)
 }
 
@@ -1075,8 +1081,7 @@ fn check_reinterpret(
         }
         _ => {
             value.ty == SemTy::Never
-                || value.ty.is_subtype_of(target)
-                || nominal_subtype(&value.ty, target, classes)
+                || value.ty.is_subtype_of(target, classes)
                 || (kind == ReinterpretKind::Gradual && value.ty == SemTy::Dyn)
         }
     };
@@ -1105,37 +1110,6 @@ fn check_reinterpret(
         ),
         value.span,
     ))
-}
-
-/// Nominal subtyping via the [`ClassTable`] oracle (D8): consulted here rather
-/// than baked into the sealed `types` lattice (`Class = id1 == id2`). Beyond the
-/// base case (`target` in `value`'s MRO) this also closes the cases the
-/// nominal-unaware lattice misses: covariant container elements (`list[Dog] <:
-/// list[Animal]`) and a union of subclasses (`Union[Dog, Cat] <: Animal`, which
-/// is how a mixed `[Dog(), Cat()]` literal types).
-fn nominal_subtype(value: &SemTy, target: &SemTy, classes: &ClassTable) -> bool {
-    // A single element is assignable if the lattice already says so, or nominally.
-    let elem_ok = |v: &SemTy, t: &SemTy| {
-        *v == SemTy::Never
-            || *t == SemTy::Dyn
-            || v.is_subtype_of(t)
-            || nominal_subtype(v, t, classes)
-    };
-    match (value, target) {
-        (SemTy::Class { class_id: a, .. }, SemTy::Class { class_id: b, .. }) => {
-            classes.is_subclass(*a, *b)
-        }
-        // A union is assignable iff every member is.
-        (SemTy::Union(members), _) => members.iter().all(|m| elem_ok(m, target)),
-        // Covariant same-base generic containers (element-wise).
-        (
-            SemTy::Generic { base: b1, args: a1 },
-            SemTy::Generic { base: b2, args: a2 },
-        ) if b1 == b2 && a1.len() == a2.len() => {
-            a1.iter().zip(a2.iter()).all(|(x, y)| elem_ok(x, y))
-        }
-        _ => false,
-    }
 }
 
 /// A short Python-facing name for a `SemTy` (best-effort, for diagnostics).
@@ -1381,11 +1355,11 @@ impl FuncState {
     /// identity, so a bottom contributor is correctly ignored by dependents;
     /// an injected `Dyn` would instead absorb and poison them irreversibly.
     /// Genuinely-unconstrained slots are mapped to `Dyn` once, in materialize.
-    fn join_writes(&self, writes: &[Idx<HirExpr>]) -> SemTy {
+    fn join_writes(&self, writes: &[Idx<HirExpr>], classes: &ClassTable) -> SemTy {
         // The Raw-uniformity discipline (PITFALLS A2/B6) lives in
         // [`raw_uniform`], shared with element-slot and return-type joins.
         let tys: Vec<SemTy> = writes.iter().map(|&v| self.ety(v)).collect();
-        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes));
         raw_uniform(joined, &tys)
     }
 
@@ -1398,10 +1372,10 @@ impl FuncState {
     /// guarded independently: `xs = [2.25]; xs.append(16)` must not leave a
     /// `Raw(F64)` element slot holding a tagged int — the slot demotes to
     /// `Dyn` (elements stay `Tagged`).
-    fn join_local_writes(&self, writes: &[Write]) -> SemTy {
+    fn join_local_writes(&self, writes: &[Write], classes: &ClassTable) -> SemTy {
         let vals: Vec<Idx<HirExpr>> =
             writes.iter().filter_map(|w| match w { Write::Val(v) => Some(*v), _ => None }).collect();
-        let base = self.join_writes(&vals);
+        let base = self.join_writes(&vals, classes);
         if base == SemTy::Never || base == SemTy::Dyn {
             return base;
         }
@@ -1439,7 +1413,7 @@ impl FuncState {
                 }
                 Write::PushIter(it) => {
                     if is_list || is_set {
-                        elems.push(iter_elem_ty(&self.ety(*it)));
+                        elems.push(iter_elem_ty(&self.ety(*it), classes));
                     }
                 }
                 Write::Insert(k, v) => {
@@ -1454,7 +1428,7 @@ impl FuncState {
             }
         }
         let join_slot = |tys: &[SemTy]| {
-            let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+            let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes));
             raw_uniform(joined, tys)
         };
         if is_list {
@@ -1535,7 +1509,7 @@ impl<'a> Sweeper<'a> {
                 }
                 // Recompute the local from its assigned values, applying the
                 // `Raw`-repr soundness guard (see the module docs).
-                let new = self.st.join_local_writes(&self.st.assignments[i]);
+                let new = self.st.join_local_writes(&self.st.assignments[i], self.classes);
                 if self.st.local_ty[i] != new {
                     self.st.local_ty[i] = new;
                     changed = true;
@@ -1600,7 +1574,7 @@ impl<'a> Sweeper<'a> {
                 if it == SemTy::Never {
                     return SemTy::Never;
                 }
-                let elem = iter_elem_ty(&it);
+                let elem = iter_elem_ty(&it, self.classes);
                 let start_ty = match start {
                     Some(s) => self.ety(*s),
                     None => SemTy::Int,
@@ -1612,7 +1586,7 @@ impl<'a> Sweeper<'a> {
                     let mut joined = SemTy::Never;
                     for d in ["__add__", "__radd__"] {
                         if let Some(t) = self.class_dunder_ret(&elem, d) {
-                            joined = joined.join(&t);
+                            joined = joined.join(&t, self.classes);
                         }
                     }
                     return if joined == SemTy::Never { SemTy::Dyn } else { joined };
@@ -1638,8 +1612,14 @@ impl<'a> Sweeper<'a> {
                 // elements — stored values keep their own representation.
                 let kt: Vec<SemTy> = pairs.iter().map(|(k, _)| self.ety(*k)).collect();
                 let vt: Vec<SemTy> = pairs.iter().map(|(_, v)| self.ety(*v)).collect();
-                let k = raw_uniform(kt.iter().fold(SemTy::Never, |acc, t| acc.join(t)), &kt);
-                let v = raw_uniform(vt.iter().fold(SemTy::Never, |acc, t| acc.join(t)), &vt);
+                let k = raw_uniform(
+                    kt.iter().fold(SemTy::Never, |acc, t| acc.join(t, self.classes)),
+                    &kt,
+                );
+                let v = raw_uniform(
+                    vt.iter().fold(SemTy::Never, |acc, t| acc.join(t, self.classes)),
+                    &vt,
+                );
                 SemTy::dict_of(k, v)
             }
             HirExprKind::BytesLit(_) => SemTy::Bytes,
@@ -1742,7 +1722,7 @@ impl<'a> Sweeper<'a> {
                     // frontend (the slot itself is a pin_tagged cell pointer).
                     l.ty.clone()
                 } else {
-                    self.st.join_writes(&self.st.cell_writes[cell.index()])
+                    self.st.join_writes(&self.st.cell_writes[cell.index()], self.classes)
                 }
             }
             // ── generators (Phase 6E) ──
@@ -1769,7 +1749,7 @@ impl<'a> Sweeper<'a> {
                 } else if self.global_demoted.get(vid).copied().unwrap_or(false) {
                     SemTy::Dyn
                 } else if !self.st.global_writes[vid].is_empty() {
-                    self.st.join_writes(&self.st.global_writes[vid])
+                    self.st.join_writes(&self.st.global_writes[vid], self.classes)
                 } else {
                     self.global_slot_ty(vid)
                 }
@@ -1944,7 +1924,7 @@ impl<'a> Sweeper<'a> {
     /// stored tagged int.
     fn join_all(&self, elems: &[Idx<HirExpr>]) -> SemTy {
         let tys: Vec<SemTy> = elems.iter().map(|e| self.ety(*e)).collect();
-        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
         raw_uniform(joined, &tys)
     }
 
@@ -1980,7 +1960,7 @@ impl<'a> Sweeper<'a> {
                     return elems[idx as usize].clone();
                 }
             }
-            return elems.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+            return elems.iter().fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
         }
         if let Some(e) = bt.tuple_var_elem() {
             return e.clone();
@@ -2006,7 +1986,7 @@ impl<'a> Sweeper<'a> {
             return SemTy::tuple_var_of(e.clone());
         }
         if let Some(elems) = bt.tuple_elems() {
-            let joined = elems.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+            let joined = elems.iter().fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
             return SemTy::tuple_var_of(joined);
         }
         match bt {
@@ -2025,7 +2005,7 @@ impl<'a> Sweeper<'a> {
         match op {
             C::Len => SemTy::Int,
             C::Contains | C::ListCmp(_) | C::TupleCmp(_) | C::IterExhausted => SemTy::Bool,
-            C::Iter => SemTy::Iterator(Box::new(iter_elem_ty(&arg0()))),
+            C::Iter => SemTy::Iterator(Box::new(iter_elem_ty(&arg0(), self.classes))),
             C::IterNext => match arg0() {
                 SemTy::Iterator(elem) => *elem,
                 // `Never` is the in-progress bottom (the iterator's type is not yet
@@ -2038,23 +2018,26 @@ impl<'a> Sweeper<'a> {
             // ── iteration builtins (the arg is the *iterable*; lowering wraps it) ──
             C::Enumerate => SemTy::Iterator(Box::new(SemTy::tuple_of(vec![
                 SemTy::Int,
-                iter_elem_ty(&arg0()),
+                iter_elem_ty(&arg0(), self.classes),
             ]))),
             C::Zip => {
-                let a = iter_elem_ty(&arg0());
-                let b = args.get(1).map(|x| iter_elem_ty(&self.ety(*x))).unwrap_or(SemTy::Dyn);
+                let a = iter_elem_ty(&arg0(), self.classes);
+                let b = args
+                    .get(1)
+                    .map(|x| iter_elem_ty(&self.ety(*x), self.classes))
+                    .unwrap_or(SemTy::Dyn);
                 SemTy::Iterator(Box::new(SemTy::tuple_of(vec![a, b])))
             }
-            C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0())),
-            C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0())),
-            C::DictFromPairs => match iter_elem_ty(&arg0()).tuple_elems() {
+            C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
+            C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0(), self.classes)),
+            C::DictFromPairs => match iter_elem_ty(&arg0(), self.classes).tuple_elems() {
                 // `dict([(k, v), …])` — the element is a 2-tuple of (key, value).
                 Some(kv) if kv.len() == 2 => SemTy::dict_of(kv[0].clone(), kv[1].clone()),
                 _ => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
             },
             C::BytesFromList => SemTy::Bytes,
-            C::Sorted => SemTy::list_of(iter_elem_ty(&arg0())),
-            C::Reversed => SemTy::Iterator(Box::new(iter_elem_ty(&arg0()))),
+            C::Sorted => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
+            C::Reversed => SemTy::Iterator(Box::new(iter_elem_ty(&arg0(), self.classes))),
             // ── ops the Phase-7E match desugar emits directly ──
             C::DictGet | C::DictPopM => {
                 let a = arg0();
@@ -2156,13 +2139,15 @@ impl<'a> Sweeper<'a> {
                 } else if is_int_like(&l) && is_sequence(&r) {
                     r
                 } else {
-                    l.join(&r)
+                    l.join(&r, self.classes)
                 }
             }
             // `+` over two same-base containers already joins to that container
             // (covariant lattice join), so list/tuple/bytes concatenation types
             // correctly without a special case.
-            BinOp::Add | BinOp::Sub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => l.join(&r),
+            BinOp::Add | BinOp::Sub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
+                l.join(&r, self.classes)
+            }
             // Python 3 true division always yields `float` for numeric operands
             // (`7 / 2 == 3.5`).
             BinOp::Div => {
@@ -2181,7 +2166,7 @@ impl<'a> Sweeper<'a> {
                 } else if l == SemTy::Never || r == SemTy::Never {
                     SemTy::Never
                 } else {
-                    l.join(&r)
+                    l.join(&r, self.classes)
                 }
             }
         }
@@ -2328,8 +2313,8 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
 /// — `f = []` then `f.append(...)` keeps `list[Never]`) yields **`Dyn`**, since at
 /// runtime it holds tagged values of unknown type, not a bottom that would wrongly
 /// type a `min`/`max` result as `None` (and print "None" without reading it).
-fn iter_elem_ty(t: &SemTy) -> SemTy {
-    let elem = iter_elem_raw(t);
+fn iter_elem_ty(t: &SemTy, classes: &ClassTable) -> SemTy {
+    let elem = iter_elem_raw(t, classes);
     if elem == SemTy::Never && *t != SemTy::Never {
         SemTy::Dyn
     } else {
@@ -2337,7 +2322,7 @@ fn iter_elem_ty(t: &SemTy) -> SemTy {
     }
 }
 
-fn iter_elem_raw(t: &SemTy) -> SemTy {
+fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
     if let Some(e) = t.list_elem() {
         return e.clone();
     }
@@ -2348,7 +2333,7 @@ fn iter_elem_raw(t: &SemTy) -> SemTy {
         return e.clone();
     }
     if let Some(elems) = t.tuple_elems() {
-        return elems.iter().fold(SemTy::Never, |acc, x| acc.join(x));
+        return elems.iter().fold(SemTy::Never, |acc, x| acc.join(x, classes));
     }
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
@@ -2373,25 +2358,28 @@ fn iter_elem_raw(t: &SemTy) -> SemTy {
 /// without instantiation args (a bare `Stack()`) leaves `Var`s the codegen has no
 /// representation for (5E). `repr_of(Var)` is already `Tagged`, so this is a
 /// clarity/soundness belt rather than a correctness requirement.
-fn erase_vars(ty: &SemTy) -> SemTy {
+fn erase_vars(ty: &SemTy, classes: &ClassTable) -> SemTy {
     if !ty.contains_var() {
         return ty.clone();
     }
     match ty {
         SemTy::Var(_) => SemTy::Dyn,
-        SemTy::Generic { base, args } => {
-            SemTy::Generic { base: *base, args: args.iter().map(erase_vars).collect() }
-        }
-        SemTy::Iterator(t) => SemTy::Iterator(Box::new(erase_vars(t))),
+        SemTy::Generic { base, args } => SemTy::Generic {
+            base: *base,
+            args: args.iter().map(|a| erase_vars(a, classes)).collect(),
+        },
+        SemTy::Iterator(t) => SemTy::Iterator(Box::new(erase_vars(t, classes))),
         // Re-join union members through the lattice so an erased `Dyn` absorbs.
-        SemTy::Union(ts) => ts.iter().fold(SemTy::Never, |acc, t| acc.join(&erase_vars(t))),
+        SemTy::Union(ts) => {
+            ts.iter().fold(SemTy::Never, |acc, t| acc.join(&erase_vars(t, classes), classes))
+        }
         other => other.clone(),
     }
 }
 
-fn materialize(func: &mut HirFunction, st: &FuncState) {
+fn materialize(func: &mut HirFunction, st: &FuncState, classes: &ClassTable) {
     for (i, local) in func.locals.iter_mut().enumerate() {
-        let ty = erase_vars(&st.local_ty[i]);
+        let ty = erase_vars(&st.local_ty[i], classes);
         let ty = &ty;
         if *ty != SemTy::Never {
             local.ty = ty.clone();
@@ -2405,7 +2393,7 @@ fn materialize(func: &mut HirFunction, st: &FuncState) {
     }
     for (idx, expr) in func.exprs.iter_mut() {
         if let Some(ty) = st.expr_ty.get(&idx) {
-            let ty = erase_vars(ty);
+            let ty = erase_vars(ty, classes);
             if ty != SemTy::Never {
                 expr.ty = ty;
             }

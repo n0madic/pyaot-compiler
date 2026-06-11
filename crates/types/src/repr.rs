@@ -176,7 +176,7 @@ pub fn sig_repr(sig: &Sig) -> SigRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::TypeLattice;
+    use crate::lattice::{NoClasses, TypeLattice};
 
     fn callable(params: Vec<SemTy>, ret: SemTy) -> SemTy {
         SemTy::Callable(Box::new(Sig::fixed(params, ret)))
@@ -203,8 +203,8 @@ mod tests {
         // join is the gradual top, so the slot stays Tagged (Phase 6A).
         let a = callable(vec![SemTy::Int], SemTy::Int);
         let b = callable(vec![SemTy::Str, SemTy::Str], SemTy::Str);
-        assert_eq!(a.join(&b), SemTy::Dyn);
+        assert_eq!(a.join(&b, &NoClasses), SemTy::Dyn);
         // The same signature joins to itself.
-        assert_eq!(a.join(&a), a);
+        assert_eq!(a.join(&a, &NoClasses), a);
     }
 }
