@@ -88,7 +88,15 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
         }
         TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj) as u64,
         TypeTagKind::None => 0, // CPython: hash(None) == 0
-        _ => 0,                 // Unhashable types return 0
+        // Identity-equality heap objects (class instances, files, closures,
+        // …): `eq_hashable_obj` compares them by pointer (its `_ => a == b`
+        // arm), so the pointer is the correct hash — and the GC is
+        // non-moving mark-sweep, so it is stable for the object's lifetime.
+        // Matches CPython's id()-based default object hash. The previous
+        // constant 0 degenerated an instance-keyed set/dict into a linear
+        // probe chain per operation (microgpt's backward() visited-set went
+        // O(n^2) — Phase 9 profile: 85% of runtime under eq_hashable_obj).
+        _ => hash_int(obj as i64),
     }
 }
 
