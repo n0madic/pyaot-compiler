@@ -71,7 +71,11 @@ fn has_box_float(f: &MirFunction) -> bool {
 fn float_add_sub_mul_lower_unboxed() {
     // `+ - *` over floats must lower to Raw(F64) BinOps with NO float boxing.
     let f64 = Repr::Raw(RawKind::F64);
-    for src in ["print(3.0 + 1.5)\n", "print(3.0 - 1.5)\n", "print(3.0 * 1.5)\n"] {
+    for src in [
+        "print(3.0 + 1.5)\n",
+        "print(3.0 - 1.5)\n",
+        "print(3.0 * 1.5)\n",
+    ] {
         let p = lowered(src);
         let f = main_fn(&p);
         let binops = binops_with_repr(f);
@@ -88,8 +92,9 @@ fn float_accumulator_loop_is_unboxed() {
     // `acc = acc + 1.5` across a loop: the add is Raw(F64), no boxing in the body.
     let p = lowered("acc = 0.0\nfor i in range(5):\n    acc = acc + 1.5\nprint(acc)\n");
     let f = main_fn(&p);
-    assert!(binops_with_repr(f).iter().any(|(op, r)| *op == BinOp::Add
-        && *r == Repr::Raw(RawKind::F64)));
+    assert!(binops_with_repr(f)
+        .iter()
+        .any(|(op, r)| *op == BinOp::Add && *r == Repr::Raw(RawKind::F64)));
     assert!(!has_box_float(f), "float accumulation must not box");
 }
 
@@ -98,7 +103,10 @@ fn float_division_stays_tagged() {
     // `/` is NOT specialized (CPython `x/0.0` raises; we keep tagged semantics).
     let p = lowered("print(7.0 / 2.0)\n");
     let f = main_fn(&p);
-    let divs: Vec<_> = binops_with_repr(f).into_iter().filter(|(op, _)| *op == BinOp::Div).collect();
+    let divs: Vec<_> = binops_with_repr(f)
+        .into_iter()
+        .filter(|(op, _)| *op == BinOp::Div)
+        .collect();
     assert_eq!(divs.len(), 1, "expected one Div");
     assert_eq!(divs[0].1, Repr::Tagged, "float division must stay tagged");
 }
@@ -112,7 +120,11 @@ fn unprovable_int_arithmetic_stays_tagged() {
     for f in &p.funcs {
         for (op, r) in binops_with_repr(f) {
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
-                assert_eq!(r, Repr::Tagged, "unbounded int BinOp {op:?} should be tagged");
+                assert_eq!(
+                    r,
+                    Repr::Tagged,
+                    "unbounded int BinOp {op:?} should be tagged"
+                );
             }
         }
     }
@@ -124,8 +136,14 @@ fn mixed_int_float_add_stays_tagged() {
     // int/float falls back to the tagged baseline (the runtime promotes).
     let p = lowered("print(3 + 1.5)\n");
     let f = main_fn(&p);
-    let adds: Vec<_> = binops_with_repr(f).into_iter().filter(|(op, _)| *op == BinOp::Add).collect();
-    assert!(adds.iter().any(|(_, r)| *r == Repr::Tagged), "mixed add must be tagged");
+    let adds: Vec<_> = binops_with_repr(f)
+        .into_iter()
+        .filter(|(op, _)| *op == BinOp::Add)
+        .collect();
+    assert!(
+        adds.iter().any(|(_, r)| *r == Repr::Tagged),
+        "mixed add must be tagged"
+    );
 }
 
 /// Count locals declared with `repr` in `f`.
@@ -139,8 +157,11 @@ fn compare_operand_reprs(f: &MirFunction) -> Vec<Repr> {
         .iter()
         .flat_map(|b| &b.insts)
         .filter_map(|i| match i {
-            MirInst::Compare { l: Operand::Local(id), .. } => Some(f.locals[id.index()].repr.clone()),
-        _ => None,
+            MirInst::Compare {
+                l: Operand::Local(id),
+                ..
+            } => Some(f.locals[id.index()].repr.clone()),
+            _ => None,
         })
         .collect()
 }
@@ -154,7 +175,10 @@ fn literal_bounded_range_cursor_is_raw_i64() {
     let p = lowered("total = 0\nfor i in range(1, 6):\n    total = total + i\nprint(total)\n");
     let f = main_fn(&p);
     // The cursor + stop slots (and the raw arithmetic temporaries they spawn).
-    assert!(locals_with_repr(f, &i64r) >= 2, "cursor and stop should be Raw(I64)");
+    assert!(
+        locals_with_repr(f, &i64r) >= 2,
+        "cursor and stop should be Raw(I64)"
+    );
     // The loop guard compares raw i64 operands.
     assert!(
         compare_operand_reprs(f).contains(&i64r),
@@ -162,12 +186,16 @@ fn literal_bounded_range_cursor_is_raw_i64() {
     );
     // The cursor increment is a raw i64 Add.
     assert!(
-        binops_with_repr(f).iter().any(|(op, r)| *op == BinOp::Add && *r == i64r),
+        binops_with_repr(f)
+            .iter()
+            .any(|(op, r)| *op == BinOp::Add && *r == i64r),
         "cursor increment should be a Raw(I64) Add"
     );
     // The accumulator stays tagged (bignum-safe).
     assert!(
-        binops_with_repr(f).iter().any(|(op, r)| *op == BinOp::Add && *r == Repr::Tagged),
+        binops_with_repr(f)
+            .iter()
+            .any(|(op, r)| *op == BinOp::Add && *r == Repr::Tagged),
         "the accumulator add must stay tagged"
     );
 }
@@ -202,8 +230,14 @@ fn list_literal_lowers_to_new_plus_pushes() {
     let p = lowered("xs = [1, 2]\nprint(xs[0])\n");
     let f = main_fn(&p);
     let ops = container_ops(f);
-    assert_eq!(ops.iter().filter(|o| **o == ContainerOp::ListNew).count(), 1);
-    assert_eq!(ops.iter().filter(|o| **o == ContainerOp::ListPush).count(), 2);
+    assert_eq!(
+        ops.iter().filter(|o| **o == ContainerOp::ListNew).count(),
+        1
+    );
+    assert_eq!(
+        ops.iter().filter(|o| **o == ContainerOp::ListPush).count(),
+        2
+    );
     assert!(
         locals_with_repr(f, &Repr::Heap(HeapShape::List(Box::new(Repr::Tagged)))) >= 1,
         "the list local should be Heap(List(Tagged))"
@@ -251,7 +285,9 @@ fn general_for_uses_iterator_protocol_in_order() {
     let ops = container_ops(f);
     assert!(ops.contains(&ContainerOp::Iter));
     assert!(
-        f.locals.iter().any(|l| matches!(l.repr, Repr::Heap(HeapShape::Iterator(_)))),
+        f.locals
+            .iter()
+            .any(|l| matches!(l.repr, Repr::Heap(HeapShape::Iterator(_)))),
         "iterator local should be Heap(Iterator)"
     );
     // Within the header block, IterNext precedes IterExhausted (runtime contract).
@@ -270,8 +306,14 @@ fn general_for_uses_iterator_protocol_in_order() {
             ops.contains(&ContainerOp::IterNext).then_some(ops)
         })
         .expect("a block with IterNext");
-    let next_pos = header_ops.iter().position(|o| *o == ContainerOp::IterNext).unwrap();
-    let exh_pos = header_ops.iter().position(|o| *o == ContainerOp::IterExhausted).unwrap();
+    let next_pos = header_ops
+        .iter()
+        .position(|o| *o == ContainerOp::IterNext)
+        .unwrap();
+    let exh_pos = header_ops
+        .iter()
+        .position(|o| *o == ContainerOp::IterExhausted)
+        .unwrap();
     assert!(next_pos < exh_pos, "IterNext must precede IterExhausted");
 }
 
@@ -288,7 +330,9 @@ fn list_comprehension_reuses_push_and_iterator_protocol() {
     assert!(ops.contains(&ContainerOp::Iter));
     assert!(ops.contains(&ContainerOp::IterNext));
     assert!(
-        f.locals.iter().any(|l| matches!(l.repr, Repr::Heap(HeapShape::List(_)))),
+        f.locals
+            .iter()
+            .any(|l| matches!(l.repr, Repr::Heap(HeapShape::List(_)))),
         "comprehension result should be a Heap(List)"
     );
 }
@@ -327,9 +371,8 @@ fn list_methods_dispatch_by_receiver() {
 
 #[test]
 fn dict_and_set_methods_dispatch_by_receiver() {
-    let p = lowered(
-        "d = {\"a\": 1}\nv = d.get(\"a\")\ns = {1}\ns.add(2)\nprint(v)\nprint(len(s))\n",
-    );
+    let p =
+        lowered("d = {\"a\": 1}\nv = d.get(\"a\")\ns = {1}\ns.add(2)\nprint(v)\nprint(len(s))\n");
     let ops = container_ops(main_fn(&p));
     assert!(ops.contains(&ContainerOp::DictGetDefault));
     assert!(ops.contains(&ContainerOp::SetAdd));
@@ -347,7 +390,11 @@ fn list_insert_index_is_raw_i64() {
         .iter()
         .flat_map(|b| &b.insts)
         .find_map(|i| match i {
-            MirInst::CallContainer { op: ContainerOp::ListInsert, args, .. } => Some(args.clone()),
+            MirInst::CallContainer {
+                op: ContainerOp::ListInsert,
+                args,
+                ..
+            } => Some(args.clone()),
             _ => None,
         })
         .expect("a ListInsert instruction");
@@ -365,7 +412,11 @@ fn unprovable_range_bound_stays_tagged() {
     let i64r = Repr::Raw(RawKind::I64);
     let p = lowered("def f(n: int) -> None:\n    for i in range(1, n):\n        print(i)\nf(6)\n");
     for f in &p.funcs {
-        assert_eq!(locals_with_repr(f, &i64r), 0, "an unprovable range cursor must stay tagged");
+        assert_eq!(
+            locals_with_repr(f, &i64r),
+            0,
+            "an unprovable range cursor must stay tagged"
+        );
         assert!(compare_operand_reprs(f).iter().all(|r| *r == Repr::Tagged));
     }
 }
@@ -401,9 +452,14 @@ fn construction_lowers_to_make_instance_then_init_call() {
         _ => None,
     });
     let (dst, cid) = mk.expect("a MakeInstance");
-    assert_eq!(f.locals[dst.index()].repr, Repr::Heap(HeapShape::Class(cid)));
+    assert_eq!(
+        f.locals[dst.index()].repr,
+        Repr::Heap(HeapShape::Class(cid))
+    );
     // __init__ is a direct Call right after construction (devirtualized, dst None).
-    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { dst: None, .. })));
+    assert!(insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::Call { dst: None, .. })));
 }
 
 #[test]
@@ -427,18 +483,31 @@ fn field_write_is_setfield_with_tagged_value() {
     let init = p
         .funcs
         .iter()
-        .find(|f| f.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, MirInst::SetField { .. })))
+        .find(|f| {
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .any(|i| matches!(i, MirInst::SetField { .. }))
+        })
         .expect("a function with SetField (the __init__)");
     let sf = init
         .blocks
         .iter()
         .flat_map(|b| &b.insts)
         .find_map(|i| match i {
-            MirInst::SetField { value: Operand::Local(v), base: Operand::Local(b), .. } => Some((*b, *v)),
+            MirInst::SetField {
+                value: Operand::Local(v),
+                base: Operand::Local(b),
+                ..
+            } => Some((*b, *v)),
             _ => None,
         })
         .expect("a SetField");
-    assert_eq!(init.locals[sf.1.index()].repr, Repr::Tagged, "field value is Tagged");
+    assert_eq!(
+        init.locals[sf.1.index()].repr,
+        Repr::Tagged,
+        "field value is Tagged"
+    );
     // The base is a valid instance operand: Heap(Class) (the `self` param) or Tagged.
     assert!(matches!(
         init.locals[sf.0.index()].repr,
@@ -453,7 +522,9 @@ fn method_call_is_devirtualized_direct_call() {
     let p = lowered(CLASS_SRC);
     let f = main_fn(&p);
     // A Call with a dst (area returns int → Tagged) referencing a user method.
-    assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { dst: Some(_), .. })));
+    assert!(insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::Call { dst: Some(_), .. })));
 }
 
 #[test]
@@ -495,7 +566,10 @@ fn has_call_virtual(p: &MirProgram) -> bool {
 fn overridden_method_dispatches_virtually() {
     // `a.speak()` where `a: Animal` and `speak` is overridden by `Dog` → CallVirtual.
     let p = lowered(INHERIT_SRC);
-    assert!(has_call_virtual(&p), "an overridden method must use virtual dispatch");
+    assert!(
+        has_call_virtual(&p),
+        "an overridden method must use virtual dispatch"
+    );
 }
 
 #[test]
@@ -550,7 +624,10 @@ x = Widget(3)
 print(x.area())
 ";
     let p = lowered(src);
-    assert!(!has_call_virtual(&p), "a non-overridden method must devirtualize");
+    assert!(
+        !has_call_virtual(&p),
+        "a non-overridden method must devirtualize"
+    );
 }
 
 // ── dunders (Phase 5C) ──
@@ -620,9 +697,13 @@ fn print_instance_routes_to_repr_dunder() {
     let p = lowered(DUNDER_SRC);
     let f = main_fn(&p);
     // A Print(StrObj) fed by a Call result (the __repr__ dispatch).
-    assert!(insts(f)
-        .iter()
-        .any(|i| matches!(i, MirInst::Print { kind: pyaot_mir::PrintKind::StrObj, .. })));
+    assert!(insts(f).iter().any(|i| matches!(
+        i,
+        MirInst::Print {
+            kind: pyaot_mir::PrintKind::StrObj,
+            ..
+        }
+    )));
 }
 
 // ── decorators + class attributes (Phase 5D) ──
@@ -658,8 +739,12 @@ T.scale = \"k\"
 fn class_attr_get_set_lowered() {
     let p = lowered(DECO_SRC);
     let f = main_fn(&p);
-    assert!(insts(f).iter().any(|i| matches!(i, MirInst::GetClassAttr { .. })));
-    assert!(insts(f).iter().any(|i| matches!(i, MirInst::SetClassAttr { .. })));
+    assert!(insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::GetClassAttr { .. })));
+    assert!(insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::SetClassAttr { .. })));
     // The class attribute initializer is recorded for classinit.
     assert!(p.classes.iter().any(|c| !c.class_attr_inits.is_empty()));
 }
@@ -671,7 +756,9 @@ fn property_getter_setter_are_calls() {
     let p = lowered(DECO_SRC);
     let f = main_fn(&p);
     // No GetField/SetField in __main__ (only the property/method bodies do field IO).
-    assert!(!insts(f).iter().any(|i| matches!(i, MirInst::GetField { .. } | MirInst::SetField { .. })));
+    assert!(!insts(f)
+        .iter()
+        .any(|i| matches!(i, MirInst::GetField { .. } | MirInst::SetField { .. })));
     assert!(insts(f).iter().any(|i| matches!(i, MirInst::Call { .. })));
 }
 
@@ -680,7 +767,10 @@ fn static_and_class_methods_drop_receiver() {
     // `T.zero()` (static) and `T.unit()` (class) take no self/cls argument.
     let p = lowered(DECO_SRC);
     // The static method `zero` has zero parameters; the classmethod `unit` too.
-    let zero = p.funcs.iter().find(|f| f.params.is_empty() && f.ret == Repr::Raw(RawKind::F64));
+    let zero = p
+        .funcs
+        .iter()
+        .find(|f| f.params.is_empty() && f.ret == Repr::Raw(RawKind::F64));
     assert!(zero.is_some(), "the @staticmethod must have no parameters");
 }
 
@@ -688,7 +778,12 @@ fn static_and_class_methods_drop_receiver() {
 
 /// Count instructions matching a predicate across every function.
 fn count_insts(p: &MirProgram, pred: impl Fn(&MirInst) -> bool) -> usize {
-    p.funcs.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts).filter(|i| pred(i)).count()
+    p.funcs
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.insts)
+        .filter(|i| pred(i))
+        .count()
 }
 
 #[test]
@@ -723,10 +818,15 @@ def total(*nums):
 print(total(1, 2, 3))
 ";
     let p = lowered(src);
-    assert!(count_insts(&p, |i| matches!(
-        i,
-        MirInst::CallContainer { op: ContainerOp::TupleNew, .. }
-    )) >= 1);
+    assert!(
+        count_insts(&p, |i| matches!(
+            i,
+            MirInst::CallContainer {
+                op: ContainerOp::TupleNew,
+                ..
+            }
+        )) >= 1
+    );
 }
 
 #[test]
@@ -755,18 +855,21 @@ fn runtime_calls(p: &MirProgram) -> Vec<(&'static str, Vec<Repr>, Option<Repr>)>
     p.funcs
         .iter()
         .flat_map(|f| {
-            f.blocks.iter().flat_map(|b| &b.insts).filter_map(move |i| match i {
-                MirInst::CallRuntime { dst, def, args } => Some((
-                    def.symbol,
-                    args.iter()
-                        .map(|a| match a {
-                            Operand::Local(id) => f.locals[id.index()].repr.clone(),
-                        })
-                        .collect(),
-                    dst.map(|d| f.locals[d.index()].repr.clone()),
-                )),
-                _ => None,
-            })
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .filter_map(move |i| match i {
+                    MirInst::CallRuntime { dst, def, args } => Some((
+                        def.symbol,
+                        args.iter()
+                            .map(|a| match a {
+                                Operand::Local(id) => f.locals[id.index()].repr.clone(),
+                            })
+                            .collect(),
+                        dst.map(|d| f.locals[d.index()].repr.clone()),
+                    )),
+                    _ => None,
+                })
         })
         .collect()
 }
@@ -777,7 +880,10 @@ fn stdlib_math_sqrt_is_raw_f64_call_runtime() {
     // result — no tagged round-trip at the call itself (Phase 8B).
     let p = lowered("import math\nx: float = math.sqrt(2.0)\nprint(x)\n");
     let calls = runtime_calls(&p);
-    let sqrt = calls.iter().find(|(s, _, _)| *s == "rt_math_sqrt").expect("sqrt call");
+    let sqrt = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_math_sqrt")
+        .expect("sqrt call");
     assert_eq!(sqrt.1, vec![Repr::Raw(RawKind::F64)]);
     assert_eq!(sqrt.2, Some(Repr::Raw(RawKind::F64)));
 }
@@ -788,7 +894,10 @@ fn stdlib_math_ceil_returns_raw_i64() {
     // legalizes to the Tagged int slot.
     let p = lowered("import math\nn: int = math.ceil(3.2)\nprint(n)\n");
     let calls = runtime_calls(&p);
-    let ceil = calls.iter().find(|(s, _, _)| *s == "rt_math_ceil").expect("ceil call");
+    let ceil = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_math_ceil")
+        .expect("ceil call");
     assert_eq!(ceil.1, vec![Repr::Raw(RawKind::F64)]);
     assert_eq!(ceil.2, Some(Repr::Raw(RawKind::I64)));
 }
@@ -799,8 +908,14 @@ fn stdlib_random_seed_appends_arg_count() {
     // raw-i64 params are the seed plus the user-written arg count (1).
     let p = lowered("import random\nrandom.seed(42)\nprint(random.random())\n");
     let calls = runtime_calls(&p);
-    let seed = calls.iter().find(|(s, _, _)| *s == "rt_random_seed").expect("seed call");
-    assert_eq!(seed.1, vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)]);
+    let seed = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_random_seed")
+        .expect("seed call");
+    assert_eq!(
+        seed.1,
+        vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)]
+    );
     assert_eq!(seed.2, None, "void descriptor has no dst");
 }
 
@@ -817,10 +932,16 @@ print(len(random.choices(xs, k=2)))
 ";
     let p = lowered(src);
     let calls = runtime_calls(&p);
-    let choices =
-        calls.iter().find(|(s, _, _)| *s == "rt_random_choices").expect("choices call");
+    let choices = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_random_choices")
+        .expect("choices call");
     assert_eq!(choices.1.len(), 3, "population, weights sentinel, k");
-    assert_eq!(choices.1[1], Repr::Tagged, "absent weights rides Tagged (null Value)");
+    assert_eq!(
+        choices.1[1],
+        Repr::Tagged,
+        "absent weights rides Tagged (null Value)"
+    );
     assert_eq!(choices.1[2], Repr::Raw(RawKind::I64), "k is a raw i64");
 }
 
@@ -877,7 +998,10 @@ print(g)
 ";
     let p = lowered(src);
     let calls = runtime_calls(&p);
-    let grp = calls.iter().find(|(s, _, _)| *s == "rt_match_group").expect("group call");
+    let grp = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_match_group")
+        .expect("group call");
     assert_eq!(grp.1, vec![Repr::Tagged, Repr::Raw(RawKind::I64)]);
 }
 
@@ -892,12 +1016,16 @@ print(data)
     let p = lowered(src);
     let calls = runtime_calls(&p);
     assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_open"));
-    assert!(calls.iter().any(|(s, _, _)| *s == "rt_file_read"), "read call present");
+    assert!(
+        calls.iter().any(|(s, _, _)| *s == "rt_file_read"),
+        "read call present"
+    );
     // Binary-mode typing shows as a Coerce(Tagged → Heap(Bytes)) after the read.
     let to_bytes = p.funcs.iter().any(|f| {
-        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
-            matches!(i, MirInst::Coerce(c) if *c.to() == Repr::Heap(HeapShape::Bytes))
-        })
+        f.blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, MirInst::Coerce(c) if *c.to() == Repr::Heap(HeapShape::Bytes)))
     });
     assert!(to_bytes, "binary read legalizes to Heap(Bytes)");
 }
@@ -913,7 +1041,10 @@ print(n)
 ";
     let p = lowered(src);
     let calls = runtime_calls(&p);
-    let w = calls.iter().find(|(s, _, _)| *s == "rt_file_write").expect("write call");
+    let w = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_file_write")
+        .expect("write call");
     assert_eq!(w.1, vec![Repr::Tagged, Repr::Tagged]);
     assert_eq!(w.2, Some(Repr::Raw(RawKind::I64)));
 }
@@ -946,7 +1077,10 @@ print(v is None)
 print(v is not None)
 ";
     let p = lowered(src);
-    let n = runtime_calls(&p).iter().filter(|(s, _, _)| *s == "rt_is_none").count();
+    let n = runtime_calls(&p)
+        .iter()
+        .filter(|(s, _, _)| *s == "rt_is_none")
+        .count();
     assert_eq!(n, 2, "two None identity checks");
 }
 
@@ -990,7 +1124,10 @@ print(1)
             )
         })
     });
-    assert!(found, "HTTPError → MirRaise::Stdlib{{class_id:30, parent:OSError(24)}}");
+    assert!(
+        found,
+        "HTTPError → MirRaise::Stdlib{{class_id:30, parent:OSError(24)}}"
+    );
 }
 
 // ── slicing (Phase 8E) ──
@@ -1002,10 +1139,17 @@ fn list_slice_passes_raw_i64_bounds() {
     // ptr_ternary Tagged default would corrupt the i64::MIN/MAX sentinels).
     let p = lowered("xs: list[int] = [0, 1, 2, 3]\nys = xs[1:3]\nprint(len(ys))\n");
     let calls = runtime_calls(&p);
-    let slice = calls.iter().find(|(s, _, _)| *s == "rt_list_slice").expect("list slice call");
+    let slice = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_list_slice")
+        .expect("list slice call");
     assert_eq!(
         slice.1,
-        vec![Repr::Tagged, Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)],
+        vec![
+            Repr::Tagged,
+            Repr::Raw(RawKind::I64),
+            Repr::Raw(RawKind::I64)
+        ],
         "receiver Tagged, bounds Raw(I64)"
     );
 }
@@ -1017,8 +1161,10 @@ fn open_ended_slice_uses_step_descriptor_when_stepped() {
     // Raw(I64) slots (never via the tagging round-trip).
     let p = lowered("xs: list[int] = [0, 1, 2]\nys = xs[::-1]\nprint(len(ys))\n");
     let calls = runtime_calls(&p);
-    let slice =
-        calls.iter().find(|(s, _, _)| *s == "rt_list_slice_step").expect("stepped slice call");
+    let slice = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_list_slice_step")
+        .expect("stepped slice call");
     assert_eq!(
         slice.1,
         vec![
@@ -1047,8 +1193,15 @@ fn fstring_format_spec_is_rt_format() {
     // `f"{x:.2f}"` → rt_format(value, spec) with both args Tagged.
     let p = lowered("x = 3.14159\nprint(f\"{x:.2f}\")\n");
     let calls = runtime_calls(&p);
-    let fmt = calls.iter().find(|(s, _, _)| *s == "rt_format").expect("rt_format call");
-    assert_eq!(fmt.1, vec![Repr::Tagged, Repr::Tagged], "value + spec both Tagged");
+    let fmt = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_format")
+        .expect("rt_format call");
+    assert_eq!(
+        fmt.1,
+        vec![Repr::Tagged, Repr::Tagged],
+        "value + spec both Tagged"
+    );
 }
 
 // ── return-type inference (Phase 8E) ──
@@ -1102,11 +1255,17 @@ print(str(p))
         f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
             matches!(
                 i,
-                MirInst::CallBuiltin { kind: pyaot_mir::BuiltinFunctionKind::Str, .. }
+                MirInst::CallBuiltin {
+                    kind: pyaot_mir::BuiltinFunctionKind::Str,
+                    ..
+                }
             )
         })
     });
-    assert!(!has_builtin_str, "str(instance) must route to __str__, not CallBuiltin{{Str}}");
+    assert!(
+        !has_builtin_str,
+        "str(instance) must route to __str__, not CallBuiltin{{Str}}"
+    );
 }
 
 #[test]
@@ -1122,10 +1281,22 @@ print(sum(xs))
     let main = main_fn(&p);
     let ops = container_ops(main);
     assert!(ops.contains(&ContainerOp::Iter), "sum lowers through Iter");
-    assert!(ops.contains(&ContainerOp::IterNext), "sum lowers through IterNext");
-    assert!(ops.contains(&ContainerOp::IterExhausted), "sum lowers through IterExhausted");
+    assert!(
+        ops.contains(&ContainerOp::IterNext),
+        "sum lowers through IterNext"
+    );
+    assert!(
+        ops.contains(&ContainerOp::IterExhausted),
+        "sum lowers through IterExhausted"
+    );
     let has_tagged_add = main.blocks.iter().flat_map(|b| &b.insts).any(|i| {
-        matches!(i, MirInst::BinOp { op: pyaot_mir::BinOp::Add, .. })
+        matches!(
+            i,
+            MirInst::BinOp {
+                op: pyaot_mir::BinOp::Add,
+                ..
+            }
+        )
     });
     assert!(has_tagged_add, "sum body adds on the tagged baseline");
 }
@@ -1155,7 +1326,10 @@ print(math.sqrt(pick(True)))
             )
         })
     });
-    assert!(has_checked, "Dyn -> Raw(F64) stdlib arg must be a checked Coerce");
+    assert!(
+        has_checked,
+        "Dyn -> Raw(F64) stdlib arg must be a checked Coerce"
+    );
 }
 
 #[test]
@@ -1183,7 +1357,10 @@ print(math.gcd(pick(True), 18))
             )
         })
     });
-    assert!(has_checked, "Dyn -> Raw(I64) stdlib arg must be a checked Coerce");
+    assert!(
+        has_checked,
+        "Dyn -> Raw(I64) stdlib arg must be a checked Coerce"
+    );
 }
 
 #[test]
@@ -1207,7 +1384,11 @@ print(n.d)
 n.d = 3.0
 ";
     let p = lowered(src);
-    let all_insts = || p.funcs.iter().flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts));
+    let all_insts = || {
+        p.funcs
+            .iter()
+            .flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts))
+    };
     assert!(
         all_insts().any(|i| matches!(i, MirInst::GetFieldNamed { .. })),
         "Dyn receiver field read lowers to GetFieldNamed"

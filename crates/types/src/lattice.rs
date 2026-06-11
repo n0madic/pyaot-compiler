@@ -188,7 +188,10 @@ fn make_canonical_union(
                             }
                         })
                         .collect();
-                    deduped.push(SemTy::Generic { base, args: merged_args });
+                    deduped.push(SemTy::Generic {
+                        base,
+                        args: merged_args,
+                    });
                     merged = true;
                     break;
                 }
@@ -208,12 +211,24 @@ fn make_canonical_union(
     loop {
         let mut merged = false;
         'outer: for i in 0..deduped.len() {
-            let SemTy::Class { class_id: id1, name: n1 } = deduped[i].clone() else { continue };
+            let SemTy::Class {
+                class_id: id1,
+                name: n1,
+            } = deduped[i].clone()
+            else {
+                continue;
+            };
             for j in i + 1..deduped.len() {
-                let SemTy::Class { class_id: id2, name: n2 } = deduped[j].clone() else {
+                let SemTy::Class {
+                    class_id: id2,
+                    name: n2,
+                } = deduped[j].clone()
+                else {
                     continue;
                 };
-                let Some(anc) = nearest_common_ancestor(id1, id2, env) else { continue };
+                let Some(anc) = nearest_common_ancestor(id1, id2, env) else {
+                    continue;
+                };
                 // Reuse an operand's cached name when the ancestor is one of
                 // them; otherwise ask the env. No name → skip (conservative).
                 let name = if anc == id1 {
@@ -226,7 +241,10 @@ fn make_canonical_union(
                         None => continue,
                     }
                 };
-                let joined = SemTy::Class { class_id: anc, name };
+                let joined = SemTy::Class {
+                    class_id: anc,
+                    name,
+                };
                 deduped.remove(j);
                 deduped.remove(i);
                 if !deduped.contains(&joined) {
@@ -317,7 +335,11 @@ impl TypeLattice for SemTy {
             if b1 == b2 && a1.len() == a2.len() {
                 return SemTy::Generic {
                     base: *b1,
-                    args: a1.iter().zip(a2.iter()).map(|(t1, t2)| t1.join(t2, env)).collect(),
+                    args: a1
+                        .iter()
+                        .zip(a2.iter())
+                        .map(|(t1, t2)| t1.join(t2, env))
+                        .collect(),
                 };
             }
             // tuple[] ⊔ tuple[T..] → TupleVar[T..]: the empty tuple has no shape
@@ -345,7 +367,10 @@ impl TypeLattice for SemTy {
                 } else if a2.is_empty() {
                     self.clone()
                 } else {
-                    SemTy::Generic { base: *b1, args: vec![a1[0].join(&a2[0], env)] }
+                    SemTy::Generic {
+                        base: *b1,
+                        args: vec![a1[0].join(&a2[0], env)],
+                    }
                 };
             }
         }
@@ -424,7 +449,9 @@ impl TypeLattice for SemTy {
         }
         // Union on right: subtract each member sequentially.
         if let SemTy::Union(excluded) = other {
-            return excluded.iter().fold(self.clone(), |acc, m| acc.minus(m, env));
+            return excluded
+                .iter()
+                .fold(self.clone(), |acc, m| acc.minus(m, env));
         }
         // Union on left: keep members not subsumed by `other`. Build directly,
         // NOT via `join`: `join`'s numeric tower would collapse a
@@ -474,12 +501,12 @@ impl SemTy {
             (SemTy::NoneTy, SemTy::Union(set)) if set.contains(&SemTy::NoneTy) => true,
 
             // Union subtyping.
-            (SemTy::Union(left), right) => {
-                left.iter().all(|t| Self::is_subtype_of_inner(t, right, env))
-            }
-            (left, SemTy::Union(right)) => {
-                right.iter().any(|t| Self::is_subtype_of_inner(left, t, env))
-            }
+            (SemTy::Union(left), right) => left
+                .iter()
+                .all(|t| Self::is_subtype_of_inner(t, right, env)),
+            (left, SemTy::Union(right)) => right
+                .iter()
+                .any(|t| Self::is_subtype_of_inner(left, t, env)),
 
             // Covariant container subtyping (Dyn-wildcard slots are vacuously OK).
             _ if this.list_elem().is_some() && other.list_elem().is_some() => {
@@ -492,9 +519,7 @@ impl SemTy {
             }
             _ if this.dict_kv().is_some() && other.dict_kv().is_some() => {
                 let ((k1, v1), (k2, v2)) = (this.dict_kv().unwrap(), other.dict_kv().unwrap());
-                (*k1 == SemTy::Dyn
-                    || *k2 == SemTy::Dyn
-                    || Self::is_subtype_of_inner(k1, k2, env))
+                (*k1 == SemTy::Dyn || *k2 == SemTy::Dyn || Self::is_subtype_of_inner(k1, k2, env))
                     && (*v1 == SemTy::Dyn
                         || *v2 == SemTy::Dyn
                         || Self::is_subtype_of_inner(v1, v2, env))
@@ -513,13 +538,26 @@ impl SemTy {
                     .all(|t| *t == SemTy::Dyn || Self::is_subtype_of_inner(t, elem, env))
             }
             _ if this.tuple_var_elem().is_some() && other.tuple_var_elem().is_some() => {
-                let (a, b) = (this.tuple_var_elem().unwrap(), other.tuple_var_elem().unwrap());
+                let (a, b) = (
+                    this.tuple_var_elem().unwrap(),
+                    other.tuple_var_elem().unwrap(),
+                );
                 *a == SemTy::Dyn || Self::is_subtype_of_inner(a, b, env)
             }
             (SemTy::Callable(s1), SemTy::Callable(s2)) => {
                 let (
-                    Sig { params: p1, ret: r1, varargs: v1, kwargs: k1 },
-                    Sig { params: p2, ret: r2, varargs: v2, kwargs: k2 },
+                    Sig {
+                        params: p1,
+                        ret: r1,
+                        varargs: v1,
+                        kwargs: k1,
+                    },
+                    Sig {
+                        params: p2,
+                        ret: r2,
+                        varargs: v2,
+                        kwargs: k2,
+                    },
                 ) = (s1.as_ref(), s2.as_ref());
                 v1 == v2
                     && k1 == k2
@@ -531,10 +569,9 @@ impl SemTy {
                     && Self::is_subtype_of_inner(r1, r2, env) // covariant return
             }
             // Nominal subtyping: `a <: b` iff `b` is in `a`'s C3 MRO.
-            (
-                SemTy::Class { class_id: id1, .. },
-                SemTy::Class { class_id: id2, .. },
-            ) => id1 == id2 || env.mro(*id1).contains(id2),
+            (SemTy::Class { class_id: id1, .. }, SemTy::Class { class_id: id2, .. }) => {
+                id1 == id2 || env.mro(*id1).contains(id2)
+            }
             (SemTy::Iterator(a), SemTy::Iterator(b)) => {
                 **a == SemTy::Dyn || Self::is_subtype_of_inner(a, b, env)
             }
@@ -590,7 +627,10 @@ mod tests {
 
     fn cls(id: u32, env: &TestClasses) -> SemTy {
         let cid = ClassId::new(id);
-        SemTy::Class { class_id: cid, name: env.names[&cid] }
+        SemTy::Class {
+            class_id: cid,
+            name: env.names[&cid],
+        }
     }
 
     /// Animal(0) ← Dog(1), Cat(2); Unrelated(3); diamond B(4), C(5) ← Animal,
@@ -640,7 +680,10 @@ mod tests {
         }
         assert_eq!(joined, unrelated.join(&dog, &env));
         // Under the empty hierarchy even siblings stay a Union (pre-MRO behavior).
-        assert!(matches!(dog.join(&cls(2, &env), &NoClasses), SemTy::Union(_)));
+        assert!(matches!(
+            dog.join(&cls(2, &env), &NoClasses),
+            SemTy::Union(_)
+        ));
     }
 
     #[test]

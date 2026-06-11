@@ -88,8 +88,13 @@ fn true_division_is_float() {
     let (m, _) = typed("print(7 / 2)\n");
     let f = main_fn(&m);
     let has_float_div = f.exprs.iter().any(|(_, e)| {
-        matches!(e.kind, HirExprKind::BinOp { op: pyaot_hir::BinOp::Div, .. })
-            && e.ty == SemTy::Float
+        matches!(
+            e.kind,
+            HirExprKind::BinOp {
+                op: pyaot_hir::BinOp::Div,
+                ..
+            }
+        ) && e.ty == SemTy::Float
     });
     assert!(has_float_div, "true-division expr should infer Float");
 }
@@ -101,7 +106,15 @@ fn arithmetic_promotes_int_and_float() {
     let add = f
         .exprs
         .iter()
-        .find(|(_, e)| matches!(e.kind, HirExprKind::BinOp { op: pyaot_hir::BinOp::Add, .. }))
+        .find(|(_, e)| {
+            matches!(
+                e.kind,
+                HirExprKind::BinOp {
+                    op: pyaot_hir::BinOp::Add,
+                    ..
+                }
+            )
+        })
         .expect("add expr");
     assert_eq!(add.1.ty, SemTy::Float);
 }
@@ -113,7 +126,15 @@ fn bitwise_on_ints_is_int() {
     let band = f
         .exprs
         .iter()
-        .find(|(_, e)| matches!(e.kind, HirExprKind::BinOp { op: pyaot_hir::BinOp::BitAnd, .. }))
+        .find(|(_, e)| {
+            matches!(
+                e.kind,
+                HirExprKind::BinOp {
+                    op: pyaot_hir::BinOp::BitAnd,
+                    ..
+                }
+            )
+        })
         .expect("bitand expr");
     assert_eq!(band.1.ty, SemTy::Int);
 }
@@ -150,13 +171,19 @@ fn rejects_int_into_float_parameter() {
     // `poly(3)` for `def poly(a: float)` must be a loud type error, NOT an
     // accept-then-SIGSEGV (an annotated float param is unboxed to Raw(F64)).
     let src = "def poly(a: float) -> float:\n    return a + 1.0\n\n\nprint(poly(3))\n";
-    assert!(try_infer(src).is_err(), "int into a float parameter must be rejected");
+    assert!(
+        try_infer(src).is_err(),
+        "int into a float parameter must be rejected"
+    );
 }
 
 #[test]
 fn accepts_float_into_float_parameter() {
     let src = "def poly(a: float) -> float:\n    return a + 1.0\n\n\nprint(poly(3.0))\n";
-    assert!(try_infer(src).is_ok(), "float into a float parameter must compile");
+    assert!(
+        try_infer(src).is_ok(),
+        "float into a float parameter must compile"
+    );
 }
 
 #[test]
@@ -177,7 +204,9 @@ fn rejects_int_returned_as_float() {
 fn rejects_concrete_nonmatch_into_typed_heap_slot() {
     // `f(5)` for a `list[int]` param SIGSEGVs without this guard (CPython raises a
     // clean TypeError); reject it at compile time instead.
-    assert!(try_infer("def f(a: list[int]) -> int:\n    return len(a)\n\n\nprint(f(5))\n").is_err());
+    assert!(
+        try_infer("def f(a: list[int]) -> int:\n    return len(a)\n\n\nprint(f(5))\n").is_err()
+    );
     // Annotated local / return / str slots get the same contract.
     assert!(try_infer("x: list[int] = 5\nprint(x)\n").is_err());
     assert!(try_infer("s: str = 42\nprint(s)\n").is_err());
@@ -219,7 +248,10 @@ fn infers_dict_and_tuple_literal_types() {
     let (m, i) = typed("d = {\"a\": 1}\nt = (1, \"two\")\nprint(d)\nprint(t)\n");
     let f = main_fn(&m);
     assert_eq!(local_ty(f, &i, "d"), SemTy::dict_of(SemTy::Str, SemTy::Int));
-    assert_eq!(local_ty(f, &i, "t"), SemTy::tuple_of(vec![SemTy::Int, SemTy::Str]));
+    assert_eq!(
+        local_ty(f, &i, "t"),
+        SemTy::tuple_of(vec![SemTy::Int, SemTy::Str])
+    );
 }
 
 #[test]
@@ -514,7 +546,10 @@ fn bare_generic_erases_type_var_to_dyn() {
     // `Dyn` (→ Tagged), never a representation-less type variable.
     let (m, i) = typed(GENERIC_SRC);
     let gd = local_ty(main_fn(&m), &i, "gd");
-    assert!(!gd.contains_var(), "no residual type variable may survive materialize");
+    assert!(
+        !gd.contains_var(),
+        "no residual type variable may survive materialize"
+    );
     assert_eq!(gd, SemTy::Dyn);
 }
 
@@ -716,7 +751,10 @@ d[2] = 7
 print(d[2])
 ";
     let (m, i) = typed(src);
-    assert_eq!(local_ty(main_fn(&m), &i, "d"), SemTy::dict_of(SemTy::Int, SemTy::Dyn));
+    assert_eq!(
+        local_ty(main_fn(&m), &i, "d"),
+        SemTy::dict_of(SemTy::Int, SemTy::Dyn)
+    );
 }
 
 #[test]
@@ -906,7 +944,9 @@ print(acc[1])
     infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     let main = main_fn(&module);
     assert!(
-        main.locals.iter().any(|l| l.ty == SemTy::list_of(SemTy::Float)),
+        main.locals
+            .iter()
+            .any(|l| l.ty == SemTy::list_of(SemTy::Float)),
         "append-built list solves to list[float], got {:?}",
         main.locals.iter().map(|l| l.ty.clone()).collect::<Vec<_>>()
     );

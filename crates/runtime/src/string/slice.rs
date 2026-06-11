@@ -1,11 +1,11 @@
 //! String slicing operations: slice, slice_step, getchar
 
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::exceptions;
 use crate::gc;
 use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::slice_utils::{normalize_slice_indices, slice_length};
-#[allow(unused_imports)]
-use crate::debug_assert_type_tag;
 use pyaot_core_defs::Value;
 
 /// Map the character range `[char_start, char_start + char_count)` to a byte

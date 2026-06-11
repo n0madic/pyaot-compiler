@@ -78,7 +78,13 @@ mod tests {
     #[test]
     fn handler_is_cold_normal_is_warm() {
         let f = function(vec![
-            (vec![], MirTerminator::TryEnter { normal: BlockId::new(1), handler: BlockId::new(2) }),
+            (
+                vec![],
+                MirTerminator::TryEnter {
+                    normal: BlockId::new(1),
+                    handler: BlockId::new(2),
+                },
+            ),
             (vec![], MirTerminator::Return(None)), // normal path
             (vec![], MirTerminator::Return(None)), // handler
         ]);
@@ -89,7 +95,10 @@ mod tests {
     fn raise_block_is_cold_even_when_warm_reachable() {
         let f = function(vec![
             (vec![], MirTerminator::Jump(BlockId::new(1))),
-            (vec![MirInst::Raise(MirRaise::Reraise)], MirTerminator::Unreachable),
+            (
+                vec![MirInst::Raise(MirRaise::Reraise)],
+                MirTerminator::Unreachable,
+            ),
         ]);
         assert_eq!(cold_blocks(&f), vec![false, true]);
     }

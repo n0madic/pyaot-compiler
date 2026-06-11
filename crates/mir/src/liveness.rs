@@ -152,7 +152,11 @@ fn successors(t: &MirTerminator) -> Vec<usize> {
     match t {
         MirTerminator::Return(_) | MirTerminator::Unreachable => vec![],
         MirTerminator::Jump(b) => vec![b.index()],
-        MirTerminator::Branch { cond: _, then, else_ } => vec![then.index(), else_.index()],
+        MirTerminator::Branch {
+            cond: _,
+            then,
+            else_,
+        } => vec![then.index(), else_.index()],
         MirTerminator::TryEnter { normal, handler } => vec![normal.index(), handler.index()],
     }
 }
@@ -165,7 +169,11 @@ fn term_uses(t: &MirTerminator, mut f: impl FnMut(LocalId)) {
                 f(*l);
             }
         }
-        MirTerminator::Branch { cond: Operand::Local(l), then: _, else_: _ } => f(*l),
+        MirTerminator::Branch {
+            cond: Operand::Local(l),
+            then: _,
+            else_: _,
+        } => f(*l),
         MirTerminator::Jump(_) | MirTerminator::TryEnter { .. } | MirTerminator::Unreachable => {}
     }
 }
@@ -219,54 +227,131 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
     match inst {
         MirInst::Const { dst: _, val: _ } => {}
         MirInst::Coerce(c) => one(c.src()),
-        MirInst::BinOp { dst: _, op: _, l, r } | MirInst::Compare { dst: _, op: _, l, r } => {
+        MirInst::BinOp {
+            dst: _,
+            op: _,
+            l,
+            r,
+        }
+        | MirInst::Compare {
+            dst: _,
+            op: _,
+            l,
+            r,
+        } => {
             one(l);
             one(r);
         }
-        MirInst::Unary { dst: _, op: _, operand } | MirInst::Truthy { dst: _, operand } => {
-            one(operand)
+        MirInst::Unary {
+            dst: _,
+            op: _,
+            operand,
         }
-        MirInst::Call { dst: _, func: _, args }
-        | MirInst::CallBuiltin { dst: _, kind: _, args }
-        | MirInst::CallContainer { dst: _, op: _, args }
-        | MirInst::CallRuntime { dst: _, def: _, args } => {
+        | MirInst::Truthy { dst: _, operand } => one(operand),
+        MirInst::Call {
+            dst: _,
+            func: _,
+            args,
+        }
+        | MirInst::CallBuiltin {
+            dst: _,
+            kind: _,
+            args,
+        }
+        | MirInst::CallContainer {
+            dst: _,
+            op: _,
+            args,
+        }
+        | MirInst::CallRuntime {
+            dst: _,
+            def: _,
+            args,
+        } => {
             for a in args {
                 one(a);
             }
         }
-        MirInst::CallVirtual { dst: _, recv, name_hash: _, args, ret: _ } => {
+        MirInst::CallVirtual {
+            dst: _,
+            recv,
+            name_hash: _,
+            args,
+            ret: _,
+        } => {
             one(recv);
             for a in args {
                 one(a);
             }
         }
-        MirInst::CallIndirect { dst: _, callee, args, sig: _ } => {
+        MirInst::CallIndirect {
+            dst: _,
+            callee,
+            args,
+            sig: _,
+        } => {
             one(callee);
             for a in args {
                 one(a);
             }
         }
-        MirInst::MakeInstance { dst: _, class_id: _, field_count: _ } => {}
-        MirInst::GetField { dst: _, base, slot: _ } => one(base),
-        MirInst::SetField { base, slot: _, value } => {
+        MirInst::MakeInstance {
+            dst: _,
+            class_id: _,
+            field_count: _,
+        } => {}
+        MirInst::GetField {
+            dst: _,
+            base,
+            slot: _,
+        } => one(base),
+        MirInst::SetField {
+            base,
+            slot: _,
+            value,
+        } => {
             one(base);
             one(value);
         }
-        MirInst::GetFieldNamed { dst: _, base, name_hash: _ } => one(base),
-        MirInst::SetFieldNamed { base, name_hash: _, value } => {
+        MirInst::GetFieldNamed {
+            dst: _,
+            base,
+            name_hash: _,
+        } => one(base),
+        MirInst::SetFieldNamed {
+            base,
+            name_hash: _,
+            value,
+        } => {
             one(base);
             one(value);
         }
-        MirInst::IsInstance { dst: _, value, class_id: _ } => one(value),
-        MirInst::GetClassAttr { dst: _, class_id: _, attr_idx: _ } => {}
-        MirInst::SetClassAttr { class_id: _, attr_idx: _, value } => one(value),
+        MirInst::IsInstance {
+            dst: _,
+            value,
+            class_id: _,
+        } => one(value),
+        MirInst::GetClassAttr {
+            dst: _,
+            class_id: _,
+            attr_idx: _,
+        } => {}
+        MirInst::SetClassAttr {
+            class_id: _,
+            attr_idx: _,
+            value,
+        } => one(value),
         MirInst::AssertFail => {}
         MirInst::Print { kind: _, arg } => {
             if let Some(a) = arg {
                 one(a);
             }
         }
-        MirInst::MakeClosure { dst: _, func: _, captures } => {
+        MirInst::MakeClosure {
+            dst: _,
+            func: _,
+            captures,
+        } => {
             for c in captures {
                 one(c);
             }
@@ -279,8 +364,18 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
         }
         MirInst::GlobalGet { dst: _, var_id: _ } => {}
         MirInst::GlobalSet { var_id: _, value } => one(value),
-        MirInst::MakeGenerator { dst: _, gen_id: _, num_locals: _ } => {}
-        MirInst::GenOpInst { dst: _, op: _, gen, imm: _, value } => {
+        MirInst::MakeGenerator {
+            dst: _,
+            gen_id: _,
+            num_locals: _,
+        } => {}
+        MirInst::GenOpInst {
+            dst: _,
+            op: _,
+            gen,
+            imm: _,
+            value,
+        } => {
             one(gen);
             if let Some(v) = value {
                 one(v);
@@ -295,7 +390,12 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
                     one(m);
                 }
             }
-            MirRaise::BuiltinFrom { tag: _, msg, cause_tag: _, cause_msg } => {
+            MirRaise::BuiltinFrom {
+                tag: _,
+                msg,
+                cause_tag: _,
+                cause_msg,
+            } => {
                 if let Some(m) = msg {
                     one(m);
                 }
@@ -303,13 +403,21 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
                     one(m);
                 }
             }
-            MirRaise::CustomWithInstance { class_id: _, msg, instance } => {
+            MirRaise::CustomWithInstance {
+                class_id: _,
+                msg,
+                instance,
+            } => {
                 if let Some(m) = msg {
                     one(m);
                 }
                 one(instance);
             }
-            MirRaise::Stdlib { class_id: _, exc_type_tag: _, msg } => {
+            MirRaise::Stdlib {
+                class_id: _,
+                exc_type_tag: _,
+                msg,
+            } => {
                 if let Some(m) = msg {
                     one(m);
                 }
@@ -356,18 +464,28 @@ mod tests {
 
     /// `Const Str` — the canonical allocating instruction in these tests.
     fn alloc_str(dst: u32) -> MirInst {
-        MirInst::Const { dst: lid(dst), val: Const::Str(interned("x")) }
+        MirInst::Const {
+            dst: lid(dst),
+            val: Const::Str(interned("x")),
+        }
     }
 
     /// `Print StrObj` — an allocating USER of its operand.
     fn print_str(arg: u32) -> MirInst {
-        MirInst::Print { kind: PrintKind::StrObj, arg: Some(op(arg)) }
+        MirInst::Print {
+            kind: PrintKind::StrObj,
+            arg: Some(op(arg)),
+        }
     }
 
     /// A non-allocating use (SetField value into an existing instance held in
     /// local `base`).
     fn quiet_use(base: u32, value: u32) -> MirInst {
-        MirInst::SetField { base: op(base), slot: 0, value: op(value) }
+        MirInst::SetField {
+            base: op(base),
+            slot: 0,
+            value: op(value),
+        }
     }
 
     #[test]
@@ -381,7 +499,10 @@ mod tests {
             vec![MirBlock {
                 insts: vec![
                     alloc_str(0),
-                    MirInst::Const { dst: lid(2), val: Const::None },
+                    MirInst::Const {
+                        dst: lid(2),
+                        val: Const::None,
+                    },
                     quiet_use(2, 0),
                     alloc_str(1),
                     print_str(1),
@@ -390,7 +511,10 @@ mod tests {
             }],
         );
         let needed = roots_needed(&f);
-        assert!(!needed[0], "consumed before the next allocation -> not rooted");
+        assert!(
+            !needed[0],
+            "consumed before the next allocation -> not rooted"
+        );
         assert!(needed[1], "used by the allocating print -> rooted");
         assert!(!needed[2], "dead before the allocation -> not rooted");
     }
@@ -420,7 +544,10 @@ mod tests {
                 term: MirTerminator::Return(None),
             }],
         );
-        assert!(roots_needed(&f)[0], "argument of an allocating inst must be rooted");
+        assert!(
+            roots_needed(&f)[0],
+            "argument of an allocating inst must be rooted"
+        );
     }
 
     #[test]
@@ -434,7 +561,10 @@ mod tests {
                 term: MirTerminator::Return(None),
             }],
         );
-        assert!(!roots_needed(&f)[0], "an allocation's own dst is not rooted by that allocation");
+        assert!(
+            !roots_needed(&f)[0],
+            "an allocation's own dst is not rooted by that allocation"
+        );
     }
 
     #[test]
@@ -444,7 +574,10 @@ mod tests {
             vec![I64, STR],
             vec![MirBlock {
                 insts: vec![
-                    MirInst::Const { dst: lid(0), val: Const::Int(7) },
+                    MirInst::Const {
+                        dst: lid(0),
+                        val: Const::Int(7),
+                    },
                     alloc_str(1),
                     quiet_use(1, 0),
                 ],
@@ -452,7 +585,10 @@ mod tests {
             }],
         );
         let needed = roots_needed(&f);
-        assert!(!needed[0], "Raw local: rootness derives from Repr (Invariant 5)");
+        assert!(
+            !needed[0],
+            "Raw local: rootness derives from Repr (Invariant 5)"
+        );
     }
 
     #[test]
@@ -509,7 +645,10 @@ mod tests {
                     insts: vec![alloc_str(1)],
                     term: MirTerminator::Jump(BlockId::new(3)),
                 },
-                MirBlock { insts: vec![], term: MirTerminator::Jump(BlockId::new(3)) },
+                MirBlock {
+                    insts: vec![],
+                    term: MirTerminator::Jump(BlockId::new(3)),
+                },
                 MirBlock {
                     insts: vec![quiet_use(3, 0)],
                     term: MirTerminator::Return(None),
@@ -538,13 +677,19 @@ mod tests {
                         handler: BlockId::new(2),
                     },
                 },
-                MirBlock { insts: vec![], term: MirTerminator::Return(None) },
+                MirBlock {
+                    insts: vec![],
+                    term: MirTerminator::Return(None),
+                },
                 MirBlock {
                     insts: vec![print_str(0)],
                     term: MirTerminator::Return(None),
                 },
             ],
         );
-        assert!(roots_needed(&f)[0], "live-in at a handler -> rooted (handler rule)");
+        assert!(
+            roots_needed(&f)[0],
+            "live-in at a handler -> rooted (handler rule)"
+        );
     }
 }

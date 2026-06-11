@@ -4,9 +4,9 @@
 //! fill character may be multi-byte. Source bytes are copied into Rust
 //! `String`s BEFORE any allocation, so no GC rooting is needed.
 
-use crate::object::{Obj, StrObj, TypeTagKind};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;

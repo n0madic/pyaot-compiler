@@ -290,19 +290,30 @@ pub enum HirExprKind {
 
     // ── containers (Phase 4) ──
     /// A list literal `[e0, e1, …]` (possibly empty).
-    ListLit { elems: Vec<Idx<HirExpr>> },
+    ListLit {
+        elems: Vec<Idx<HirExpr>>,
+    },
     /// A fixed-arity tuple literal `(e0, e1, …)` (possibly empty).
-    TupleLit { elems: Vec<Idx<HirExpr>> },
+    TupleLit {
+        elems: Vec<Idx<HirExpr>>,
+    },
     /// A set literal `{e0, e1, …}` (never empty — `{}` is a dict).
-    SetLit { elems: Vec<Idx<HirExpr>> },
+    SetLit {
+        elems: Vec<Idx<HirExpr>>,
+    },
     /// A dict literal `{k0: v0, …}` (possibly empty).
-    DictLit { pairs: Vec<(Idx<HirExpr>, Idx<HirExpr>)> },
+    DictLit {
+        pairs: Vec<(Idx<HirExpr>, Idx<HirExpr>)>,
+    },
     /// A bytes literal `b"…"`; the raw bytes are interned like a string literal.
     BytesLit(InternedString),
     /// Subscript read `base[index]`. The runtime dispatch (`rt_list_get` /
     /// `rt_dict_get` / generic `rt_any_getitem`) is selected at lowering from the
     /// `base` representation. Subscript *writes* are [`HirStmt::SetItem`].
-    Subscript { base: Idx<HirExpr>, index: Idx<HirExpr> },
+    Subscript {
+        base: Idx<HirExpr>,
+        index: Idx<HirExpr>,
+    },
     /// Slice read `base[start:end:step]` (Phase 8E). Each bound is optional; an
     /// absent bound takes the runtime's `i64::MIN`/`i64::MAX`/`1` default. The
     /// result has the same kind as `base` (list→list, str→str, …); a `Dyn` base
@@ -316,7 +327,10 @@ pub enum HirExprKind {
     /// An f-string field with a (static) format spec — `f"{x:.4f}"` (Phase 8E).
     /// Lowers to `rt_format(value, spec)`; the result is always a `str`. Any
     /// `!s`/`!r` conversion is already applied to `value` by the frontend.
-    FormatValue { value: Idx<HirExpr>, spec: InternedString },
+    FormatValue {
+        value: Idx<HirExpr>,
+        spec: InternedString,
+    },
     /// `sum(iterable[, start])` (Phase 8H, D2). Typed by `typeck` (numeric
     /// promotion / inferred `__add__`/`__radd__` dunder returns ride the
     /// fixpoint); EXPANDED by `lowering` into a Tagged-accumulator iterator
@@ -330,7 +344,10 @@ pub enum HirExprKind {
     /// for-loop iterator protocol → `Iter`/`IterNext`/`IterExhausted`). Container
     /// *builtins* called by name (`len`/`enumerate`/`zip`/…) instead flow through
     /// [`HirExprKind::Call`] → [`Symbol::Container`] so user shadowing is honored.
-    ContainerExpr { op: ContainerOp, args: Vec<Idx<HirExpr>> },
+    ContainerExpr {
+        op: ContainerOp,
+        args: Vec<Idx<HirExpr>>,
+    },
     /// A method call `recv.method(args...)`. The frontend carries the interned
     /// method *name* (no early rejection of unknown names — Phase 5); lowering
     /// dispatches by the receiver's static type: a container receiver resolves the
@@ -345,22 +362,33 @@ pub enum HirExprKind {
     /// Attribute read `value.name` (Phase 5). The slot is resolved at lowering
     /// from the receiver's class via the [`ClassTable`]; a `@property` getter
     /// becomes a method call (Phase 5D). Attribute *writes* are [`HirStmt::SetAttr`].
-    Attribute { value: Idx<HirExpr>, name: InternedString },
+    Attribute {
+        value: Idx<HirExpr>,
+        name: InternedString,
+    },
     /// `super()` evaluated inside a method of the carried class (Phase 5B). Only
     /// ever the receiver of a [`Self::MethodCall`]; resolved at lowering against the
     /// enclosing class's MRO to a direct `Call` with the current `self`.
     Super(ClassId),
     /// `isinstance(value, Cls)` (Phase 5B) → `Bool`. The class is resolved by the
     /// frontend; lowering emits the inheritance-aware runtime check.
-    IsInstance { value: Idx<HirExpr>, class_id: ClassId },
+    IsInstance {
+        value: Idx<HirExpr>,
+        class_id: ClassId,
+    },
     /// `isinstance(value, str|int|float|bool)` (Phase 8B) → `Bool`. Folded
     /// statically at lowering from `value`'s inferred `SemTy` — a `Dyn` value is
     /// a loud compile error (a runtime tag check is out of scope).
-    IsInstanceBuiltin { value: Idx<HirExpr>, target: SemTy },
+    IsInstanceBuiltin {
+        value: Idx<HirExpr>,
+        target: SemTy,
+    },
     /// `value is None` (Phase 8D) → `Bool`, via `rt_is_none` — the identity test
     /// that recognizes both the immediate `None` tag and a heap `None` object
     /// (which `==` does not). `value is not None` is `Unary{Not, IsNone}`.
-    IsNone { value: Idx<HirExpr> },
+    IsNone {
+        value: Idx<HirExpr>,
+    },
     /// A call to a frozen-runtime stdlib function/attr/field through its
     /// declarative descriptor (Phase 8B). `args` is positionally aligned with
     /// the descriptor's params: the frontend's call adaptation fills optional
@@ -403,19 +431,31 @@ pub enum HirExprKind {
         init: Option<Idx<HirExpr>>,
     },
     /// Read the current value of the cell held in local `cell`.
-    CellGet { cell: LocalId },
+    CellGet {
+        cell: LocalId,
+    },
     /// Read promoted module-global slot `var_id` (Phase 6B) — GC-rooted uniform
     /// tagged storage (`rt_global_get_ptr`).
-    GlobalGet { var_id: u32 },
+    GlobalGet {
+        var_id: u32,
+    },
 
     // ── generators (Phase 6E) ──
     /// Build a generator object (the wrapper's body) — `rt_make_generator`.
-    MakeGenerator { gen_id: u32, num_locals: u32 },
+    MakeGenerator {
+        gen_id: u32,
+        num_locals: u32,
+    },
     /// A generator state-machine query carrying its generator operand (P6-3:
     /// all values crossing a `GenOp` are `Tagged`, structurally enforced). The
     /// `slot`/`state` immediate rides alongside (`GetLocal`), and `value` is the
     /// sent value (`Send`); other ops ignore both.
-    GenQuery { op: GenOp, gen: Idx<HirExpr>, imm: u32, value: Option<Idx<HirExpr>> },
+    GenQuery {
+        op: GenOp,
+        gen: Idx<HirExpr>,
+        imm: u32,
+        value: Option<Idx<HirExpr>>,
+    },
 
     // ── exceptions (Phase 7) ──
     /// A query against the thread-local exception state (Phase 7A). Only ever
@@ -424,7 +464,9 @@ pub enum HirExprKind {
     ExcQuery(ExcQuery),
     /// `str(e)` / `print(e)` of a caught exception instance (Phase 7B) —
     /// `rt_exc_instance_str(value)` → the message `StrObj`.
-    ExcInstanceStr { value: Idx<HirExpr> },
+    ExcInstanceStr {
+        value: Idx<HirExpr>,
+    },
 }
 
 // ============================================================================
@@ -579,13 +621,20 @@ pub enum HirRaise {
     /// `raise MyError(args…)` for a user exception class. Lowering constructs
     /// the instance (running `__init__` when the class has one; a single arg
     /// becomes the message operand otherwise so `str(e)` works).
-    Custom { class_id: ClassId, args: Vec<Idx<HirExpr>> },
+    Custom {
+        class_id: ClassId,
+        args: Vec<Idx<HirExpr>>,
+    },
     /// `raise HTTPError(args…)` for a stdlib exception (Phase 8D). `exc_type_tag`
     /// is the builtin parent (`OSError`) so `except OSError` matches by tag;
     /// `class_id` is the reserved stdlib id so `except HTTPError` matches by id.
     /// `msg` is the first positional arg (its message); remaining args are
     /// ignored (the corpus never inspects the message).
-    Stdlib { class_id: u8, exc_type_tag: u8, msg: Option<Idx<HirExpr>> },
+    Stdlib {
+        class_id: u8,
+        exc_type_tag: u8,
+        msg: Option<Idx<HirExpr>>,
+    },
     /// `raise e` — re-raise a caught exception instance value.
     Instance { value: Idx<HirExpr> },
     /// Bare `raise` — re-raise the exception being handled.
@@ -1104,7 +1153,10 @@ pub enum HirStmt {
     /// Append `value` to the container local `container` (Phase 4C comprehension
     /// element-push). Lowers to the same `CallContainer{ListPush/SetAdd}` path as a
     /// literal build, so a desugared comprehension never needs user methods.
-    ContainerPush { container: LocalId, value: Idx<HirExpr> },
+    ContainerPush {
+        container: LocalId,
+        value: Idx<HirExpr>,
+    },
     /// Insert `key: value` into the dict local `container` (Phase 4C dict
     /// comprehension). Lowers to `CallContainer{DictSet}`.
     ContainerInsert {
@@ -1115,20 +1167,18 @@ pub enum HirStmt {
     /// Store `value` into the cell held in local `cell` (Phase 6A). Assignments
     /// to a celled variable rewrite to this; the cell local itself is written
     /// exactly once (the entry-block `MakeCell`).
-    CellSet {
-        cell: LocalId,
-        value: Idx<HirExpr>,
-    },
+    CellSet { cell: LocalId, value: Idx<HirExpr> },
     /// Write promoted module-global slot `var_id` (Phase 6B) —
     /// `rt_global_set_ptr` (uniform tagged storage).
-    GlobalSet {
-        var_id: u32,
-        value: Idx<HirExpr>,
-    },
+    GlobalSet { var_id: u32, value: Idx<HirExpr> },
 
     // ── generators (Phase 6E) ──
     /// Write generator slot `slot` from `value` — `GenOp::SetLocal`.
-    GenSetLocal { gen: Idx<HirExpr>, slot: u32, value: Idx<HirExpr> },
+    GenSetLocal {
+        gen: Idx<HirExpr>,
+        slot: u32,
+        value: Idx<HirExpr>,
+    },
     /// Set the generator state — `GenOp::SetState`.
     GenSetState { gen: Idx<HirExpr>, state: u32 },
     /// Mark the generator exhausted — `GenOp::SetExhausted`.
@@ -1205,7 +1255,9 @@ pub struct ResolveResult {
 
 impl ResolveResult {
     pub fn new() -> Self {
-        Self { symbols: Vec::new() }
+        Self {
+            symbols: Vec::new(),
+        }
     }
 
     /// Intern a resolved symbol, returning its [`SymbolId`].
@@ -1418,7 +1470,9 @@ pub struct ClassTable {
 
 impl ClassTable {
     pub fn new() -> Self {
-        Self { classes: HashMap::new() }
+        Self {
+            classes: HashMap::new(),
+        }
     }
     pub fn insert(&mut self, info: ClassInfo) {
         self.classes.insert(info.class_id, info);
@@ -1449,7 +1503,9 @@ impl ClassTable {
         if a == b {
             return true;
         }
-        self.classes.get(&a).is_some_and(|info| info.mro.contains(&b))
+        self.classes
+            .get(&a)
+            .is_some_and(|info| info.mro.contains(&b))
     }
 
     /// Resolve `super().name()` from class `cid` (Phase 5B): the first class in

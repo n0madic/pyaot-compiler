@@ -31,7 +31,13 @@ impl CoerceInst {
     /// ([`classify_coercion`]) accepts `(from, to)`.
     pub fn new(dst: LocalId, src: Operand, from: Repr, to: Repr) -> Option<Self> {
         classify_coercion(&from, &to)?;
-        Some(Self { dst, src, from, to, checked: false })
+        Some(Self {
+            dst,
+            src,
+            from,
+            to,
+            checked: false,
+        })
     }
 
     /// A CHECKED (runtime-validated) unbox at a stdlib raw-ABI boundary
@@ -46,12 +52,18 @@ impl CoerceInst {
     /// family (a wrong-shape `Value` blind-cast to a typed heap pointer in a
     /// frozen `rt_*`). See PITFALLS B18.
     pub fn new_checked(dst: LocalId, src: Operand, from: Repr, to: Repr) -> Option<Self> {
-        let legal = from == Repr::Tagged
-            && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
+        let legal =
+            from == Repr::Tagged && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
         if !legal {
             return None;
         }
-        Some(Self { dst, src, from, to, checked: true })
+        Some(Self {
+            dst,
+            src,
+            from,
+            to,
+            checked: true,
+        })
     }
 
     pub fn dst(&self) -> LocalId {
@@ -92,11 +104,11 @@ mod tests {
     #[test]
     fn legal_pairs_construct() {
         for (from, to) in [
-            (Repr::Raw(RawKind::F64), Repr::Tagged),              // BoxFloat
-            (Repr::Tagged, Repr::Raw(RawKind::F64)),              // UnboxFloat
-            (Repr::Tagged, Repr::Raw(RawKind::I64)),              // UntagInt
-            (Repr::Heap(HeapShape::Str), Repr::Tagged),           // HeapToTagged
-            (Repr::Tagged, Repr::Heap(HeapShape::Str)),           // TaggedToHeap
+            (Repr::Raw(RawKind::F64), Repr::Tagged),    // BoxFloat
+            (Repr::Tagged, Repr::Raw(RawKind::F64)),    // UnboxFloat
+            (Repr::Tagged, Repr::Raw(RawKind::I64)),    // UntagInt
+            (Repr::Heap(HeapShape::Str), Repr::Tagged), // HeapToTagged
+            (Repr::Tagged, Repr::Heap(HeapShape::Str)), // TaggedToHeap
         ] {
             let c = CoerceInst::new(l(1), op(0), from.clone(), to.clone())
                 .unwrap_or_else(|| panic!("{from:?} -> {to:?} must be legal"));
@@ -125,13 +137,18 @@ mod tests {
 
     #[test]
     fn checked_admits_only_the_two_unbox_shapes() {
-        assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::F64))
-            .is_some_and(|c| c.checked()));
-        assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I64))
-            .is_some_and(|c| c.checked()));
+        assert!(
+            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::F64))
+                .is_some_and(|c| c.checked())
+        );
+        assert!(
+            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I64))
+                .is_some_and(|c| c.checked())
+        );
         // Wrong target / wrong source are unrepresentable.
-        assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8))
-            .is_none());
+        assert!(
+            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8)).is_none()
+        );
         assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Tagged).is_none());
         assert!(CoerceInst::new_checked(
             l(1),

@@ -42,7 +42,7 @@ pub use pyaot_core_defs::BuiltinFunctionKind;
 // Re-exported so consumers can name container ops without a direct `hir` dep.
 // `ContainerCmpOp` is the HIR comparison operator carried by `ContainerOp`'s
 // ordering variants (aliased to avoid clashing with this crate's own `CmpOp`).
-pub use pyaot_hir::{ContainerArg, ContainerOp, ContainerResult, CmpOp as ContainerCmpOp};
+pub use pyaot_hir::{CmpOp as ContainerCmpOp, ContainerArg, ContainerOp, ContainerResult};
 // Generator op surface (Phase 6E), shared so lowering/codegen name it.
 pub use pyaot_hir::{GenOp, GenResult};
 // Exception op surface (Phase 7), shared so lowering/codegen name it.
@@ -242,25 +242,45 @@ pub enum MirInst {
     /// field_count)`. `dst` is `Heap(Class(class_id))` so the instance is
     /// GC-rooted automatically and accepted as a `GetField`/`SetField`/`Call`-self
     /// operand. Fields are zero-filled; `__init__` (a normal `Call`) runs after.
-    MakeInstance { dst: LocalId, class_id: ClassId, field_count: i64 },
+    MakeInstance {
+        dst: LocalId,
+        class_id: ClassId,
+        field_count: i64,
+    },
     /// Read instance field `slot` — `rt_instance_get_field(base, slot)`. `base` is
     /// `Heap(Class(_))`/`Tagged`; the result is the uniform tagged field `Value`
     /// (A5), then legalized to the field's repr by the caller.
-    GetField { dst: LocalId, base: Operand, slot: usize },
+    GetField {
+        dst: LocalId,
+        base: Operand,
+        slot: usize,
+    },
     /// Write instance field `slot` — `rt_instance_set_field(base, slot, value)`.
     /// `base` is `Heap(Class(_))`/`Tagged`; `value` is coerced to `Tagged` (the A5
     /// uniform-storage seam) before the store. No result.
-    SetField { base: Operand, slot: usize, value: Operand },
+    SetField {
+        base: Operand,
+        slot: usize,
+        value: Operand,
+    },
     /// Read instance field by NAME hash (Phase 8H, D4) —
     /// `rt_getattr_name(base, name_hash)`. Used when the receiver's static
     /// type is `Dyn`: the slot is resolved at runtime through the
     /// FIELD_NAME_REGISTRY (AttributeError on a miss/non-instance). `base`
     /// and `dst` are `Tagged`.
-    GetFieldNamed { dst: LocalId, base: Operand, name_hash: u64 },
+    GetFieldNamed {
+        dst: LocalId,
+        base: Operand,
+        name_hash: u64,
+    },
     /// Write instance field by NAME hash (Phase 8H, D4) —
     /// `rt_setattr_name(base, name_hash, value)`. `base` and `value` are
     /// `Tagged`. No result.
-    SetFieldNamed { base: Operand, name_hash: u64, value: Operand },
+    SetFieldNamed {
+        base: Operand,
+        name_hash: u64,
+        value: Operand,
+    },
     /// Polymorphic method dispatch (Phase 5B): `rt_vtable_lookup_by_name(recv,
     /// name_hash)` → fn ptr → `call_indirect`. Used when a base-typed receiver may
     /// dispatch to an override (D7). `recv` is the `self` (instance base); `args`
@@ -276,18 +296,33 @@ pub enum MirInst {
     },
     /// `isinstance(value, class_id)` with inheritance (Phase 5B) —
     /// `rt_isinstance_class_inherited`. `value` is `Tagged`; `dst` is `Raw(I8)`.
-    IsInstance { dst: LocalId, value: Operand, class_id: ClassId },
+    IsInstance {
+        dst: LocalId,
+        value: Operand,
+        class_id: ClassId,
+    },
     /// Read class-level attribute `attr_idx` of `class_id` (Phase 5D) —
     /// `rt_class_attr_get_ptr`. Uniform tagged storage: `dst` is `Tagged`.
-    GetClassAttr { dst: LocalId, class_id: ClassId, attr_idx: u32 },
+    GetClassAttr {
+        dst: LocalId,
+        class_id: ClassId,
+        attr_idx: u32,
+    },
     /// Write class-level attribute `attr_idx` (Phase 5D) — `rt_class_attr_set_ptr`.
     /// `value` is coerced to `Tagged`.
-    SetClassAttr { class_id: ClassId, attr_idx: u32, value: Operand },
+    SetClassAttr {
+        class_id: ClassId,
+        attr_idx: u32,
+        value: Operand,
+    },
     /// Raise `AssertionError` (no message in Phase 2). Followed by `Unreachable`.
     AssertFail,
     /// A parameterized print op — one variant covers every print form rather
     /// than one runtime-call variant per symbol.
-    Print { kind: PrintKind, arg: Option<Operand> },
+    Print {
+        kind: PrintKind,
+        arg: Option<Operand>,
+    },
 
     // ── closures / cells / globals (Phase 6) ──
     /// Build a closure env tuple over `func` (Phase 6A): `rt_make_tuple(1+N)`,
@@ -330,7 +365,11 @@ pub enum MirInst {
     /// Build a generator object — `rt_make_generator(gen_id, num_locals)`. `dst`
     /// is `Tagged` (the generator is a heap value flowing through tagged slots /
     /// the iterator protocol).
-    MakeGenerator { dst: LocalId, gen_id: u32, num_locals: u32 },
+    MakeGenerator {
+        dst: LocalId,
+        gen_id: u32,
+        num_locals: u32,
+    },
     /// A generator state-machine op (Phase 6E). The `gen` operand is `Tagged`;
     /// `value` (for `SetLocal`) is `Tagged` (P6-3: tagged slot storage); `imm`
     /// is the slot index / state number; `dst` (if present) carries the op's
@@ -393,9 +432,23 @@ impl MirInst {
             MirInst::Coerce(c) => {
                 c.checked() || classify_coercion(c.from(), c.to()) == Some(Coercion::BoxFloat)
             }
-            MirInst::BinOp { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
-            MirInst::Compare { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
-            MirInst::Unary { dst: _, op: _, operand } => non_raw(operand),
+            MirInst::BinOp {
+                dst: _,
+                op: _,
+                l,
+                r,
+            } => non_raw(l) || non_raw(r),
+            MirInst::Compare {
+                dst: _,
+                op: _,
+                l,
+                r,
+            } => non_raw(l) || non_raw(r),
+            MirInst::Unary {
+                dst: _,
+                op: _,
+                operand,
+            } => non_raw(operand),
             // Truthiness never allocates (tag test / len check).
             MirInst::Truthy { dst: _, operand: _ } => false,
             // Any call can re-enter user code or the allocating runtime.
@@ -428,7 +481,13 @@ impl MirInst {
             // Pure state reads/writes on the generator object are loads/
             // stores; `Next`/`Send`/`Close` re-enter the generator body
             // (arbitrary user code).
-            MirInst::GenOpInst { dst: _, op, gen: _, imm: _, value: _ } => match op {
+            MirInst::GenOpInst {
+                dst: _,
+                op,
+                gen: _,
+                imm: _,
+                value: _,
+            } => match op {
                 GenOp::GetLocal
                 | GenOp::SetLocal
                 | GenOp::GetState
@@ -502,10 +561,19 @@ impl MirInst {
                     | BinOp::Shr => true,
                 }
             }
-            MirInst::Unary { dst: _, op: _, operand } => non_raw(operand),
+            MirInst::Unary {
+                dst: _,
+                op: _,
+                operand,
+            } => non_raw(operand),
             // A raw compare is a machine instruction; tagged comparison can
             // re-enter user `__eq__` through the runtime.
-            MirInst::Compare { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
+            MirInst::Compare {
+                dst: _,
+                op: _,
+                l,
+                r,
+            } => non_raw(l) || non_raw(r),
             // Truthiness is a tag test / len check — never raises.
             MirInst::Truthy { .. } => false,
             // Calls run arbitrary code.
@@ -538,10 +606,14 @@ impl MirInst {
             MirInst::Print { .. } => true,
             // Generator state reads are loads off the generator object; the
             // writes mutate it; Next/Send/Close re-enter the body.
-            MirInst::GenOpInst { dst: _, op, gen: _, imm: _, value: _ } => match op {
-                GenOp::GetLocal | GenOp::GetState | GenOp::GetSentValue | GenOp::IsClosing => {
-                    false
-                }
+            MirInst::GenOpInst {
+                dst: _,
+                op,
+                gen: _,
+                imm: _,
+                value: _,
+            } => match op {
+                GenOp::GetLocal | GenOp::GetState | GenOp::GetSentValue | GenOp::IsClosing => false,
                 GenOp::SetLocal
                 | GenOp::SetState
                 | GenOp::SetExhausted
@@ -639,14 +711,18 @@ impl MirInst {
                 }
                 args.iter_mut().for_each(|a| map_op(a, &mut f));
             }
-            MirInst::CallVirtual { dst, recv, args, .. } => {
+            MirInst::CallVirtual {
+                dst, recv, args, ..
+            } => {
                 if let Some(d) = dst {
                     *d = f(*d);
                 }
                 map_op(recv, &mut f);
                 args.iter_mut().for_each(|a| map_op(a, &mut f));
             }
-            MirInst::CallIndirect { dst, callee, args, .. } => {
+            MirInst::CallIndirect {
+                dst, callee, args, ..
+            } => {
                 if let Some(d) = dst {
                     *d = f(*d);
                 }
@@ -661,8 +737,7 @@ impl MirInst {
                 *dst = f(*dst);
                 map_op(base, &mut f);
             }
-            MirInst::SetField { base, value, .. }
-            | MirInst::SetFieldNamed { base, value, .. } => {
+            MirInst::SetField { base, value, .. } | MirInst::SetFieldNamed { base, value, .. } => {
                 map_op(base, &mut f);
                 map_op(value, &mut f);
             }
@@ -695,7 +770,9 @@ impl MirInst {
                 map_op(cell, &mut f);
                 map_op(value, &mut f);
             }
-            MirInst::GenOpInst { dst, gen, value, .. } => {
+            MirInst::GenOpInst {
+                dst, gen, value, ..
+            } => {
                 if let Some(d) = dst {
                     *d = f(*d);
                 }
@@ -766,8 +843,7 @@ impl MirInst {
             }
             MirInst::MakeInstance { .. } => {}
             MirInst::GetField { base, .. } | MirInst::GetFieldNamed { base, .. } => f(base),
-            MirInst::SetField { base, value, .. }
-            | MirInst::SetFieldNamed { base, value, .. } => {
+            MirInst::SetField { base, value, .. } | MirInst::SetFieldNamed { base, value, .. } => {
                 f(base);
                 f(value);
             }
@@ -856,7 +932,11 @@ pub enum MirRaise {
     /// `rt_exc_raise_stdlib(exc_type_tag, class_id, msg, len)` — a stdlib
     /// exception with a builtin parent tag plus its own reserved class id
     /// (Phase 8D).
-    Stdlib { class_id: u8, exc_type_tag: u8, msg: Option<Operand> },
+    Stdlib {
+        class_id: u8,
+        exc_type_tag: u8,
+        msg: Option<Operand>,
+    },
     /// `rt_exc_raise_instance(value)` — re-raise a caught instance (`raise e`).
     Instance { value: Operand },
     /// `rt_exc_reraise()` — bare `raise`.
@@ -951,7 +1031,10 @@ pub enum MirTerminator {
     /// **directly** (B3), and branches `rc == 0 → normal`, else `handler`.
     /// Handler entry must NOT pop the frame (`dispatch_to_handler` already
     /// popped it and unwound the GC shadow stack / traceback).
-    TryEnter { normal: BlockId, handler: BlockId },
+    TryEnter {
+        normal: BlockId,
+        handler: BlockId,
+    },
     Unreachable,
 }
 
@@ -973,7 +1056,9 @@ pub struct StrPool {
 
 impl StrPool {
     pub fn new() -> Self {
-        Self { bytes: HashMap::new() }
+        Self {
+            bytes: HashMap::new(),
+        }
     }
 
     /// Record the bytes of a string literal (idempotent for a given id).
@@ -1093,12 +1178,20 @@ mod tests {
     #[test]
     fn closure_coercion_arms_phase6() {
         use pyaot_types::SigRepr;
-        let sig =
-            SigRepr { params: vec![Repr::Tagged], ret: Box::new(Repr::Tagged) };
+        let sig = SigRepr {
+            params: vec![Repr::Tagged],
+            ret: Box::new(Repr::Tagged),
+        };
         let closure = Repr::Closure(Box::new(sig.clone()));
         // Closure <-> Tagged: free both ways (the env tuple IS a tagged value).
-        assert_eq!(classify_coercion(&closure, &Repr::Tagged), Some(Coercion::Noop));
-        assert_eq!(classify_coercion(&Repr::Tagged, &closure), Some(Coercion::TaggedToHeap));
+        assert_eq!(
+            classify_coercion(&closure, &Repr::Tagged),
+            Some(Coercion::Noop)
+        );
+        assert_eq!(
+            classify_coercion(&Repr::Tagged, &closure),
+            Some(Coercion::TaggedToHeap)
+        );
         // Same-signature closure -> closure is the identity Noop.
         assert_eq!(classify_coercion(&closure, &closure), Some(Coercion::Noop));
         // A *different* signature is an illegal bridge (would forge an ABI).

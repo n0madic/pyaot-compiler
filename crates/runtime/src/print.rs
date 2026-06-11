@@ -41,9 +41,9 @@ pub fn rt_print_str_obj(str_obj: *mut Obj) {
     }
     let v = Value(str_obj as u64);
     let is_none = v.is_none()
-        || (!v.is_int() && !v.is_bool() && unsafe {
-            (*str_obj).header.type_tag == TypeTagKind::None
-        });
+        || (!v.is_int()
+            && !v.is_bool()
+            && unsafe { (*str_obj).header.type_tag == TypeTagKind::None });
     if is_none {
         if is_stderr_target() {
             eprint!("None");
@@ -178,8 +178,7 @@ pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
                 let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
                 let str_obj = obj as *mut StrObj;
                 (*str_obj).len = bytes.len();
-                (*str_obj).char_len =
-                    crate::string::count_codepoints(bytes.as_ptr(), bytes.len());
+                (*str_obj).char_len = crate::string::count_codepoints(bytes.as_ptr(), bytes.len());
                 if !bytes.is_empty() {
                     std::ptr::copy_nonoverlapping(
                         bytes.as_ptr(),

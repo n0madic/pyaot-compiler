@@ -203,7 +203,8 @@ pub fn collect_classes(
     let mut parents: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
     let mut direct_exc_base: HashMap<ClassId, pyaot_hir::BuiltinExceptionKind> = HashMap::new();
     for c in &module.classes {
-        let ns = (namespaces.class_ns.get(&c.class_id).copied().unwrap_or(0) as usize).min(n_ns - 1);
+        let ns =
+            (namespaces.class_ns.get(&c.class_id).copied().unwrap_or(0) as usize).min(n_ns - 1);
         let name_to_id = &class_maps[ns];
         let mut bases = Vec::new();
         for base in &c.base_names {
@@ -253,7 +254,9 @@ pub fn collect_classes(
         // (PITFALLS "fail loud"; method dispatch is by-name and stays correct).
         let mut fields: Vec<FieldInfo> = Vec::new();
         for base in &parents[&c.class_id] {
-            let Some(binfo) = table.get(*base) else { continue };
+            let Some(binfo) = table.get(*base) else {
+                continue;
+            };
             for (bslot, bf) in binfo.fields.iter().enumerate() {
                 match fields.get(bslot) {
                     Some(existing) if existing.name != bf.name => {
@@ -305,7 +308,9 @@ pub fn collect_classes(
         // Assign vtable slots base-first so a base method keeps its slot in
         // subclasses (slot-stability); an override reuses the inherited slot.
         for ancestor in mro.iter().rev() {
-            let Some(ac) = by_id.get(ancestor) else { continue };
+            let Some(ac) = by_id.get(ancestor) else {
+                continue;
+            };
             for (mname, _fid) in &ac.methods {
                 if !slot_of.contains_key(mname) {
                     let slot = slot_of.len();
@@ -318,7 +323,9 @@ pub fn collect_classes(
         // (self first), recording its FuncId + stable slot.
         let mut seen: HashMap<InternedString, ()> = HashMap::new();
         for ancestor in &mro {
-            let Some(ac) = by_id.get(ancestor) else { continue };
+            let Some(ac) = by_id.get(ancestor) else {
+                continue;
+            };
             for (mname, fid) in &ac.methods {
                 if seen.contains_key(mname) {
                     continue;
@@ -337,12 +344,20 @@ pub fn collect_classes(
         let static_methods = c
             .static_methods
             .iter()
-            .map(|(n, f)| MethodInfo { name: *n, func_id: *f, slot: 0 })
+            .map(|(n, f)| MethodInfo {
+                name: *n,
+                func_id: *f,
+                slot: 0,
+            })
             .collect();
         let class_methods = c
             .class_methods
             .iter()
-            .map(|(n, f)| MethodInfo { name: *n, func_id: *f, slot: 0 })
+            .map(|(n, f)| MethodInfo {
+                name: *n,
+                func_id: *f,
+                slot: 0,
+            })
             .collect();
         let properties: Vec<PropertyInfo> = c
             .properties
@@ -369,9 +384,10 @@ pub fn collect_classes(
         // The effective builtin exception base (Phase 7C): a direct builtin
         // base, else inherited through the first user parent (already resolved
         // — bases are declared before subclasses).
-        let exception_base = direct_exc_base.get(&c.class_id).copied().or_else(|| {
-            parent.and_then(|p| table.get(p).and_then(|info| info.exception_base))
-        });
+        let exception_base = direct_exc_base
+            .get(&c.class_id)
+            .copied()
+            .or_else(|| parent.and_then(|p| table.get(p).and_then(|info| info.exception_base)));
 
         table.insert(ClassInfo {
             class_id: c.class_id,
@@ -399,17 +415,16 @@ pub fn collect_classes(
 /// annotations first (in declaration order), then `self.x = …` writes scanned
 /// across its method bodies (first-appearance order). Best-effort field types
 /// (D5): annotation → assigned-param type → assigned-literal type → `Dyn`.
-fn discover_fields(
-    c: &HirClass,
-    module: &HirModule,
-    interner: &StringInterner,
-) -> Vec<FieldInfo> {
+fn discover_fields(c: &HirClass, module: &HirModule, interner: &StringInterner) -> Vec<FieldInfo> {
     let mut fields: Vec<FieldInfo> = Vec::new();
 
     // 1. Class-level annotations.
     for (name, ty) in &c.field_annotations {
         if !fields.iter().any(|f| f.name == *name) {
-            fields.push(FieldInfo { name: *name, ty: ty.clone() });
+            fields.push(FieldInfo {
+                name: *name,
+                ty: ty.clone(),
+            });
         }
     }
 
@@ -420,7 +435,9 @@ fn discover_fields(
         let self_lid = LocalId::new(0);
         for (_b, block) in func.blocks.iter() {
             for stmt in &block.stmts {
-                let HirStmt::SetAttr { base, name, value } = stmt else { continue };
+                let HirStmt::SetAttr { base, name, value } = stmt else {
+                    continue;
+                };
                 if !is_local_ref(func, *base, self_lid) {
                     continue;
                 }
@@ -607,7 +624,10 @@ class Dog(Animal):
         let dog = t.get(cid_of(&t, &i, "Dog")).unwrap();
         assert_eq!(dog.field_slot(name), Some(0));
         assert_eq!(dog.field_slot(breed), Some(1));
-        assert_eq!(t.get(cid_of(&t, &i, "Animal")).unwrap().field_slot(name), Some(0));
+        assert_eq!(
+            t.get(cid_of(&t, &i, "Animal")).unwrap().field_slot(name),
+            Some(0)
+        );
     }
 
     fn cid_of(table: &ClassTable, interner: &StringInterner, name: &str) -> ClassId {
@@ -737,16 +757,23 @@ print(add(1, 2))
         // No resolved symbol maps the public name `add` to a Function.
         let add = interner.intern("add");
         // The renamed body exists as a function.
-        assert!(module.functions.iter().any(|f| interner.resolve(f.name) == "add.<orig>"));
+        assert!(module
+            .functions
+            .iter()
+            .any(|f| interner.resolve(f.name) == "add.<orig>"));
         // ... and a `<thunk>` adapter for it.
-        assert!(module.functions.iter().any(|f| interner.resolve(f.name).contains("add.<orig>.<thunk>")));
+        assert!(module
+            .functions
+            .iter()
+            .any(|f| interner.resolve(f.name).contains("add.<orig>.<thunk>")));
         // Every resolved `add` name occurrence is NOT a Symbol::Function.
         for func in &module.functions {
             for (_idx, expr) in func.exprs.iter() {
                 if let HirExprKind::Name(SymbolRef::Resolved(id)) = expr.kind {
                     if let Symbol::Function(fid) = result.symbol(id) {
                         assert_ne!(
-                            module.functions[fid.index()].name, add,
+                            module.functions[fid.index()].name,
+                            add,
                             "the public decorated name must not resolve to a Function symbol"
                         );
                     }

@@ -144,10 +144,13 @@ const TAGGED_4: &[MirSemantic] = &[
 // (with `i64::MIN`/`i64::MAX` sentinels for "default start/stop"), so they must
 // be passed Raw — the generic `ptr_ternary`/`ptr_quaternary` Tagged default is
 // wrong here (Phase 8E).
-const SLICE_TERNARY: &[MirSemantic] =
-    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Raw];
-const SLICE_QUATERNARY: &[MirSemantic] =
-    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Raw, MirSemantic::Raw];
+const SLICE_TERNARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Raw];
+const SLICE_QUATERNARY: &[MirSemantic] = &[
+    MirSemantic::Tagged,
+    MirSemantic::Raw,
+    MirSemantic::Raw,
+    MirSemantic::Raw,
+];
 
 impl RuntimeFuncDef {
     /// General constructor (no explicit MIR semantic). Verifier falls back
@@ -515,7 +518,8 @@ pub static RT_ANY_GETITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_any_g
 /// produced empty-shape lists for downstream consumers.
 pub static RT_OBJ_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_obj_slice");
 /// rt_obj_slice_step(obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj
-pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::slice_quaternary("rt_obj_slice_step");
+pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef =
+    RuntimeFuncDef::slice_quaternary("rt_obj_slice_step");
 /// rt_obj_len(obj: *mut Obj) -> i64 — Any/HeapAny runtime-dispatched length.
 /// Routes to the type-specific length helper based on `TypeTagKind`. Used
 /// by `lower_len` when `select_len_func` returns `None` (Any/HeapAny),
@@ -1034,7 +1038,8 @@ pub static RT_STR_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_co
 /// rt_str_slice(s: *mut Obj, start: i64, stop: i64) -> *mut Obj
 pub static RT_STR_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_str_slice");
 /// rt_str_slice_step(s: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
-pub static RT_STR_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::slice_quaternary("rt_str_slice_step");
+pub static RT_STR_SLICE_STEP: RuntimeFuncDef =
+    RuntimeFuncDef::slice_quaternary("rt_str_slice_step");
 /// rt_str_getchar(s: *mut Obj, byte_index: i64) -> *mut Obj
 pub static RT_STR_GETCHAR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_getchar");
 /// rt_str_subscript(s: *mut Obj, char_index: i64) -> *mut Obj
@@ -1091,8 +1096,7 @@ pub static RT_STR_SWAPCASE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_s
 // receiver, a RAW i64 width, and (except zfill) a tagged fillchar. The width
 // is read as a machine integer by the runtime, so the generic
 // `ptr_ternary`/`ptr_binary` all-Tagged default is wrong here (Phase 8H).
-const ALIGN_TERNARY: &[MirSemantic] =
-    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged];
+const ALIGN_TERNARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged];
 const ALIGN_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
 
 /// rt_str_center(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj

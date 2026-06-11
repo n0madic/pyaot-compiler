@@ -33,7 +33,10 @@ pub fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_upper");
-        let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_uppercase()).collect();
+        let result: String = str_obj_to_string(str_obj)
+            .chars()
+            .flat_map(|c| c.to_uppercase())
+            .collect();
         rt_make_str(result.as_ptr(), result.len())
     }
 }
@@ -51,7 +54,10 @@ pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_lower");
-        let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_lowercase()).collect();
+        let result: String = str_obj_to_string(str_obj)
+            .chars()
+            .flat_map(|c| c.to_lowercase())
+            .collect();
         rt_make_str(result.as_ptr(), result.len())
     }
 }

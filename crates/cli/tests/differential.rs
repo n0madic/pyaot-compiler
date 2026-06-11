@@ -13,8 +13,11 @@ use std::process::Command;
 /// timestamps), compared in self-checking mode instead of byte-diff: both
 /// runs must exit 0 and end with the same final line — the file's own
 /// "…passed!" marker, which only prints when every internal assert held.
-const SELF_CHECKING: &[&str] =
-    &["test_stdlib_time.py", "test_file_io_core.py", "test_stdlib_subprocess.py"];
+const SELF_CHECKING: &[&str] = &[
+    "test_stdlib_time.py",
+    "test_file_io_core.py",
+    "test_stdlib_subprocess.py",
+];
 
 /// The phase spec entries — an explicit allowlist that grows one feature at a
 /// time. Each file's compiled stdout must match CPython byte-for-byte
@@ -344,7 +347,9 @@ fn ensure_runtime_lib(target_dir: &Path) -> PathBuf {
     if profile == "release" {
         cmd.arg("--release");
     }
-    let build = cmd.output().expect("failed to spawn cargo build for runtime");
+    let build = cmd
+        .output()
+        .expect("failed to spawn cargo build for runtime");
     assert!(
         build.status.success(),
         "failed to build pyaot-runtime staticlib:\n{}",

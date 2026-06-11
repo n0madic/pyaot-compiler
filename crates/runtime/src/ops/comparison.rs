@@ -44,7 +44,10 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         let a_big = va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::BigInt;
         let b_big = vb.is_ptr() && !b.is_null() && (*b).type_tag() == TypeTagKind::BigInt;
         if a_big || b_big {
-            return match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            return match (
+                crate::bigint::classify_num(va),
+                crate::bigint::classify_num(vb),
+            ) {
                 (Some(x), Some(y)) => crate::bigint::num_eq(&x, &y) as i8,
                 _ => 0, // BigInt vs non-number → not equal
             };
@@ -404,7 +407,10 @@ pub fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
         let a_big = va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::BigInt;
         let b_big = vb.is_ptr() && !b.is_null() && (*b).type_tag() == TypeTagKind::BigInt;
         if a_big || b_big {
-            if let (Some(x), Some(y)) = (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+            if let (Some(x), Some(y)) = (
+                crate::bigint::classify_num(va),
+                crate::bigint::classify_num(vb),
+            ) {
                 return match crate::bigint::num_cmp(&x, &y) {
                     Some(ord) => {
                         let r = match op_tag {

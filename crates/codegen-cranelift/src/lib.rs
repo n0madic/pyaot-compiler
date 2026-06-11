@@ -36,8 +36,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
-    classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp, LocalDecl,
-    MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
+    classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp,
+    LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
@@ -443,7 +443,8 @@ fn declare_import(
 ) -> Result<FuncId> {
     let mut sig = Signature::new(cc);
     sig.params.extend(params.iter().copied().map(AbiParam::new));
-    sig.returns.extend(returns.iter().copied().map(AbiParam::new));
+    sig.returns
+        .extend(returns.iter().copied().map(AbiParam::new));
     module
         .declare_function(name, Linkage::Import, &sig)
         .map_err(|e| cg_error(format!("declare import `{name}`: {e}")))
@@ -483,7 +484,10 @@ pub struct CodegenOptions {
 
 impl Default for CodegenOptions {
     fn default() -> Self {
-        Self { opt_level: OptLevel::Speed, alias_analysis: true }
+        Self {
+            opt_level: OptLevel::Speed,
+            alias_analysis: true,
+        }
     }
 }
 
@@ -564,7 +568,13 @@ pub fn compile(
         let py_name: String = interner
             .resolve(mf.name)
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let name = format!("pyaot_fn_{i}_{py_name}");
         let id = module
@@ -593,7 +603,10 @@ pub fn compile(
         for (slot, fid) in c.vtable.iter().enumerate() {
             let cl_fid = func_ids[fid.index()];
             let fref = module.declare_func_in_data(cl_fid, &mut desc);
-            desc.write_function_addr(pyaot_core_defs::layout::vtable_slot_offset(slot) as u32, fref);
+            desc.write_function_addr(
+                pyaot_core_defs::layout::vtable_slot_offset(slot) as u32,
+                fref,
+            );
         }
         module
             .define_data(data_id, &desc)
@@ -603,7 +616,16 @@ pub fn compile(
 
     // Define each function body.
     for (i, mf) in program.funcs.iter().enumerate() {
-        define_function(&mut module, mf, func_ids[i], &func_ids, &rt, &data_ids, ptr_ty, call_conv)?;
+        define_function(
+            &mut module,
+            mf,
+            func_ids[i],
+            &func_ids,
+            &rt,
+            &data_ids,
+            ptr_ty,
+            call_conv,
+        )?;
     }
 
     // Class registration (`__pyaot_classinit`) runs before `__main__`, so every
@@ -613,11 +635,25 @@ pub fn compile(
         None
     } else {
         Some(emit_classinit(
-            &mut module, program, &rt, &data_ids, &vtable_ids, &func_ids, ptr_ty, call_conv,
+            &mut module,
+            program,
+            &rt,
+            &data_ids,
+            &vtable_ids,
+            &func_ids,
+            ptr_ty,
+            call_conv,
         )?)
     };
 
-    emit_main(&mut module, func_ids[program.entry.index()], classinit, &rt, ptr_ty, call_conv)?;
+    emit_main(
+        &mut module,
+        func_ids[program.entry.index()],
+        classinit,
+        &rt,
+        ptr_ty,
+        call_conv,
+    )?;
     emit_generator_dispatch(&mut module, program, &func_ids, ptr_ty, call_conv)?;
 
     let product = module.finish();
@@ -666,8 +702,9 @@ fn emit_generator_dispatch(
             builder.finalize();
         } else {
             let offset = pyaot_core_defs::layout::GENERATOR_FUNC_ID_OFFSET;
-            let func_id_val =
-                builder.ins().load(types::I32, MemFlags::trusted(), gen, offset);
+            let func_id_val = builder
+                .ins()
+                .load(types::I32, MemFlags::trusted(), gen, offset);
             // Compare-chain: for each gen_id, if func_id == gen_id call its
             // resume fn and return; else fall to the next test.
             for (gen_id, resume_fid) in program.generators.iter().enumerate() {
@@ -846,7 +883,10 @@ fn materialize_const(
     ptr_ty: Type,
     val: &Const,
 ) -> Result<Value> {
-    let str_data = |module: &mut ObjectModule, builder: &mut FunctionBuilder, id: InternedString| -> Result<(Value, Value)> {
+    let str_data = |module: &mut ObjectModule,
+                    builder: &mut FunctionBuilder,
+                    id: InternedString|
+     -> Result<(Value, Value)> {
         let (data_id, len) = *data_ids
             .get(&id)
             .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
@@ -855,7 +895,11 @@ fn materialize_const(
         let len_val = builder.ins().iconst(types::I64, len as i64);
         Ok((ptr, len_val))
     };
-    let call1 = |module: &mut ObjectModule, builder: &mut FunctionBuilder, fid: FuncId, args: &[Value]| -> Value {
+    let call1 = |module: &mut ObjectModule,
+                 builder: &mut FunctionBuilder,
+                 fid: FuncId,
+                 args: &[Value]|
+     -> Value {
         let fref = module.declare_func_in_func(fid, builder.func);
         let inst = builder.ins().call(fref, args);
         builder.inst_results(inst)[0]
@@ -1200,13 +1244,16 @@ impl FnGen<'_, '_> {
     /// locals' home is their roots slot, raw locals' home their spill slot.
     fn def_local(&mut self, id: LocalId, val: Value) {
         if !self.has_try {
-            self.builder.def_var(Variable::from_u32(id.index() as u32), val);
+            self.builder
+                .def_var(Variable::from_u32(id.index() as u32), val);
         } else if let Some(slot) = self.spill_slot_of[id.index()] {
             self.builder.ins().stack_store(val, slot, 0);
         }
         if let Some(slot_idx) = self.root_slot_of[id.index()] {
             let rs = self.roots_slot.expect("rooted local needs a roots slot");
-            self.builder.ins().stack_store(val, rs, (slot_idx * 8) as i32);
+            self.builder
+                .ins()
+                .stack_store(val, rs, (slot_idx * 8) as i32);
         }
     }
 
@@ -1224,9 +1271,13 @@ impl FnGen<'_, '_> {
             self.builder.ins().stack_store(zero, roots, (i * 8) as i32);
         }
         let nroots_v = self.builder.ins().iconst(types::I64, self.nroots as i64);
-        self.builder.ins().stack_store(nroots_v, frame, SHADOW_FRAME_NROOTS_OFFSET);
+        self.builder
+            .ins()
+            .stack_store(nroots_v, frame, SHADOW_FRAME_NROOTS_OFFSET);
         let roots_addr = self.builder.ins().stack_addr(self.ptr_ty, roots, 0);
-        self.builder.ins().stack_store(roots_addr, frame, SHADOW_FRAME_ROOTS_OFFSET);
+        self.builder
+            .ins()
+            .stack_store(roots_addr, frame, SHADOW_FRAME_ROOTS_OFFSET);
         let frame_addr = self.builder.ins().stack_addr(self.ptr_ty, frame, 0);
         self.call(self.rt.gc_push, &[frame_addr]);
     }
@@ -1313,7 +1364,11 @@ impl FnGen<'_, '_> {
                 }
                 Ok(())
             }
-            MirInst::MakeInstance { dst, class_id, field_count } => {
+            MirInst::MakeInstance {
+                dst,
+                class_id,
+                field_count,
+            } => {
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let fc = self.builder.ins().iconst(types::I64, *field_count);
                 let v = self.call(self.rt.make_instance, &[cid, fc]).unwrap();
@@ -1334,38 +1389,62 @@ impl FnGen<'_, '_> {
                 self.call(self.rt.instance_set_field, &[b, slot_v, v]);
                 Ok(())
             }
-            MirInst::GetFieldNamed { dst, base, name_hash } => {
+            MirInst::GetFieldNamed {
+                dst,
+                base,
+                name_hash,
+            } => {
                 let b = self.use_operand(base);
                 let h = self.builder.ins().iconst(types::I64, *name_hash as i64);
                 let v = self.call(self.rt.getattr_name, &[b, h]).unwrap();
                 self.def_local(*dst, v);
                 Ok(())
             }
-            MirInst::SetFieldNamed { base, name_hash, value } => {
+            MirInst::SetFieldNamed {
+                base,
+                name_hash,
+                value,
+            } => {
                 let b = self.use_operand(base);
                 let h = self.builder.ins().iconst(types::I64, *name_hash as i64);
                 let v = self.use_operand(value);
                 self.call(self.rt.setattr_name, &[b, h, v]);
                 Ok(())
             }
-            MirInst::CallVirtual { dst, recv, name_hash, args, ret } => {
-                self.lower_call_virtual(dst, recv, *name_hash, args, ret)
-            }
-            MirInst::IsInstance { dst, value, class_id } => {
+            MirInst::CallVirtual {
+                dst,
+                recv,
+                name_hash,
+                args,
+                ret,
+            } => self.lower_call_virtual(dst, recv, *name_hash, args, ret),
+            MirInst::IsInstance {
+                dst,
+                value,
+                class_id,
+            } => {
                 let v = self.use_operand(value);
                 let cid = self.builder.ins().iconst(types::I64, class_id.0 as i64);
                 let r = self.call(self.rt.isinstance_inherited, &[v, cid]).unwrap();
                 self.def_local(*dst, r);
                 Ok(())
             }
-            MirInst::GetClassAttr { dst, class_id, attr_idx } => {
+            MirInst::GetClassAttr {
+                dst,
+                class_id,
+                attr_idx,
+            } => {
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let idx = self.builder.ins().iconst(types::I32, *attr_idx as i64);
                 let v = self.call(self.rt.class_attr_get_ptr, &[cid, idx]).unwrap();
                 self.def_local(*dst, v);
                 Ok(())
             }
-            MirInst::SetClassAttr { class_id, attr_idx, value } => {
+            MirInst::SetClassAttr {
+                class_id,
+                attr_idx,
+                value,
+            } => {
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let idx = self.builder.ins().iconst(types::I32, *attr_idx as i64);
                 let v = self.use_operand(value);
@@ -1379,12 +1458,17 @@ impl FnGen<'_, '_> {
             }
             MirInst::Print { kind, arg } => self.lower_print(*kind, arg),
             // ── closures / cells / globals (Phase 6) ──
-            MirInst::MakeClosure { dst, func, captures } => {
-                self.lower_make_closure(*dst, *func, captures)
-            }
-            MirInst::CallIndirect { dst, callee, args, sig } => {
-                self.lower_call_indirect(dst, callee, args, sig)
-            }
+            MirInst::MakeClosure {
+                dst,
+                func,
+                captures,
+            } => self.lower_make_closure(*dst, *func, captures),
+            MirInst::CallIndirect {
+                dst,
+                callee,
+                args,
+                sig,
+            } => self.lower_call_indirect(dst, callee, args, sig),
             MirInst::MakeCell { dst, init } => {
                 let iv = self.use_operand(init);
                 let v = self.call(self.rt.make_cell_ptr, &[iv]).unwrap();
@@ -1416,16 +1500,24 @@ impl FnGen<'_, '_> {
                 Ok(())
             }
             // ── generators (Phase 6E) ──
-            MirInst::MakeGenerator { dst, gen_id, num_locals } => {
+            MirInst::MakeGenerator {
+                dst,
+                gen_id,
+                num_locals,
+            } => {
                 let gid = self.builder.ins().iconst(types::I32, *gen_id as i64);
                 let nl = self.builder.ins().iconst(types::I32, *num_locals as i64);
                 let v = self.call(self.rt.make_generator, &[gid, nl]).unwrap();
                 self.def_local(*dst, v);
                 Ok(())
             }
-            MirInst::GenOpInst { dst, op, gen, imm, value } => {
-                self.lower_gen_op(dst, *op, gen, *imm, value)
-            }
+            MirInst::GenOpInst {
+                dst,
+                op,
+                gen,
+                imm,
+                value,
+            } => self.lower_gen_op(dst, *op, gen, *imm, value),
             // ── exceptions (Phase 7) ──
             MirInst::ExcOp(op) => {
                 let fid = match op {
@@ -1502,20 +1594,36 @@ impl FnGen<'_, '_> {
                 let t = self.builder.ins().iconst(types::I8, *tag as i64);
                 self.call(self.rt.exc_raise_from_none, &[t, ptr, len]);
             }
-            R::BuiltinFrom { tag, msg, cause_tag, cause_msg } => {
+            R::BuiltinFrom {
+                tag,
+                msg,
+                cause_tag,
+                cause_msg,
+            } => {
                 let (ptr, len) = self.msg_ptr_len(msg);
                 let (cptr, clen) = self.msg_ptr_len(cause_msg);
                 let t = self.builder.ins().iconst(types::I8, *tag as i64);
                 let ct = self.builder.ins().iconst(types::I8, *cause_tag as i64);
                 self.call(self.rt.exc_raise_from, &[t, ptr, len, ct, cptr, clen]);
             }
-            R::CustomWithInstance { class_id, msg, instance } => {
+            R::CustomWithInstance {
+                class_id,
+                msg,
+                instance,
+            } => {
                 let (ptr, len) = self.msg_ptr_len(msg);
                 let cid = self.builder.ins().iconst(types::I8, class_id.0 as i64);
                 let inst = self.use_operand(instance);
-                self.call(self.rt.exc_raise_custom_with_instance, &[cid, ptr, len, inst]);
+                self.call(
+                    self.rt.exc_raise_custom_with_instance,
+                    &[cid, ptr, len, inst],
+                );
             }
-            R::Stdlib { class_id, exc_type_tag, msg } => {
+            R::Stdlib {
+                class_id,
+                exc_type_tag,
+                msg,
+            } => {
                 let (ptr, len) = self.msg_ptr_len(msg);
                 let t = self.builder.ins().iconst(types::I8, *exc_type_tag as i64);
                 let cid = self.builder.ins().iconst(types::I8, *class_id as i64);
@@ -1604,13 +1712,18 @@ impl FnGen<'_, '_> {
         func: pyaot_utils::FuncId,
         captures: &[Operand],
     ) -> Result<()> {
-        let count = self.builder.ins().iconst(types::I64, 1 + captures.len() as i64);
+        let count = self
+            .builder
+            .ins()
+            .iconst(types::I64, 1 + captures.len() as i64);
         let env = self.call(self.rt.make_tuple, &[count]).unwrap();
         // Root the env tuple immediately: the capture stores below call into the
         // runtime, and a later allocation must not collect it.
         self.def_local(dst, env);
 
-        let fref = self.module.declare_func_in_func(self.func_ids[func.index()], self.builder.func);
+        let fref = self
+            .module
+            .declare_func_in_func(self.func_ids[func.index()], self.builder.func);
         let addr = self.builder.ins().func_addr(self.ptr_ty, fref);
         let shifted = self.builder.ins().ishl_imm(addr, tag::INT_SHIFT as i64);
         let tagged_addr = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
@@ -1639,7 +1752,10 @@ impl FnGen<'_, '_> {
         let env = self.use_operand(callee);
         let slot0 = self.builder.ins().iconst(types::I64, 0);
         let tagged_addr = self.call(self.rt.tuple_get, &[env, slot0]).unwrap();
-        let fnaddr = self.builder.ins().sshr_imm(tagged_addr, tag::INT_SHIFT as i64);
+        let fnaddr = self
+            .builder
+            .ins()
+            .sshr_imm(tagged_addr, tag::INT_SHIFT as i64);
 
         let mut csig = Signature::new(self.cc);
         csig.params.push(AbiParam::new(types::I64)); // env tuple
@@ -1731,13 +1847,9 @@ impl FnGen<'_, '_> {
         if checked {
             let s = self.use_operand(src);
             let v = match to {
-                Repr::Raw(RawKind::F64) => {
-                    self.call(self.rt.unbox_float_checked, &[s]).unwrap()
-                }
+                Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
-                other => {
-                    return Err(cg_error(format!("illegal checked coercion to {other:?}")))
-                }
+                other => return Err(cg_error(format!("illegal checked coercion to {other:?}"))),
             };
             self.def_local(dst, v);
             return Ok(());
@@ -2025,13 +2137,17 @@ impl FnGen<'_, '_> {
     ) -> Result<()> {
         let recv_v = self.use_operand(recv);
         let hash_v = self.builder.ins().iconst(types::I64, name_hash as i64);
-        let fnptr = self.call(self.rt.vtable_lookup_by_name, &[recv_v, hash_v]).unwrap();
+        let fnptr = self
+            .call(self.rt.vtable_lookup_by_name, &[recv_v, hash_v])
+            .unwrap();
 
         // Indirect-call signature: (self: I64, args…) -> ret.
         let mut sig = Signature::new(self.cc);
-        sig.params.push(AbiParam::new(clif_ty(self.operand_repr(recv))));
+        sig.params
+            .push(AbiParam::new(clif_ty(self.operand_repr(recv))));
         for a in args {
-            sig.params.push(AbiParam::new(clif_ty(self.operand_repr(a))));
+            sig.params
+                .push(AbiParam::new(clif_ty(self.operand_repr(a))));
         }
         sig.returns.push(AbiParam::new(clif_ty(ret)));
         let sigref = self.builder.import_signature(sig);
@@ -2061,7 +2177,11 @@ impl FnGen<'_, '_> {
             K::Len => self.rt.builtin_len,
             K::Ord => self.rt.builtin_ord,
             K::Chr => self.rt.builtin_chr,
-            other => return Err(cg_error(format!("builtin {other:?} not supported in Phase 2"))),
+            other => {
+                return Err(cg_error(format!(
+                    "builtin {other:?} not supported in Phase 2"
+                )))
+            }
         })
     }
 
@@ -2130,10 +2250,10 @@ impl FnGen<'_, '_> {
                 let slot = self.exc_frame_slots[&self.cur_block];
                 let frame = self.builder.ins().stack_addr(self.ptr_ty, slot, 0);
                 self.call(self.rt.exc_push_frame, &[frame]);
-                let jb = self
-                    .builder
-                    .ins()
-                    .iadd_imm(frame, pyaot_core_defs::layout::EXCEPTION_JMP_BUF_OFFSET as i64);
+                let jb = self.builder.ins().iadd_imm(
+                    frame,
+                    pyaot_core_defs::layout::EXCEPTION_JMP_BUF_OFFSET as i64,
+                );
                 let rc = self.call(self.rt.setjmp, &[jb]).unwrap();
                 let n = self.cl_blocks[normal.index()];
                 let h = self.cl_blocks[handler.index()];

@@ -17,10 +17,7 @@ pub fn op(i: u32) -> Operand {
 }
 
 /// A zero-param function from `(insts, term)` block descriptions; entry = 0.
-pub fn function(
-    locals: Vec<Repr>,
-    blocks: Vec<(Vec<MirInst>, MirTerminator)>,
-) -> MirFunction {
+pub fn function(locals: Vec<Repr>, blocks: Vec<(Vec<MirInst>, MirTerminator)>) -> MirFunction {
     MirFunction {
         name: interned("test_fn"),
         params: Vec::new(),
@@ -34,11 +31,7 @@ pub fn function(
     }
 }
 
-pub fn single_block(
-    locals: Vec<Repr>,
-    insts: Vec<MirInst>,
-    term: MirTerminator,
-) -> MirFunction {
+pub fn single_block(locals: Vec<Repr>, insts: Vec<MirInst>, term: MirTerminator) -> MirFunction {
     function(locals, vec![(insts, term)])
 }
 

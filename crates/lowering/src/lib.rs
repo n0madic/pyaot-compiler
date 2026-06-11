@@ -38,7 +38,9 @@ use pyaot_mir::{
     MirClass, MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand, PrintKind,
     StrPool, UnaryOp as MUnaryOp,
 };
-use pyaot_types::{repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND};
+use pyaot_types::{
+    repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND,
+};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner};
 
 /// Lower a resolved, inferred [`HirModule`] into a [`MirProgram`].
@@ -82,7 +84,15 @@ pub fn lower(
     let mut funcs = Vec::with_capacity(module.functions.len());
     for (i, func) in module.functions.iter().enumerate() {
         let ret_repr = sigs[i].ret.clone();
-        let mut fl = FnLower::new(func, resolve, interner, &mut str_pool, &sigs, classes, ret_repr);
+        let mut fl = FnLower::new(
+            func,
+            resolve,
+            interner,
+            &mut str_pool,
+            &sigs,
+            classes,
+            ret_repr,
+        );
         funcs.push(fl.lower()?);
     }
     // The codegen-facing class registration data (`__pyaot_classinit`). Qualname
@@ -108,7 +118,10 @@ fn build_mir_classes(
 ) -> Vec<MirClass> {
     let mut out = Vec::new();
     for info in classes.iter() {
-        str_pool.insert(info.qualname, interner.resolve(info.qualname).as_bytes().to_vec());
+        str_pool.insert(
+            info.qualname,
+            interner.resolve(info.qualname).as_bytes().to_vec(),
+        );
         if info.is_exception_class() {
             str_pool.insert(info.name, interner.resolve(info.name).as_bytes().to_vec());
         }
@@ -222,8 +235,13 @@ impl<'a> FnLower<'a> {
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
         // temporaries are appended after.
-        let locals: Vec<LocalDecl> =
-            func.locals.iter().map(|l| LocalDecl { repr: local_repr(l) }).collect();
+        let locals: Vec<LocalDecl> = func
+            .locals
+            .iter()
+            .map(|l| LocalDecl {
+                repr: local_repr(l),
+            })
+            .collect();
         FnLower {
             func,
             resolve,
@@ -277,7 +295,10 @@ impl<'a> FnLower<'a> {
     /// Reserve a fresh MIR block slot (placeholder), returning its id.
     fn reserve_block(&mut self) -> BlockId {
         let id = BlockId::new(self.blocks.len() as u32);
-        self.blocks.push(MirBlock { insts: Vec::new(), term: MirTerminator::Unreachable });
+        self.blocks.push(MirBlock {
+            insts: Vec::new(),
+            term: MirTerminator::Unreachable,
+        });
         id
     }
 
@@ -391,7 +412,11 @@ impl<'a> FnLower<'a> {
                 let cond_op = self.lower_cond(*cond)?;
                 let ok = self.reserve_block();
                 let fail = self.reserve_block();
-                self.seal(MirTerminator::Branch { cond: cond_op, then: ok, else_: fail });
+                self.seal(MirTerminator::Branch {
+                    cond: cond_op,
+                    then: ok,
+                    else_: fail,
+                });
                 self.switch(fail);
                 self.emit(MirInst::AssertFail);
                 self.seal(MirTerminator::Unreachable);
@@ -410,7 +435,11 @@ impl<'a> FnLower<'a> {
                 self.emit_container(op, vec![(*container, cont_repr), (vl, vr)], None)?;
                 Ok(())
             }
-            HirStmt::ContainerInsert { container, key, value } => {
+            HirStmt::ContainerInsert {
+                container,
+                key,
+                value,
+            } => {
                 let cont_repr = self.local_repr(*container);
                 let (kl, kr) = self.lower_expr(*key)?;
                 let (vl, vr) = self.lower_expr(*value)?;
@@ -435,7 +464,10 @@ impl<'a> FnLower<'a> {
             HirStmt::GlobalSet { var_id, value } => {
                 let (vl, vr) = self.lower_expr(*value)?;
                 let vt = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit(MirInst::GlobalSet { var_id: *var_id, value: Operand::Local(vt) });
+                self.emit(MirInst::GlobalSet {
+                    var_id: *var_id,
+                    value: Operand::Local(vt),
+                });
                 Ok(())
             }
             // ── generators (Phase 6E) ──
@@ -497,7 +529,12 @@ impl<'a> FnLower<'a> {
                 let msg = self.lower_exc_msg(*msg)?;
                 self.emit(MirInst::Raise(MirRaise::BuiltinFromNone { tag: *tag, msg }));
             }
-            H::BuiltinFrom { tag, msg, cause_tag, cause_msg } => {
+            H::BuiltinFrom {
+                tag,
+                msg,
+                cause_tag,
+                cause_msg,
+            } => {
                 let msg = self.lower_exc_msg(*msg)?;
                 let cause_msg = self.lower_exc_msg(*cause_msg)?;
                 self.emit(MirInst::Raise(MirRaise::BuiltinFrom {
@@ -512,14 +549,11 @@ impl<'a> FnLower<'a> {
                     .first()
                     .map(|a| self.func.exprs[*a].span)
                     .unwrap_or_else(pyaot_utils::Span::dummy);
-                let has_init = self
-                    .classes
-                    .get(*class_id)
-                    .is_some_and(|info| {
-                        info.methods
-                            .iter()
-                            .any(|m| self.interner.resolve(m.name) == "__init__")
-                    });
+                let has_init = self.classes.get(*class_id).is_some_and(|info| {
+                    info.methods
+                        .iter()
+                        .any(|m| self.interner.resolve(m.name) == "__init__")
+                });
                 if has_init {
                     // Construct + run __init__ at the raise site; the instance
                     // carries the user fields.
@@ -549,7 +583,11 @@ impl<'a> FnLower<'a> {
                     }));
                 }
             }
-            H::Stdlib { class_id, exc_type_tag, msg } => {
+            H::Stdlib {
+                class_id,
+                exc_type_tag,
+                msg,
+            } => {
                 let msg = self.lower_exc_msg(*msg)?;
                 self.emit(MirInst::Raise(MirRaise::Stdlib {
                     class_id: *class_id,
@@ -560,7 +598,9 @@ impl<'a> FnLower<'a> {
             H::Instance { value } => {
                 let (vl, vr) = self.lower_expr(*value)?;
                 let vt = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit(MirInst::Raise(MirRaise::Instance { value: Operand::Local(vt) }));
+                self.emit(MirInst::Raise(MirRaise::Instance {
+                    value: Operand::Local(vt),
+                }));
             }
             H::Reraise => self.emit(MirInst::Raise(MirRaise::Reraise)),
         }
@@ -611,7 +651,10 @@ impl<'a> FnLower<'a> {
             self.emit_dunder_call(fid, vec![(bl, br), (il, ir), (vl, vr)])?;
             return Ok(());
         }
-        let kind = sub_kind(&self.func.exprs[base].ty, &repr_of(&self.func.exprs[base].ty));
+        let kind = sub_kind(
+            &self.func.exprs[base].ty,
+            &repr_of(&self.func.exprs[base].ty),
+        );
         let (bl, br) = self.lower_expr(base)?;
         let (il, ir) = self.lower_expr(index)?;
         let (vl, vr) = self.lower_expr(value)?;
@@ -664,14 +707,20 @@ impl<'a> FnLower<'a> {
         for (i, (arg_idx, loc, repr)) in vals.into_iter().enumerate() {
             if i > 0 {
                 match sep {
-                    None => self.emit(MirInst::Print { kind: PrintKind::Sep, arg: None }),
+                    None => self.emit(MirInst::Print {
+                        kind: PrintKind::Sep,
+                        arg: None,
+                    }),
                     Some(id) => self.emit_print_str(id),
                 }
             }
             self.lower_print_arg(arg_idx, loc, repr)?;
         }
         match end {
-            None => self.emit(MirInst::Print { kind: PrintKind::Newline, arg: None }),
+            None => self.emit(MirInst::Print {
+                kind: PrintKind::Newline,
+                arg: None,
+            }),
             Some(id) => self.emit_print_str(id),
         }
         Ok(())
@@ -690,7 +739,10 @@ impl<'a> FnLower<'a> {
         {
             let (res, rrep) = self.emit_dunder_call(fid, vec![(loc, repr)])?;
             let tagged = self.coerce(res, rrep, Repr::Tagged)?;
-            self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
+            self.emit(MirInst::Print {
+                kind: PrintKind::StrObj,
+                arg: Some(Operand::Local(tagged)),
+            });
             return Ok(());
         }
         // `print(e)` of a caught exception prints its message (Phase 7B) —
@@ -698,9 +750,15 @@ impl<'a> FnLower<'a> {
         if self.is_exception_value(&ty) {
             let vt = self.coerce(loc, repr, Repr::Tagged)?;
             let s = self.alloc_temp(Repr::Heap(HeapShape::Str));
-            self.emit(MirInst::ExcInstanceStr { dst: s, value: Operand::Local(vt) });
+            self.emit(MirInst::ExcInstanceStr {
+                dst: s,
+                value: Operand::Local(vt),
+            });
             let tagged = self.coerce(s, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-            self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
+            self.emit(MirInst::Print {
+                kind: PrintKind::StrObj,
+                arg: Some(Operand::Local(tagged)),
+            });
             return Ok(());
         }
         let (kind, want) = print_dispatch(&ty);
@@ -709,7 +767,10 @@ impl<'a> FnLower<'a> {
             None => self.emit(MirInst::Print { kind, arg: None }),
             Some(want_repr) => {
                 let coerced = self.coerce(loc, repr, want_repr)?;
-                self.emit(MirInst::Print { kind, arg: Some(Operand::Local(coerced)) });
+                self.emit(MirInst::Print {
+                    kind,
+                    arg: Some(Operand::Local(coerced)),
+                });
             }
         }
         Ok(())
@@ -718,14 +779,21 @@ impl<'a> FnLower<'a> {
     /// Emit `print(<str literal>)` with no separator/newline (used for custom
     /// `sep=`/`end=` strings).
     fn emit_print_str(&mut self, id: pyaot_utils::InternedString) {
-        self.str_pool.insert(id, self.interner.resolve(id).as_bytes().to_vec());
+        self.str_pool
+            .insert(id, self.interner.resolve(id).as_bytes().to_vec());
         let s = self.alloc_temp(Repr::Heap(HeapShape::Str));
-        self.emit(MirInst::Const { dst: s, val: Const::Str(id) });
+        self.emit(MirInst::Const {
+            dst: s,
+            val: Const::Str(id),
+        });
         // Heap(Str) → Tagged is a free no-op coercion via legalize.
         let tagged = self
             .coerce(s, Repr::Heap(HeapShape::Str), Repr::Tagged)
             .expect("Heap(Str)->Tagged is always legal");
-        self.emit(MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(tagged)) });
+        self.emit(MirInst::Print {
+            kind: PrintKind::StrObj,
+            arg: Some(Operand::Local(tagged)),
+        });
     }
 
     // ── terminators ──────────────────────────────────────────────────────────
@@ -766,7 +834,10 @@ impl<'a> FnLower<'a> {
         // Truthiness on the tagged baseline.
         let tagged = self.coerce(loc, repr, Repr::Tagged)?;
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
-        self.emit(MirInst::Truthy { dst, operand: Operand::Local(tagged) });
+        self.emit(MirInst::Truthy {
+            dst,
+            operand: Operand::Local(tagged),
+        });
         Ok(Operand::Local(dst))
     }
 
@@ -778,36 +849,56 @@ impl<'a> FnLower<'a> {
         match &expr.kind {
             HirExprKind::StrLit(id) => {
                 let id = *id;
-                self.str_pool.insert(id, self.interner.resolve(id).as_bytes().to_vec());
+                self.str_pool
+                    .insert(id, self.interner.resolve(id).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const { dst, val: Const::Str(id) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Str(id),
+                });
                 Ok((dst, Repr::Heap(HeapShape::Str)))
             }
             HirExprKind::IntLit(v) => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::Int(*v) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Int(*v),
+                });
                 Ok((dst, Repr::Tagged))
             }
             HirExprKind::BigIntLit(id) => {
                 let id = *id;
-                self.str_pool.insert(id, self.interner.resolve(id).as_bytes().to_vec());
+                self.str_pool
+                    .insert(id, self.interner.resolve(id).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::BigInt));
-                self.emit(MirInst::Const { dst, val: Const::BigIntStr(id) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::BigIntStr(id),
+                });
                 Ok((dst, Repr::Heap(HeapShape::BigInt)))
             }
             HirExprKind::FloatLit(f) => {
                 let dst = self.alloc_temp(Repr::Raw(RawKind::F64));
-                self.emit(MirInst::Const { dst, val: Const::Float(*f) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Float(*f),
+                });
                 Ok((dst, Repr::Raw(RawKind::F64)))
             }
             HirExprKind::BoolLit(b) => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::Bool(*b) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Bool(*b),
+                });
                 Ok((dst, Repr::Tagged))
             }
             HirExprKind::NoneLit => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::None });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::None,
+                });
                 Ok((dst, Repr::Tagged))
             }
             HirExprKind::Name(symref) => self.lower_name(*symref, expr.span),
@@ -823,23 +914,32 @@ impl<'a> FnLower<'a> {
             HirExprKind::DictLit { pairs } => self.lower_dict_lit(idx, &pairs.clone()),
             HirExprKind::BytesLit(id) => {
                 let id = *id;
-                self.str_pool.insert(id, self.interner.resolve(id).as_bytes().to_vec());
+                self.str_pool
+                    .insert(id, self.interner.resolve(id).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Bytes));
-                self.emit(MirInst::Const { dst, val: Const::Bytes(id) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Bytes(id),
+                });
                 Ok((dst, Repr::Heap(HeapShape::Bytes)))
             }
             HirExprKind::Subscript { base, index } => self.lower_subscript(*base, *index),
-            HirExprKind::Slice { base, start, end, step } => {
-                self.lower_slice(idx, *base, *start, *end, *step)
-            }
+            HirExprKind::Slice {
+                base,
+                start,
+                end,
+                step,
+            } => self.lower_slice(idx, *base, *start, *end, *step),
             HirExprKind::FormatValue { value, spec } => self.lower_format_value(idx, *value, *spec),
             HirExprKind::ContainerExpr { op, args } => {
                 self.lower_container_expr(idx, *op, &args.clone())
             }
             HirExprKind::Sum { iterable, start } => self.lower_sum_expr(idx, *iterable, *start),
-            HirExprKind::MethodCall { recv, method_name, args } => {
-                self.lower_method_call(idx, *recv, *method_name, &args.clone())
-            }
+            HirExprKind::MethodCall {
+                recv,
+                method_name,
+                args,
+            } => self.lower_method_call(idx, *recv, *method_name, &args.clone()),
             HirExprKind::Attribute { value, name } => self.lower_attribute(idx, *value, *name),
             HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
             HirExprKind::IsInstanceBuiltin { value, target } => {
@@ -858,9 +958,11 @@ impl<'a> FnLower<'a> {
                 });
                 Ok((dst, Repr::Raw(RawKind::I8)))
             }
-            HirExprKind::CallRuntime { target, args, provided } => {
-                self.lower_call_runtime(idx, target, args, *provided)
-            }
+            HirExprKind::CallRuntime {
+                target,
+                args,
+                provided,
+            } => self.lower_call_runtime(idx, target, args, *provided),
             // `Stack[int](...)` lowers identically to `Stack(...)` — type args are
             // erased at repr (one shared physical layout for every instantiation).
             HirExprKind::GenericConstruct { class_id, args, .. } => {
@@ -886,7 +988,10 @@ impl<'a> FnLower<'a> {
                     None => self.none_temp(),
                 };
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::MakeCell { dst, init: Operand::Local(iv) });
+                self.emit(MirInst::MakeCell {
+                    dst,
+                    init: Operand::Local(iv),
+                });
                 Ok((dst, Repr::Tagged))
             }
             HirExprKind::CellGet { cell } => {
@@ -894,25 +999,38 @@ impl<'a> FnLower<'a> {
                 let cr = self.local_repr(cell);
                 let ct = self.coerce(cell, cr, Repr::Tagged)?;
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::CellGet { dst, cell: Operand::Local(ct) });
+                self.emit(MirInst::CellGet {
+                    dst,
+                    cell: Operand::Local(ct),
+                });
                 // Uniform tagged cell storage: consumers legalize per their own
                 // typed context (the same seam as container reads).
                 Ok((dst, Repr::Tagged))
             }
             HirExprKind::GlobalGet { var_id } => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::GlobalGet { dst, var_id: *var_id });
+                self.emit(MirInst::GlobalGet {
+                    dst,
+                    var_id: *var_id,
+                });
                 Ok((dst, Repr::Tagged))
             }
             // ── generators (Phase 6E) ──
             HirExprKind::MakeGenerator { gen_id, num_locals } => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::MakeGenerator { dst, gen_id: *gen_id, num_locals: *num_locals });
+                self.emit(MirInst::MakeGenerator {
+                    dst,
+                    gen_id: *gen_id,
+                    num_locals: *num_locals,
+                });
                 Ok((dst, Repr::Tagged))
             }
-            HirExprKind::GenQuery { op, gen, imm, value } => {
-                self.lower_gen_query(*op, *gen, *imm, *value)
-            }
+            HirExprKind::GenQuery {
+                op,
+                gen,
+                imm,
+                value,
+            } => self.lower_gen_query(*op, *gen, *imm, *value),
             // ── exceptions (Phase 7) ──
             HirExprKind::ExcQuery(q) => match q {
                 ExcQuery::Current => {
@@ -930,7 +1048,10 @@ impl<'a> FnLower<'a> {
                 let (vl, vr) = self.lower_expr(*value)?;
                 let vt = self.coerce(vl, vr, Repr::Tagged)?;
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::ExcInstanceStr { dst, value: Operand::Local(vt) });
+                self.emit(MirInst::ExcInstanceStr {
+                    dst,
+                    value: Operand::Local(vt),
+                });
                 Ok((dst, Repr::Heap(HeapShape::Str)))
             }
         }
@@ -957,17 +1078,25 @@ impl<'a> FnLower<'a> {
         };
         if op.result() == pyaot_mir::GenResult::None {
             // `Close` — a mutating op used as a statement; yield `None`.
-            self.emit(MirInst::GenOpInst { dst: None, op, gen: Operand::Local(g), imm, value: val_op });
+            self.emit(MirInst::GenOpInst {
+                dst: None,
+                op,
+                gen: Operand::Local(g),
+                imm,
+                value: val_op,
+            });
             return self.none_value();
         }
         let (dst, ret) = match op.result() {
             pyaot_mir::GenResult::Value => (self.alloc_temp(Repr::Tagged), Repr::Tagged),
-            pyaot_mir::GenResult::Int => {
-                (self.alloc_temp(Repr::Raw(RawKind::I64)), Repr::Raw(RawKind::I64))
-            }
-            pyaot_mir::GenResult::Bool => {
-                (self.alloc_temp(Repr::Raw(RawKind::I8)), Repr::Raw(RawKind::I8))
-            }
+            pyaot_mir::GenResult::Int => (
+                self.alloc_temp(Repr::Raw(RawKind::I64)),
+                Repr::Raw(RawKind::I64),
+            ),
+            pyaot_mir::GenResult::Bool => (
+                self.alloc_temp(Repr::Raw(RawKind::I8)),
+                Repr::Raw(RawKind::I8),
+            ),
             pyaot_mir::GenResult::None => {
                 return Err(CompilerError::semantic_error(
                     "internal: a mutating generator op cannot be a value".to_string(),
@@ -1011,7 +1140,11 @@ impl<'a> FnLower<'a> {
             caps.push(Operand::Local(self.coerce(cl, cr, Repr::Tagged)?));
         }
         let dst = self.alloc_temp(dst_repr.clone());
-        self.emit(MirInst::MakeClosure { dst, func, captures: caps });
+        self.emit(MirInst::MakeClosure {
+            dst,
+            func,
+            captures: caps,
+        });
         Ok((dst, dst_repr))
     }
 
@@ -1083,9 +1216,8 @@ impl<'a> FnLower<'a> {
         let info = self.classes.get(cid).ok_or_else(|| {
             CompilerError::semantic_error("internal: unknown class id".to_string(), span)
         })?;
-        info.field_slot(name).ok_or_else(|| {
-            CompilerError::semantic_error(self.missing_attr_msg(cid, name), span)
-        })
+        info.field_slot(name)
+            .ok_or_else(|| CompilerError::semantic_error(self.missing_attr_msg(cid, name), span))
     }
 
     /// Diagnostic for an unresolved attribute on class `cid`. Names the Phase-5D
@@ -1144,7 +1276,10 @@ impl<'a> FnLower<'a> {
         // Evaluate the receiver for side effects, then materialize the verdict.
         let _ = self.lower_expr(value)?;
         let tagged = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const { dst: tagged, val: Const::Bool(verdict) });
+        self.emit(MirInst::Const {
+            dst: tagged,
+            val: Const::Bool(verdict),
+        });
         let dst = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I8))?;
         Ok((dst, Repr::Raw(RawKind::I8)))
     }
@@ -1190,7 +1325,10 @@ impl<'a> FnLower<'a> {
                     if want == Repr::Raw(RawKind::I64) {
                         if let HirExprKind::IntLit(v) = self.func.exprs[*arg].kind {
                             let dst = self.alloc_temp(Repr::Raw(RawKind::I64));
-                            self.emit(MirInst::Const { dst, val: Const::Int(v) });
+                            self.emit(MirInst::Const {
+                                dst,
+                                val: Const::Int(v),
+                            });
                             ops.push(Operand::Local(dst));
                             continue;
                         }
@@ -1238,7 +1376,10 @@ impl<'a> FnLower<'a> {
                 None => {
                     // Absent optional object param → the null-pointer sentinel.
                     let null = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const { dst: null, val: Const::NullPtr });
+                    self.emit(MirInst::Const {
+                        dst: null,
+                        val: Const::NullPtr,
+                    });
                     ops.push(Operand::Local(null));
                 }
             }
@@ -1249,7 +1390,10 @@ impl<'a> FnLower<'a> {
                 None => Repr::Raw(RawKind::I64),
             };
             let c = self.alloc_temp(count_repr);
-            self.emit(MirInst::Const { dst: c, val: Const::Int(provided as i64) });
+            self.emit(MirInst::Const {
+                dst: c,
+                val: Const::Int(provided as i64),
+            });
             ops.push(Operand::Local(c));
         }
 
@@ -1271,15 +1415,26 @@ impl<'a> FnLower<'a> {
             Some(_) => {
                 let ret_repr = runtime_return_repr(def, ret_spec);
                 let dst = self.alloc_temp(ret_repr.clone());
-                self.emit(MirInst::CallRuntime { dst: Some(dst), def, args: ops });
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(dst),
+                    def,
+                    args: ops,
+                });
                 let result_repr = repr_of(&self.func.exprs[call_idx].ty);
                 let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
                 Ok((coerced, result_repr))
             }
             None => {
-                self.emit(MirInst::CallRuntime { dst: None, def, args: ops });
+                self.emit(MirInst::CallRuntime {
+                    dst: None,
+                    def,
+                    args: ops,
+                });
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::None });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::None,
+                });
                 Ok((dst, Repr::Tagged))
             }
         }
@@ -1301,7 +1456,11 @@ impl<'a> FnLower<'a> {
         let def = &method.codegen;
         if args.len() > method.params.len() {
             return Err(CompilerError::semantic_error(
-                format!("`{}()` takes at most {} argument(s)", method.name, method.params.len()),
+                format!(
+                    "`{}()` takes at most {} argument(s)",
+                    method.name,
+                    method.params.len()
+                ),
                 span,
             ));
         }
@@ -1319,7 +1478,10 @@ impl<'a> FnLower<'a> {
                 if want == Repr::Raw(RawKind::I64) {
                     if let HirExprKind::IntLit(v) = self.func.exprs[args[i]].kind {
                         let d = self.alloc_temp(Repr::Raw(RawKind::I64));
-                        self.emit(MirInst::Const { dst: d, val: Const::Int(v) });
+                        self.emit(MirInst::Const {
+                            dst: d,
+                            val: Const::Int(v),
+                        });
                         ops.push(Operand::Local(d));
                         continue;
                     }
@@ -1330,7 +1492,11 @@ impl<'a> FnLower<'a> {
                 // Absent optional param: a zero in its raw register class, else
                 // the null-pointer object sentinel.
                 let d = self.alloc_temp(want.clone());
-                let val = if let Repr::Raw(_) = want { Const::Int(0) } else { Const::NullPtr };
+                let val = if let Repr::Raw(_) = want {
+                    Const::Int(0)
+                } else {
+                    Const::NullPtr
+                };
                 self.emit(MirInst::Const { dst: d, val });
                 ops.push(Operand::Local(d));
             }
@@ -1380,22 +1546,48 @@ impl<'a> FnLower<'a> {
             "capitalize" => Some((&rf::RT_STR_CAPITALIZE, &[], 0, None, TypeSpec::Str)),
             "swapcase" => Some((&rf::RT_STR_SWAPCASE, &[], 0, None, TypeSpec::Str)),
             "strip" => Some((&rf::RT_STR_STRIP, &[], 0, None, TypeSpec::Str)),
-            "startswith" => Some((&rf::RT_STR_STARTSWITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
+            "startswith" => Some((
+                &rf::RT_STR_STARTSWITH,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Bool,
+            )),
             "endswith" => Some((&rf::RT_STR_ENDSWITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
             "find" => Some((&rf::RT_STR_FIND, &[TaggedArg], 1, Some(0), TypeSpec::Int)),
             "rfind" => Some((&rf::RT_STR_RFIND, &[TaggedArg], 1, Some(1), TypeSpec::Int)),
             "index" => Some((&rf::RT_STR_INDEX, &[TaggedArg], 1, Some(2), TypeSpec::Int)),
             "count" => Some((&rf::RT_STR_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
             "zfill" => Some((&rf::RT_STR_ZFILL, &[RawI64], 1, None, TypeSpec::Str)),
-            "center" => Some((&rf::RT_STR_CENTER, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
-            "ljust" => Some((&rf::RT_STR_LJUST, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
-            "rjust" => Some((&rf::RT_STR_RJUST, &[RawI64, TaggedArg], 1, None, TypeSpec::Str)),
+            "center" => Some((
+                &rf::RT_STR_CENTER,
+                &[RawI64, TaggedArg],
+                1,
+                None,
+                TypeSpec::Str,
+            )),
+            "ljust" => Some((
+                &rf::RT_STR_LJUST,
+                &[RawI64, TaggedArg],
+                1,
+                None,
+                TypeSpec::Str,
+            )),
+            "rjust" => Some((
+                &rf::RT_STR_RJUST,
+                &[RawI64, TaggedArg],
+                1,
+                None,
+                TypeSpec::Str,
+            )),
             // `sep.join(iterable)` → `rt_str_join(sep, list)` (Phase 8E). The
             // argument is coerced to Tagged (a list/tuple of strings).
             "join" => Some((&rf::RT_STR_JOIN, &[TaggedArg], 1, None, TypeSpec::Str)),
             _ => None,
         };
-        let Some((def, wants, min_args, op_tag, ret_spec)) = plan else { return Ok(None) };
+        let Some((def, wants, min_args, op_tag, ret_spec)) = plan else {
+            return Ok(None);
+        };
         if args.len() < min_args || args.len() > wants.len() {
             return Err(CompilerError::semantic_error(
                 format!(
@@ -1428,14 +1620,20 @@ impl<'a> FnLower<'a> {
             } else {
                 // Absent optional arg — the null-pointer object sentinel.
                 let d = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst: d, val: Const::NullPtr });
+                self.emit(MirInst::Const {
+                    dst: d,
+                    val: Const::NullPtr,
+                });
                 d
             };
             ops.push(Operand::Local(op));
         }
         if let Some(tag) = op_tag {
             let t = self.alloc_temp(Repr::Raw(RawKind::I8));
-            self.emit(MirInst::Const { dst: t, val: Const::Int(tag) });
+            self.emit(MirInst::Const {
+                dst: t,
+                val: Const::Int(tag),
+            });
             ops.push(Operand::Local(t));
         }
         Ok(Some(self.emit_runtime_call(call_idx, def, ops, &ret_spec)?))
@@ -1483,7 +1681,11 @@ impl<'a> FnLower<'a> {
         match name {
             "read" if !args.is_empty() => {
                 let (al, ar) = self.lower_expr(args[0])?;
-                ops.push(Operand::Local(self.coerce(al, ar, Repr::Raw(RawKind::I64))?));
+                ops.push(Operand::Local(self.coerce(
+                    al,
+                    ar,
+                    Repr::Raw(RawKind::I64),
+                )?));
             }
             "write" => {
                 let (al, ar) = self.lower_expr(args[0])?;
@@ -1501,7 +1703,6 @@ impl<'a> FnLower<'a> {
         };
         self.emit_runtime_call(call_idx, def, ops, &ret_spec)
     }
-
 
     fn lower_attribute(
         &mut self,
@@ -1531,7 +1732,11 @@ impl<'a> FnLower<'a> {
             let (bl, br) = self.lower_expr(value)?;
             let bt = self.coerce(bl, br, Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Tagged);
-            self.emit(MirInst::GetField { dst, base: Operand::Local(bt), slot: 0 });
+            self.emit(MirInst::GetField {
+                dst,
+                base: Operand::Local(bt),
+                slot: 0,
+            });
             let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
@@ -1562,38 +1767,63 @@ impl<'a> FnLower<'a> {
                     None => Repr::Raw(RawKind::I64),
                 };
                 let idx_const = self.alloc_temp(idx_repr);
-                self.emit(MirInst::Const { dst: idx_const, val: Const::Int(fi) });
+                self.emit(MirInst::Const {
+                    dst: idx_const,
+                    val: Const::Int(fi),
+                });
                 args.push(Operand::Local(idx_const));
             }
             let ret_repr = runtime_return_repr(&field.codegen, &field.field_type);
             let dst = self.alloc_temp(ret_repr.clone());
-            self.emit(MirInst::CallRuntime { dst: Some(dst), def: &field.codegen, args });
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &field.codegen,
+                args,
+            });
             let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
 
         // (a) `ClassName.attr` → a class-level attribute (Phase 5D).
         if let Some(cid) = self.class_name_ref(value) {
-            let attr = self.classes.get(cid).and_then(|i| i.class_attr(name)).ok_or_else(|| {
-                CompilerError::semantic_error(
-                    format!("class has no attribute `.{}`", self.interner.resolve(name)),
-                    span,
-                )
-            })?;
+            let attr = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.class_attr(name))
+                .ok_or_else(|| {
+                    CompilerError::semantic_error(
+                        format!("class has no attribute `.{}`", self.interner.resolve(name)),
+                        span,
+                    )
+                })?;
             return self.read_class_attr(cid, attr.attr_idx, result_repr);
         }
 
         let bt = self.func.exprs[value].ty.clone();
         if let Some(cid) = class_of(&bt, self.classes) {
             // (b) `instance.prop` → the `@property` getter call (Phase 5D).
-            if let Some(getter) = self.classes.get(cid).and_then(|i| i.property(name)).map(|p| p.getter) {
+            if let Some(getter) = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.property(name))
+                .map(|p| p.getter)
+            {
                 let (bl, br) = self.lower_expr(value)?;
                 return self.emit_dunder_call(getter, vec![(bl, br)]);
             }
             // (c) `instance.classattr` (not an instance field) → class attribute.
-            let is_field = self.classes.get(cid).and_then(|i| i.field_slot(name)).is_some();
+            let is_field = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.field_slot(name))
+                .is_some();
             if !is_field {
-                if let Some(idx) = self.classes.get(cid).and_then(|i| i.class_attr(name)).map(|a| a.attr_idx) {
+                if let Some(idx) = self
+                    .classes
+                    .get(cid)
+                    .and_then(|i| i.class_attr(name))
+                    .map(|a| a.attr_idx)
+                {
                     // Evaluate the receiver for side effects, then read the class slot.
                     let _ = self.lower_expr(value)?;
                     return self.read_class_attr(cid, idx, result_repr);
@@ -1611,14 +1841,22 @@ impl<'a> FnLower<'a> {
             let base = self.coerce(bl, br, Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Tagged);
             let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
-            self.emit(MirInst::GetFieldNamed { dst, base: Operand::Local(base), name_hash });
+            self.emit(MirInst::GetFieldNamed {
+                dst,
+                base: Operand::Local(base),
+                name_hash,
+            });
             let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
         let slot = self.field_slot(value, name)?;
         let (bl, _br) = self.lower_expr(value)?;
         let dst = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::GetField { dst, base: Operand::Local(bl), slot });
+        self.emit(MirInst::GetField {
+            dst,
+            base: Operand::Local(bl),
+            slot,
+        });
         // The field's static type drives the read's representation; the
         // Tagged→repr coercion is guarded by `typeck::check_repr_boundaries`.
         let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
@@ -1626,9 +1864,18 @@ impl<'a> FnLower<'a> {
     }
 
     /// Read class attribute `attr_idx` of `cid` and legalize to `want` repr.
-    fn read_class_attr(&mut self, cid: ClassId, attr_idx: u32, want: Repr) -> Result<(LocalId, Repr)> {
+    fn read_class_attr(
+        &mut self,
+        cid: ClassId,
+        attr_idx: u32,
+        want: Repr,
+    ) -> Result<(LocalId, Repr)> {
         let dst = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::GetClassAttr { dst, class_id: cid, attr_idx });
+        self.emit(MirInst::GetClassAttr {
+            dst,
+            class_id: cid,
+            attr_idx,
+        });
         let coerced = self.coerce(dst, Repr::Tagged, want.clone())?;
         Ok((coerced, want))
     }
@@ -1658,15 +1905,22 @@ impl<'a> FnLower<'a> {
                 })?;
             let (vl, vr) = self.lower_expr(value)?;
             let vt = self.coerce(vl, vr, Repr::Tagged)?;
-            self.emit(MirInst::SetClassAttr { class_id: cid, attr_idx: idx, value: Operand::Local(vt) });
+            self.emit(MirInst::SetClassAttr {
+                class_id: cid,
+                attr_idx: idx,
+                value: Operand::Local(vt),
+            });
             return Ok(());
         }
 
         let bt = self.func.exprs[base].ty.clone();
         if let Some(cid) = class_of(&bt, self.classes) {
             // (b) `instance.prop = v` → the `@x.setter` call (Phase 5D).
-            if let Some(setter) =
-                self.classes.get(cid).and_then(|i| i.property(name)).and_then(|p| p.setter)
+            if let Some(setter) = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.property(name))
+                .and_then(|p| p.setter)
             {
                 let (bl, br) = self.lower_expr(base)?;
                 let (vl, vr) = self.lower_expr(value)?;
@@ -1674,13 +1928,26 @@ impl<'a> FnLower<'a> {
                 return Ok(());
             }
             // (c) `instance.classattr = v` (not an instance field) → class attribute.
-            let is_field = self.classes.get(cid).and_then(|i| i.field_slot(name)).is_some();
+            let is_field = self
+                .classes
+                .get(cid)
+                .and_then(|i| i.field_slot(name))
+                .is_some();
             if !is_field {
-                if let Some(idx) = self.classes.get(cid).and_then(|i| i.class_attr(name)).map(|a| a.attr_idx) {
+                if let Some(idx) = self
+                    .classes
+                    .get(cid)
+                    .and_then(|i| i.class_attr(name))
+                    .map(|a| a.attr_idx)
+                {
                     let _ = self.lower_expr(base)?;
                     let (vl, vr) = self.lower_expr(value)?;
                     let vt = self.coerce(vl, vr, Repr::Tagged)?;
-                    self.emit(MirInst::SetClassAttr { class_id: cid, attr_idx: idx, value: Operand::Local(vt) });
+                    self.emit(MirInst::SetClassAttr {
+                        class_id: cid,
+                        attr_idx: idx,
+                        value: Operand::Local(vt),
+                    });
                     return Ok(());
                 }
             }
@@ -1727,7 +1994,11 @@ impl<'a> FnLower<'a> {
         let field_count = info.field_count() as i64;
         let inst_repr = Repr::Heap(HeapShape::Class(cid));
         let inst = self.alloc_temp(inst_repr.clone());
-        self.emit(MirInst::MakeInstance { dst: inst, class_id: cid, field_count });
+        self.emit(MirInst::MakeInstance {
+            dst: inst,
+            class_id: cid,
+            field_count,
+        });
 
         let init = info
             .methods
@@ -1766,7 +2037,11 @@ impl<'a> FnLower<'a> {
                 };
                 argvals.push(Operand::Local(at));
             }
-            self.emit(MirInst::Call { dst: None, func: fid, args: argvals });
+            self.emit(MirInst::Call {
+                dst: None,
+                func: fid,
+                args: argvals,
+            });
         } else if !args.is_empty() {
             return Err(CompilerError::semantic_error(
                 "class has no __init__ to accept constructor arguments".to_string(),
@@ -1780,48 +2055,69 @@ impl<'a> FnLower<'a> {
     /// mirroring how `lower_expr` lowers the equivalent literal. Used to fill
     /// missing trailing constructor args. The empty-tuple default builds a fresh
     /// zero-length tuple (immutable, so per-call freshness is unobservable).
-    fn materialize_default(
-        &mut self,
-        init: &pyaot_hir::ClassAttrInit,
-    ) -> Result<(LocalId, Repr)> {
+    fn materialize_default(&mut self, init: &pyaot_hir::ClassAttrInit) -> Result<(LocalId, Repr)> {
         use pyaot_hir::ClassAttrInit as A;
         Ok(match init {
             A::Int(v) => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::Int(*v) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Int(*v),
+                });
                 (dst, Repr::Tagged)
             }
             A::Bool(b) => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::Bool(*b) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Bool(*b),
+                });
                 (dst, Repr::Tagged)
             }
             A::None => {
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const { dst, val: Const::None });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::None,
+                });
                 (dst, Repr::Tagged)
             }
             A::Float(f) => {
                 let dst = self.alloc_temp(Repr::Raw(RawKind::F64));
-                self.emit(MirInst::Const { dst, val: Const::Float(*f) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Float(*f),
+                });
                 (dst, Repr::Raw(RawKind::F64))
             }
             A::Str(s) => {
-                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                self.str_pool
+                    .insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const { dst, val: Const::Str(*s) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Str(*s),
+                });
                 (dst, Repr::Heap(HeapShape::Str))
             }
             A::Bytes(s) => {
-                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                self.str_pool
+                    .insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Bytes));
-                self.emit(MirInst::Const { dst, val: Const::Bytes(*s) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Bytes(*s),
+                });
                 (dst, Repr::Heap(HeapShape::Bytes))
             }
             A::BigInt(s) => {
-                self.str_pool.insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                self.str_pool
+                    .insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::BigInt));
-                self.emit(MirInst::Const { dst, val: Const::BigIntStr(*s) });
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::BigIntStr(*s),
+                });
                 (dst, Repr::Heap(HeapShape::BigInt))
             }
             A::EmptyTuple => {
@@ -1857,7 +2153,10 @@ impl<'a> FnLower<'a> {
                 return Ok(res);
             }
             return Err(CompilerError::semantic_error(
-                format!("class has no static/class method `.{}()`", self.interner.resolve(method_name)),
+                format!(
+                    "class has no static/class method `.{}()`",
+                    self.interner.resolve(method_name)
+                ),
                 span,
             ));
         }
@@ -1916,7 +2215,10 @@ impl<'a> FnLower<'a> {
                 }
                 None => {
                     let n = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const { dst: n, val: Const::NullPtr });
+                    self.emit(MirInst::Const {
+                        dst: n,
+                        val: Const::NullPtr,
+                    });
                     n
                 }
             };
@@ -1928,12 +2230,17 @@ impl<'a> FnLower<'a> {
             );
         }
         // Container receiver → the Phase-4D ContainerMethod path.
-        let cm = ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
-            CompilerError::semantic_error(
-                format!("unsupported method `.{}()` (receiver type {:?})", self.interner.resolve(method_name), recv_ty),
-                span,
-            )
-        })?;
+        let cm =
+            ContainerMethod::from_name(self.interner.resolve(method_name)).ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!(
+                        "unsupported method `.{}()` (receiver type {:?})",
+                        self.interner.resolve(method_name),
+                        recv_ty
+                    ),
+                    span,
+                )
+            })?;
         self.lower_container_method_call(call_idx, recv, cm, args)
     }
 
@@ -1953,7 +2260,10 @@ impl<'a> FnLower<'a> {
             .map(|m| m.func_id)
             .ok_or_else(|| {
                 CompilerError::semantic_error(
-                    format!("class has no method `.{}()`", self.interner.resolve(method_name)),
+                    format!(
+                        "class has no method `.{}()`",
+                        self.interner.resolve(method_name)
+                    ),
                     span,
                 )
             })?;
@@ -1963,7 +2273,11 @@ impl<'a> FnLower<'a> {
         let self_arg = self.coerce(rl, rr, self_param)?;
         let argvals = self.adapt_method_args(fid, Operand::Local(self_arg), args, span)?;
         let dst = self.alloc_temp(ret.clone());
-        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        self.emit(MirInst::Call {
+            dst: Some(dst),
+            func: fid,
+            args: argvals,
+        });
         Ok((dst, ret))
     }
 
@@ -1983,7 +2297,11 @@ impl<'a> FnLower<'a> {
         let varargs = self.sigs[fid.index()].varargs;
         let kwargs = self.sigs[fid.index()].kwargs;
         let fixed = params.len() - 1 - usize::from(varargs) - usize::from(kwargs);
-        let arity_ok = if varargs { args.len() >= fixed } else { args.len() == fixed };
+        let arity_ok = if varargs {
+            args.len() >= fixed
+        } else {
+            args.len() == fixed
+        };
         if !arity_ok {
             return Err(CompilerError::semantic_error(
                 "wrong number of arguments in method call".to_string(),
@@ -2011,7 +2329,11 @@ impl<'a> FnLower<'a> {
                 let pos = self.raw_i64_const(i as i64);
                 self.emit_container(
                     ContainerOp::TupleSet,
-                    vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (el, er)],
+                    vec![
+                        (tup, tup_repr.clone()),
+                        (pos, Repr::Raw(RawKind::I64)),
+                        (el, er),
+                    ],
                     None,
                 )?;
             }
@@ -2038,7 +2360,9 @@ impl<'a> FnLower<'a> {
         span: pyaot_utils::Span,
     ) -> Result<Option<(LocalId, Repr)>> {
         let fid = match self.classes.get(cid).and_then(|i| {
-            i.static_method(name).or_else(|| i.class_method(name)).map(|m| m.func_id)
+            i.static_method(name)
+                .or_else(|| i.class_method(name))
+                .map(|m| m.func_id)
         }) {
             Some(f) => f,
             None => return Ok(None),
@@ -2061,7 +2385,11 @@ impl<'a> FnLower<'a> {
             argvals.push(Operand::Local(self.coerce(al, ar, prepr.clone())?));
         }
         let dst = self.alloc_temp(ret.clone());
-        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        self.emit(MirInst::Call {
+            dst: Some(dst),
+            func: fid,
+            args: argvals,
+        });
         Ok(Some((dst, ret)))
     }
 
@@ -2075,12 +2403,18 @@ impl<'a> FnLower<'a> {
         args: &[Idx<HirExpr>],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
-        let fid = self.classes.resolve_super_method(cid, method_name).ok_or_else(|| {
-            CompilerError::semantic_error(
-                format!("super() has no method `.{}()`", self.interner.resolve(method_name)),
-                span,
-            )
-        })?;
+        let fid = self
+            .classes
+            .resolve_super_method(cid, method_name)
+            .ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!(
+                        "super() has no method `.{}()`",
+                        self.interner.resolve(method_name)
+                    ),
+                    span,
+                )
+            })?;
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         if args.len() + 1 != params.len() {
@@ -2100,7 +2434,11 @@ impl<'a> FnLower<'a> {
             argvals.push(Operand::Local(at));
         }
         let dst = self.alloc_temp(ret.clone());
-        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        self.emit(MirInst::Call {
+            dst: Some(dst),
+            func: fid,
+            args: argvals,
+        });
         Ok((dst, ret))
     }
 
@@ -2122,7 +2460,10 @@ impl<'a> FnLower<'a> {
             .map(|m| m.func_id)
             .ok_or_else(|| {
                 CompilerError::semantic_error(
-                    format!("class has no method `.{}()`", self.interner.resolve(method_name)),
+                    format!(
+                        "class has no method `.{}()`",
+                        self.interner.resolve(method_name)
+                    ),
                     span,
                 )
             })?;
@@ -2163,7 +2504,11 @@ impl<'a> FnLower<'a> {
         let (vl, vr) = self.lower_expr(value)?;
         let vt = self.coerce(vl, vr, Repr::Tagged)?;
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
-        self.emit(MirInst::IsInstance { dst, value: Operand::Local(vt), class_id });
+        self.emit(MirInst::IsInstance {
+            dst,
+            value: Operand::Local(vt),
+            class_id,
+        });
         Ok((dst, Repr::Raw(RawKind::I8)))
     }
 
@@ -2176,8 +2521,7 @@ impl<'a> FnLower<'a> {
             SemTy::Union(members) => {
                 !members.is_empty() && members.iter().all(|m| self.is_exception_value(m))
             }
-            _ => class_of(ty, self.classes)
-                .is_some_and(|cid| self.classes.is_exception_class(cid)),
+            _ => class_of(ty, self.classes).is_some_and(|cid| self.classes.is_exception_class(cid)),
         }
     }
 
@@ -2188,7 +2532,10 @@ impl<'a> FnLower<'a> {
     fn concrete_dunder(&self, ty: &SemTy, name: &str) -> Option<FuncId> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
-        let m = info.methods.iter().find(|m| self.interner.resolve(m.name) == name)?;
+        let m = info
+            .methods
+            .iter()
+            .find(|m| self.interner.resolve(m.name) == name)?;
         if self.classes.method_overridden_below(cid, m.name) {
             return None;
         }
@@ -2209,7 +2556,11 @@ impl<'a> FnLower<'a> {
             argvals.push(Operand::Local(self.coerce(loc, repr, prepr.clone())?));
         }
         let dst = self.alloc_temp(ret.clone());
-        self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+        self.emit(MirInst::Call {
+            dst: Some(dst),
+            func: fid,
+            args: argvals,
+        });
         Ok((dst, ret))
     }
 
@@ -2218,7 +2569,10 @@ impl<'a> FnLower<'a> {
     fn truthy_i8(&mut self, val: LocalId, repr: Repr) -> Result<LocalId> {
         let tagged = self.coerce(val, repr, Repr::Tagged)?;
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
-        self.emit(MirInst::Truthy { dst, operand: Operand::Local(tagged) });
+        self.emit(MirInst::Truthy {
+            dst,
+            operand: Operand::Local(tagged),
+        });
         Ok(dst)
     }
 
@@ -2242,7 +2596,10 @@ impl<'a> FnLower<'a> {
     /// `Tagged → Raw(I64)` untag round-trips soundly.
     fn raw_i64_const(&mut self, n: i64) -> LocalId {
         let t = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const { dst: t, val: Const::Int(n) });
+        self.emit(MirInst::Const {
+            dst: t,
+            val: Const::Int(n),
+        });
         self.coerce(t, Repr::Tagged, Repr::Raw(RawKind::I64))
             .expect("Tagged -> Raw(I64) is always legal")
     }
@@ -2317,11 +2674,18 @@ impl<'a> FnLower<'a> {
         }
     }
 
-    fn lower_list_lit(&mut self, idx: Idx<HirExpr>, elems: &[Idx<HirExpr>]) -> Result<(LocalId, Repr)> {
+    fn lower_list_lit(
+        &mut self,
+        idx: Idx<HirExpr>,
+        elems: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
         let list_repr = repr_of(&self.func.exprs[idx].ty);
         let cap = self.raw_i64_const(elems.len() as i64);
-        let (list, _) =
-            self.emit_container(ContainerOp::ListNew, vec![(cap, Repr::Raw(RawKind::I64))], Some(list_repr.clone()))?;
+        let (list, _) = self.emit_container(
+            ContainerOp::ListNew,
+            vec![(cap, Repr::Raw(RawKind::I64))],
+            Some(list_repr.clone()),
+        )?;
         let list = list.expect("ListNew produces a list");
         for e in elems {
             let (el, er) = self.lower_expr(*e)?;
@@ -2334,15 +2698,26 @@ impl<'a> FnLower<'a> {
         Ok((list, list_repr))
     }
 
-    fn lower_set_lit(&mut self, idx: Idx<HirExpr>, elems: &[Idx<HirExpr>]) -> Result<(LocalId, Repr)> {
+    fn lower_set_lit(
+        &mut self,
+        idx: Idx<HirExpr>,
+        elems: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
         let set_repr = repr_of(&self.func.exprs[idx].ty);
         let cap = self.raw_i64_const(elems.len() as i64);
-        let (set, _) =
-            self.emit_container(ContainerOp::SetNew, vec![(cap, Repr::Raw(RawKind::I64))], Some(set_repr.clone()))?;
+        let (set, _) = self.emit_container(
+            ContainerOp::SetNew,
+            vec![(cap, Repr::Raw(RawKind::I64))],
+            Some(set_repr.clone()),
+        )?;
         let set = set.expect("SetNew produces a set");
         for e in elems {
             let (el, er) = self.lower_expr(*e)?;
-            self.emit_container(ContainerOp::SetAdd, vec![(set, set_repr.clone()), (el, er)], None)?;
+            self.emit_container(
+                ContainerOp::SetAdd,
+                vec![(set, set_repr.clone()), (el, er)],
+                None,
+            )?;
         }
         Ok((set, set_repr))
     }
@@ -2354,8 +2729,11 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let dict_repr = repr_of(&self.func.exprs[idx].ty);
         let cap = self.raw_i64_const(pairs.len() as i64);
-        let (dict, _) =
-            self.emit_container(ContainerOp::DictNew, vec![(cap, Repr::Raw(RawKind::I64))], Some(dict_repr.clone()))?;
+        let (dict, _) = self.emit_container(
+            ContainerOp::DictNew,
+            vec![(cap, Repr::Raw(RawKind::I64))],
+            Some(dict_repr.clone()),
+        )?;
         let dict = dict.expect("DictNew produces a dict");
         for (k, v) in pairs {
             let (kl, kr) = self.lower_expr(*k)?;
@@ -2369,18 +2747,29 @@ impl<'a> FnLower<'a> {
         Ok((dict, dict_repr))
     }
 
-    fn lower_tuple_lit(&mut self, idx: Idx<HirExpr>, elems: &[Idx<HirExpr>]) -> Result<(LocalId, Repr)> {
+    fn lower_tuple_lit(
+        &mut self,
+        idx: Idx<HirExpr>,
+        elems: &[Idx<HirExpr>],
+    ) -> Result<(LocalId, Repr)> {
         let tup_repr = repr_of(&self.func.exprs[idx].ty);
         let size = self.raw_i64_const(elems.len() as i64);
-        let (tup, _) =
-            self.emit_container(ContainerOp::TupleNew, vec![(size, Repr::Raw(RawKind::I64))], Some(tup_repr.clone()))?;
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
         let tup = tup.expect("TupleNew produces a tuple");
         for (i, e) in elems.iter().enumerate() {
             let (el, er) = self.lower_expr(*e)?;
             let pos = self.raw_i64_const(i as i64);
             self.emit_container(
                 ContainerOp::TupleSet,
-                vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (el, er)],
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (el, er),
+                ],
                 None,
             )?;
         }
@@ -2391,7 +2780,11 @@ impl<'a> FnLower<'a> {
     /// the base's *static type* (which survives even when a nested get lowered the
     /// base into a uniform-tagged slot) and falling back to its representation. The
     /// result is normalized to the tagged baseline.
-    fn lower_subscript(&mut self, base: Idx<HirExpr>, index: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
+    fn lower_subscript(
+        &mut self,
+        base: Idx<HirExpr>,
+        index: Idx<HirExpr>,
+    ) -> Result<(LocalId, Repr)> {
         // Class `__getitem__` (Phase 5C) — a direct devirtualized call.
         let bt = self.func.exprs[base].ty.clone();
         if let Some(fid) = self.concrete_dunder(&bt, "__getitem__") {
@@ -2399,7 +2792,10 @@ impl<'a> FnLower<'a> {
             let (il, ir) = self.lower_expr(index)?;
             return self.emit_dunder_call(fid, vec![(bl, br), (il, ir)]);
         }
-        let kind = sub_kind(&self.func.exprs[base].ty, &repr_of(&self.func.exprs[base].ty));
+        let kind = sub_kind(
+            &self.func.exprs[base].ty,
+            &repr_of(&self.func.exprs[base].ty),
+        );
         let (bl, br) = self.lower_expr(base)?;
         let (il, ir) = self.lower_expr(index)?;
         let op = match kind {
@@ -2441,13 +2837,29 @@ impl<'a> FnLower<'a> {
         let bt = self.func.exprs[base].ty.clone();
         let stepped = step.is_some();
         let def: &'static pyaot_core_defs::RuntimeFuncDef = if matches!(bt, SemTy::Str) {
-            if stepped { &rf::RT_STR_SLICE_STEP } else { &rf::RT_STR_SLICE }
+            if stepped {
+                &rf::RT_STR_SLICE_STEP
+            } else {
+                &rf::RT_STR_SLICE
+            }
         } else if matches!(bt, SemTy::Bytes) {
-            if stepped { &rf::RT_BYTES_SLICE_STEP } else { &rf::RT_BYTES_SLICE }
+            if stepped {
+                &rf::RT_BYTES_SLICE_STEP
+            } else {
+                &rf::RT_BYTES_SLICE
+            }
         } else if bt.list_elem().is_some() {
-            if stepped { &rf::RT_LIST_SLICE_STEP } else { &rf::RT_LIST_SLICE }
+            if stepped {
+                &rf::RT_LIST_SLICE_STEP
+            } else {
+                &rf::RT_LIST_SLICE
+            }
         } else if bt.tuple_elems().is_some() || bt.tuple_var_elem().is_some() {
-            if stepped { &rf::RT_TUPLE_SLICE_STEP } else { &rf::RT_TUPLE_SLICE }
+            if stepped {
+                &rf::RT_TUPLE_SLICE_STEP
+            } else {
+                &rf::RT_TUPLE_SLICE
+            }
         } else if stepped {
             &rf::RT_OBJ_SLICE_STEP
         } else {
@@ -2480,9 +2892,13 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let (vl, vr) = self.lower_expr(value)?;
         let value_op = self.coerce(vl, vr, Repr::Tagged)?;
-        self.str_pool.insert(spec, self.interner.resolve(spec).as_bytes().to_vec());
+        self.str_pool
+            .insert(spec, self.interner.resolve(spec).as_bytes().to_vec());
         let spec_str = self.alloc_temp(Repr::Heap(HeapShape::Str));
-        self.emit(MirInst::Const { dst: spec_str, val: Const::Str(spec) });
+        self.emit(MirInst::Const {
+            dst: spec_str,
+            val: Const::Str(spec),
+        });
         let spec_op = self.coerce(spec_str, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
         self.emit_runtime_call(
             fmt_idx,
@@ -2504,7 +2920,10 @@ impl<'a> FnLower<'a> {
             }
             None => {
                 let t = self.alloc_temp(Repr::Raw(RawKind::I64));
-                self.emit(MirInst::Const { dst: t, val: Const::Int(default) });
+                self.emit(MirInst::Const {
+                    dst: t,
+                    val: Const::Int(default),
+                });
                 Ok(t)
             }
         }
@@ -2546,8 +2965,8 @@ impl<'a> FnLower<'a> {
                 def: &rf::RT_FILE_READLINES,
                 args: vec![Operand::Local(ft)],
             });
-            let heap = (op.result() == ContainerResult::Heap)
-                .then(|| repr_of(&self.func.exprs[idx].ty));
+            let heap =
+                (op.result() == ContainerResult::Heap).then(|| repr_of(&self.func.exprs[idx].ty));
             let (dst, ret) = self.emit_container(
                 op,
                 vec![(lines, Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))))],
@@ -2560,8 +2979,8 @@ impl<'a> FnLower<'a> {
         for a in args {
             lowered.push(self.lower_expr(*a)?);
         }
-        let heap = (op.result() == ContainerResult::Heap)
-            .then(|| repr_of(&self.func.exprs[idx].ty));
+        let heap =
+            (op.result() == ContainerResult::Heap).then(|| repr_of(&self.func.exprs[idx].ty));
         let (dst, ret) = self.emit_container(op, lowered, heap)?;
         self.normalize_container_result(dst.expect("container expr produces a value"), ret)
     }
@@ -2615,7 +3034,8 @@ impl<'a> FnLower<'a> {
                     } else {
                         (self.raw_i64_const(-1), Repr::Raw(RawKind::I64))
                     };
-                    let (d, r) = self.emit_container(ContainerOp::ListPop, vec![recv_arg, idx], None)?;
+                    let (d, r) =
+                        self.emit_container(ContainerOp::ListPop, vec![recv_arg, idx], None)?;
                     self.normalize_container_result(d.unwrap(), r)
                 }
                 M::Insert if argn == 2 => {
@@ -2627,16 +3047,26 @@ impl<'a> FnLower<'a> {
                     self.none_value()
                 }
                 M::Extend if argn == 1 => {
-                    self.emit_container(ContainerOp::ListExtend, vec![recv_arg, a[0].clone()], None)?;
+                    self.emit_container(
+                        ContainerOp::ListExtend,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.none_value()
                 }
-                M::Index if argn == 1 => self.method_scalar(ContainerOp::ListIndexOf, recv_arg, vec![a[0].clone()]),
-                M::Count if argn == 1 => self.method_scalar(ContainerOp::ListCount, recv_arg, vec![a[0].clone()]),
+                M::Index if argn == 1 => {
+                    self.method_scalar(ContainerOp::ListIndexOf, recv_arg, vec![a[0].clone()])
+                }
+                M::Count if argn == 1 => {
+                    self.method_scalar(ContainerOp::ListCount, recv_arg, vec![a[0].clone()])
+                }
                 M::Clear if argn == 0 => {
                     self.emit_container(ContainerOp::ListClear, vec![recv_arg], None)?;
                     self.none_value()
                 }
-                M::Copy if argn == 0 => self.method_heap(ContainerOp::ListCopy, recv_arg, vec![], heap()),
+                M::Copy if argn == 0 => {
+                    self.method_heap(ContainerOp::ListCopy, recv_arg, vec![], heap())
+                }
                 M::Reverse if argn == 0 => {
                     self.emit_container(ContainerOp::ListReverse, vec![recv_arg], None)?;
                     self.none_value()
@@ -2649,7 +3079,11 @@ impl<'a> FnLower<'a> {
             },
             MethodRecv::Dict => match method {
                 M::Get if argn == 1 || argn == 2 => {
-                    let default = if argn == 2 { a[1].clone() } else { (self.none_temp(), Repr::Tagged) };
+                    let default = if argn == 2 {
+                        a[1].clone()
+                    } else {
+                        (self.none_temp(), Repr::Tagged)
+                    };
                     let (d, r) = self.emit_container(
                         ContainerOp::DictGetDefault,
                         vec![recv_arg, a[0].clone(), default],
@@ -2658,7 +3092,11 @@ impl<'a> FnLower<'a> {
                     self.normalize_container_result(d.unwrap(), r)
                 }
                 M::Setdefault if argn == 1 || argn == 2 => {
-                    let default = if argn == 2 { a[1].clone() } else { (self.none_temp(), Repr::Tagged) };
+                    let default = if argn == 2 {
+                        a[1].clone()
+                    } else {
+                        (self.none_temp(), Repr::Tagged)
+                    };
                     let (d, r) = self.emit_container(
                         ContainerOp::DictSetdefault,
                         vec![recv_arg, a[0].clone(), default],
@@ -2667,21 +3105,37 @@ impl<'a> FnLower<'a> {
                     self.normalize_container_result(d.unwrap(), r)
                 }
                 M::Pop if argn == 1 => {
-                    let (d, r) = self.emit_container(ContainerOp::DictPopM, vec![recv_arg, a[0].clone()], None)?;
+                    let (d, r) = self.emit_container(
+                        ContainerOp::DictPopM,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.normalize_container_result(d.unwrap(), r)
                 }
-                M::Keys if argn == 0 => self.method_heap(ContainerOp::DictKeys, recv_arg, vec![], heap()),
-                M::Values if argn == 0 => self.method_heap(ContainerOp::DictValues, recv_arg, vec![], heap()),
-                M::Items if argn == 0 => self.method_heap(ContainerOp::DictItems, recv_arg, vec![], heap()),
+                M::Keys if argn == 0 => {
+                    self.method_heap(ContainerOp::DictKeys, recv_arg, vec![], heap())
+                }
+                M::Values if argn == 0 => {
+                    self.method_heap(ContainerOp::DictValues, recv_arg, vec![], heap())
+                }
+                M::Items if argn == 0 => {
+                    self.method_heap(ContainerOp::DictItems, recv_arg, vec![], heap())
+                }
                 M::Update if argn == 1 => {
-                    self.emit_container(ContainerOp::DictUpdate, vec![recv_arg, a[0].clone()], None)?;
+                    self.emit_container(
+                        ContainerOp::DictUpdate,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.none_value()
                 }
                 M::Clear if argn == 0 => {
                     self.emit_container(ContainerOp::DictClear, vec![recv_arg], None)?;
                     self.none_value()
                 }
-                M::Copy if argn == 0 => self.method_heap(ContainerOp::DictCopy, recv_arg, vec![], heap()),
+                M::Copy if argn == 0 => {
+                    self.method_heap(ContainerOp::DictCopy, recv_arg, vec![], heap())
+                }
                 _ => Err(bad("unsupported dict method / arity")),
             },
             MethodRecv::Set => match method {
@@ -2690,32 +3144,56 @@ impl<'a> FnLower<'a> {
                     self.none_value()
                 }
                 M::Remove if argn == 1 => {
-                    self.emit_container(ContainerOp::SetRemove, vec![recv_arg, a[0].clone()], None)?;
+                    self.emit_container(
+                        ContainerOp::SetRemove,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.none_value()
                 }
                 M::Discard if argn == 1 => {
-                    self.emit_container(ContainerOp::SetDiscard, vec![recv_arg, a[0].clone()], None)?;
+                    self.emit_container(
+                        ContainerOp::SetDiscard,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.none_value()
                 }
                 M::Update if argn == 1 => {
-                    self.emit_container(ContainerOp::SetUpdate, vec![recv_arg, a[0].clone()], None)?;
+                    self.emit_container(
+                        ContainerOp::SetUpdate,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
                     self.none_value()
                 }
-                M::Union if argn == 1 => self.method_heap(ContainerOp::SetUnion, recv_arg, vec![a[0].clone()], heap()),
-                M::Intersection if argn == 1 => {
-                    self.method_heap(ContainerOp::SetIntersection, recv_arg, vec![a[0].clone()], heap())
+                M::Union if argn == 1 => {
+                    self.method_heap(ContainerOp::SetUnion, recv_arg, vec![a[0].clone()], heap())
                 }
-                M::Difference if argn == 1 => {
-                    self.method_heap(ContainerOp::SetDifference, recv_arg, vec![a[0].clone()], heap())
+                M::Intersection if argn == 1 => self.method_heap(
+                    ContainerOp::SetIntersection,
+                    recv_arg,
+                    vec![a[0].clone()],
+                    heap(),
+                ),
+                M::Difference if argn == 1 => self.method_heap(
+                    ContainerOp::SetDifference,
+                    recv_arg,
+                    vec![a[0].clone()],
+                    heap(),
+                ),
+                M::Copy if argn == 0 => {
+                    self.method_heap(ContainerOp::SetCopy, recv_arg, vec![], heap())
                 }
-                M::Copy if argn == 0 => self.method_heap(ContainerOp::SetCopy, recv_arg, vec![], heap()),
                 M::Clear if argn == 0 => {
                     self.emit_container(ContainerOp::SetClear, vec![recv_arg], None)?;
                     self.none_value()
                 }
                 _ => Err(bad("unsupported set method / arity")),
             },
-            _ => Err(bad("method calls require a statically-known list, dict, or set receiver")),
+            _ => Err(bad(
+                "method calls require a statically-known list, dict, or set receiver",
+            )),
         }
     }
 
@@ -2749,7 +3227,10 @@ impl<'a> FnLower<'a> {
     /// Materialize the tagged `None` singleton into a fresh local.
     fn none_temp(&mut self) -> LocalId {
         let t = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const { dst: t, val: Const::None });
+        self.emit(MirInst::Const {
+            dst: t,
+            val: Const::None,
+        });
         t
     }
 
@@ -2823,12 +3304,12 @@ impl<'a> FnLower<'a> {
         let i64r = Repr::Raw(RawKind::I64);
         let raw_addsub = matches!(mop, MBinOp::Add | MBinOp::Sub) && (lr == i64r || rr == i64r);
         let proven = self.func.exprs[idx].raw_int_ok && self.func.exprs[idx].ty == SemTy::Int;
-        let raw_muldivmod =
-            proven && matches!(mop, MBinOp::Mul | MBinOp::Mod | MBinOp::FloorDiv);
+        let raw_muldivmod = proven && matches!(mop, MBinOp::Mul | MBinOp::Mod | MBinOp::FloorDiv);
         if raw_addsub || raw_muldivmod {
-            if let (Some(la), Some(ra)) =
-                (self.raw_i64_operand(l, ll, &lr)?, self.raw_i64_operand(r, rl, &rr)?)
-            {
+            if let (Some(la), Some(ra)) = (
+                self.raw_i64_operand(l, ll, &lr)?,
+                self.raw_i64_operand(r, rl, &rr)?,
+            ) {
                 let dst = self.alloc_temp(i64r.clone());
                 self.emit(MirInst::BinOp {
                     dst,
@@ -2867,10 +3348,9 @@ impl<'a> FnLower<'a> {
             MBinOp::Add => {
                 let cop = match (lr, rr) {
                     (Repr::Heap(List(_)), Repr::Heap(List(_))) => ContainerOp::ListConcat,
-                    (
-                        Repr::Heap(Tuple(_) | TupleVar(_)),
-                        Repr::Heap(Tuple(_) | TupleVar(_)),
-                    ) => ContainerOp::TupleConcat,
+                    (Repr::Heap(Tuple(_) | TupleVar(_)), Repr::Heap(Tuple(_) | TupleVar(_))) => {
+                        ContainerOp::TupleConcat
+                    }
                     (Repr::Heap(Bytes), Repr::Heap(Bytes)) => ContainerOp::BytesConcat,
                     _ => return Ok(None),
                 };
@@ -2918,7 +3398,11 @@ impl<'a> FnLower<'a> {
             Repr::Tagged
         };
         let dst = self.alloc_temp(dst_repr.clone());
-        self.emit(MirInst::Unary { dst, op: mop, operand: Operand::Local(ot) });
+        self.emit(MirInst::Unary {
+            dst,
+            op: mop,
+            operand: Operand::Local(ot),
+        });
         Ok((dst, dst_repr))
     }
 
@@ -2999,7 +3483,10 @@ impl<'a> FnLower<'a> {
         let (la, ra) = if lr == i64r && rr == i64r {
             (ll, rl)
         } else {
-            (self.coerce(ll, lr, Repr::Tagged)?, self.coerce(rl, rr, Repr::Tagged)?)
+            (
+                self.coerce(ll, lr, Repr::Tagged)?,
+                self.coerce(rl, rr, Repr::Tagged)?,
+            )
         };
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
         self.emit(MirInst::Compare {
@@ -3066,7 +3553,10 @@ impl<'a> FnLower<'a> {
                         let (vl, vr) = self.lower_expr(args[0])?;
                         let vt = self.coerce(vl, vr, Repr::Tagged)?;
                         let dst = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                        self.emit(MirInst::ExcInstanceStr { dst, value: Operand::Local(vt) });
+                        self.emit(MirInst::ExcInstanceStr {
+                            dst,
+                            value: Operand::Local(vt),
+                        });
                         return Ok((dst, Repr::Heap(HeapShape::Str)));
                     }
                 }
@@ -3077,7 +3567,11 @@ impl<'a> FnLower<'a> {
                     argvals.push(Operand::Local(at));
                 }
                 let dst = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::CallBuiltin { dst: Some(dst), kind, args: argvals });
+                self.emit(MirInst::CallBuiltin {
+                    dst: Some(dst),
+                    kind,
+                    args: argvals,
+                });
                 Ok((dst, Repr::Tagged))
             }
             Symbol::Function(fid) => {
@@ -3096,7 +3590,11 @@ impl<'a> FnLower<'a> {
                     argvals.push(Operand::Local(at));
                 }
                 let dst = self.alloc_temp(ret.clone());
-                self.emit(MirInst::Call { dst: Some(dst), func: fid, args: argvals });
+                self.emit(MirInst::Call {
+                    dst: Some(dst),
+                    func: fid,
+                    args: argvals,
+                });
                 Ok((dst, ret))
             }
             Symbol::Container(op) => self.lower_container_builtin(call_idx, op, &args),
@@ -3148,12 +3646,18 @@ impl<'a> FnLower<'a> {
             }
             None if node_ty == SemTy::Float => {
                 let raw = self.alloc_temp(Repr::Raw(RawKind::F64));
-                self.emit(MirInst::Const { dst: raw, val: Const::Float(0.0) });
+                self.emit(MirInst::Const {
+                    dst: raw,
+                    val: Const::Float(0.0),
+                });
                 self.coerce_into(acc, raw, Repr::Raw(RawKind::F64), Repr::Tagged)?;
             }
             None => {
                 let raw = self.alloc_temp(Repr::Raw(RawKind::I64));
-                self.emit(MirInst::Const { dst: raw, val: Const::Int(0) });
+                self.emit(MirInst::Const {
+                    dst: raw,
+                    val: Const::Int(0),
+                });
                 self.coerce_into(acc, raw, Repr::Raw(RawKind::I64), Repr::Tagged)?;
             }
         }
@@ -3173,11 +3677,8 @@ impl<'a> FnLower<'a> {
         // header: elem = next(it); done = is_exhausted(it) (the runtime call
         // order contract: next advances and sets the exhausted flag).
         self.switch(header);
-        let (elem, _) = self.emit_container(
-            ContainerOp::IterNext,
-            vec![(it, iter_repr.clone())],
-            None,
-        )?;
+        let (elem, _) =
+            self.emit_container(ContainerOp::IterNext, vec![(it, iter_repr.clone())], None)?;
         let elem = elem.expect("IterNext produces a value");
         let (done, _) =
             self.emit_container(ContainerOp::IterExhausted, vec![(it, iter_repr)], None)?;
@@ -3266,7 +3767,9 @@ impl<'a> FnLower<'a> {
                 Ok((dst.unwrap(), ret))
             }
             C::ListFromIter => self.lower_constructor(call_idx, args, C::ListNew, C::ListFromIter),
-            C::TupleFromIter => self.lower_constructor(call_idx, args, C::TupleNew, C::TupleFromIter),
+            C::TupleFromIter => {
+                self.lower_constructor(call_idx, args, C::TupleNew, C::TupleFromIter)
+            }
             C::DictFromPairs => {
                 if args.is_empty() {
                     return self.empty_container(C::DictNew, result_heap);
@@ -3384,7 +3887,8 @@ impl<'a> FnLower<'a> {
     fn lower_iter_arg(&mut self, arg: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
         let (l, r) = self.lower_expr(arg)?;
         let iter_repr = Repr::Heap(HeapShape::Iterator(Box::new(Repr::Tagged)));
-        let (dst, _) = self.emit_container(ContainerOp::Iter, vec![(l, r)], Some(iter_repr.clone()))?;
+        let (dst, _) =
+            self.emit_container(ContainerOp::Iter, vec![(l, r)], Some(iter_repr.clone()))?;
         Ok((dst.unwrap(), iter_repr))
     }
 
@@ -3401,13 +3905,20 @@ impl<'a> FnLower<'a> {
         let (it, _) = self.emit_container(ContainerOp::Iter, vec![(l, r)], Some(iter_repr))?;
         let (dst, _) = self.emit_container(
             ContainerOp::ListFromIter,
-            vec![(it.unwrap(), Repr::Heap(HeapShape::Iterator(Box::new(Repr::Tagged))))],
+            vec![(
+                it.unwrap(),
+                Repr::Heap(HeapShape::Iterator(Box::new(Repr::Tagged))),
+            )],
             Some(list_repr.clone()),
         )?;
         Ok((dst.unwrap(), list_repr))
     }
 
-    fn lower_name(&mut self, symref: SymbolRef, span: pyaot_utils::Span) -> Result<(LocalId, Repr)> {
+    fn lower_name(
+        &mut self,
+        symref: SymbolRef,
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
         let id = match symref {
             SymbolRef::Resolved(id) => id,
             SymbolRef::Unresolved(_) => {
@@ -3537,7 +4048,10 @@ fn sub_kind(ty: &SemTy, repr: &Repr) -> SubKind {
         SubKind::Dict
     } else if ty.tuple_elems().is_some()
         || ty.tuple_var_elem().is_some()
-        || matches!(repr, Repr::Heap(HeapShape::Tuple(_) | HeapShape::TupleVar(_)))
+        || matches!(
+            repr,
+            Repr::Heap(HeapShape::Tuple(_) | HeapShape::TupleVar(_))
+        )
     {
         SubKind::Tuple
     } else if matches!(ty, SemTy::Bytes) || matches!(repr, Repr::Heap(HeapShape::Bytes)) {
@@ -3567,7 +4081,9 @@ fn is_builtin_exception_ty(ty: &SemTy) -> bool {
         SemTy::BuiltinException(_) => true,
         SemTy::Union(members) => {
             !members.is_empty()
-                && members.iter().all(|m| matches!(m, SemTy::BuiltinException(_)))
+                && members
+                    .iter()
+                    .all(|m| matches!(m, SemTy::BuiltinException(_)))
         }
         _ => false,
     }
@@ -3665,7 +4181,9 @@ fn runtime_return_repr(
 fn is_sequence_repr(r: &Repr) -> bool {
     matches!(
         r,
-        Repr::Heap(HeapShape::List(_) | HeapShape::Tuple(_) | HeapShape::TupleVar(_) | HeapShape::Bytes)
+        Repr::Heap(
+            HeapShape::List(_) | HeapShape::Tuple(_) | HeapShape::TupleVar(_) | HeapShape::Bytes
+        )
     )
 }
 

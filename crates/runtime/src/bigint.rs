@@ -44,7 +44,9 @@ pub unsafe fn classify_num(v: Value) -> Option<Num> {
         if !p.is_null() {
             match (*p).type_tag() {
                 TypeTagKind::Float => return Some(Num::Float((*(p as *mut FloatObj)).value)),
-                TypeTagKind::BigInt => return Some(Num::Big((*(p as *mut BigIntObj)).value.clone())),
+                TypeTagKind::BigInt => {
+                    return Some(Num::Big((*(p as *mut BigIntObj)).value.clone()))
+                }
                 _ => {}
             }
         }
@@ -153,7 +155,10 @@ pub fn num_floordiv(a: Num, b: Num) -> *mut Obj {
         let fb = to_f64(&b);
         if fb == 0.0 {
             unsafe {
-                crate::raise_exc!(ExceptionType::ZeroDivisionError, "float floor division by zero")
+                crate::raise_exc!(
+                    ExceptionType::ZeroDivisionError,
+                    "float floor division by zero"
+                )
             };
         }
         return crate::boxing::rt_box_float((to_f64(&a) / fb).floor());
@@ -161,7 +166,10 @@ pub fn num_floordiv(a: Num, b: Num) -> *mut Obj {
     let bb = to_big(&b);
     if bb.is_zero() {
         unsafe {
-            crate::raise_exc!(ExceptionType::ZeroDivisionError, "integer division or modulo by zero")
+            crate::raise_exc!(
+                ExceptionType::ZeroDivisionError,
+                "integer division or modulo by zero"
+            )
         };
     }
     // `div_floor` rounds toward -inf (CPython floor division).
@@ -172,9 +180,7 @@ pub fn num_mod(a: Num, b: Num) -> *mut Obj {
     if is_float(&a) || is_float(&b) {
         let fb = to_f64(&b);
         if fb == 0.0 {
-            unsafe {
-                crate::raise_exc!(ExceptionType::ZeroDivisionError, "float modulo")
-            };
+            unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "float modulo") };
         }
         let fa = to_f64(&a);
         let mut r = fa % fb;
@@ -186,7 +192,10 @@ pub fn num_mod(a: Num, b: Num) -> *mut Obj {
     let bb = to_big(&b);
     if bb.is_zero() {
         unsafe {
-            crate::raise_exc!(ExceptionType::ZeroDivisionError, "integer division or modulo by zero")
+            crate::raise_exc!(
+                ExceptionType::ZeroDivisionError,
+                "integer division or modulo by zero"
+            )
         };
     }
     // `mod_floor` gives a result with the divisor's sign (CPython modulo).
@@ -204,9 +213,7 @@ pub fn num_pow(a: Num, b: Num) -> *mut Obj {
     }
     match exp.to_u32() {
         Some(e) => make_int_value(Pow::pow(to_big(&a), e)),
-        None => unsafe {
-            crate::raise_exc!(ExceptionType::OverflowError, "exponent too large")
-        },
+        None => unsafe { crate::raise_exc!(ExceptionType::OverflowError, "exponent too large") },
     }
 }
 
@@ -325,7 +332,10 @@ pub fn num_invert(a: Num) -> *mut Obj {
         Num::Int(i) => make_int_value(!BigInt::from(i)),
         Num::Big(b) => make_int_value(!b),
         Num::Float(_) => unsafe {
-            crate::raise_exc!(ExceptionType::TypeError, "bad operand type for unary ~: 'float'")
+            crate::raise_exc!(
+                ExceptionType::TypeError,
+                "bad operand type for unary ~: 'float'"
+            )
         },
     }
 }

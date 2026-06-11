@@ -135,7 +135,11 @@ mod char_len_tests {
                 "y😀xтевирп",
                 "u[::-1]",
             );
-            assert_str(rt_str_slice_step(u, i64::MIN, i64::MAX, 2), "пиеxy", "u[::2]");
+            assert_str(
+                rt_str_slice_step(u, i64::MIN, i64::MAX, 2),
+                "пиеxy",
+                "u[::2]",
+            );
             assert_str(
                 rt_str_slice_step(a, i64::MIN, i64::MAX, -1),
                 "yx_tevirp",
@@ -208,8 +212,16 @@ mod char_len_tests {
         let _guard = lock_and_init();
         unsafe {
             let u = mk(UNI);
-            assert_str(rt_str_replace(u, mk("x"), mk("XY")), "приветXY😀y", "replace");
-            assert_str(rt_str_replace(mk("ab"), mk(""), mk("X")), "XaXbX", "replace empty old");
+            assert_str(
+                rt_str_replace(u, mk("x"), mk("XY")),
+                "приветXY😀y",
+                "replace",
+            );
+            assert_str(
+                rt_str_replace(mk("ab"), mk(""), mk("X")),
+                "XaXbX",
+                "replace empty old",
+            );
             assert_str(
                 rt_str_replace(mk("aбa"), mk("a"), mk("ю")),
                 "юбю",
@@ -218,7 +230,11 @@ mod char_len_tests {
 
             assert_str(rt_str_removeprefix(u, mk("при")), "ветx😀y", "removeprefix");
             assert_str(rt_str_removesuffix(u, mk("😀y")), "приветx", "removesuffix");
-            assert_str(rt_str_removeprefix(mk("ab"), mk("zz")), "ab", "removeprefix miss");
+            assert_str(
+                rt_str_removeprefix(mk("ab"), mk("zz")),
+                "ab",
+                "removeprefix miss",
+            );
 
             assert_str(rt_str_expandtabs(mk("a\tб"), 4), "a   б", "expandtabs");
             assert_str(rt_str_expandtabs(mk("\tб"), 2), "  б", "expandtabs leading");

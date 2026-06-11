@@ -14,7 +14,7 @@
 
 use pyaot_mir::{MirFunction, MirProgram, MirTerminator, Operand};
 
-use crate::analysis::{read_counts, reachable_blocks};
+use crate::analysis::{reachable_blocks, read_counts};
 use crate::OptimizationPass;
 
 pub struct Dce;
@@ -46,9 +46,7 @@ fn run_func(f: &mut MirFunction) {
             // closure are visible to later instructions in the same sweep.
             block.insts.retain(|inst| {
                 let dead = !inst.has_side_effects(locals)
-                    && inst
-                        .dst()
-                        .is_some_and(|d| reads[d.index()] == 0);
+                    && inst.dst().is_some_and(|d| reads[d.index()] == 0);
                 if dead {
                     inst.for_each_operand(|op| {
                         let Operand::Local(id) = op;
@@ -92,11 +90,26 @@ mod tests {
         // l0 = 1; l1 = 2; l2 = l0 + l1 (raw, pure) — nothing read; the whole
         // chain dies across fixpoint sweeps (l2 first, then its operands).
         let mut f = single_block(
-            vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(1) },
-                MirInst::Const { dst: l(1), val: Const::Int(2) },
-                MirInst::BinOp { dst: l(2), op: BinOp::Add, l: op(0), r: op(1) },
+                Repr::Raw(RawKind::I64),
+                Repr::Raw(RawKind::I64),
+                Repr::Raw(RawKind::I64),
+            ],
+            vec![
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(1),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Int(2),
+                },
+                MirInst::BinOp {
+                    dst: l(2),
+                    op: BinOp::Add,
+                    l: op(0),
+                    r: op(1),
+                },
             ],
             MirTerminator::Return(None),
         );
@@ -112,9 +125,20 @@ mod tests {
         let mut f = single_block(
             vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(1) },
-                MirInst::Const { dst: l(1), val: Const::Int(2) },
-                MirInst::BinOp { dst: l(2), op: BinOp::Add, l: op(0), r: op(1) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(1),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Int(2),
+                },
+                MirInst::BinOp {
+                    dst: l(2),
+                    op: BinOp::Add,
+                    l: op(0),
+                    r: op(1),
+                },
             ],
             MirTerminator::Return(None),
         );
@@ -127,13 +151,32 @@ mod tests {
     fn keeps_values_read_by_terminator() {
         // The Branch condition and the Return operand are reads.
         let mut f = single_block(
-            vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I8)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(1) },
-                MirInst::Const { dst: l(1), val: Const::Int(2) },
-                MirInst::Compare { dst: l(2), op: CmpOp::Lt, l: op(0), r: op(1) },
+                Repr::Raw(RawKind::I64),
+                Repr::Raw(RawKind::I64),
+                Repr::Raw(RawKind::I8),
             ],
-            MirTerminator::Branch { cond: op(2), then: BlockId::new(0), else_: BlockId::new(0) },
+            vec![
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(1),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Int(2),
+                },
+                MirInst::Compare {
+                    dst: l(2),
+                    op: CmpOp::Lt,
+                    l: op(0),
+                    r: op(1),
+                },
+            ],
+            MirTerminator::Branch {
+                cond: op(2),
+                then: BlockId::new(0),
+                else_: BlockId::new(0),
+            },
         );
         run_func(&mut f);
         assert_eq!(f.blocks[0].insts.len(), 3);
@@ -146,7 +189,10 @@ mod tests {
         let mut f = single_block(
             vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(7) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(7),
+                },
                 MirInst::Coerce(
                     pyaot_mir::CoerceInst::new(
                         l(1),
@@ -173,7 +219,10 @@ mod tests {
             vec![
                 (vec![], MirTerminator::Return(None)),
                 (
-                    vec![MirInst::Const { dst: LocalId::new(0), val: Const::Int(3) }],
+                    vec![MirInst::Const {
+                        dst: LocalId::new(0),
+                        val: Const::Int(3),
+                    }],
                     MirTerminator::Jump(BlockId::new(0)),
                 ),
             ],
@@ -191,7 +240,10 @@ mod tests {
         let mut f = single_block(
             vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::None },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::None,
+                },
                 MirInst::Coerce(
                     pyaot_mir::CoerceInst::new_checked(
                         l(1),

@@ -528,7 +528,10 @@ unsafe fn resolve_field_slot(obj: *mut u8, name_hash: i64) -> Result<(usize, u8)
 /// Raises `AttributeError` when the object is not an instance or has no such
 /// field — matching CPython's failure mode for `obj.missing`.
 #[no_mangle]
-pub extern "C" fn rt_getattr_name(obj: pyaot_core_defs::Value, name_hash: i64) -> pyaot_core_defs::Value {
+pub extern "C" fn rt_getattr_name(
+    obj: pyaot_core_defs::Value,
+    name_hash: i64,
+) -> pyaot_core_defs::Value {
     unsafe {
         let ptr = obj.0 as *mut u8;
         match resolve_field_slot(ptr, name_hash) {

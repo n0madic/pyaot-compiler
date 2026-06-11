@@ -78,9 +78,7 @@ fn fold_inst(
             let lc = env.get_operand(l)?;
             let rc = env.get_operand(r)?;
             match (lc, rc) {
-                (Const::Int(a), Const::Int(b))
-                    if locals[dst.index()].repr == Repr::Tagged =>
-                {
+                (Const::Int(a), Const::Int(b)) if locals[dst.index()].repr == Repr::Tagged => {
                     let v = match op {
                         BinOp::Add => a.checked_add(*b)?,
                         BinOp::Sub => a.checked_sub(*b)?,
@@ -99,7 +97,10 @@ fn fold_inst(
                     if !int_fits(v) {
                         return None; // would promote to BigInt at runtime
                     }
-                    Some(MirInst::Const { dst: *dst, val: Const::Int(v) })
+                    Some(MirInst::Const {
+                        dst: *dst,
+                        val: Const::Int(v),
+                    })
                 }
                 (Const::Float(a), Const::Float(b))
                     if locals[dst.index()].repr == Repr::Raw(RawKind::F64) =>
@@ -110,7 +111,10 @@ fn fold_inst(
                         BinOp::Mul => a * b,
                         _ => return None, // float Div & friends stay at runtime
                     };
-                    Some(MirInst::Const { dst: *dst, val: Const::Float(v) })
+                    Some(MirInst::Const {
+                        dst: *dst,
+                        val: Const::Float(v),
+                    })
                 }
                 _ => None,
             }
@@ -127,18 +131,31 @@ fn fold_inst(
                 (Const::Bool(a), Const::Bool(b)) => cmp(op, &(*a as i64), &(*b as i64)),
                 _ => return None,
             };
-            Some(MirInst::Const { dst: *dst, val: Const::Int(res as i64) })
+            Some(MirInst::Const {
+                dst: *dst,
+                val: Const::Int(res as i64),
+            })
         }
         MirInst::Truthy { dst, operand } => {
             let truth = const_truthiness(env.get_operand(operand)?)?;
-            Some(MirInst::Const { dst: *dst, val: Const::Int(truth as i64) })
+            Some(MirInst::Const {
+                dst: *dst,
+                val: Const::Int(truth as i64),
+            })
         }
-        MirInst::Unary { dst, op: UnaryOp::Not, operand } => {
+        MirInst::Unary {
+            dst,
+            op: UnaryOp::Not,
+            operand,
+        } => {
             if locals[dst.index()].repr != Repr::Raw(RawKind::I8) {
                 return None;
             }
             let truth = const_truthiness(env.get_operand(operand)?)?;
-            Some(MirInst::Const { dst: *dst, val: Const::Int(!truth as i64) })
+            Some(MirInst::Const {
+                dst: *dst,
+                val: Const::Int(!truth as i64),
+            })
         }
         _ => None,
     }
@@ -191,9 +208,20 @@ mod tests {
         single_block(
             vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(a) },
-                MirInst::Const { dst: l(1), val: Const::Int(b) },
-                MirInst::BinOp { dst: l(2), op: op_kind, l: op(0), r: op(1) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(a),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Int(b),
+                },
+                MirInst::BinOp {
+                    dst: l(2),
+                    op: op_kind,
+                    l: op(0),
+                    r: op(1),
+                },
             ],
             MirTerminator::Return(Some(op(2))),
         )
@@ -204,7 +232,13 @@ mod tests {
         let mut f = tagged_int_binop(BinOp::Add, 2, 3);
         run_func(&mut f);
         assert!(
-            matches!(f.blocks[0].insts[2], MirInst::Const { val: Const::Int(5), .. }),
+            matches!(
+                f.blocks[0].insts[2],
+                MirInst::Const {
+                    val: Const::Int(5),
+                    ..
+                }
+            ),
             "2 + 3 must fold to Const::Int(5), got {:?}",
             f.blocks[0].insts[2]
         );
@@ -224,8 +258,14 @@ mod tests {
     #[test]
     fn raising_ops_never_fold() {
         // 1 // 0 must keep raising ZeroDivisionError at runtime.
-        for op_kind in [BinOp::Div, BinOp::FloorDiv, BinOp::Mod, BinOp::Pow, BinOp::Shl, BinOp::Shr]
-        {
+        for op_kind in [
+            BinOp::Div,
+            BinOp::FloorDiv,
+            BinOp::Mod,
+            BinOp::Pow,
+            BinOp::Shl,
+            BinOp::Shr,
+        ] {
             let mut f = tagged_int_binop(op_kind, 1, 0);
             run_func(&mut f);
             assert!(
@@ -238,16 +278,33 @@ mod tests {
     #[test]
     fn folds_raw_float_mul() {
         let mut f = single_block(
-            vec![Repr::Raw(RawKind::F64), Repr::Raw(RawKind::F64), Repr::Raw(RawKind::F64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Float(1.5) },
-                MirInst::Const { dst: l(1), val: Const::Float(2.0) },
-                MirInst::BinOp { dst: l(2), op: BinOp::Mul, l: op(0), r: op(1) },
+                Repr::Raw(RawKind::F64),
+                Repr::Raw(RawKind::F64),
+                Repr::Raw(RawKind::F64),
+            ],
+            vec![
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Float(1.5),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Float(2.0),
+                },
+                MirInst::BinOp {
+                    dst: l(2),
+                    op: BinOp::Mul,
+                    l: op(0),
+                    r: op(1),
+                },
             ],
             MirTerminator::Return(None),
         );
         run_func(&mut f);
-        assert!(matches!(f.blocks[0].insts[2], MirInst::Const { val: Const::Float(v), .. } if v == 3.0));
+        assert!(
+            matches!(f.blocks[0].insts[2], MirInst::Const { val: Const::Float(v), .. } if v == 3.0)
+        );
         verify_ok(&f);
     }
 
@@ -258,18 +315,39 @@ mod tests {
             vec![
                 (
                     vec![
-                        MirInst::Const { dst: l(0), val: Const::Int(1) },
-                        MirInst::Const { dst: l(1), val: Const::Int(2) },
-                        MirInst::Compare { dst: l(2), op: CmpOp::Lt, l: op(0), r: op(1) },
+                        MirInst::Const {
+                            dst: l(0),
+                            val: Const::Int(1),
+                        },
+                        MirInst::Const {
+                            dst: l(1),
+                            val: Const::Int(2),
+                        },
+                        MirInst::Compare {
+                            dst: l(2),
+                            op: CmpOp::Lt,
+                            l: op(0),
+                            r: op(1),
+                        },
                     ],
-                    MirTerminator::Branch { cond: op(2), then: BlockId::new(1), else_: BlockId::new(2) },
+                    MirTerminator::Branch {
+                        cond: op(2),
+                        then: BlockId::new(1),
+                        else_: BlockId::new(2),
+                    },
                 ),
                 (vec![], MirTerminator::Return(None)),
                 (vec![], MirTerminator::Return(None)),
             ],
         );
         run_func(&mut f);
-        assert!(matches!(f.blocks[0].insts[2], MirInst::Const { val: Const::Int(1), .. }));
+        assert!(matches!(
+            f.blocks[0].insts[2],
+            MirInst::Const {
+                val: Const::Int(1),
+                ..
+            }
+        ));
         assert!(
             matches!(f.blocks[0].term, MirTerminator::Jump(t) if t == BlockId::new(1)),
             "1 < 2 branch must become Jump(then)"
@@ -282,15 +360,37 @@ mod tests {
         let mut f = single_block(
             vec![Repr::Tagged, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(0) },
-                MirInst::Truthy { dst: l(1), operand: op(0) },
-                MirInst::Unary { dst: l(2), op: UnaryOp::Not, operand: op(0) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(0),
+                },
+                MirInst::Truthy {
+                    dst: l(1),
+                    operand: op(0),
+                },
+                MirInst::Unary {
+                    dst: l(2),
+                    op: UnaryOp::Not,
+                    operand: op(0),
+                },
             ],
             MirTerminator::Return(None),
         );
         run_func(&mut f);
-        assert!(matches!(f.blocks[0].insts[1], MirInst::Const { val: Const::Int(0), .. }));
-        assert!(matches!(f.blocks[0].insts[2], MirInst::Const { val: Const::Int(1), .. }));
+        assert!(matches!(
+            f.blocks[0].insts[1],
+            MirInst::Const {
+                val: Const::Int(0),
+                ..
+            }
+        ));
+        assert!(matches!(
+            f.blocks[0].insts[2],
+            MirInst::Const {
+                val: Const::Int(1),
+                ..
+            }
+        ));
         verify_ok(&f);
     }
 
@@ -300,11 +400,27 @@ mod tests {
         let mut f = single_block(
             vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Int(1) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Int(1),
+                },
                 // Overwrite l0 with a runtime value (Div never folds).
-                MirInst::BinOp { dst: l(0), op: BinOp::Div, l: op(0), r: op(0) },
-                MirInst::Const { dst: l(1), val: Const::Int(1) },
-                MirInst::BinOp { dst: l(2), op: BinOp::Add, l: op(0), r: op(1) },
+                MirInst::BinOp {
+                    dst: l(0),
+                    op: BinOp::Div,
+                    l: op(0),
+                    r: op(0),
+                },
+                MirInst::Const {
+                    dst: l(1),
+                    val: Const::Int(1),
+                },
+                MirInst::BinOp {
+                    dst: l(2),
+                    op: BinOp::Add,
+                    l: op(0),
+                    r: op(1),
+                },
             ],
             MirTerminator::Return(Some(op(2))),
         );

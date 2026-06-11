@@ -436,7 +436,12 @@ fn record_all(
             child(*index, rec);
             Interval::Top
         }
-        HirExprKind::Slice { base, start, end, step } => {
+        HirExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             child(*base, rec);
             for o in [start, end, step].into_iter().flatten() {
                 child(*o, rec);
@@ -669,7 +674,12 @@ fn analyze_func(
     let entry = index_of[&func.entry];
     let succ_of: Vec<Vec<usize>> = order
         .iter()
-        .map(|&b| successors(&func.blocks[b].term, &index_of).into_iter().map(|(s, _)| s).collect())
+        .map(|&b| {
+            successors(&func.blocks[b].term, &index_of)
+                .into_iter()
+                .map(|(s, _)| s)
+                .collect()
+        })
         .collect();
     let heads = loop_heads(&succ_of, entry);
 
@@ -710,7 +720,9 @@ fn analyze_func(
     // Each (block, local) endpoint climbs through at most `WIDEN_LIMIT` finite
     // values before widening pins it to a `±∞` sentinel, so the ascending chain
     // stabilizes; the cap bounds the pathological case and bails conservatively.
-    let max_rounds = n.saturating_mul(n_locals.saturating_add(1)).saturating_mul(WIDEN_LIMIT + 2);
+    let max_rounds = n
+        .saturating_mul(n_locals.saturating_add(1))
+        .saturating_mul(WIDEN_LIMIT + 2);
     let max_rounds = max_rounds.clamp(64, 200_000);
     let mut converged = false;
     for _ in 0..max_rounds {
@@ -884,7 +896,15 @@ fn apply_flags(
     let mut flagged: Vec<Idx<HirExpr>> = Vec::new();
     let exprs: Vec<Idx<HirExpr>> = func.exprs.iter().map(|(i, _)| i).collect();
     for idx in exprs {
-        rawable(func, resolve, expr_iv, &local_eligible, &mut memo, &mut flagged, idx);
+        rawable(
+            func,
+            resolve,
+            expr_iv,
+            &local_eligible,
+            &mut memo,
+            &mut flagged,
+            idx,
+        );
     }
 
     for (lid, ok) in local_eligible.iter().enumerate() {
@@ -928,7 +948,11 @@ fn rawable(
                     op,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::FloorDiv
                 )
-                && expr_iv.get(&idx).copied().unwrap_or(Interval::Top).eligible()
+                && expr_iv
+                    .get(&idx)
+                    .copied()
+                    .unwrap_or(Interval::Top)
+                    .eligible()
                 && lr
                 && rr;
             if res_ok {
@@ -1024,7 +1048,11 @@ mod tests {
         let mut iv = Interval::Bottom;
         for k in 0..(WIDEN_LIMIT as i128 + 4) {
             let next = iv.join(r(0, k));
-            iv = if k as usize >= WIDEN_LIMIT { iv.widen(next) } else { next };
+            iv = if k as usize >= WIDEN_LIMIT {
+                iv.widen(next)
+            } else {
+                next
+            };
         }
         assert_eq!(iv, Interval::Range { lo: 0, hi: POS_INF });
         assert!(!iv.eligible());

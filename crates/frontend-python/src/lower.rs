@@ -14,9 +14,8 @@ use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
     ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
-    ExprSetComp,
-    ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt, StmtClassDef,
-    StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
+    ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt,
+    StmtClassDef, StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
 
@@ -362,7 +361,9 @@ impl<'a> ProgramLowerer<'a> {
                 let name = exp.init_name;
                 self.init_emitted.insert(dotted);
                 // Make the `<init>` name resolvable as a callee in the importer.
-                self.namespace_imports[my_ns as usize].funcs.insert(name, exp.init_fid);
+                self.namespace_imports[my_ns as usize]
+                    .funcs
+                    .insert(name, exp.init_fid);
                 action.init_calls.push(name);
             }
         }
@@ -370,21 +371,33 @@ impl<'a> ProgramLowerer<'a> {
 
     /// Register an `import M` alias: every exported func/class/var of `M` becomes
     /// reachable as a qualified `"alias.name"` access (Phase 8).
-    fn register_alias(&mut self, alias: &str, module: &[String], my_ns: u32, col: &mut ImportCollect) {
+    fn register_alias(
+        &mut self,
+        alias: &str,
+        module: &[String],
+        my_ns: u32,
+        col: &mut ImportCollect,
+    ) {
         let dotted = module.join(".");
-        let Some(exp) = self.loaded.get(&dotted).cloned() else { return };
+        let Some(exp) = self.loaded.get(&dotted).cloned() else {
+            return;
+        };
         col.aliases.insert(alias.to_string());
         for (fname, (fid, info)) in &exp.funcs {
             let key = format!("{alias}.{fname}");
             col.imported_funcs.push((key.clone(), info.clone()));
             let ki = self.interner.intern(&key);
-            self.namespace_imports[my_ns as usize].funcs.insert(ki, *fid);
+            self.namespace_imports[my_ns as usize]
+                .funcs
+                .insert(ki, *fid);
         }
         for (cname, (cid, iname)) in &exp.classes {
             let key = format!("{alias}.{cname}");
             col.class_map.insert(key.clone(), (*cid, *iname));
             let ki = self.interner.intern(&key);
-            self.namespace_imports[my_ns as usize].classes.insert(ki, *cid);
+            self.namespace_imports[my_ns as usize]
+                .classes
+                .insert(ki, *cid);
         }
         for (vname, slot) in &exp.var_slots {
             col.alias_vars.insert(format!("{alias}.{vname}"), *slot);
@@ -414,9 +427,8 @@ impl<'a> ProgramLowerer<'a> {
                     Some(n) => (n.as_str(), dotted_name),
                     None => (target[0].as_str(), target[0].as_str()),
                 };
-                let module = pyaot_stdlib_defs::get_module(lookup).ok_or_else(|| {
-                    parse_error(format!("no module named `{dotted_name}`"), span)
-                })?;
+                let module = pyaot_stdlib_defs::get_module(lookup)
+                    .ok_or_else(|| parse_error(format!("no module named `{dotted_name}`"), span))?;
                 register_stdlib_alias(bind, module, &mut col.stdlib);
                 continue;
             }
@@ -473,9 +485,8 @@ impl<'a> ProgramLowerer<'a> {
             // No user module on the search path → stdlib `from M import …`
             // (Phase 8B). Relative imports never reach here (`level == 0`).
             let dotted = target.join(".");
-            let module = pyaot_stdlib_defs::get_module(&dotted).ok_or_else(|| {
-                parse_error(format!("no module named `{dotted}`"), span)
-            })?;
+            let module = pyaot_stdlib_defs::get_module(&dotted)
+                .ok_or_else(|| parse_error(format!("no module named `{dotted}`"), span))?;
             for alias in &i.names {
                 let name = alias.name.as_str();
                 if name == "*" {
@@ -499,15 +510,20 @@ impl<'a> ProgramLowerer<'a> {
             if let Some((fid, info)) = exp.funcs.get(name) {
                 // A from-imported function is a static binding to its FuncId.
                 col.imported_funcs.push((bind.to_string(), info.clone()));
-                col.reexport_funcs.push((bind.to_string(), *fid, info.clone()));
+                col.reexport_funcs
+                    .push((bind.to_string(), *fid, info.clone()));
                 let bi = self.interner.intern(bind);
-                self.namespace_imports[my_ns as usize].funcs.insert(bi, *fid);
+                self.namespace_imports[my_ns as usize]
+                    .funcs
+                    .insert(bi, *fid);
             } else if let Some((cid, iname)) = exp.classes.get(name) {
                 // A from-imported class is a static binding to its ClassId.
                 col.class_map.insert(bind.to_string(), (*cid, *iname));
                 col.reexport_classes.push((bind.to_string(), *cid, *iname));
                 let bi = self.interner.intern(bind);
-                self.namespace_imports[my_ns as usize].classes.insert(bi, *cid);
+                self.namespace_imports[my_ns as usize]
+                    .classes
+                    .insert(bi, *cid);
             } else if let Some(src_slot) = exp.var_slots.get(name) {
                 // A from-imported variable is a snapshot copy (CPython-faithful).
                 let dst = match col.promoted.get(bind) {
@@ -669,8 +685,12 @@ impl<'a> ProgramLowerer<'a> {
         };
         let mut top_defs: TopDefMap = HashMap::new();
         for def in &defs {
-            let parsed =
-                parse_params(&mut *self.interner, &pre_ctx, def.args.as_ref(), &FirstParam::Plain)?;
+            let parsed = parse_params(
+                &mut *self.interner,
+                &pre_ctx,
+                def.args.as_ref(),
+                &FirstParam::Plain,
+            )?;
             let ret = match &def.returns {
                 Some(e) => annotation_to_semty(e.as_ref(), &pre_ctx),
                 None => SemTy::Dyn,
@@ -763,7 +783,10 @@ impl<'a> ProgramLowerer<'a> {
                 ret,
             );
             let slot = col.promoted[d.name.as_str()];
-            decorated_info.insert(d.name.as_str().to_string(), DecoratedDef { slot, thunk_fid });
+            decorated_info.insert(
+                d.name.as_str().to_string(),
+                DecoratedDef { slot, thunk_fid },
+            );
         }
 
         // The module-init function: `__main__` for the entry, `<dotted>.<init>`
@@ -941,9 +964,10 @@ fn register_stdlib_items(
     }
     for cls in module.classes {
         if let Some(spec) = &cls.type_spec {
-            stdlib
-                .classes
-                .insert(format!("{prefix}.{}", cls.name), pyaot_hir::semty_from_typespec(spec));
+            stdlib.classes.insert(
+                format!("{prefix}.{}", cls.name),
+                pyaot_hir::semty_from_typespec(spec),
+            );
         }
     }
     for sub in module.submodules {
@@ -970,15 +994,22 @@ fn bind_stdlib_item(
         stdlib.consts.insert(bind.to_string(), c);
     } else if let Some(a) = module.attrs.iter().find(|a| a.name == name) {
         stdlib.attrs.insert(bind.to_string(), a);
-    } else if let Some(spec) =
-        module.classes.iter().find(|c| c.name == name).and_then(|c| c.type_spec.as_ref())
+    } else if let Some(spec) = module
+        .classes
+        .iter()
+        .find(|c| c.name == name)
+        .and_then(|c| c.type_spec.as_ref())
     {
-        stdlib.classes.insert(bind.to_string(), pyaot_hir::semty_from_typespec(spec));
+        stdlib
+            .classes
+            .insert(bind.to_string(), pyaot_hir::semty_from_typespec(spec));
     } else if let Some(exc) = module.exceptions.iter().find(|e| e.name == name) {
         // A stdlib exception class (`from urllib.error import HTTPError`,
         // Phase 8D): record its reserved id + builtin parent tag for
         // `except`/`raise` resolution.
-        stdlib.exceptions.insert(bind.to_string(), (exc.class_id, exc.parent.tag()));
+        stdlib
+            .exceptions
+            .insert(bind.to_string(), (exc.class_id, exc.parent.tag()));
     } else {
         return Err(parse_error(
             format!("cannot import name `{name}` from `{module_dotted}`"),
@@ -1007,7 +1038,10 @@ fn resolve_relative(
     // The first dot is the package itself; each extra dot ascends one level.
     for _ in 1..level {
         if pkg.is_empty() {
-            return Err(parse_error("relative import beyond top-level package", span));
+            return Err(parse_error(
+                "relative import beyond top-level package",
+                span,
+            ));
         }
         pkg.pop();
     }
@@ -1043,9 +1077,19 @@ enum ScopeCtx {
 /// The element action of a comprehension: append to a list/set, or insert into a
 /// dict. Carries the result container local plus the borrowed element expressions.
 enum CompKind<'a> {
-    List { result: LocalId, elt: &'a Expr },
-    Set { result: LocalId, elt: &'a Expr },
-    Dict { result: LocalId, key: &'a Expr, val: &'a Expr },
+    List {
+        result: LocalId,
+        elt: &'a Expr,
+    },
+    Set {
+        result: LocalId,
+        elt: &'a Expr,
+    },
+    Dict {
+        result: LocalId,
+        key: &'a Expr,
+        val: &'a Expr,
+    },
 }
 
 /// A simple iterator loop opened by `begin_iter_loop`: the header to jump back to,
@@ -1151,7 +1195,10 @@ impl<'a> FnLowerer<'a> {
         enclosing_class: Option<ClassId>,
     ) -> Self {
         let mut blocks = Arena::new();
-        let entry = blocks.alloc(HirBlock { stmts: Vec::new(), term: HirTerminator::Unreachable });
+        let entry = blocks.alloc(HirBlock {
+            stmts: Vec::new(),
+            term: HirTerminator::Unreachable,
+        });
         Self {
             interner,
             ctx,
@@ -1190,10 +1237,21 @@ impl<'a> FnLowerer<'a> {
             .filter(|n| !(self.is_main && self.ctx.promoted.contains_key(*n)))
             .map(|n| self.interner.intern(n))
             .collect();
-        self.shared_writes =
-            facts.shared_writes.iter().map(|n| self.interner.intern(n)).collect();
-        self.global_decls = facts.globals.iter().map(|n| self.interner.intern(n)).collect();
-        self.bound_names = facts.bound.iter().map(|n| self.interner.intern(n)).collect();
+        self.shared_writes = facts
+            .shared_writes
+            .iter()
+            .map(|n| self.interner.intern(n))
+            .collect();
+        self.global_decls = facts
+            .globals
+            .iter()
+            .map(|n| self.interner.intern(n))
+            .collect();
+        self.bound_names = facts
+            .bound
+            .iter()
+            .map(|n| self.interner.intern(n))
+            .collect();
     }
 
     /// Register a parameter as the next local (params occupy locals `0..nparams`).
@@ -1202,9 +1260,18 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Register a parameter carrying a constant default (Phase 6C).
-    fn add_param_default(&mut self, name: InternedString, ty: SemTy, default: Option<ClassAttrInit>) {
+    fn add_param_default(
+        &mut self,
+        name: InternedString,
+        ty: SemTy,
+        default: Option<ClassAttrInit>,
+    ) {
         let id = LocalId::new(self.locals.len() as u32);
-        self.params.push(HirParam { name, ty: ty.clone(), default });
+        self.params.push(HirParam {
+            name,
+            ty: ty.clone(),
+            default,
+        });
         self.locals.push(HirLocal {
             name,
             ty,
@@ -1266,7 +1333,10 @@ impl<'a> FnLowerer<'a> {
             let cell_lid =
                 self.alloc_cell_local(name, content_ty, self.shared_writes.contains(&name));
             let mc = self.alloc(HirExprKind::MakeCell { init }, SemTy::Dyn, Span::dummy());
-            self.push_stmt(HirStmt::Assign { target: cell_lid, value: mc });
+            self.push_stmt(HirStmt::Assign {
+                target: cell_lid,
+                value: mc,
+            });
             self.scope.insert(name, Binding::Cell(cell_lid));
         }
     }
@@ -1320,7 +1390,10 @@ impl<'a> FnLowerer<'a> {
     // ── block builder ──────────────────────────────────────────────────────
 
     fn new_block(&mut self) -> Idx<HirBlock> {
-        self.blocks.alloc(HirBlock { stmts: Vec::new(), term: HirTerminator::Unreachable })
+        self.blocks.alloc(HirBlock {
+            stmts: Vec::new(),
+            term: HirTerminator::Unreachable,
+        })
     }
 
     fn push_stmt(&mut self, stmt: HirStmt) {
@@ -1345,7 +1418,12 @@ impl<'a> FnLowerer<'a> {
     fn alloc(&mut self, kind: HirExprKind, ty: SemTy, span: Span) -> Idx<HirExpr> {
         // `raw_int_ok` defaults to the always-correct tagged baseline; typeck's
         // interval pass proves and sets it where sound (Phase 3c).
-        self.exprs.alloc(HirExpr { kind, ty, span, raw_int_ok: false })
+        self.exprs.alloc(HirExpr {
+            kind,
+            ty,
+            span,
+            raw_int_ok: false,
+        })
     }
 
     /// Synthesize `lit0 + str(e0) + lit1 + str(e1) + ... + tail` — the
@@ -1361,9 +1439,15 @@ impl<'a> FnLowerer<'a> {
         let mut acc: Option<Idx<HirExpr>> = None;
         let mut push = |this: &mut Self, e: Idx<HirExpr>| {
             acc = Some(match acc {
-                Some(a) => {
-                    this.alloc(HirExprKind::BinOp { op: BinOp::Add, l: a, r: e }, SemTy::Dyn, span)
-                }
+                Some(a) => this.alloc(
+                    HirExprKind::BinOp {
+                        op: BinOp::Add,
+                        l: a,
+                        r: e,
+                    },
+                    SemTy::Dyn,
+                    span,
+                ),
                 None => e,
             });
         };
@@ -1374,10 +1458,19 @@ impl<'a> FnLowerer<'a> {
                 push(self, lit_e);
             }
             let fn_name = self.intern("str");
-            let callee =
-                self.alloc(HirExprKind::Name(SymbolRef::Unresolved(fn_name)), SemTy::Dyn, span);
-            let wrapped =
-                self.alloc(HirExprKind::Call { callee, args: vec![*expr] }, SemTy::Str, span);
+            let callee = self.alloc(
+                HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
+                SemTy::Dyn,
+                span,
+            );
+            let wrapped = self.alloc(
+                HirExprKind::Call {
+                    callee,
+                    args: vec![*expr],
+                },
+                SemTy::Str,
+                span,
+            );
             push(self, wrapped);
         }
         if !tail.is_empty() {
@@ -1470,7 +1563,11 @@ impl<'a> FnLowerer<'a> {
             .map(|_| self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span))
             .collect();
         let call = self.alloc(
-            HirExprKind::MethodCall { recv, method_name, args },
+            HirExprKind::MethodCall {
+                recv,
+                method_name,
+                args,
+            },
             SemTy::Dyn,
             span,
         );
@@ -1534,7 +1631,11 @@ impl<'a> FnLowerer<'a> {
                     let cond = self.lower_expr(s.test.as_ref())?;
                     let fail_b = self.new_block();
                     let ok_b = self.new_block();
-                    self.seal(HirTerminator::Branch { cond, then: ok_b, else_: fail_b });
+                    self.seal(HirTerminator::Branch {
+                        cond,
+                        then: ok_b,
+                        else_: fail_b,
+                    });
                     self.switch(fail_b);
                     let m = self.lower_expr(msg.as_ref())?;
                     self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
@@ -1579,7 +1680,10 @@ impl<'a> FnLowerer<'a> {
                 }
             }
             Stmt::Import(i) => {
-                if i.names.iter().all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions")) {
+                if i.names
+                    .iter()
+                    .all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions"))
+                {
                     Ok(false)
                 } else {
                     Err(parse_error(
@@ -1625,7 +1729,11 @@ impl<'a> FnLowerer<'a> {
                     self.emit_gen_exhaust(span);
                     return Ok(true);
                 }
-                if self.scope_stack.iter().all(|s| matches!(s, ScopeCtx::Loop { .. })) {
+                if self
+                    .scope_stack
+                    .iter()
+                    .all(|s| matches!(s, ScopeCtx::Loop { .. }))
+                {
                     // Fast path: no protected regions to clean up.
                     let val = match &r.value {
                         Some(e) => Some(self.lower_expr(e.as_ref())?),
@@ -1640,7 +1748,10 @@ impl<'a> FnLowerer<'a> {
                     Some(e) => {
                         let v = self.lower_expr(e.as_ref())?;
                         let tmp = self.fresh_local(SemTy::Dyn);
-                        self.push_stmt(HirStmt::Assign { target: tmp, value: v });
+                        self.push_stmt(HirStmt::Assign {
+                            target: tmp,
+                            value: v,
+                        });
                         Some(tmp)
                     }
                     None => None,
@@ -1804,7 +1915,10 @@ impl<'a> FnLowerer<'a> {
         for v in values {
             let vv = self.lower_expr(v)?;
             let tmp = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: tmp, value: vv });
+            self.push_stmt(HirStmt::Assign {
+                target: tmp,
+                value: vv,
+            });
             staged.push(tmp);
         }
         for (target, tmp) in targets.iter().zip(staged) {
@@ -1844,7 +1958,10 @@ impl<'a> FnLowerer<'a> {
             let tmp_ref = self.local_ref(tmp, span);
             let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
             let sub = self.alloc(
-                HirExprKind::Subscript { base: tmp_ref, index: idx },
+                HirExprKind::Subscript {
+                    base: tmp_ref,
+                    index: idx,
+                },
                 SemTy::Dyn,
                 span,
             );
@@ -1855,19 +1972,35 @@ impl<'a> FnLowerer<'a> {
         // n = len(tmp), staged once for the star slice and the suffix indices.
         let tmp_ref = self.local_ref(tmp, span);
         let len_e = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Len, args: vec![tmp_ref] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Len,
+                args: vec![tmp_ref],
+            },
             SemTy::Int,
             span,
         );
         let len_l = self.fresh_local(SemTy::Int);
-        self.push_stmt(HirStmt::Assign { target: len_l, value: len_e });
+        self.push_stmt(HirStmt::Assign {
+            target: len_l,
+            value: len_e,
+        });
 
         // *rest = tmp[p .. n - m] as a fresh list.
-        let Expr::Starred(st) = &targets[p] else { unreachable!() };
+        let Expr::Starred(st) = &targets[p] else {
+            unreachable!()
+        };
         let lo = self.alloc(HirExprKind::IntLit(p as i64), SemTy::Int, span);
         let len_ref = self.local_ref(len_l, span);
         let m_lit = self.alloc(HirExprKind::IntLit(suffix.len() as i64), SemTy::Int, span);
-        let hi = self.alloc(HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: m_lit }, SemTy::Dyn, span);
+        let hi = self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::Sub,
+                l: len_ref,
+                r: m_lit,
+            },
+            SemTy::Dyn,
+            span,
+        );
         let rest = self.build_sublist(tmp, lo, hi, span)?;
         let rest_ref = self.local_ref(rest, span);
         self.assign_to_target(st.value.as_ref(), rest_ref)?;
@@ -1881,13 +2014,20 @@ impl<'a> FnLowerer<'a> {
                 span,
             );
             let idx = self.alloc(
-                HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: back },
+                HirExprKind::BinOp {
+                    op: BinOp::Sub,
+                    l: len_ref,
+                    r: back,
+                },
                 SemTy::Dyn,
                 span,
             );
             let tmp_ref = self.local_ref(tmp, span);
             let sub = self.alloc(
-                HirExprKind::Subscript { base: tmp_ref, index: idx },
+                HirExprKind::Subscript {
+                    base: tmp_ref,
+                    index: idx,
+                },
                 SemTy::Dyn,
                 span,
             );
@@ -1913,31 +2053,57 @@ impl<'a> FnLowerer<'a> {
             Expr::Attribute(attr) => {
                 let base_e = self.lower_expr(attr.value.as_ref())?;
                 let base_tmp = self.fresh_local(SemTy::Dyn);
-                self.push_stmt(HirStmt::Assign { target: base_tmp, value: base_e });
+                self.push_stmt(HirStmt::Assign {
+                    target: base_tmp,
+                    value: base_e,
+                });
                 let name = self.intern(attr.attr.as_str());
                 let read_base = self.local_ref(base_tmp, span);
-                let cur = self.alloc(HirExprKind::Attribute { value: read_base, name }, SemTy::Dyn, span);
+                let cur = self.alloc(
+                    HirExprKind::Attribute {
+                        value: read_base,
+                        name,
+                    },
+                    SemTy::Dyn,
+                    span,
+                );
                 let r = self.lower_expr(a.value.as_ref())?;
                 let combined = self.alloc(HirExprKind::BinOp { op, l: cur, r }, SemTy::Dyn, span);
                 let write_base = self.local_ref(base_tmp, span);
-                self.push_stmt(HirStmt::SetAttr { base: write_base, name, value: combined });
+                self.push_stmt(HirStmt::SetAttr {
+                    base: write_base,
+                    name,
+                    value: combined,
+                });
                 Ok(())
             }
             // `base[index] op= value` — evaluate `base` and `index` once.
             Expr::Subscript(s) => {
                 if matches!(s.slice.as_ref(), Expr::Slice(_)) {
-                    return Err(parse_error("slice augmented assignment is not supported", span));
+                    return Err(parse_error(
+                        "slice augmented assignment is not supported",
+                        span,
+                    ));
                 }
                 let base_e = self.lower_expr(s.value.as_ref())?;
                 let base_tmp = self.fresh_local(SemTy::Dyn);
-                self.push_stmt(HirStmt::Assign { target: base_tmp, value: base_e });
+                self.push_stmt(HirStmt::Assign {
+                    target: base_tmp,
+                    value: base_e,
+                });
                 let idx_e = self.lower_expr(s.slice.as_ref())?;
                 let idx_tmp = self.fresh_local(SemTy::Dyn);
-                self.push_stmt(HirStmt::Assign { target: idx_tmp, value: idx_e });
+                self.push_stmt(HirStmt::Assign {
+                    target: idx_tmp,
+                    value: idx_e,
+                });
                 let read_base = self.local_ref(base_tmp, span);
                 let read_idx = self.local_ref(idx_tmp, span);
                 let cur = self.alloc(
-                    HirExprKind::Subscript { base: read_base, index: read_idx },
+                    HirExprKind::Subscript {
+                        base: read_base,
+                        index: read_idx,
+                    },
                     SemTy::Dyn,
                     span,
                 );
@@ -1963,7 +2129,10 @@ impl<'a> FnLowerer<'a> {
         let span = to_span(a.range());
         let ty = annotation_to_semty(a.annotation.as_ref(), self.ctx);
         let Expr::Name(n) = a.target.as_ref() else {
-            return Err(parse_error("annotated assignment target must be a name", span));
+            return Err(parse_error(
+                "annotated assignment target must be a name",
+                span,
+            ));
         };
         let name = self.intern(n.id.as_str());
         let place = self.resolve_write_place(name, ty);
@@ -2044,8 +2213,7 @@ impl<'a> FnLowerer<'a> {
     /// or a promoted name the function never binds locally.
     fn global_read_slot(&self, name: InternedString) -> Option<u32> {
         let vid = self.promoted_id(name)?;
-        if self.is_main || self.global_decls.contains(&name) || !self.bound_names.contains(&name)
-        {
+        if self.is_main || self.global_decls.contains(&name) || !self.bound_names.contains(&name) {
             Some(vid)
         } else {
             None
@@ -2079,8 +2247,16 @@ impl<'a> FnLowerer<'a> {
         let cond = self.lower_expr(s.test.as_ref())?;
         let then_b = self.new_block();
         let join = self.new_block();
-        let else_b = if s.orelse.is_empty() { join } else { self.new_block() };
-        self.seal(HirTerminator::Branch { cond, then: then_b, else_: else_b });
+        let else_b = if s.orelse.is_empty() {
+            join
+        } else {
+            self.new_block()
+        };
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: then_b,
+            else_: else_b,
+        });
 
         self.switch(then_b);
         self.lower_body(&s.body)?;
@@ -2103,11 +2279,22 @@ impl<'a> FnLowerer<'a> {
         let cond = self.lower_expr(s.test.as_ref())?;
         let body_b = self.new_block();
         let exit = self.new_block();
-        let else_b = if s.orelse.is_empty() { exit } else { self.new_block() };
-        self.seal(HirTerminator::Branch { cond, then: body_b, else_: else_b });
+        let else_b = if s.orelse.is_empty() {
+            exit
+        } else {
+            self.new_block()
+        };
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: body_b,
+            else_: else_b,
+        });
 
         self.switch(body_b);
-        self.scope_stack.push(ScopeCtx::Loop { continue_to: header, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop {
+            continue_to: header,
+            break_to: exit,
+        });
         self.lower_body(&s.body)?;
         self.scope_stack.pop();
         self.seal(HirTerminator::Jump(header));
@@ -2153,11 +2340,17 @@ impl<'a> FnLowerer<'a> {
         let iterable = self.lower_iterable_expr(s.iter.as_ref(), span)?;
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
 
         let header = self.new_block();
         self.seal(HirTerminator::Jump(header));
@@ -2168,28 +2361,48 @@ impl<'a> FnLowerer<'a> {
         let elem = self.fresh_local_tagged();
         let it_ref1 = self.local_ref(it, span);
         let next_expr = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterNext,
+                args: vec![it_ref1],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: elem, value: next_expr });
+        self.push_stmt(HirStmt::Assign {
+            target: elem,
+            value: next_expr,
+        });
         let it_ref2 = self.local_ref(it, span);
         let done = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterExhausted,
+                args: vec![it_ref2],
+            },
             SemTy::Bool,
             span,
         );
 
         let body_b = self.new_block();
         let exit = self.new_block();
-        let else_b = if s.orelse.is_empty() { exit } else { self.new_block() };
+        let else_b = if s.orelse.is_empty() {
+            exit
+        } else {
+            self.new_block()
+        };
         // done == true → exit (or the for-else); else run the body.
-        self.seal(HirTerminator::Branch { cond: done, then: else_b, else_: body_b });
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: else_b,
+            else_: body_b,
+        });
 
         self.switch(body_b);
         let elem_ref = self.local_ref(elem, span);
         self.bind_for_target(s.target.as_ref(), elem_ref, span)?;
-        self.scope_stack.push(ScopeCtx::Loop { continue_to: header, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop {
+            continue_to: header,
+            break_to: exit,
+        });
         self.lower_body(&s.body)?;
         self.scope_stack.pop();
         self.seal(HirTerminator::Jump(header));
@@ -2245,9 +2458,15 @@ impl<'a> FnLowerer<'a> {
 
         // cursor = start; stop_l = stop  (range args evaluated once).
         let s_idx = self.lower_range_arg(&start, span)?;
-        self.push_stmt(HirStmt::Assign { target: cursor, value: s_idx });
+        self.push_stmt(HirStmt::Assign {
+            target: cursor,
+            value: s_idx,
+        });
         let stop_idx = self.lower_range_arg(&stop, span)?;
-        self.push_stmt(HirStmt::Assign { target: stop_l, value: stop_idx });
+        self.push_stmt(HirStmt::Assign {
+            target: stop_l,
+            value: stop_idx,
+        });
 
         let header = self.new_block();
         self.seal(HirTerminator::Jump(header));
@@ -2256,21 +2475,36 @@ impl<'a> FnLowerer<'a> {
         let stop_ref = self.local_ref(stop_l, span);
         let cmp_op = if step > 0 { CmpOp::Lt } else { CmpOp::Gt };
         let cond = self.alloc(
-            HirExprKind::Compare { op: cmp_op, l: cursor_ref, r: stop_ref },
+            HirExprKind::Compare {
+                op: cmp_op,
+                l: cursor_ref,
+                r: stop_ref,
+            },
             SemTy::Bool,
             span,
         );
         let body_b = self.new_block();
         let incr = self.new_block();
         let exit = self.new_block();
-        let else_b = if s.orelse.is_empty() { exit } else { self.new_block() };
-        self.seal(HirTerminator::Branch { cond, then: body_b, else_: else_b });
+        let else_b = if s.orelse.is_empty() {
+            exit
+        } else {
+            self.new_block()
+        };
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: body_b,
+            else_: else_b,
+        });
 
         self.switch(body_b);
         // i = cursor
         let cref = self.local_ref(cursor, span);
         self.write_place(i_b, cref);
-        self.scope_stack.push(ScopeCtx::Loop { continue_to: incr, break_to: exit });
+        self.scope_stack.push(ScopeCtx::Loop {
+            continue_to: incr,
+            break_to: exit,
+        });
         self.lower_body(&s.body)?;
         self.scope_stack.pop();
         self.seal(HirTerminator::Jump(incr));
@@ -2280,8 +2514,19 @@ impl<'a> FnLowerer<'a> {
         let cref2 = self.local_ref(cursor, span);
         let step_kind = self.int_literal_const(step);
         let step_lit = self.alloc(step_kind, SemTy::Int, span);
-        let inc = self.alloc(HirExprKind::BinOp { op: BinOp::Add, l: cref2, r: step_lit }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: cursor, value: inc });
+        let inc = self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::Add,
+                l: cref2,
+                r: step_lit,
+            },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: cursor,
+            value: inc,
+        });
         self.seal(HirTerminator::Jump(header));
 
         if !s.orelse.is_empty() {
@@ -2373,20 +2618,24 @@ impl<'a> FnLowerer<'a> {
     /// `try X finally F`: normal edge `PopFrame; <F>`; exceptional edge
     /// `StartHandling; <F>; Reraise`. Early exits re-lower `<F>` via the
     /// [`ScopeCtx::Finally`] entry.
-    fn lower_try_finally(
-        &mut self,
-        t: &rustpython_parser::ast::StmtTry,
-        span: Span,
-    ) -> Result<()> {
+    fn lower_try_finally(&mut self, t: &rustpython_parser::ast::StmtTry, span: Span) -> Result<()> {
         let try_b = self.new_block();
         let exc_b = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter { normal: try_b, handler: exc_b });
+        self.seal(HirTerminator::TryEnter {
+            normal: try_b,
+            handler: exc_b,
+        });
 
         self.switch(try_b);
-        self.scope_stack.push(ScopeCtx::Finally { stmts: t.finalbody.clone() });
+        self.scope_stack.push(ScopeCtx::Finally {
+            stmts: t.finalbody.clone(),
+        });
         if t.handlers.is_empty() {
-            debug_assert!(t.orelse.is_empty(), "orelse without handlers is a SyntaxError");
+            debug_assert!(
+                t.orelse.is_empty(),
+                "orelse without handlers is a SyntaxError"
+            );
             self.lower_body(&t.body)?;
         } else {
             self.lower_try_except(&t.body, &t.handlers, &t.orelse, span)?;
@@ -2424,11 +2673,17 @@ impl<'a> FnLowerer<'a> {
         orelse: &[Stmt],
         span: Span,
     ) -> Result<()> {
-        debug_assert!(!handlers.is_empty(), "try without handlers or finally is a SyntaxError");
+        debug_assert!(
+            !handlers.is_empty(),
+            "try without handlers or finally is a SyntaxError"
+        );
         let try_b = self.new_block();
         let h_test = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter { normal: try_b, handler: h_test });
+        self.seal(HirTerminator::TryEnter {
+            normal: try_b,
+            handler: h_test,
+        });
 
         // ── try body ──
         self.switch(try_b);
@@ -2462,17 +2717,29 @@ impl<'a> FnLowerer<'a> {
                     for (i, te) in tu.elts.iter().enumerate() {
                         let q = self.exc_match_query(te)?;
                         if i + 1 == tu.elts.len() {
-                            self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: next_test });
+                            self.seal(HirTerminator::Branch {
+                                cond: q,
+                                then: body_b,
+                                else_: next_test,
+                            });
                         } else {
                             let more = self.new_block();
-                            self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: more });
+                            self.seal(HirTerminator::Branch {
+                                cond: q,
+                                then: body_b,
+                                else_: more,
+                            });
                             self.switch(more);
                         }
                     }
                 }
                 Some(single) => {
                     let q = self.exc_match_query(single)?;
-                    self.seal(HirTerminator::Branch { cond: q, then: body_b, else_: next_test });
+                    self.seal(HirTerminator::Branch {
+                        cond: q,
+                        then: body_b,
+                        else_: next_test,
+                    });
                 }
             }
 
@@ -2483,7 +2750,11 @@ impl<'a> FnLowerer<'a> {
                 // the still-current exception). A fresh local per binding,
                 // shadowing the name, with the clause's static type.
                 let bind_ty = self.exc_clause_semty(h.type_.as_deref());
-                let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), bind_ty.clone(), hspan);
+                let cur = self.alloc(
+                    HirExprKind::ExcQuery(ExcQuery::Current),
+                    bind_ty.clone(),
+                    hspan,
+                );
                 self.bind_exc_name(name.as_str(), bind_ty, cur);
             }
             self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
@@ -2527,7 +2798,10 @@ impl<'a> FnLowerer<'a> {
             ExcQuery::MatchesBuiltin(tag)
         } else {
             return Err(parse_error(
-                format!("unknown exception type `{}` in except clause", n.id.as_str()),
+                format!(
+                    "unknown exception type `{}` in except clause",
+                    n.id.as_str()
+                ),
                 span,
             ));
         };
@@ -2598,7 +2872,10 @@ impl<'a> FnLowerer<'a> {
     fn exc_member_semty(&mut self, e: &Expr) -> SemTy {
         let Expr::Name(n) = e else { return SemTy::Dyn };
         if let Some((cid, iname)) = self.ctx.class_map.get(n.id.as_str()).copied() {
-            return SemTy::Class { class_id: cid, name: iname };
+            return SemTy::Class {
+                class_id: cid,
+                name: iname,
+            };
         }
         if let Some(kind) = pyaot_core_defs::BuiltinExceptionKind::from_name(n.id.as_str()) {
             return SemTy::BuiltinException(kind);
@@ -2684,7 +2961,10 @@ impl<'a> FnLowerer<'a> {
                             ));
                         }
                         let args = self.lower_expr_list(&c.args)?;
-                        return Ok(HirRaise::Custom { class_id: cid, args });
+                        return Ok(HirRaise::Custom {
+                            class_id: cid,
+                            args,
+                        });
                     }
                     if let Some((class_id, parent_tag)) =
                         self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
@@ -2724,7 +3004,11 @@ impl<'a> FnLowerer<'a> {
                                 None => None,
                             },
                         };
-                        return Ok(HirRaise::Stdlib { class_id, exc_type_tag: parent_tag, msg });
+                        return Ok(HirRaise::Stdlib {
+                            class_id,
+                            exc_type_tag: parent_tag,
+                            msg,
+                        });
                     }
                     if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
                         if c.args.len() > 1 {
@@ -2762,7 +3046,10 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ));
                 }
-                return Ok(HirRaise::Custom { class_id: cid, args: vec![] });
+                return Ok(HirRaise::Custom {
+                    class_id: cid,
+                    args: vec![],
+                });
             }
             if let Some((class_id, parent_tag)) =
                 self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
@@ -2773,7 +3060,11 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ));
                 }
-                return Ok(HirRaise::Stdlib { class_id, exc_type_tag: parent_tag, msg: None });
+                return Ok(HirRaise::Stdlib {
+                    class_id,
+                    exc_type_tag: parent_tag,
+                    msg: None,
+                });
             }
             if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
                 return self.attach_cause(tag, None, cause, span);
@@ -2849,7 +3140,12 @@ impl<'a> FnLowerer<'a> {
             Some(a) => Some(self.lower_expr(a)?),
             None => None,
         };
-        Ok(HirRaise::BuiltinFrom { tag, msg, cause_tag, cause_msg })
+        Ok(HirRaise::BuiltinFrom {
+            tag,
+            msg,
+            cause_tag,
+            cause_msg,
+        })
     }
 
     // ── with (Phase 7D) ──────────────────────────────────────────────────────
@@ -2876,11 +3172,18 @@ impl<'a> FnLowerer<'a> {
         // mgr = EXPR; val = mgr.__enter__(); [bind TARGET]
         let mgr_e = self.lower_expr(&first.context_expr)?;
         let mgr = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: mgr, value: mgr_e });
+        self.push_stmt(HirStmt::Assign {
+            target: mgr,
+            value: mgr_e,
+        });
         let recv = self.local_ref(mgr, span);
         let enter_name = self.intern("__enter__");
         let enter = self.alloc(
-            HirExprKind::MethodCall { recv, method_name: enter_name, args: vec![] },
+            HirExprKind::MethodCall {
+                recv,
+                method_name: enter_name,
+                args: vec![],
+            },
             SemTy::Dyn,
             span,
         );
@@ -2892,7 +3195,10 @@ impl<'a> FnLowerer<'a> {
         let body_b = self.new_block();
         let exit_exc = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter { normal: body_b, handler: exit_exc });
+        self.seal(HirTerminator::TryEnter {
+            normal: body_b,
+            handler: exit_exc,
+        });
 
         // ── body (or the next nested item) ──
         self.switch(body_b);
@@ -2909,7 +3215,10 @@ impl<'a> FnLowerer<'a> {
         self.switch(exit_exc);
         let e_local = self.fresh_local_tagged();
         let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: e_local, value: cur });
+        self.push_stmt(HirStmt::Assign {
+            target: e_local,
+            value: cur,
+        });
         self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
         let recv2 = self.local_ref(mgr, span);
         let e1 = self.local_ref(e_local, span);
@@ -2926,11 +3235,18 @@ impl<'a> FnLowerer<'a> {
             span,
         );
         let r_local = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: r_local, value: r });
+        self.push_stmt(HirStmt::Assign {
+            target: r_local,
+            value: r,
+        });
         let swallow_b = self.new_block();
         let reraise_b = self.new_block();
         let cond = self.local_ref(r_local, span);
-        self.seal(HirTerminator::Branch { cond, then: swallow_b, else_: reraise_b });
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: swallow_b,
+            else_: reraise_b,
+        });
         self.switch(swallow_b);
         self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
         self.seal(HirTerminator::Jump(join));
@@ -2951,7 +3267,10 @@ impl<'a> FnLowerer<'a> {
         let span = to_span(m.range());
         let subj_e = self.lower_expr(m.subject.as_ref())?;
         let subj = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: subj, value: subj_e });
+        self.push_stmt(HirStmt::Assign {
+            target: subj,
+            value: subj_e,
+        });
         let join = self.new_block();
 
         for case in &m.cases {
@@ -2960,7 +3279,11 @@ impl<'a> FnLowerer<'a> {
             if let Some(g) = &case.guard {
                 let cond = self.lower_expr(g.as_ref())?;
                 let body_b = self.new_block();
-                self.seal(HirTerminator::Branch { cond, then: body_b, else_: fail_b });
+                self.seal(HirTerminator::Branch {
+                    cond,
+                    then: body_b,
+                    else_: fail_b,
+                });
                 self.switch(body_b);
             }
             self.lower_body(&case.body)?;
@@ -3031,9 +3354,14 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             Pattern::MatchSequence(s) => self.lower_seq_pattern(&s.patterns, scr, fail, span),
-            Pattern::MatchMapping(mp) => {
-                self.lower_mapping_pattern(&mp.keys, &mp.patterns, mp.rest.as_ref(), scr, fail, span)
-            }
+            Pattern::MatchMapping(mp) => self.lower_mapping_pattern(
+                &mp.keys,
+                &mp.patterns,
+                mp.rest.as_ref(),
+                scr,
+                fail,
+                span,
+            ),
             Pattern::MatchClass(c) => self.lower_class_pattern(c, scr, fail, span),
             Pattern::MatchStar(_) => Err(parse_error(
                 "a star pattern is only valid inside a sequence pattern",
@@ -3051,9 +3379,21 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<()> {
         let s = self.local_ref(scr, span);
-        let cmp = self.alloc(HirExprKind::Compare { op: CmpOp::Eq, l: s, r: lit }, SemTy::Bool, span);
+        let cmp = self.alloc(
+            HirExprKind::Compare {
+                op: CmpOp::Eq,
+                l: s,
+                r: lit,
+            },
+            SemTy::Bool,
+            span,
+        );
         let cont = self.new_block();
-        self.seal(HirTerminator::Branch { cond: cmp, then: cont, else_: fail });
+        self.seal(HirTerminator::Branch {
+            cond: cmp,
+            then: cont,
+            else_: fail,
+        });
         self.switch(cont);
         Ok(())
     }
@@ -3081,12 +3421,18 @@ impl<'a> FnLowerer<'a> {
         // n = len(subject), staged once.
         let s = self.local_ref(scr, span);
         let len_e = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Len, args: vec![s] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Len,
+                args: vec![s],
+            },
             SemTy::Int,
             span,
         );
         let len_l = self.fresh_local(SemTy::Int);
-        self.push_stmt(HirStmt::Assign { target: len_l, value: len_e });
+        self.push_stmt(HirStmt::Assign {
+            target: len_l,
+            value: len_e,
+        });
 
         let (prefix, suffix): (&[Pattern], &[Pattern]) = match star_pos {
             Some(p) => (&pats[..p], &pats[p + 1..]),
@@ -3095,34 +3441,59 @@ impl<'a> FnLowerer<'a> {
         let need = (prefix.len() + suffix.len()) as i64;
         let len_ref = self.local_ref(len_l, span);
         let need_lit = self.alloc(HirExprKind::IntLit(need), SemTy::Int, span);
-        let cmp_op = if star_pos.is_some() { CmpOp::GtE } else { CmpOp::Eq };
+        let cmp_op = if star_pos.is_some() {
+            CmpOp::GtE
+        } else {
+            CmpOp::Eq
+        };
         let cmp = self.alloc(
-            HirExprKind::Compare { op: cmp_op, l: len_ref, r: need_lit },
+            HirExprKind::Compare {
+                op: cmp_op,
+                l: len_ref,
+                r: need_lit,
+            },
             SemTy::Bool,
             span,
         );
         let cont = self.new_block();
-        self.seal(HirTerminator::Branch { cond: cmp, then: cont, else_: fail });
+        self.seal(HirTerminator::Branch {
+            cond: cmp,
+            then: cont,
+            else_: fail,
+        });
         self.switch(cont);
 
         // Prefix elements: subject[i].
         for (i, sub) in prefix.iter().enumerate() {
             let base = self.local_ref(scr, span);
             let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-            let elem = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+            let elem = self.alloc(
+                HirExprKind::Subscript { base, index: idx },
+                SemTy::Dyn,
+                span,
+            );
             let tmp = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: tmp, value: elem });
+            self.push_stmt(HirStmt::Assign {
+                target: tmp,
+                value: elem,
+            });
             self.lower_pattern(sub, tmp, fail, span)?;
         }
         // Star capture: subject[p .. n-m] as a fresh list.
         if let Some(p) = star_pos {
-            let Pattern::MatchStar(st) = &pats[p] else { unreachable!() };
+            let Pattern::MatchStar(st) = &pats[p] else {
+                unreachable!()
+            };
             if let Some(name) = &st.name {
                 let lo = self.alloc(HirExprKind::IntLit(p as i64), SemTy::Int, span);
                 let len_ref = self.local_ref(len_l, span);
                 let m_lit = self.alloc(HirExprKind::IntLit(suffix.len() as i64), SemTy::Int, span);
                 let hi = self.alloc(
-                    HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: m_lit },
+                    HirExprKind::BinOp {
+                        op: BinOp::Sub,
+                        l: len_ref,
+                        r: m_lit,
+                    },
                     SemTy::Dyn,
                     span,
                 );
@@ -3141,14 +3512,25 @@ impl<'a> FnLowerer<'a> {
                 span,
             );
             let idx = self.alloc(
-                HirExprKind::BinOp { op: BinOp::Sub, l: len_ref, r: back },
+                HirExprKind::BinOp {
+                    op: BinOp::Sub,
+                    l: len_ref,
+                    r: back,
+                },
                 SemTy::Dyn,
                 span,
             );
             let base = self.local_ref(scr, span);
-            let elem = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+            let elem = self.alloc(
+                HirExprKind::Subscript { base, index: idx },
+                SemTy::Dyn,
+                span,
+            );
             let tmp = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: tmp, value: elem });
+            self.push_stmt(HirStmt::Assign {
+                target: tmp,
+                value: elem,
+            });
             self.lower_pattern(sub, tmp, fail, span)?;
         }
         Ok(())
@@ -3165,31 +3547,66 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<LocalId> {
         let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
         let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
         let cursor = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: cursor, value: lo });
+        self.push_stmt(HirStmt::Assign {
+            target: cursor,
+            value: lo,
+        });
         let hi_l = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: hi_l, value: hi });
+        self.push_stmt(HirStmt::Assign {
+            target: hi_l,
+            value: hi,
+        });
 
         let header = self.new_block();
         self.seal(HirTerminator::Jump(header));
         self.switch(header);
         let c1 = self.local_ref(cursor, span);
         let h1 = self.local_ref(hi_l, span);
-        let cond = self.alloc(HirExprKind::Compare { op: CmpOp::Lt, l: c1, r: h1 }, SemTy::Bool, span);
+        let cond = self.alloc(
+            HirExprKind::Compare {
+                op: CmpOp::Lt,
+                l: c1,
+                r: h1,
+            },
+            SemTy::Bool,
+            span,
+        );
         let body_b = self.new_block();
         let exit = self.new_block();
-        self.seal(HirTerminator::Branch { cond, then: body_b, else_: exit });
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: body_b,
+            else_: exit,
+        });
 
         self.switch(body_b);
         let base = self.local_ref(src, span);
         let c2 = self.local_ref(cursor, span);
         let elem = self.alloc(HirExprKind::Subscript { base, index: c2 }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::ContainerPush { container: result, value: elem });
+        self.push_stmt(HirStmt::ContainerPush {
+            container: result,
+            value: elem,
+        });
         let c3 = self.local_ref(cursor, span);
         let one = self.alloc(HirExprKind::IntLit(1), SemTy::Int, span);
-        let inc = self.alloc(HirExprKind::BinOp { op: BinOp::Add, l: c3, r: one }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: cursor, value: inc });
+        let inc = self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::Add,
+                l: c3,
+                r: one,
+            },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: cursor,
+            value: inc,
+        });
         self.seal(HirTerminator::Jump(header));
 
         self.switch(exit);
@@ -3213,7 +3630,10 @@ impl<'a> FnLowerer<'a> {
         for k in keys {
             let ke = self.lower_expr(k)?;
             let kl = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: kl, value: ke });
+            self.push_stmt(HirStmt::Assign {
+                target: kl,
+                value: ke,
+            });
             key_locals.push(kl);
         }
         // Membership tests, then sub-pattern binds.
@@ -3221,40 +3641,62 @@ impl<'a> FnLowerer<'a> {
             let c = self.local_ref(scr, span);
             let k = self.local_ref(*kl, span);
             let has = self.alloc(
-                HirExprKind::ContainerExpr { op: ContainerOp::Contains, args: vec![c, k] },
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Contains,
+                    args: vec![c, k],
+                },
                 SemTy::Bool,
                 span,
             );
             let cont = self.new_block();
-            self.seal(HirTerminator::Branch { cond: has, then: cont, else_: fail });
+            self.seal(HirTerminator::Branch {
+                cond: has,
+                then: cont,
+                else_: fail,
+            });
             self.switch(cont);
 
             let c2 = self.local_ref(scr, span);
             let k2 = self.local_ref(*kl, span);
             let got = self.alloc(
-                HirExprKind::ContainerExpr { op: ContainerOp::DictGet, args: vec![c2, k2] },
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::DictGet,
+                    args: vec![c2, k2],
+                },
                 SemTy::Dyn,
                 span,
             );
             let tmp = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: tmp, value: got });
+            self.push_stmt(HirStmt::Assign {
+                target: tmp,
+                value: got,
+            });
             self.lower_pattern(sub, tmp, fail, span)?;
         }
         // `**rest` = copy minus the matched keys (copy semantics).
         if let Some(rest_name) = rest {
             let c = self.local_ref(scr, span);
             let copy = self.alloc(
-                HirExprKind::ContainerExpr { op: ContainerOp::DictCopy, args: vec![c] },
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::DictCopy,
+                    args: vec![c],
+                },
                 SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
                 span,
             );
             let copy_l = self.fresh_local(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn));
-            self.push_stmt(HirStmt::Assign { target: copy_l, value: copy });
+            self.push_stmt(HirStmt::Assign {
+                target: copy_l,
+                value: copy,
+            });
             for kl in &key_locals {
                 let d = self.local_ref(copy_l, span);
                 let k = self.local_ref(*kl, span);
                 let popped = self.alloc(
-                    HirExprKind::ContainerExpr { op: ContainerOp::DictPopM, args: vec![d, k] },
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::DictPopM,
+                        args: vec![d, k],
+                    },
                     SemTy::Dyn,
                     span,
                 );
@@ -3293,9 +3735,20 @@ impl<'a> FnLowerer<'a> {
             ));
         }
         let v = self.local_ref(scr, span);
-        let isinst = self.alloc(HirExprKind::IsInstance { value: v, class_id: cid }, SemTy::Bool, span);
+        let isinst = self.alloc(
+            HirExprKind::IsInstance {
+                value: v,
+                class_id: cid,
+            },
+            SemTy::Bool,
+            span,
+        );
         let cont = self.new_block();
-        self.seal(HirTerminator::Branch { cond: isinst, then: cont, else_: fail });
+        self.seal(HirTerminator::Branch {
+            cond: isinst,
+            then: cont,
+            else_: fail,
+        });
         self.switch(cont);
 
         // Narrow the subject to the class type so attribute reads resolve. The
@@ -3308,17 +3761,36 @@ impl<'a> FnLowerer<'a> {
         let cell_lid = self.alloc_cell_local(erase_name, SemTy::Dyn, true);
         let init = self.local_ref(scr, span);
         let mc = self.alloc(HirExprKind::MakeCell { init: Some(init) }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: cell_lid, value: mc });
+        self.push_stmt(HirStmt::Assign {
+            target: cell_lid,
+            value: mc,
+        });
         let erased = self.alloc(HirExprKind::CellGet { cell: cell_lid }, SemTy::Dyn, span);
-        let cls_local = self.fresh_local(SemTy::Class { class_id: cid, name: iname });
-        self.push_stmt(HirStmt::Assign { target: cls_local, value: erased });
+        let cls_local = self.fresh_local(SemTy::Class {
+            class_id: cid,
+            name: iname,
+        });
+        self.push_stmt(HirStmt::Assign {
+            target: cls_local,
+            value: erased,
+        });
 
         for (attr, sub) in c.kwd_attrs.iter().zip(&c.kwd_patterns) {
             let base = self.local_ref(cls_local, span);
             let aname = self.intern(attr.as_str());
-            let read = self.alloc(HirExprKind::Attribute { value: base, name: aname }, SemTy::Dyn, span);
+            let read = self.alloc(
+                HirExprKind::Attribute {
+                    value: base,
+                    name: aname,
+                },
+                SemTy::Dyn,
+                span,
+            );
             let tmp = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: tmp, value: read });
+            self.push_stmt(HirStmt::Assign {
+                target: tmp,
+                value: read,
+            });
             self.lower_pattern(sub, tmp, fail, span)?;
         }
         Ok(())
@@ -3358,7 +3830,11 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ))
                 } else {
-                    Ok(self.alloc(HirExprKind::Name(SymbolRef::Unresolved(name)), SemTy::Dyn, span))
+                    Ok(self.alloc(
+                        HirExprKind::Name(SymbolRef::Unresolved(name)),
+                        SemTy::Dyn,
+                        span,
+                    ))
                 }
             }
             Expr::Lambda(l) => self.lower_lambda(l, span),
@@ -3488,17 +3964,27 @@ impl<'a> FnLowerer<'a> {
     fn lower_subscript_expr(&mut self, s: &ExprSubscript, span: Span) -> Result<Idx<HirExpr>> {
         if let Expr::Slice(sl) = s.slice.as_ref() {
             let base = self.lower_expr(s.value.as_ref())?;
-            let lower_opt = |this: &mut Self, e: &Option<Box<Expr>>| -> Result<Option<Idx<HirExpr>>> {
-                match e {
-                    Some(x) => Ok(Some(this.lower_expr(x.as_ref())?)),
-                    None => Ok(None),
-                }
-            };
+            let lower_opt =
+                |this: &mut Self, e: &Option<Box<Expr>>| -> Result<Option<Idx<HirExpr>>> {
+                    match e {
+                        Some(x) => Ok(Some(this.lower_expr(x.as_ref())?)),
+                        None => Ok(None),
+                    }
+                };
             let start = lower_opt(self, &sl.lower)?;
             let end = lower_opt(self, &sl.upper)?;
             let step = lower_opt(self, &sl.step)?;
             // The result kind mirrors the base's static type; typeck assigns it.
-            return Ok(self.alloc(HirExprKind::Slice { base, start, end, step }, SemTy::Dyn, span));
+            return Ok(self.alloc(
+                HirExprKind::Slice {
+                    base,
+                    start,
+                    end,
+                    step,
+                },
+                SemTy::Dyn,
+                span,
+            ));
         }
         let base = self.lower_expr(s.value.as_ref())?;
         let index = self.lower_expr(s.slice.as_ref())?;
@@ -3554,7 +4040,10 @@ impl<'a> FnLowerer<'a> {
                                 span,
                             );
                             self.alloc(
-                                HirExprKind::Call { callee, args: vec![raw] },
+                                HirExprKind::Call {
+                                    callee,
+                                    args: vec![raw],
+                                },
                                 SemTy::Str,
                                 span,
                             )
@@ -3568,7 +4057,10 @@ impl<'a> FnLowerer<'a> {
                             let spec = static_format_spec(spec_expr.as_ref(), span)?;
                             let spec_id = self.intern(&spec);
                             self.alloc(
-                                HirExprKind::FormatValue { value: converted, spec: spec_id },
+                                HirExprKind::FormatValue {
+                                    value: converted,
+                                    spec: spec_id,
+                                },
                                 SemTy::Str,
                                 span,
                             )
@@ -3584,7 +4076,10 @@ impl<'a> FnLowerer<'a> {
                                     span,
                                 );
                                 self.alloc(
-                                    HirExprKind::Call { callee, args: vec![raw] },
+                                    HirExprKind::Call {
+                                        callee,
+                                        args: vec![raw],
+                                    },
                                     SemTy::Str,
                                     span,
                                 )
@@ -3602,7 +4097,15 @@ impl<'a> FnLowerer<'a> {
             return Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
         };
         for p in iter {
-            acc = self.alloc(HirExprKind::BinOp { op: BinOp::Add, l: acc, r: p }, SemTy::Dyn, span);
+            acc = self.alloc(
+                HirExprKind::BinOp {
+                    op: BinOp::Add,
+                    l: acc,
+                    r: p,
+                },
+                SemTy::Dyn,
+                span,
+            );
         }
         Ok(acc)
     }
@@ -3612,8 +4115,14 @@ impl<'a> FnLowerer<'a> {
         // desugared pushes (Phase 8H, D1) instead of pinning `list[Dyn]`.
         let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: result, value: empty });
-        let kind = CompKind::List { result, elt: c.elt.as_ref() };
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
+        let kind = CompKind::List {
+            result,
+            elt: c.elt.as_ref(),
+        };
         self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
         Ok(self.local_ref(result, span))
     }
@@ -3623,8 +4132,14 @@ impl<'a> FnLowerer<'a> {
         // `Dyn` for push-driven element inference (Phase 8H, D1).
         let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: result, value: empty });
-        let kind = CompKind::Set { result, elt: c.elt.as_ref() };
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
+        let kind = CompKind::Set {
+            result,
+            elt: c.elt.as_ref(),
+        };
         self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
         Ok(self.local_ref(result, span))
     }
@@ -3634,8 +4149,15 @@ impl<'a> FnLowerer<'a> {
         // `Dyn` for insert-driven key/value inference (Phase 8H, D1).
         let result = self.fresh_local(SemTy::Dyn);
         let empty = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: result, value: empty });
-        let kind = CompKind::Dict { result, key: c.key.as_ref(), val: c.value.as_ref() };
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
+        let kind = CompKind::Dict {
+            result,
+            key: c.key.as_ref(),
+            val: c.value.as_ref(),
+        };
         self.lower_comp_clauses(&c.generators, 0, &kind, span)?;
         Ok(self.local_ref(result, span))
     }
@@ -3687,11 +4209,17 @@ impl<'a> FnLowerer<'a> {
         let iterable = self.lower_iterable_expr(&gen.iter, span)?;
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
 
         let header = self.new_block();
         self.seal(HirTerminator::Jump(header));
@@ -3699,20 +4227,33 @@ impl<'a> FnLowerer<'a> {
         let elem = self.fresh_local_tagged();
         let it_ref1 = self.local_ref(it, span);
         let next = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterNext,
+                args: vec![it_ref1],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        self.push_stmt(HirStmt::Assign {
+            target: elem,
+            value: next,
+        });
         let it_ref2 = self.local_ref(it, span);
         let done = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterExhausted,
+                args: vec![it_ref2],
+            },
             SemTy::Bool,
             span,
         );
         let body_b = self.new_block();
         let exit = self.new_block();
-        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: exit,
+            else_: body_b,
+        });
 
         self.switch(body_b);
         let elem_ref = self.local_ref(elem, span);
@@ -3721,7 +4262,11 @@ impl<'a> FnLowerer<'a> {
         for cond_expr in &gen.ifs {
             let cond = self.lower_expr(cond_expr)?;
             let cont = self.new_block();
-            self.seal(HirTerminator::Branch { cond, then: cont, else_: header });
+            self.seal(HirTerminator::Branch {
+                cond,
+                then: cont,
+                else_: header,
+            });
             self.switch(cont);
         }
         // Recurse into the next clause (or emit the element at the innermost).
@@ -3753,31 +4298,50 @@ impl<'a> FnLowerer<'a> {
     fn begin_iter_loop(&mut self, iterable: Idx<HirExpr>, span: Span) -> Result<IterLoop> {
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
         let header = self.new_block();
         self.seal(HirTerminator::Jump(header));
         self.switch(header);
         let elem = self.fresh_local_tagged();
         let it_ref1 = self.local_ref(it, span);
         let next = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref1] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterNext,
+                args: vec![it_ref1],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        self.push_stmt(HirStmt::Assign {
+            target: elem,
+            value: next,
+        });
         let it_ref2 = self.local_ref(it, span);
         let done = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref2] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterExhausted,
+                args: vec![it_ref2],
+            },
             SemTy::Bool,
             span,
         );
         let body_b = self.new_block();
         let exit = self.new_block();
-        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: exit,
+            else_: body_b,
+        });
         self.switch(body_b);
         Ok(IterLoop { header, exit, elem })
     }
@@ -3804,8 +4368,14 @@ impl<'a> FnLowerer<'a> {
             // elt/generators.
             let result = self.fresh_local(SemTy::Dyn);
             let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
-            self.push_stmt(HirStmt::Assign { target: result, value: empty });
-            let kind = CompKind::List { result, elt: g.elt.as_ref() };
+            self.push_stmt(HirStmt::Assign {
+                target: result,
+                value: empty,
+            });
+            let kind = CompKind::List {
+                result,
+                elt: g.elt.as_ref(),
+            };
             self.lower_comp_clauses(&g.generators, 0, &kind, span)?;
             self.local_ref(result, span)
         } else {
@@ -3832,7 +4402,10 @@ impl<'a> FnLowerer<'a> {
         is_min: bool,
     ) -> Result<Idx<HirExpr>> {
         if args.is_empty() {
-            return Err(parse_error("min()/max() require at least one argument", span));
+            return Err(parse_error(
+                "min()/max() require at least one argument",
+                span,
+            ));
         }
         // 1 arg → iterate it; 2+ args → iterate a synthetic list of the args.
         let iterable = if args.len() == 1 {
@@ -3853,7 +4426,10 @@ impl<'a> FnLowerer<'a> {
                 if self.scope.contains_key(&iname) {
                     let kv = self.lower_expr(k)?;
                     let l = self.fresh_local(SemTy::Dyn);
-                    self.push_stmt(HirStmt::Assign { target: l, value: kv });
+                    self.push_stmt(HirStmt::Assign {
+                        target: l,
+                        value: kv,
+                    });
                     Some(KeyMode::Staged(l))
                 } else {
                     Some(KeyMode::ByName(k))
@@ -3862,7 +4438,10 @@ impl<'a> FnLowerer<'a> {
             Some(k) => {
                 let kv = self.lower_expr(k)?;
                 let l = self.fresh_local(SemTy::Dyn);
-                self.push_stmt(HirStmt::Assign { target: l, value: kv });
+                self.push_stmt(HirStmt::Assign {
+                    target: l,
+                    value: kv,
+                });
                 Some(KeyMode::Staged(l))
             }
         };
@@ -3870,16 +4449,26 @@ impl<'a> FnLowerer<'a> {
         // it = iter(iterable); first probe decides empty-vs-seed.
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::Iter, args: vec![iterable] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: it, value: iter_expr });
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
         let elem0 = self.emit_iter_next(it, span);
         let done0 = self.emit_iter_exhausted(it, span);
         let empty_b = self.new_block();
         let first_b = self.new_block();
-        self.seal(HirTerminator::Branch { cond: done0, then: empty_b, else_: first_b });
+        self.seal(HirTerminator::Branch {
+            cond: done0,
+            then: empty_b,
+            else_: first_b,
+        });
 
         // empty: raise ValueError — the live-oracle (CPython ≥3.13) wording.
         self.switch(empty_b);
@@ -3896,12 +4485,18 @@ impl<'a> FnLowerer<'a> {
         self.switch(first_b);
         let acc = self.fresh_local(SemTy::Dyn);
         let e0 = self.local_ref(elem0, span);
-        self.push_stmt(HirStmt::Assign { target: acc, value: e0 });
+        self.push_stmt(HirStmt::Assign {
+            target: acc,
+            value: e0,
+        });
         let acc_key = match &key_mode {
             Some(km) => {
                 let l = self.fresh_local(SemTy::Dyn);
                 let v = self.emit_key_call(km, elem0, span)?;
-                self.push_stmt(HirStmt::Assign { target: l, value: v });
+                self.push_stmt(HirStmt::Assign {
+                    target: l,
+                    value: v,
+                });
                 Some(l)
             }
             None => None,
@@ -3915,14 +4510,21 @@ impl<'a> FnLowerer<'a> {
         let done = self.emit_iter_exhausted(it, span);
         let body_b = self.new_block();
         let exit = self.new_block();
-        self.seal(HirTerminator::Branch { cond: done, then: exit, else_: body_b });
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: exit,
+            else_: body_b,
+        });
 
         self.switch(body_b);
         let cand_key = match &key_mode {
             Some(km) => {
                 let l = self.fresh_local(SemTy::Dyn);
                 let v = self.emit_key_call(km, elem, span)?;
-                self.push_stmt(HirStmt::Assign { target: l, value: v });
+                self.push_stmt(HirStmt::Assign {
+                    target: l,
+                    value: v,
+                });
                 Some(l)
             }
             None => None,
@@ -3934,15 +4536,33 @@ impl<'a> FnLowerer<'a> {
         let cref = self.local_ref(cl, span);
         let bref = self.local_ref(bl, span);
         let op = if is_min { CmpOp::Lt } else { CmpOp::Gt };
-        let cmp = self.alloc(HirExprKind::Compare { op, l: cref, r: bref }, SemTy::Bool, span);
+        let cmp = self.alloc(
+            HirExprKind::Compare {
+                op,
+                l: cref,
+                r: bref,
+            },
+            SemTy::Bool,
+            span,
+        );
         let upd = self.new_block();
-        self.seal(HirTerminator::Branch { cond: cmp, then: upd, else_: header });
+        self.seal(HirTerminator::Branch {
+            cond: cmp,
+            then: upd,
+            else_: header,
+        });
         self.switch(upd);
         let e_ref = self.local_ref(elem, span);
-        self.push_stmt(HirStmt::Assign { target: acc, value: e_ref });
+        self.push_stmt(HirStmt::Assign {
+            target: acc,
+            value: e_ref,
+        });
         if let (Some(ck), Some(ak)) = (cand_key, acc_key) {
             let ck_ref = self.local_ref(ck, span);
-            self.push_stmt(HirStmt::Assign { target: ak, value: ck_ref });
+            self.push_stmt(HirStmt::Assign {
+                target: ak,
+                value: ck_ref,
+            });
         }
         self.seal(HirTerminator::Jump(header));
 
@@ -3955,11 +4575,17 @@ impl<'a> FnLowerer<'a> {
         let elem = self.fresh_local_tagged();
         let it_ref = self.local_ref(it, span);
         let next = self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterNext, args: vec![it_ref] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterNext,
+                args: vec![it_ref],
+            },
             SemTy::Dyn,
             span,
         );
-        self.push_stmt(HirStmt::Assign { target: elem, value: next });
+        self.push_stmt(HirStmt::Assign {
+            target: elem,
+            value: next,
+        });
         elem
     }
 
@@ -3967,7 +4593,10 @@ impl<'a> FnLowerer<'a> {
     fn emit_iter_exhausted(&mut self, it: LocalId, span: Span) -> Idx<HirExpr> {
         let it_ref = self.local_ref(it, span);
         self.alloc(
-            HirExprKind::ContainerExpr { op: ContainerOp::IterExhausted, args: vec![it_ref] },
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::IterExhausted,
+                args: vec![it_ref],
+            },
             SemTy::Bool,
             span,
         )
@@ -3986,7 +4615,14 @@ impl<'a> FnLowerer<'a> {
             KeyMode::ByName(expr) => self.lower_callee(expr)?,
         };
         let arg = self.local_ref(elem, span);
-        Ok(self.alloc(HirExprKind::Call { callee, args: vec![arg] }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![arg],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// `set()` → empty set; `set(iterable)` → fill an empty set from the iterable.
@@ -3999,11 +4635,17 @@ impl<'a> FnLowerer<'a> {
         }
         let result = self.fresh_local(SemTy::set_of(SemTy::Dyn));
         let empty = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
-        self.push_stmt(HirStmt::Assign { target: result, value: empty });
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
         let iterable = self.lower_expr(&args[0])?;
         let lp = self.begin_iter_loop(iterable, span)?;
         let elem_ref = self.local_ref(lp.elem, span);
-        self.push_stmt(HirStmt::ContainerPush { container: result, value: elem_ref });
+        self.push_stmt(HirStmt::ContainerPush {
+            container: result,
+            value: elem_ref,
+        });
         self.end_iter_loop(lp);
         Ok(self.local_ref(result, span))
     }
@@ -4013,12 +4655,19 @@ impl<'a> FnLowerer<'a> {
         match kind {
             CompKind::List { result, elt } | CompKind::Set { result, elt } => {
                 let v = self.lower_expr(elt)?;
-                self.push_stmt(HirStmt::ContainerPush { container: *result, value: v });
+                self.push_stmt(HirStmt::ContainerPush {
+                    container: *result,
+                    value: v,
+                });
             }
             CompKind::Dict { result, key, val } => {
                 let k = self.lower_expr(key)?;
                 let v = self.lower_expr(val)?;
-                self.push_stmt(HirStmt::ContainerInsert { container: *result, key: k, value: v });
+                self.push_stmt(HirStmt::ContainerInsert {
+                    container: *result,
+                    key: k,
+                    value: v,
+                });
             }
         }
         let _ = span;
@@ -4107,7 +4756,14 @@ impl<'a> FnLowerer<'a> {
             };
             cap_exprs.push(self.local_ref(cell_lid, span));
         }
-        Ok(self.alloc(HirExprKind::MakeClosure { func: fid, captures: cap_exprs }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::MakeClosure {
+                func: fid,
+                captures: cap_exprs,
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// Lower a nested `def` (Phase 6A): a flat synthetic function with an
@@ -4144,8 +4800,16 @@ impl<'a> FnLowerer<'a> {
         if args.vararg.is_some() || args.kwarg.is_some() || !args.kwonlyargs.is_empty() {
             return Err(parse_error("lambda *args/**kwargs are out of scope", span));
         }
-        if args.posonlyargs.iter().chain(args.args.iter()).any(|a| a.default.is_some()) {
-            return Err(parse_error("lambda default arguments are out of scope", span));
+        if args
+            .posonlyargs
+            .iter()
+            .chain(args.args.iter())
+            .any(|a| a.default.is_some())
+        {
+            return Err(parse_error(
+                "lambda default arguments are out of scope",
+                span,
+            ));
         }
         let facts = freevars::analyze_lambda(l);
         let captures = self.capture_list(&facts.free);
@@ -4197,7 +4861,10 @@ impl<'a> FnLowerer<'a> {
                 SemTy::Dyn,
                 span,
             );
-            self.push_stmt(HirStmt::Assign { target: cell_lid, value: tg });
+            self.push_stmt(HirStmt::Assign {
+                target: cell_lid,
+                value: tg,
+            });
             self.scope.insert(iname, Binding::Cell(cell_lid));
         }
     }
@@ -4233,8 +4900,11 @@ impl<'a> FnLowerer<'a> {
                     fl.add_param(pname, pty.clone());
                 }
                 let target = fl.intern(fname);
-                let callee =
-                    fl.alloc(HirExprKind::Name(SymbolRef::Unresolved(target)), SemTy::Dyn, span);
+                let callee = fl.alloc(
+                    HirExprKind::Name(SymbolRef::Unresolved(target)),
+                    SemTy::Dyn,
+                    span,
+                );
                 let args: Vec<Idx<HirExpr>> = (0..param_tys.len())
                     .map(|i| fl.local_ref(LocalId::new(i as u32 + 1), span))
                     .collect();
@@ -4248,7 +4918,14 @@ impl<'a> FnLowerer<'a> {
                 fid
             }
         };
-        Ok(self.alloc(HirExprKind::MakeClosure { func: fid, captures: vec![] }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::MakeClosure {
+                func: fid,
+                captures: vec![],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     fn local_ref(&mut self, lid: LocalId, span: Span) -> Idx<HirExpr> {
@@ -4273,7 +4950,11 @@ impl<'a> FnLowerer<'a> {
             PyUnaryOp::Not => UnaryOp::Not,
         };
         let operand = self.lower_expr(u.operand.as_ref())?;
-        let ty = if op == UnaryOp::Not { SemTy::Bool } else { SemTy::Dyn };
+        let ty = if op == UnaryOp::Not {
+            SemTy::Bool
+        } else {
+            SemTy::Dyn
+        };
         Ok(self.alloc(HirExprKind::Unary { op, operand }, ty, span))
     }
 
@@ -4340,7 +5021,10 @@ impl<'a> FnLowerer<'a> {
                 );
                 if matches!(c.ops[0], PyCmpOp::NotIn) {
                     return Ok(self.alloc(
-                        HirExprKind::Unary { op: UnaryOp::Not, operand: contains },
+                        HirExprKind::Unary {
+                            op: UnaryOp::Not,
+                            operand: contains,
+                        },
                         SemTy::Bool,
                         span,
                     ));
@@ -4361,12 +5045,19 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ));
                 }
-                let operand = if r_none { c.left.as_ref() } else { &c.comparators[0] };
+                let operand = if r_none {
+                    c.left.as_ref()
+                } else {
+                    &c.comparators[0]
+                };
                 let v = self.lower_expr(operand)?;
                 let is_none = self.alloc(HirExprKind::IsNone { value: v }, SemTy::Bool, span);
                 if matches!(c.ops[0], PyCmpOp::IsNot) {
                     return Ok(self.alloc(
-                        HirExprKind::Unary { op: UnaryOp::Not, operand: is_none },
+                        HirExprKind::Unary {
+                            op: UnaryOp::Not,
+                            operand: is_none,
+                        },
                         SemTy::Bool,
                         span,
                     ));
@@ -4387,18 +5078,36 @@ impl<'a> FnLowerer<'a> {
 
         let lv = self.lower_expr(c.left.as_ref())?;
         let mut prev = self.fresh_local(SemTy::Dyn);
-        self.push_stmt(HirStmt::Assign { target: prev, value: lv });
+        self.push_stmt(HirStmt::Assign {
+            target: prev,
+            value: lv,
+        });
 
         for (i, comp) in c.comparators.iter().enumerate() {
             let op = self.map_cmp(&c.ops[i], span)?;
             let cv = self.lower_expr(comp)?;
             let cur = self.fresh_local(SemTy::Dyn);
-            self.push_stmt(HirStmt::Assign { target: cur, value: cv });
+            self.push_stmt(HirStmt::Assign {
+                target: cur,
+                value: cv,
+            });
             let lref = self.local_ref(prev, span);
             let rref = self.local_ref(cur, span);
-            let cmp = self.alloc(HirExprKind::Compare { op, l: lref, r: rref }, SemTy::Bool, span);
+            let cmp = self.alloc(
+                HirExprKind::Compare {
+                    op,
+                    l: lref,
+                    r: rref,
+                },
+                SemTy::Bool,
+                span,
+            );
             let next = self.new_block();
-            self.seal(HirTerminator::Branch { cond: cmp, then: next, else_: false_b });
+            self.seal(HirTerminator::Branch {
+                cond: cmp,
+                then: next,
+                else_: false_b,
+            });
             self.switch(next);
             prev = cur;
         }
@@ -4406,12 +5115,18 @@ impl<'a> FnLowerer<'a> {
 
         self.switch(true_b);
         let t = self.alloc(HirExprKind::BoolLit(true), SemTy::Bool, span);
-        self.push_stmt(HirStmt::Assign { target: res, value: t });
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: t,
+        });
         self.seal(HirTerminator::Jump(join));
 
         self.switch(false_b);
         let fb = self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span);
-        self.push_stmt(HirStmt::Assign { target: res, value: fb });
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: fb,
+        });
         self.seal(HirTerminator::Jump(join));
 
         self.switch(join);
@@ -4426,19 +5141,26 @@ impl<'a> FnLowerer<'a> {
         let n = b.values.len();
         for (i, val) in b.values.iter().enumerate() {
             let v = self.lower_expr(val)?;
-            self.push_stmt(HirStmt::Assign { target: res, value: v });
+            self.push_stmt(HirStmt::Assign {
+                target: res,
+                value: v,
+            });
             if i + 1 < n {
                 let next = self.new_block();
                 let cond = self.local_ref(res, span);
                 match b.op {
                     // `and`: keep going while truthy; short-circuit (res = falsy) to join.
-                    PyBoolOp::And => {
-                        self.seal(HirTerminator::Branch { cond, then: next, else_: join })
-                    }
+                    PyBoolOp::And => self.seal(HirTerminator::Branch {
+                        cond,
+                        then: next,
+                        else_: join,
+                    }),
                     // `or`: short-circuit (res = truthy) to join; else keep going.
-                    PyBoolOp::Or => {
-                        self.seal(HirTerminator::Branch { cond, then: join, else_: next })
-                    }
+                    PyBoolOp::Or => self.seal(HirTerminator::Branch {
+                        cond,
+                        then: join,
+                        else_: next,
+                    }),
                 }
                 self.switch(next);
             } else {
@@ -4456,16 +5178,26 @@ impl<'a> FnLowerer<'a> {
         let then_b = self.new_block();
         let else_b = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::Branch { cond, then: then_b, else_: else_b });
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: then_b,
+            else_: else_b,
+        });
 
         self.switch(then_b);
         let bv = self.lower_expr(e.body.as_ref())?;
-        self.push_stmt(HirStmt::Assign { target: res, value: bv });
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: bv,
+        });
         self.seal(HirTerminator::Jump(join));
 
         self.switch(else_b);
         let ev = self.lower_expr(e.orelse.as_ref())?;
-        self.push_stmt(HirStmt::Assign { target: res, value: ev });
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: ev,
+        });
         self.seal(HirTerminator::Jump(join));
 
         self.switch(join);
@@ -4477,7 +5209,10 @@ impl<'a> FnLowerer<'a> {
     fn lower_call_expr(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
         if let Expr::Name(n) = c.func.as_ref() {
             if n.id.as_str() == "print" {
-                return Err(parse_error("print() is only supported as a statement", span));
+                return Err(parse_error(
+                    "print() is only supported as a statement",
+                    span,
+                ));
             }
         }
         // `Cls[T](args)` → a subscripted generic construction (Phase 5E).
@@ -4488,7 +5223,11 @@ impl<'a> FnLowerer<'a> {
                     let type_args = subscript_type_args(s.slice.as_ref(), self.ctx);
                     let args = self.lower_expr_list(&c.args)?;
                     return Ok(self.alloc(
-                        HirExprKind::GenericConstruct { class_id, type_args, args },
+                        HirExprKind::GenericConstruct {
+                            class_id,
+                            type_args,
+                            args,
+                        },
                         SemTy::Dyn,
                         span,
                     ));
@@ -4534,9 +5273,7 @@ impl<'a> FnLowerer<'a> {
         if let Expr::Name(n) = c.func.as_ref() {
             if n.id.as_str() == "open" {
                 let iname = self.intern("open");
-                if !self.scope.contains_key(&iname)
-                    && !self.ctx.top_defs.contains_key("open")
-                {
+                if !self.scope.contains_key(&iname) && !self.ctx.top_defs.contains_key("open") {
                     return self.lower_open_builtin(c, span);
                 }
             }
@@ -4593,7 +5330,11 @@ impl<'a> FnLowerer<'a> {
                         reject_call_extras(c, span, "module class construction")?;
                         let args = self.lower_expr_list(&c.args)?;
                         return Ok(self.alloc(
-                            HirExprKind::GenericConstruct { class_id, type_args: vec![], args },
+                            HirExprKind::GenericConstruct {
+                                class_id,
+                                type_args: vec![],
+                                args,
+                            },
                             SemTy::Dyn,
                             span,
                         ));
@@ -4602,7 +5343,11 @@ impl<'a> FnLowerer<'a> {
                         return self.lower_direct_known_call(&info, &qual, c, span);
                     }
                     return Err(parse_error(
-                        format!("module `{}` has no callable attribute `{}`", m.id.as_str(), attr.attr.as_str()),
+                        format!(
+                            "module `{}` has no callable attribute `{}`",
+                            m.id.as_str(),
+                            attr.attr.as_str()
+                        ),
                         span,
                     ));
                 }
@@ -4617,7 +5362,12 @@ impl<'a> FnLowerer<'a> {
                     let gen = self.lower_expr(attr.value.as_ref())?;
                     let value = self.lower_expr(&c.args[0])?;
                     return Ok(self.alloc(
-                        HirExprKind::GenQuery { op: GenOp::Send, gen, imm: 0, value: Some(value) },
+                        HirExprKind::GenQuery {
+                            op: GenOp::Send,
+                            gen,
+                            imm: 0,
+                            value: Some(value),
+                        },
                         SemTy::Dyn,
                         span,
                     ));
@@ -4625,7 +5375,12 @@ impl<'a> FnLowerer<'a> {
                 "close" if c.args.is_empty() && c.keywords.is_empty() => {
                     let gen = self.lower_expr(attr.value.as_ref())?;
                     return Ok(self.alloc(
-                        HirExprKind::GenQuery { op: GenOp::Close, gen, imm: 0, value: None },
+                        HirExprKind::GenQuery {
+                            op: GenOp::Close,
+                            gen,
+                            imm: 0,
+                            value: None,
+                        },
                         SemTy::NoneTy,
                         span,
                     ));
@@ -4641,9 +5396,9 @@ impl<'a> FnLowerer<'a> {
         if let Expr::Attribute(attr) = c.func.as_ref() {
             reject_call_extras(c, span, "method calls")?;
             let recv = if is_super_call(attr.value.as_ref()) {
-                let cid = self.enclosing_class.ok_or_else(|| {
-                    parse_error("super() is only valid inside a method", span)
-                })?;
+                let cid = self
+                    .enclosing_class
+                    .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
                 self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span)
             } else {
                 self.lower_expr(attr.value.as_ref())?
@@ -4651,7 +5406,11 @@ impl<'a> FnLowerer<'a> {
             let method_name = self.intern(attr.attr.as_str());
             let args = self.lower_expr_list(&c.args)?;
             return Ok(self.alloc(
-                HirExprKind::MethodCall { recv, method_name, args },
+                HirExprKind::MethodCall {
+                    recv,
+                    method_name,
+                    args,
+                },
                 SemTy::Dyn,
                 span,
             ));
@@ -4662,7 +5421,10 @@ impl<'a> FnLowerer<'a> {
             // `min`/`max` accept the `key=` keyword (Phase 7).
             if matches!(n.id.as_str(), "min" | "max") {
                 if has_starred_arg(c) {
-                    return Err(parse_error("`*args` spreading is not supported for min()/max()", span));
+                    return Err(parse_error(
+                        "`*args` spreading is not supported for min()/max()",
+                        span,
+                    ));
                 }
                 let mut key: Option<&Expr> = None;
                 for kw in &c.keywords {
@@ -4670,7 +5432,9 @@ impl<'a> FnLowerer<'a> {
                         Some("key") => key = Some(&kw.value),
                         Some(other) => {
                             return Err(parse_error(
-                                format!("min()/max() got an unsupported keyword argument '{other}'"),
+                                format!(
+                                    "min()/max() got an unsupported keyword argument '{other}'"
+                                ),
                                 span,
                             ))
                         }
@@ -4693,7 +5457,12 @@ impl<'a> FnLowerer<'a> {
                         }
                         let gen = self.lower_expr(&c.args[0])?;
                         return Ok(self.alloc(
-                            HirExprKind::GenQuery { op: GenOp::Next, gen, imm: 0, value: None },
+                            HirExprKind::GenQuery {
+                                op: GenOp::Next,
+                                gen,
+                                imm: 0,
+                                value: None,
+                            },
                             SemTy::Dyn,
                             span,
                         ));
@@ -4719,7 +5488,11 @@ impl<'a> FnLowerer<'a> {
                         for a in &c.args {
                             args.push(self.lower_expr(a)?);
                         }
-                        return Ok(self.alloc(HirExprKind::Call { callee, args }, SemTy::Dyn, span));
+                        return Ok(self.alloc(
+                            HirExprKind::Call { callee, args },
+                            SemTy::Dyn,
+                            span,
+                        ));
                     }
                 }
             }
@@ -4752,7 +5525,12 @@ impl<'a> FnLowerer<'a> {
 
     /// Pack a call to a decorated function into the wrapper's `(*args, **kwargs)`
     /// ABI and call its global slot indirectly (Phase 6D).
-    fn lower_decorated_call(&mut self, slot: u32, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+    fn lower_decorated_call(
+        &mut self,
+        slot: u32,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
         reject_call_extras(c, span, "calls to decorated functions")?;
         let mut elems = Vec::with_capacity(c.args.len());
         for a in &c.args {
@@ -4762,7 +5540,10 @@ impl<'a> FnLowerer<'a> {
         let mut pairs = Vec::with_capacity(c.keywords.len());
         for kw in &c.keywords {
             let Some(name) = &kw.arg else {
-                return Err(parse_error("`**` spreading into a decorated call is out of scope", span));
+                return Err(parse_error(
+                    "`**` spreading into a decorated call is out of scope",
+                    span,
+                ));
             };
             let key_id = self.intern(name.as_str());
             let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
@@ -4771,7 +5552,14 @@ impl<'a> FnLowerer<'a> {
         }
         let dict = self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span);
         let callee = self.alloc(HirExprKind::GlobalGet { var_id: slot }, SemTy::Dyn, span);
-        Ok(self.alloc(HirExprKind::Call { callee, args: vec![tuple, dict] }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![tuple, dict],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// Emit a decorated module-level function's rebinding into `__main__`
@@ -4783,13 +5571,27 @@ impl<'a> FnLowerer<'a> {
     fn emit_import_action(&mut self, action: &ImportAction) {
         let span = Span::dummy();
         for name in &action.init_calls {
-            let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(*name)), SemTy::Dyn, span);
-            let call = self.alloc(HirExprKind::Call { callee, args: vec![] }, SemTy::NoneTy, span);
+            let callee = self.alloc(
+                HirExprKind::Name(SymbolRef::Unresolved(*name)),
+                SemTy::Dyn,
+                span,
+            );
+            let call = self.alloc(
+                HirExprKind::Call {
+                    callee,
+                    args: vec![],
+                },
+                SemTy::NoneTy,
+                span,
+            );
             self.push_stmt(HirStmt::Expr(call));
         }
         for (dst, src) in &action.snapshots {
             let val = self.alloc(HirExprKind::GlobalGet { var_id: *src }, SemTy::Dyn, span);
-            self.push_stmt(HirStmt::GlobalSet { var_id: *dst, value: val });
+            self.push_stmt(HirStmt::GlobalSet {
+                var_id: *dst,
+                value: val,
+            });
         }
     }
 
@@ -4800,12 +5602,21 @@ impl<'a> FnLowerer<'a> {
         slot: u32,
     ) -> Result<()> {
         let span = to_span(f.range());
-        let mut v =
-            self.alloc(HirExprKind::MakeClosure { func: thunk_fid, captures: vec![] }, SemTy::Dyn, span);
+        let mut v = self.alloc(
+            HirExprKind::MakeClosure {
+                func: thunk_fid,
+                captures: vec![],
+            },
+            SemTy::Dyn,
+            span,
+        );
         for deco in f.decorator_list.iter().rev() {
             v = self.apply_decorator(deco, v, span)?;
         }
-        self.push_stmt(HirStmt::GlobalSet { var_id: slot, value: v });
+        self.push_stmt(HirStmt::GlobalSet {
+            var_id: slot,
+            value: v,
+        });
         Ok(())
     }
 
@@ -4813,9 +5624,21 @@ impl<'a> FnLowerer<'a> {
     /// decorator is lowered as an ordinary value (a top-level function → its
     /// thunk; a factory `@repeat(3)` → the call result), so the application is a
     /// uniform indirect call.
-    fn apply_decorator(&mut self, deco: &Expr, v: Idx<HirExpr>, span: Span) -> Result<Idx<HirExpr>> {
+    fn apply_decorator(
+        &mut self,
+        deco: &Expr,
+        v: Idx<HirExpr>,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
         let dval = self.lower_expr(deco)?;
-        Ok(self.alloc(HirExprKind::Call { callee: dval, args: vec![v] }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee: dval,
+                args: vec![v],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     // ── generators (Phase 6E) ────────────────────────────────────────────────
@@ -4829,7 +5652,10 @@ impl<'a> FnLowerer<'a> {
             return Err(parse_error("malformed generator expression", span));
         }
         if g.generators.iter().any(|c| c.is_async) {
-            return Err(parse_error("async generator expressions are out of scope", span));
+            return Err(parse_error(
+                "async generator expressions are out of scope",
+                span,
+            ));
         }
         // The outermost iterable, evaluated eagerly in THIS scope.
         let outer = self.lower_expr(&g.generators[0].iter)?;
@@ -4844,14 +5670,24 @@ impl<'a> FnLowerer<'a> {
         // ── resume function ──
         let resume_name = self.interner.intern(&format!("{synth}.<resume>"));
         {
-            let mut rl =
-                FnLowerer::new(self.interner, self.ctx, self.shared, resume_name, &synth, SemTy::Dyn, None);
+            let mut rl = FnLowerer::new(
+                self.interner,
+                self.ctx,
+                self.shared,
+                resume_name,
+                &synth,
+                SemTy::Dyn,
+                None,
+            );
             let gen_name = rl.intern("__gen__");
             rl.add_param(gen_name, SemTy::Dyn);
             let iter0_name = rl.intern("__iter0__");
             let iter0 = rl.add_logical_local(iter0_name, SemTy::Dyn);
-            rl.gen =
-                Some(GenCtx { gen_local: LocalId::new(0), next_state: 1, resume_targets: Vec::new() });
+            rl.gen = Some(GenCtx {
+                gen_local: LocalId::new(0),
+                next_state: 1,
+                resume_targets: Vec::new(),
+            });
             let start = rl.new_block();
             rl.switch(start);
             rl.lower_genexpr_clauses(g, 0, iter0, span)?;
@@ -4865,16 +5701,34 @@ impl<'a> FnLowerer<'a> {
             self.shared.fill(resume_fid, resume_fn);
 
             // ── wrapper(iter0) ──
-            let mut wl =
-                FnLowerer::new(self.interner, self.ctx, self.shared, name, &synth, SemTy::Dyn, None);
+            let mut wl = FnLowerer::new(
+                self.interner,
+                self.ctx,
+                self.shared,
+                name,
+                &synth,
+                SemTy::Dyn,
+                None,
+            );
             let p = wl.intern("__iter0__");
             wl.add_param(p, SemTy::Dyn);
             let g_local = wl.fresh_local(SemTy::Dyn);
-            let mg = wl.alloc(HirExprKind::MakeGenerator { gen_id, num_locals }, SemTy::Dyn, span);
-            wl.push_stmt(HirStmt::Assign { target: g_local, value: mg });
+            let mg = wl.alloc(
+                HirExprKind::MakeGenerator { gen_id, num_locals },
+                SemTy::Dyn,
+                span,
+            );
+            wl.push_stmt(HirStmt::Assign {
+                target: g_local,
+                value: mg,
+            });
             let gen = wl.local_ref(g_local, span);
             let p0 = wl.local_ref(LocalId::new(0), span);
-            wl.push_stmt(HirStmt::GenSetLocal { gen, slot: 0, value: p0 });
+            wl.push_stmt(HirStmt::GenSetLocal {
+                gen,
+                slot: 0,
+                value: p0,
+            });
             let g_ret = wl.local_ref(g_local, span);
             wl.seal(HirTerminator::Return(Some(g_ret)));
             let wrapper_fn = wl.finish(HirTerminator::Return(None));
@@ -4882,8 +5736,19 @@ impl<'a> FnLowerer<'a> {
         }
 
         // Call the synthetic wrapper with the eager iterable → the generator.
-        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(name)), SemTy::Dyn, span);
-        Ok(self.alloc(HirExprKind::Call { callee, args: vec![outer] }, SemTy::Dyn, span))
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(name)),
+            SemTy::Dyn,
+            span,
+        );
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![outer],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// Recurse over a genexpr's clauses building nested iterator loops; the
@@ -4913,7 +5778,11 @@ impl<'a> FnLowerer<'a> {
         for cond_expr in &comp.ifs {
             let cond = self.lower_expr(cond_expr)?;
             let cont = self.new_block();
-            self.seal(HirTerminator::Branch { cond, then: cont, else_: lp.header });
+            self.seal(HirTerminator::Branch {
+                cond,
+                then: cont,
+                else_: lp.header,
+            });
             self.switch(cont);
         }
         self.lower_genexpr_clauses(g, idx + 1, iter0, span)?;
@@ -4971,7 +5840,11 @@ impl<'a> FnLowerer<'a> {
         // A suspended frame would dangle its stack-allocated ExceptionFrame
         // (the frame registers a stack address with the runtime, and the
         // resume call runs on a different stack) — reject lexically (Phase 7).
-        if self.scope_stack.iter().any(|s| !matches!(s, ScopeCtx::Loop { .. })) {
+        if self
+            .scope_stack
+            .iter()
+            .any(|s| !matches!(s, ScopeCtx::Loop { .. }))
+        {
             return Err(parse_error(
                 "yield inside try/with is unsupported in this milestone",
                 span,
@@ -4995,11 +5868,23 @@ impl<'a> FnLowerer<'a> {
         // `close()` resumes with `closing` set: exhaust and return None (no
         // try/finally pre-Phase-7, so exhaust is the correct unwind).
         let gen2 = self.gen_ref(span);
-        let closing =
-            self.alloc(HirExprKind::GenQuery { op: GenOp::IsClosing, gen: gen2, imm: 0, value: None }, SemTy::Bool, span);
+        let closing = self.alloc(
+            HirExprKind::GenQuery {
+                op: GenOp::IsClosing,
+                gen: gen2,
+                imm: 0,
+                value: None,
+            },
+            SemTy::Bool,
+            span,
+        );
         let close_b = self.new_block();
         let cont = self.new_block();
-        self.seal(HirTerminator::Branch { cond: closing, then: close_b, else_: cont });
+        self.seal(HirTerminator::Branch {
+            cond: closing,
+            then: close_b,
+            else_: cont,
+        });
         self.switch(close_b);
         self.emit_gen_exhaust(span);
         self.switch(cont);
@@ -5007,7 +5892,12 @@ impl<'a> FnLowerer<'a> {
         if want_sent {
             let gen3 = self.gen_ref(span);
             let sent = self.alloc(
-                HirExprKind::GenQuery { op: GenOp::GetSentValue, gen: gen3, imm: 0, value: None },
+                HirExprKind::GenQuery {
+                    op: GenOp::GetSentValue,
+                    gen: gen3,
+                    imm: 0,
+                    value: None,
+                },
                 SemTy::Dyn,
                 span,
             );
@@ -5023,7 +5913,10 @@ impl<'a> FnLowerer<'a> {
         let gen = self.gen_ref(span);
         self.push_stmt(HirStmt::GenSetExhausted { gen });
         let gen2 = self.gen_ref(span);
-        self.push_stmt(HirStmt::GenSetState { gen: gen2, state: u32::MAX });
+        self.push_stmt(HirStmt::GenSetState {
+            gen: gen2,
+            state: u32::MAX,
+        });
         let none = self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span);
         self.seal(HirTerminator::Return(Some(none)));
     }
@@ -5047,7 +5940,12 @@ impl<'a> FnLowerer<'a> {
             .collect();
         for (idx, slot) in read_rewrites {
             let gen = self.alloc(HirExprKind::Local(gen_local), SemTy::Dyn, span);
-            self.exprs[idx].kind = HirExprKind::GenQuery { op: GenOp::GetLocal, gen, imm: slot, value: None };
+            self.exprs[idx].kind = HirExprKind::GenQuery {
+                op: GenOp::GetLocal,
+                gen,
+                imm: slot,
+                value: None,
+            };
         }
         // Rewrite writes (`Assign`) in place across every block.
         let block_ids: Vec<Idx<HirBlock>> = self.blocks.iter().map(|(b, _)| b).collect();
@@ -5079,14 +5977,35 @@ impl<'a> FnLowerer<'a> {
             self.switch(block);
             let gen = self.gen_ref(span);
             let s = self.alloc(
-                HirExprKind::GenQuery { op: GenOp::GetState, gen, imm: 0, value: None },
+                HirExprKind::GenQuery {
+                    op: GenOp::GetState,
+                    gen,
+                    imm: 0,
+                    value: None,
+                },
                 SemTy::Int,
                 span,
             );
             let k = self.alloc(HirExprKind::IntLit(state as i64), SemTy::Int, span);
-            let cmp = self.alloc(HirExprKind::Compare { op: CmpOp::Eq, l: s, r: k }, SemTy::Bool, span);
-            let next = if i + 1 < len { self.new_block() } else { default_b };
-            self.seal(HirTerminator::Branch { cond: cmp, then: target, else_: next });
+            let cmp = self.alloc(
+                HirExprKind::Compare {
+                    op: CmpOp::Eq,
+                    l: s,
+                    r: k,
+                },
+                SemTy::Bool,
+                span,
+            );
+            let next = if i + 1 < len {
+                self.new_block()
+            } else {
+                default_b
+            };
+            self.seal(HirTerminator::Branch {
+                cond: cmp,
+                then: target,
+                else_: next,
+            });
             block = next;
         }
         self.switch(default_b);
@@ -5118,7 +6037,10 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<Idx<HirExpr>> {
         if c.args.iter().any(|a| matches!(a, Expr::Starred(_))) {
-            return Err(parse_error("`*` spreading into a stdlib call is out of scope", span));
+            return Err(parse_error(
+                "`*` spreading into a stdlib call is out of scope",
+                span,
+            ));
         }
         // A `variadic_to_list` descriptor (`os.path.join(*paths)`) collects all
         // positional args into one list passed as the single runtime arg
@@ -5134,7 +6056,10 @@ impl<'a> FnLowerer<'a> {
             let provided = c.args.len();
             if provided < def.min_args {
                 return Err(parse_error(
-                    format!("`{}()` takes at least {} argument(s)", def.name, def.min_args),
+                    format!(
+                        "`{}()` takes at least {} argument(s)",
+                        def.name, def.min_args
+                    ),
                     span,
                 ));
             }
@@ -5167,7 +6092,10 @@ impl<'a> FnLowerer<'a> {
         let mut keywords: Vec<(String, &Expr, bool)> = Vec::new();
         for kw in &c.keywords {
             let Some(name) = &kw.arg else {
-                return Err(parse_error("`**kwargs` spreading is out of scope here", span));
+                return Err(parse_error(
+                    "`**kwargs` spreading is out of scope here",
+                    span,
+                ));
             };
             keywords.push((name.as_str().to_string(), &kw.value, false));
         }
@@ -5291,8 +6219,11 @@ impl<'a> FnLowerer<'a> {
                 span,
             ));
         }
-        let positionals: Vec<&Expr> =
-            c.args.iter().filter(|a| !matches!(a, Expr::Starred(_))).collect();
+        let positionals: Vec<&Expr> = c
+            .args
+            .iter()
+            .filter(|a| !matches!(a, Expr::Starred(_)))
+            .collect();
         let star: Option<&Expr> = c.args.iter().find_map(|a| match a {
             Expr::Starred(s) => Some(s.value.as_ref()),
             _ => None,
@@ -5301,7 +6232,10 @@ impl<'a> FnLowerer<'a> {
         let mut keywords: Vec<(String, &Expr, bool)> = Vec::new();
         for kw in &c.keywords {
             let Some(name) = &kw.arg else {
-                return Err(parse_error("`**kwargs` spreading is out of scope here", span));
+                return Err(parse_error(
+                    "`**kwargs` spreading is out of scope here",
+                    span,
+                ));
             };
             keywords.push((name.as_str().to_string(), &kw.value, false));
         }
@@ -5333,7 +6267,9 @@ impl<'a> FnLowerer<'a> {
             let n_pos = positionals.len();
             if n_pos > n_fixed && info.varargs.is_none() {
                 return Err(parse_error(
-                    format!("`{fname}()` takes {n_fixed} positional argument(s) but {n_pos} were given"),
+                    format!(
+                        "`{fname}()` takes {n_fixed} positional argument(s) but {n_pos} were given"
+                    ),
                     span,
                 ));
             }
@@ -5341,7 +6277,8 @@ impl<'a> FnLowerer<'a> {
             for (i, p) in info.fixed.iter().enumerate() {
                 let v = if i < pos_for_fixed {
                     self.lower_expr(positionals[i])?
-                } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name)) {
+                } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name))
+                {
                     self.lower_expr(kv)?
                 } else if let Some(def) = &p.default {
                     self.lower_const_default(def, span)
@@ -5389,7 +6326,9 @@ impl<'a> FnLowerer<'a> {
         if info.varargs.is_some() {
             match star_tuple {
                 Some(t) => out.push(t),
-                None => out.push(self.alloc(HirExprKind::TupleLit { elems: vec![] }, SemTy::Dyn, span)),
+                None => {
+                    out.push(self.alloc(HirExprKind::TupleLit { elems: vec![] }, SemTy::Dyn, span))
+                }
             }
         }
 
@@ -5416,7 +6355,11 @@ impl<'a> FnLowerer<'a> {
         }
 
         let target = self.intern(fname);
-        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(target)), SemTy::Dyn, span);
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(target)),
+            SemTy::Dyn,
+            span,
+        );
         Ok(self.alloc(HirExprKind::Call { callee, args: out }, SemTy::Dyn, span))
     }
 
@@ -5500,9 +6443,8 @@ impl<'a> FnLowerer<'a> {
             Constant::Bytes(b) => {
                 // The bytes are interned through the string table (codegen reads
                 // them back as raw bytes). Non-UTF-8 byte literals are out of scope.
-                let s = std::str::from_utf8(b).map_err(|_| {
-                    parse_error("non-UTF-8 bytes literals are out of scope", span)
-                })?;
+                let s = std::str::from_utf8(b)
+                    .map_err(|_| parse_error("non-UTF-8 bytes literals are out of scope", span))?;
                 (HirExprKind::BytesLit(self.intern(s)), SemTy::Bytes)
             }
             _ => {
@@ -5532,7 +6474,6 @@ impl<'a> FnLowerer<'a> {
             }
         }
     }
-
 }
 
 /// A `range()` bound argument: the literal `0` start of `range(stop)`, or an
@@ -5585,9 +6526,15 @@ fn type_var_assign_name(stmt: &Stmt) -> Option<String> {
     if a.targets.len() != 1 {
         return None;
     }
-    let Expr::Name(target) = &a.targets[0] else { return None };
-    let Expr::Call(call) = a.value.as_ref() else { return None };
-    let Expr::Name(f) = call.func.as_ref() else { return None };
+    let Expr::Name(target) = &a.targets[0] else {
+        return None;
+    };
+    let Expr::Call(call) = a.value.as_ref() else {
+        return None;
+    };
+    let Expr::Name(f) = call.func.as_ref() else {
+        return None;
+    };
     matches!(f.id.as_str(), "TypeVar" | "ParamSpec" | "TypeVarTuple")
         .then(|| target.id.as_str().to_string())
 }
@@ -5633,15 +6580,30 @@ fn build_generic_thunk(
     fl.add_param(kwargs_name, SemTy::dict_of(SemTy::Str, SemTy::Dyn));
     // orig(args[0], …, args[arity-1]) — a direct call resolved by semantics.
     let orig = fl.intern(orig_name_str);
-    let callee = fl.alloc(HirExprKind::Name(SymbolRef::Unresolved(orig)), SemTy::Dyn, span);
+    let callee = fl.alloc(
+        HirExprKind::Name(SymbolRef::Unresolved(orig)),
+        SemTy::Dyn,
+        span,
+    );
     let mut call_args = Vec::with_capacity(arity);
     for i in 0..arity {
         let base = fl.local_ref(LocalId::new(1), span); // the `__args__` tuple param
         let idx = fl.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-        let sub = fl.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+        let sub = fl.alloc(
+            HirExprKind::Subscript { base, index: idx },
+            SemTy::Dyn,
+            span,
+        );
         call_args.push(sub);
     }
-    let call = fl.alloc(HirExprKind::Call { callee, args: call_args }, SemTy::Dyn, span);
+    let call = fl.alloc(
+        HirExprKind::Call {
+            callee,
+            args: call_args,
+        },
+        SemTy::Dyn,
+        span,
+    );
     fl.seal(HirTerminator::Return(Some(call)));
     let mut f = fl.finish(HirTerminator::Return(None));
     f.varargs = true;
@@ -5653,7 +6615,12 @@ fn build_generic_thunk(
 /// The full ABI parameter types of a top-level def, in MIR order: fixed →
 /// keyword-only → `*args` tuple → `**kwargs` dict (Phase 6C).
 fn top_def_param_tys(info: &TopDefInfo) -> Vec<SemTy> {
-    let mut v: Vec<SemTy> = info.fixed.iter().chain(&info.kwonly).map(|p| p.ty.clone()).collect();
+    let mut v: Vec<SemTy> = info
+        .fixed
+        .iter()
+        .chain(&info.kwonly)
+        .map(|p| p.ty.clone())
+        .collect();
     if info.varargs.is_some() {
         v.push(SemTy::tuple_var_of(SemTy::Dyn));
     }
@@ -5724,7 +6691,10 @@ fn seq_target_elts(e: &Expr) -> Option<&[Expr]> {
 /// Reject starred unpacking targets (`a, *rest = …`) — deferred to Phase 6.
 fn reject_starred(targets: &[Expr], span: Span) -> Result<()> {
     if targets.iter().any(|t| matches!(t, Expr::Starred(_))) {
-        return Err(parse_error("starred unpacking targets are out of scope", span));
+        return Err(parse_error(
+            "starred unpacking targets are out of scope",
+            span,
+        ));
     }
     Ok(())
 }
@@ -5744,11 +6714,19 @@ fn parse_range(iter: &Expr, span: Span) -> Result<(RangeArg<'_>, RangeArg<'_>, i
     }
     match call.args.len() {
         1 => Ok((RangeArg::Zero, RangeArg::Expr(&call.args[0]), 1)),
-        2 => Ok((RangeArg::Expr(&call.args[0]), RangeArg::Expr(&call.args[1]), 1)),
+        2 => Ok((
+            RangeArg::Expr(&call.args[0]),
+            RangeArg::Expr(&call.args[1]),
+            1,
+        )),
         3 => {
             let step = literal_int(&call.args[2])
                 .ok_or_else(|| parse_error("range() step must be an integer literal", span))?;
-            Ok((RangeArg::Expr(&call.args[0]), RangeArg::Expr(&call.args[1]), step))
+            Ok((
+                RangeArg::Expr(&call.args[0]),
+                RangeArg::Expr(&call.args[1]),
+                step,
+            ))
         }
         _ => Err(parse_error("range() takes 1 to 3 arguments", span)),
     }
@@ -5814,7 +6792,10 @@ fn annotation_to_semty(ann: &Expr, ctx: &AnnCtx) -> SemTy {
                 if ctx.aliases.contains(m.id.as_str()) {
                     let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
                     if let Some((class_id, name)) = ctx.class_map.get(&qual) {
-                        return SemTy::Class { class_id: *class_id, name: *name };
+                        return SemTy::Class {
+                            class_id: *class_id,
+                            name: *name,
+                        };
                     }
                 }
                 if ctx.stdlib.aliases.contains(m.id.as_str()) {
@@ -5858,7 +6839,10 @@ fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
             }
             // A user-defined class name annotates an instance of that class.
             if let Some((class_id, name)) = ctx.class_map.get(other) {
-                return SemTy::Class { class_id: *class_id, name: *name };
+                return SemTy::Class {
+                    class_id: *class_id,
+                    name: *name,
+                };
             }
             // A from-imported stdlib class (`from time import struct_time`).
             if let Some(ty) = ctx.stdlib.classes.get(other) {
@@ -5872,7 +6856,9 @@ fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
 /// Map a subscripted generic annotation (`list[int]`, `dict[K, V]`, …) to a
 /// `SemTy`. Unknown bases fall back to `Dyn`.
 fn annotation_subscript(base: &Expr, slice: &Expr, ctx: &AnnCtx) -> SemTy {
-    let Expr::Name(n) = base else { return SemTy::Dyn };
+    let Expr::Name(n) = base else {
+        return SemTy::Dyn;
+    };
     match n.id.as_str() {
         "list" | "List" => SemTy::list_of(annotation_to_semty(slice, ctx)),
         "set" | "Set" | "frozenset" => SemTy::set_of(annotation_to_semty(slice, ctx)),
@@ -5918,7 +6904,9 @@ fn is_ellipsis(e: &Expr) -> bool {
 /// shapes fall back to `Dyn` (→ `Tagged`, the correct baseline — calling such a
 /// value then gets the loud Dyn-callee diagnostic).
 fn callable_annotation(slice: &Expr, ctx: &AnnCtx) -> SemTy {
-    let Expr::Tuple(t) = slice else { return SemTy::Dyn };
+    let Expr::Tuple(t) = slice else {
+        return SemTy::Dyn;
+    };
     if t.elts.len() != 2 {
         return SemTy::Dyn;
     }
@@ -5929,7 +6917,10 @@ fn callable_annotation(slice: &Expr, ctx: &AnnCtx) -> SemTy {
             ret,
         ))),
         e if is_ellipsis(e) => SemTy::Callable(Box::new(Sig {
-            params: vec![SemTy::tuple_var_of(SemTy::Dyn), SemTy::dict_of(SemTy::Str, SemTy::Dyn)],
+            params: vec![
+                SemTy::tuple_var_of(SemTy::Dyn),
+                SemTy::dict_of(SemTy::Str, SemTy::Dyn),
+            ],
             ret,
             varargs: true,
             kwargs: true,
@@ -6013,12 +7004,20 @@ fn lower_callable(
     // *args / **kwargs in a generator are out of scope.
     if body_has_yield(&def.body) {
         if nested.is_some_and(|(caps, _)| !caps.is_empty()) {
-            return Err(parse_error("a generator that captures variables is out of scope (Phase 6E)", span));
+            return Err(parse_error(
+                "a generator that captures variables is out of scope (Phase 6E)",
+                span,
+            ));
         }
         if varargs || kwargs {
-            return Err(parse_error("a generator with *args/**kwargs is out of scope (Phase 6E)", span));
+            return Err(parse_error(
+                "a generator with *args/**kwargs is out of scope (Phase 6E)",
+                span,
+            ));
         }
-        lower_generator_def(interner, ctx, shared, &def.body, name_str, name, fid, &parsed, ret_ty, enclosing)?;
+        lower_generator_def(
+            interner, ctx, shared, &def.body, name_str, name, fid, &parsed, ret_ty, enclosing,
+        )?;
         return Ok(fid);
     }
 
@@ -6100,9 +7099,7 @@ fn pattern_has_bindings(p: &rustpython_parser::ast::Pattern) -> bool {
         Pattern::MatchOr(o) => o.patterns.iter().any(pattern_has_bindings),
         Pattern::MatchSequence(s) => s.patterns.iter().any(pattern_has_bindings),
         Pattern::MatchStar(s) => s.name.is_some(),
-        Pattern::MatchMapping(m) => {
-            m.rest.is_some() || m.patterns.iter().any(pattern_has_bindings)
-        }
+        Pattern::MatchMapping(m) => m.rest.is_some() || m.patterns.iter().any(pattern_has_bindings),
         Pattern::MatchClass(c) => {
             c.patterns.iter().any(pattern_has_bindings)
                 || c.kwd_patterns.iter().any(pattern_has_bindings)
@@ -6139,7 +7136,15 @@ fn lower_generator_def(
     shared.generators.push(resume_fid);
 
     let resume_name = interner.intern(&format!("{name_str}.<resume>"));
-    let mut rl = FnLowerer::new(interner, ctx, shared, resume_name, name_str, SemTy::Dyn, enclosing);
+    let mut rl = FnLowerer::new(
+        interner,
+        ctx,
+        shared,
+        resume_name,
+        name_str,
+        SemTy::Dyn,
+        enclosing,
+    );
     // Param 0 = the generator object.
     let gen_name = rl.intern("__gen__");
     rl.add_param(gen_name, SemTy::Dyn);
@@ -6148,7 +7153,11 @@ fn lower_generator_def(
     for p in parsed.fixed.iter().chain(&parsed.kwonly) {
         rl.add_logical_local(p.name, p.ty.clone());
     }
-    rl.gen = Some(GenCtx { gen_local: LocalId::new(0), next_state: 1, resume_targets: Vec::new() });
+    rl.gen = Some(GenCtx {
+        gen_local: LocalId::new(0),
+        next_state: 1,
+        resume_targets: Vec::new(),
+    });
 
     let start = rl.new_block();
     rl.switch(start);
@@ -6167,12 +7176,23 @@ fn lower_generator_def(
     let mut wl = FnLowerer::new(interner, ctx, shared, name, name_str, ret_ty, enclosing);
     wl.install_params(parsed);
     let g_local = wl.fresh_local(SemTy::Dyn);
-    let mg = wl.alloc(HirExprKind::MakeGenerator { gen_id, num_locals }, SemTy::Dyn, span);
-    wl.push_stmt(HirStmt::Assign { target: g_local, value: mg });
+    let mg = wl.alloc(
+        HirExprKind::MakeGenerator { gen_id, num_locals },
+        SemTy::Dyn,
+        span,
+    );
+    wl.push_stmt(HirStmt::Assign {
+        target: g_local,
+        value: mg,
+    });
     for i in 0..n_params {
         let gen = wl.local_ref(g_local, span);
         let p = wl.local_ref(LocalId::new(i as u32), span);
-        wl.push_stmt(HirStmt::GenSetLocal { gen, slot: i as u32, value: p });
+        wl.push_stmt(HirStmt::GenSetLocal {
+            gen,
+            slot: i as u32,
+            value: p,
+        });
     }
     let g_ret = wl.local_ref(g_local, span);
     wl.seal(HirTerminator::Return(Some(g_ret)));
@@ -6201,7 +7221,13 @@ fn parse_params(
 ) -> Result<ParsedParams> {
     let skip = matches!(first, FirstParam::SkipCls) as usize;
     let mut fixed = Vec::new();
-    for (i, awd) in args.posonlyargs.iter().chain(args.args.iter()).skip(skip).enumerate() {
+    for (i, awd) in args
+        .posonlyargs
+        .iter()
+        .chain(args.args.iter())
+        .skip(skip)
+        .enumerate()
+    {
         let ty = match (i, first) {
             (0, FirstParam::Method(t)) => t.clone(),
             _ => match &awd.def.annotation {
@@ -6213,7 +7239,11 @@ fn parse_params(
             Some(e) => Some(class_attr_init(interner, e)?),
             None => None,
         };
-        fixed.push(ParamInfo { name: interner.intern(awd.def.arg.as_str()), ty, default });
+        fixed.push(ParamInfo {
+            name: interner.intern(awd.def.arg.as_str()),
+            ty,
+            default,
+        });
     }
     let mut kwonly = Vec::new();
     for awd in &args.kwonlyargs {
@@ -6225,11 +7255,23 @@ fn parse_params(
             Some(e) => Some(class_attr_init(interner, e)?),
             None => None,
         };
-        kwonly.push(ParamInfo { name: interner.intern(awd.def.arg.as_str()), ty, default });
+        kwonly.push(ParamInfo {
+            name: interner.intern(awd.def.arg.as_str()),
+            ty,
+            default,
+        });
     }
-    let varargs = args.vararg.as_ref().map(|a| interner.intern(a.arg.as_str()));
+    let varargs = args
+        .vararg
+        .as_ref()
+        .map(|a| interner.intern(a.arg.as_str()));
     let kwargs = args.kwarg.as_ref().map(|a| interner.intern(a.arg.as_str()));
-    Ok(ParsedParams { fixed, kwonly, varargs, kwargs })
+    Ok(ParsedParams {
+        fixed,
+        kwonly,
+        varargs,
+        kwargs,
+    })
 }
 
 /// Lower a `class` definition: lower each method into `functions` (recording its
@@ -6271,7 +7313,10 @@ fn lower_class(
             // `Generic[T]` / `Generic[T1, T2]` → record the type params.
             Expr::Subscript(s) => {
                 let Expr::Name(b) = s.value.as_ref() else {
-                    return Err(parse_error("unsupported subscripted base class", to_span(base.range())));
+                    return Err(parse_error(
+                        "unsupported subscripted base class",
+                        to_span(base.range()),
+                    ));
                 };
                 if matches!(b.id.as_str(), "Generic" | "Protocol") {
                     for tp in subscript_type_param_names(s.slice.as_ref()) {
@@ -6324,26 +7369,25 @@ fn lower_class(
     let mut field_annotations: Vec<(InternedString, SemTy)> = Vec::new();
 
     // Lower a method body into the shared table, returning its FuncId.
-    let lower_method =
-        |interner: &mut StringInterner,
-         shared: &mut Shared,
-         m: &StmtFunctionDef,
-         suffix: &str,
-         first: FirstParam,
-         enclosing: Option<ClassId>|
-         -> Result<(FuncId, SemTy)> {
-            let synthetic = format!("{}.{}{}", cdef.name.as_str(), m.name.as_str(), suffix);
-            let fname = interner.intern(&synthetic);
-            let func_id = lower_callable(
-                interner, &cctx, shared, m, &synthetic, fname, first, enclosing, true, None,
-            )?;
-            let ret = shared.funcs[func_id.index()]
-                .as_ref()
-                .expect("method just filled")
-                .ret_ty
-                .clone();
-            Ok((func_id, ret))
-        };
+    let lower_method = |interner: &mut StringInterner,
+                        shared: &mut Shared,
+                        m: &StmtFunctionDef,
+                        suffix: &str,
+                        first: FirstParam,
+                        enclosing: Option<ClassId>|
+     -> Result<(FuncId, SemTy)> {
+        let synthetic = format!("{}.{}{}", cdef.name.as_str(), m.name.as_str(), suffix);
+        let fname = interner.intern(&synthetic);
+        let func_id = lower_callable(
+            interner, &cctx, shared, m, &synthetic, fname, first, enclosing, true, None,
+        )?;
+        let ret = shared.funcs[func_id.index()]
+            .as_ref()
+            .expect("method just filled")
+            .ret_ty
+            .clone();
+        Ok((func_id, ret))
+    };
 
     for stmt in &cdef.body {
         match stmt {
@@ -6352,8 +7396,12 @@ fn lower_class(
                 match classify_method_decorator(m)? {
                     MethodDecor::Instance => {
                         let (fid, _) = lower_method(
-                            interner, shared, m, "",
-                            FirstParam::Method(class_ty.clone()), Some(class_id),
+                            interner,
+                            shared,
+                            m,
+                            "",
+                            FirstParam::Method(class_ty.clone()),
+                            Some(class_id),
                         )?;
                         methods.push((method_name, fid));
                     }
@@ -6369,16 +7417,29 @@ fn lower_class(
                     }
                     MethodDecor::Property => {
                         let (fid, ty) = lower_method(
-                            interner, shared, m, ".get",
-                            FirstParam::Method(class_ty.clone()), Some(class_id),
+                            interner,
+                            shared,
+                            m,
+                            ".get",
+                            FirstParam::Method(class_ty.clone()),
+                            Some(class_id),
                         )?;
-                        properties.push(HirProperty { name: method_name, getter: fid, setter: None, ty });
+                        properties.push(HirProperty {
+                            name: method_name,
+                            getter: fid,
+                            setter: None,
+                            ty,
+                        });
                     }
                     MethodDecor::Setter(prop) => {
                         let pname = interner.intern(&prop);
                         let (fid, _) = lower_method(
-                            interner, shared, m, ".set",
-                            FirstParam::Method(class_ty.clone()), Some(class_id),
+                            interner,
+                            shared,
+                            m,
+                            ".set",
+                            FirstParam::Method(class_ty.clone()),
+                            Some(class_id),
                         )?;
                         match properties.iter_mut().find(|p| p.name == pname) {
                             Some(p) => p.setter = Some(fid),
@@ -6407,7 +7468,11 @@ fn lower_class(
                     Some(v) => {
                         let init = class_attr_init(interner, v.as_ref())?;
                         reject_tuple_class_attr(&init, to_span(a.range()))?;
-                        class_attrs.push(HirClassAttr { name: fname, ty, init });
+                        class_attrs.push(HirClassAttr {
+                            name: fname,
+                            ty,
+                            init,
+                        });
                     }
                     None => field_annotations.push((fname, ty)),
                 }
@@ -6436,10 +7501,15 @@ fn lower_class(
                 let init = class_attr_init(interner, a.value.as_ref())?;
                 reject_tuple_class_attr(&init, to_span(a.range()))?;
                 let ty = class_attr_init_ty(&init);
-                class_attrs.push(HirClassAttr { name: fname, ty, init });
+                class_attrs.push(HirClassAttr {
+                    name: fname,
+                    ty,
+                    init,
+                });
             }
             // A docstring (a bare string-constant expression) is ignored.
-            Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Str(_))) => {}
+            Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Str(_))) =>
+                {}
             Stmt::Pass(_) => {}
             other => {
                 return Err(parse_error(
@@ -6541,7 +7611,10 @@ fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassA
                 return match &c.value {
                     Constant::Int(b) => Ok(int_attr_init(interner, &b.to_string(), neg)),
                     Constant::Float(f) => Ok(ClassAttrInit::Float(if neg { -*f } else { *f })),
-                    _ => Err(parse_error("class-attribute initializer must be a literal", span)),
+                    _ => Err(parse_error(
+                        "class-attribute initializer must be a literal",
+                        span,
+                    )),
                 };
             }
         }
@@ -6692,8 +7765,12 @@ pub(crate) fn desugar_module_lambda_defs(body: &mut [Stmt]) {
             if a.targets.len() != 1 {
                 continue;
             }
-            let Expr::Name(n) = &a.targets[0] else { continue };
-            let Expr::Lambda(l) = a.value.as_ref() else { continue };
+            let Expr::Name(n) = &a.targets[0] else {
+                continue;
+            };
+            let Expr::Lambda(l) = a.value.as_ref() else {
+                continue;
+            };
             let args = l.args.as_ref();
             let has_defaults = args
                 .posonlyargs
@@ -6801,7 +7878,11 @@ fn int_attr_init(interner: &mut StringInterner, decimal: &str, negative: bool) -
             ClassAttrInit::Int(if negative { -mag } else { mag })
         }
         _ => {
-            let text = if negative { format!("-{decimal}") } else { decimal.to_string() };
+            let text = if negative {
+                format!("-{decimal}")
+            } else {
+                decimal.to_string()
+            };
             ClassAttrInit::BigInt(interner.intern(&text))
         }
     }
@@ -6874,17 +7955,13 @@ mod tests {
 
     #[test]
     fn rejects_yield_inside_with() {
-        let err = parse_err(
-            "def g():\n    with ctx() as c:\n        yield c\n",
-        );
+        let err = parse_err("def g():\n    with ctx() as c:\n        yield c\n");
         assert!(err.contains("yield inside try/with"), "got: {err}");
     }
 
     #[test]
     fn rejects_or_pattern_with_captures() {
-        let err = parse_err(
-            "match x:\n    case [a] | [a, b]:\n        pass\n",
-        );
+        let err = parse_err("match x:\n    case [a] | [a, b]:\n        pass\n");
         assert!(err.contains("or-patterns with capture names"), "got: {err}");
     }
 
@@ -6898,17 +7975,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_exception_in_except() {
-        let err = parse_err(
-            "try:\n    pass\nexcept NotAThing:\n    pass\n",
-        );
+        let err = parse_err("try:\n    pass\nexcept NotAThing:\n    pass\n");
         assert!(err.contains("unknown exception type"), "got: {err}");
     }
 
     #[test]
     fn rejects_bare_except_not_last() {
-        let err = parse_err(
-            "try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n",
-        );
+        let err = parse_err("try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n");
         assert!(err.contains("must be last"), "got: {err}");
     }
 
@@ -6999,6 +8072,9 @@ print(add(1, 2))
                 }
             }
         }
-        assert!(saw_global_set, "decorated def must rebind via a global slot");
+        assert!(
+            saw_global_set,
+            "decorated def must rebind via a global slot"
+        );
     }
 }

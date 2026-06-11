@@ -137,7 +137,9 @@ fn inline_into(
                 None
             })
         };
-        let Some((inst_idx, callee)) = site else { continue };
+        let Some((inst_idx, callee)) = site else {
+            continue;
+        };
 
         let body = clone_body(&program.funcs[callee]);
         let cont = splice(&mut program.funcs[caller], bi, inst_idx, &body);
@@ -157,7 +159,10 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
             return false;
         }
         for inst in &block.insts {
-            if matches!(inst, MirInst::MakeGenerator { .. } | MirInst::GenOpInst { .. }) {
+            if matches!(
+                inst,
+                MirInst::MakeGenerator { .. } | MirInst::GenOpInst { .. }
+            ) {
                 return false;
             }
         }
@@ -172,7 +177,10 @@ fn clone_body(f: &MirFunction) -> CalleeBody {
         blocks: f
             .blocks
             .iter()
-            .map(|b| MirBlock { insts: b.insts.clone(), term: b.term.clone() })
+            .map(|b| MirBlock {
+                insts: b.insts.clone(),
+                term: b.term.clone(),
+            })
             .collect(),
         entry: f.entry,
     }
@@ -205,8 +213,13 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     // Exact repr equality is verifier-guaranteed at every Call site, so the
     // identity coercion is always constructible.
     for (i, (arg, repr)) in args.into_iter().zip(&body.params).enumerate() {
-        let mv = CoerceInst::new(LocalId::new(l_off + i as u32), arg, repr.clone(), repr.clone())
-            .expect("identity coercion is always legal");
+        let mv = CoerceInst::new(
+            LocalId::new(l_off + i as u32),
+            arg,
+            repr.clone(),
+            repr.clone(),
+        )
+        .expect("identity coercion is always legal");
         caller.blocks[bi].insts.push(MirInst::Coerce(mv));
     }
 
@@ -225,13 +238,8 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
                     let Operand::Local(src) = op;
                     let src = LocalId::new(l_off + src.index() as u32);
                     let ret_repr = caller.locals[d.index()].repr.clone();
-                    let mv = CoerceInst::new(
-                        d,
-                        Operand::Local(src),
-                        ret_repr.clone(),
-                        ret_repr,
-                    )
-                    .expect("identity coercion is always legal");
+                    let mv = CoerceInst::new(d, Operand::Local(src), ret_repr.clone(), ret_repr)
+                        .expect("identity coercion is always legal");
                     insts.push(MirInst::Coerce(mv));
                 }
                 MirTerminator::Jump(cont)
@@ -254,7 +262,10 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     }
 
     // The continuation block: the call block's suffix + original terminator.
-    caller.blocks.push(MirBlock { insts: suffix, term: orig_term });
+    caller.blocks.push(MirBlock {
+        insts: suffix,
+        term: orig_term,
+    });
     cont.index()
 }
 
@@ -338,8 +349,8 @@ fn call_graph_sccs(funcs: &[MirFunction]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use pyaot_mir::{
-        verify, BinOp, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram,
-        MirTerminator, StrPool,
+        verify, BinOp, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator,
+        StrPool,
     };
     use pyaot_types::{RawKind, Repr};
     use pyaot_utils::{BlockId, FuncId};
@@ -391,7 +402,12 @@ mod tests {
             i64r.clone(),
             vec![i64r.clone(), i64r.clone(), i64r],
             vec![(
-                vec![MirInst::BinOp { dst: l(2), op: BinOp::Add, l: op(0), r: op(1) }],
+                vec![MirInst::BinOp {
+                    dst: l(2),
+                    op: BinOp::Add,
+                    l: op(0),
+                    r: op(1),
+                }],
                 MirTerminator::Return(Some(op(2))),
             )],
         )
@@ -406,9 +422,19 @@ mod tests {
             vec![i64r.clone(), i64r.clone(), i64r.clone()],
             vec![(
                 vec![
-                    MirInst::Const { dst: l(0), val: Const::Int(2) },
-                    MirInst::Const { dst: l(1), val: Const::Int(3) },
-                    MirInst::Call { dst: Some(l(2)), func: FuncId::new(1), args: vec![op(0), op(1)] },
+                    MirInst::Const {
+                        dst: l(0),
+                        val: Const::Int(2),
+                    },
+                    MirInst::Const {
+                        dst: l(1),
+                        val: Const::Int(3),
+                    },
+                    MirInst::Call {
+                        dst: Some(l(2)),
+                        func: FuncId::new(1),
+                        args: vec![op(0), op(1)],
+                    },
                 ],
                 MirTerminator::Return(None),
             )],
@@ -419,10 +445,15 @@ mod tests {
         let f = &p.funcs[0];
         // The Call is gone; the call block jumps into the spliced body.
         assert!(
-            !f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i, MirInst::Call { .. }))),
+            !f.blocks
+                .iter()
+                .any(|b| b.insts.iter().any(|i| matches!(i, MirInst::Call { .. }))),
             "direct call must be spliced away"
         );
-        assert!(f.blocks.len() > 1, "splice must add callee + continuation blocks");
+        assert!(
+            f.blocks.len() > 1,
+            "splice must add callee + continuation blocks"
+        );
         assert_eq!(f.locals.len(), 3 + 3, "callee locals must append");
         verify_all(&p);
     }
@@ -436,7 +467,11 @@ mod tests {
             i64r.clone(),
             vec![i64r.clone(), i64r.clone()],
             vec![(
-                vec![MirInst::Call { dst: Some(l(1)), func: FuncId::new(0), args: vec![op(0)] }],
+                vec![MirInst::Call {
+                    dst: Some(l(1)),
+                    func: FuncId::new(0),
+                    args: vec![op(0)],
+                }],
                 MirTerminator::Return(Some(op(1))),
             )],
         );
@@ -486,7 +521,13 @@ mod tests {
             Repr::Tagged,
             vec![],
             vec![
-                (vec![], MirTerminator::TryEnter { normal: BlockId::new(1), handler: BlockId::new(2) }),
+                (
+                    vec![],
+                    MirTerminator::TryEnter {
+                        normal: BlockId::new(1),
+                        handler: BlockId::new(2),
+                    },
+                ),
                 (vec![], MirTerminator::Return(None)),
                 (vec![], MirTerminator::Return(None)),
             ],
@@ -496,7 +537,11 @@ mod tests {
             Repr::Tagged,
             vec![i64r],
             vec![(
-                vec![MirInst::Call { dst: None, func: FuncId::new(1), args: vec![] }],
+                vec![MirInst::Call {
+                    dst: None,
+                    func: FuncId::new(1),
+                    args: vec![],
+                }],
                 MirTerminator::Return(None),
             )],
         );
@@ -517,10 +562,20 @@ mod tests {
         let callee = func(
             vec![i64r.clone()],
             i64r.clone(),
-            vec![i64r.clone(), i8r, i64r.clone(), i64r.clone(), i64r.clone(), i64r.clone()],
+            vec![
+                i64r.clone(),
+                i8r,
+                i64r.clone(),
+                i64r.clone(),
+                i64r.clone(),
+                i64r.clone(),
+            ],
             vec![
                 (
-                    vec![MirInst::Const { dst: l(1), val: Const::Int(1) }],
+                    vec![MirInst::Const {
+                        dst: l(1),
+                        val: Const::Int(1),
+                    }],
                     MirTerminator::Branch {
                         cond: op(1),
                         then: BlockId::new(1),
@@ -529,15 +584,31 @@ mod tests {
                 ),
                 (
                     vec![
-                        MirInst::Const { dst: l(2), val: Const::Int(1) },
-                        MirInst::BinOp { dst: l(3), op: BinOp::Add, l: op(0), r: op(2) },
+                        MirInst::Const {
+                            dst: l(2),
+                            val: Const::Int(1),
+                        },
+                        MirInst::BinOp {
+                            dst: l(3),
+                            op: BinOp::Add,
+                            l: op(0),
+                            r: op(2),
+                        },
                     ],
                     MirTerminator::Return(Some(op(3))),
                 ),
                 (
                     vec![
-                        MirInst::Const { dst: l(4), val: Const::Int(2) },
-                        MirInst::BinOp { dst: l(5), op: BinOp::Add, l: op(0), r: op(4) },
+                        MirInst::Const {
+                            dst: l(4),
+                            val: Const::Int(2),
+                        },
+                        MirInst::BinOp {
+                            dst: l(5),
+                            op: BinOp::Add,
+                            l: op(0),
+                            r: op(4),
+                        },
                     ],
                     MirTerminator::Return(Some(op(5))),
                 ),
@@ -549,8 +620,15 @@ mod tests {
             vec![i64r.clone(), i64r.clone()],
             vec![(
                 vec![
-                    MirInst::Const { dst: l(0), val: Const::Int(10) },
-                    MirInst::Call { dst: Some(l(1)), func: FuncId::new(1), args: vec![op(0)] },
+                    MirInst::Const {
+                        dst: l(0),
+                        val: Const::Int(10),
+                    },
+                    MirInst::Call {
+                        dst: Some(l(1)),
+                        func: FuncId::new(1),
+                        args: vec![op(0)],
+                    },
                 ],
                 MirTerminator::Return(None),
             )],
@@ -571,7 +649,10 @@ mod tests {
             Repr::Tagged,
             vec![Repr::Tagged],
             vec![(
-                vec![MirInst::Const { dst: l(0), val: Const::None }],
+                vec![MirInst::Const {
+                    dst: l(0),
+                    val: Const::None,
+                }],
                 MirTerminator::Return(Some(op(0))),
             )],
         );
@@ -581,7 +662,11 @@ mod tests {
             Repr::Tagged,
             vec![],
             vec![(
-                vec![MirInst::Call { dst: None, func: FuncId::new(1), args: vec![] }],
+                vec![MirInst::Call {
+                    dst: None,
+                    func: FuncId::new(1),
+                    args: vec![],
+                }],
                 MirTerminator::Return(None),
             )],
         );
@@ -605,7 +690,11 @@ mod tests {
             i64r.clone(),
             vec![i64r.clone(), i64r.clone(), i64r.clone()],
             vec![(
-                vec![MirInst::Call { dst: Some(l(2)), func: FuncId::new(2), args: vec![op(0), op(1)] }],
+                vec![MirInst::Call {
+                    dst: Some(l(2)),
+                    func: FuncId::new(2),
+                    args: vec![op(0), op(1)],
+                }],
                 MirTerminator::Return(Some(op(2))),
             )],
         );
@@ -615,9 +704,19 @@ mod tests {
             vec![i64r.clone(), i64r.clone(), i64r.clone()],
             vec![(
                 vec![
-                    MirInst::Const { dst: l(0), val: Const::Int(1) },
-                    MirInst::Const { dst: l(1), val: Const::Int(2) },
-                    MirInst::Call { dst: Some(l(2)), func: FuncId::new(1), args: vec![op(0), op(1)] },
+                    MirInst::Const {
+                        dst: l(0),
+                        val: Const::Int(1),
+                    },
+                    MirInst::Const {
+                        dst: l(1),
+                        val: Const::Int(2),
+                    },
+                    MirInst::Call {
+                        dst: Some(l(2)),
+                        func: FuncId::new(1),
+                        args: vec![op(0), op(1)],
+                    },
                 ],
                 MirTerminator::Return(None),
             )],
@@ -626,7 +725,9 @@ mod tests {
         Inline::default().run(&mut p);
         for f in &p.funcs {
             assert!(
-                !f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i, MirInst::Call { .. }))),
+                !f.blocks
+                    .iter()
+                    .any(|b| b.insts.iter().any(|i| matches!(i, MirInst::Call { .. }))),
                 "every direct call must be gone after bottom-up inlining"
             );
         }

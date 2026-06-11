@@ -35,7 +35,9 @@ impl ModuleSource for DirModuleSource {
         }
         let module_file = base.with_extension("py");
         if module_file.is_file() {
-            return std::fs::read_to_string(&module_file).ok().map(|s| (s, false));
+            return std::fs::read_to_string(&module_file)
+                .ok()
+                .map(|s| (s, false));
         }
         let init_file = base.join("__init__.py");
         if init_file.is_file() {
@@ -164,7 +166,10 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
 
     // ── codegen → object → link. ──
     let output = cli.output.as_ref().ok_or_else(|| {
-        CompilerError::codegen_error("an output path (-o) is required unless --emit-mir is set", None)
+        CompilerError::codegen_error(
+            "an output path (-o) is required unless --emit-mir is set",
+            None,
+        )
     })?;
     let object_path = output.with_extension("o");
     let codegen_opts = CodegenOptions {

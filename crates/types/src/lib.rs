@@ -36,7 +36,5 @@ pub mod repr;
 pub mod sem;
 
 pub use lattice::{ClassHierarchy, NoClasses, TypeLattice};
-pub use repr::{
-    repr_of, sig_repr, HeapShape, RawKind, Repr, SigRepr, RAW_I64_NARROW_BOUND,
-};
+pub use repr::{repr_of, sig_repr, HeapShape, RawKind, Repr, SigRepr, RAW_I64_NARROW_BOUND};
 pub use sem::{SemTy, Sig};

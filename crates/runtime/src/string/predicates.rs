@@ -1,8 +1,8 @@
 //! Character predicate operations: isdigit, isalpha, isalnum, isspace, isupper, islower
 
-use crate::object::{Obj, StrObj, TypeTagKind};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 /// Check if all characters are digits

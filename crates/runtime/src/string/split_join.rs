@@ -2,10 +2,10 @@
 //!
 //! Uses Boyer-Moore-Horspool for efficient substring search in split.
 
-use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
-use crate::list::{rt_list_len, rt_list_push, rt_make_list};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
+use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
+use crate::list::{rt_list_len, rt_list_push, rt_make_list};
 use crate::object::{ListObj, Obj, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 use pyaot_core_defs::Value;

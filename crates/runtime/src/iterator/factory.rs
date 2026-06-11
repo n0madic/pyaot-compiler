@@ -71,7 +71,9 @@ pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj};
 
-    unsafe { debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_iter_dict"); }
+    unsafe {
+        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_iter_dict");
+    }
 
     // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
     // (the iterator allocation below) so GC stress test cannot collect it.

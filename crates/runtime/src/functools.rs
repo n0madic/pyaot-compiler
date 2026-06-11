@@ -342,8 +342,7 @@ pub unsafe fn rt_reduce_tagged(
         // re-wrap before the next iteration so the callback's tagged
         // ABI contract for `acc` is honoured. `acc` is read through the
         // root slot (see above).
-        let raw_result =
-            call_reduce_with_captures(func_ptr, captures, cc_byte, roots[0], elem);
+        let raw_result = call_reduce_with_captures(func_ptr, captures, cc_byte, roots[0], elem);
         roots[0] = rewrap(raw_result);
     }
 }

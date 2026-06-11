@@ -103,7 +103,11 @@ pub extern "C" fn rt_unbox_int_abi(v: Value) -> i64 {
             let big = &(*(obj as *mut BigIntObj)).value;
             let (sign, digits) = big.to_u64_digits();
             let low = digits.first().copied().unwrap_or(0) as i64;
-            return if sign == num_bigint::Sign::Minus { low.wrapping_neg() } else { low };
+            return if sign == num_bigint::Sign::Minus {
+                low.wrapping_neg()
+            } else {
+                low
+            };
         }
         raise_exc!(
             crate::exceptions::ExceptionType::TypeError,

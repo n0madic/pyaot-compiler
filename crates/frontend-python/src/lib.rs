@@ -80,6 +80,9 @@ pub(crate) fn parse_module_body(src: &str) -> Result<Vec<Stmt>> {
     })?;
     match parsed {
         Mod::Module(m) => Ok(m.body),
-        _ => Err(CompilerError::parse_error("expected a module", Span::dummy())),
+        _ => Err(CompilerError::parse_error(
+            "expected a module",
+            Span::dummy(),
+        )),
     }
 }

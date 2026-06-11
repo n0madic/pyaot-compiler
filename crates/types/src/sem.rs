@@ -33,7 +33,12 @@ pub struct Sig {
 impl Sig {
     /// A plain fixed-arity signature (no `*args` / `**kwargs`).
     pub fn fixed(params: Vec<SemTy>, ret: SemTy) -> Sig {
-        Sig { params, ret, varargs: false, kwargs: false }
+        Sig {
+            params,
+            ret,
+            varargs: false,
+            kwargs: false,
+        }
     }
 
     /// The number of leading fixed (non-`*args`/`**kwargs`) parameters.
@@ -104,22 +109,40 @@ impl SemTy {
     // ── container constructors ──
 
     pub fn list_of(elem: SemTy) -> SemTy {
-        SemTy::Generic { base: BUILTIN_LIST_CLASS_ID, args: vec![elem] }
+        SemTy::Generic {
+            base: BUILTIN_LIST_CLASS_ID,
+            args: vec![elem],
+        }
     }
     pub fn dict_of(k: SemTy, v: SemTy) -> SemTy {
-        SemTy::Generic { base: BUILTIN_DICT_CLASS_ID, args: vec![k, v] }
+        SemTy::Generic {
+            base: BUILTIN_DICT_CLASS_ID,
+            args: vec![k, v],
+        }
     }
     pub fn set_of(elem: SemTy) -> SemTy {
-        SemTy::Generic { base: BUILTIN_SET_CLASS_ID, args: vec![elem] }
+        SemTy::Generic {
+            base: BUILTIN_SET_CLASS_ID,
+            args: vec![elem],
+        }
     }
     pub fn tuple_of(elems: Vec<SemTy>) -> SemTy {
-        SemTy::Generic { base: BUILTIN_TUPLE_CLASS_ID, args: elems }
+        SemTy::Generic {
+            base: BUILTIN_TUPLE_CLASS_ID,
+            args: elems,
+        }
     }
     pub fn tuple_var_of(elem: SemTy) -> SemTy {
-        SemTy::Generic { base: BUILTIN_TUPLE_VAR_CLASS_ID, args: vec![elem] }
+        SemTy::Generic {
+            base: BUILTIN_TUPLE_VAR_CLASS_ID,
+            args: vec![elem],
+        }
     }
     pub fn deque_of(elem: SemTy) -> SemTy {
-        SemTy::Generic { base: BUILTIN_DEQUE_CLASS_ID, args: vec![elem] }
+        SemTy::Generic {
+            base: BUILTIN_DEQUE_CLASS_ID,
+            args: vec![elem],
+        }
     }
 
     /// `Optional[T]` sugar (`Union[T, None]`).

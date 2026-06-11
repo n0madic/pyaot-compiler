@@ -139,9 +139,16 @@ mod tests {
     fn coerce_round_trip_becomes_noop_move() {
         // l0: F64; l1 = box(l0); l2 = unbox(l1) → l2 = Coerce(l0)[F64→F64].
         let mut f = single_block(
-            vec![Repr::Raw(RawKind::F64), Repr::Tagged, Repr::Raw(RawKind::F64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Float(1.0) },
+                Repr::Raw(RawKind::F64),
+                Repr::Tagged,
+                Repr::Raw(RawKind::F64),
+            ],
+            vec![
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Float(1.0),
+                },
                 MirInst::Coerce(
                     CoerceInst::new(l(1), op(0), Repr::Raw(RawKind::F64), Repr::Tagged).unwrap(),
                 ),
@@ -168,13 +175,23 @@ mod tests {
         // The original local is overwritten between the two coerces — the
         // round-trip must NOT rewrite (it would read the new value).
         let mut f = single_block(
-            vec![Repr::Raw(RawKind::F64), Repr::Tagged, Repr::Raw(RawKind::F64)],
             vec![
-                MirInst::Const { dst: l(0), val: Const::Float(1.0) },
+                Repr::Raw(RawKind::F64),
+                Repr::Tagged,
+                Repr::Raw(RawKind::F64),
+            ],
+            vec![
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Float(1.0),
+                },
                 MirInst::Coerce(
                     CoerceInst::new(l(1), op(0), Repr::Raw(RawKind::F64), Repr::Tagged).unwrap(),
                 ),
-                MirInst::Const { dst: l(0), val: Const::Float(2.0) },
+                MirInst::Const {
+                    dst: l(0),
+                    val: Const::Float(2.0),
+                },
                 MirInst::Coerce(
                     CoerceInst::new(l(2), op(1), Repr::Tagged, Repr::Raw(RawKind::F64)).unwrap(),
                 ),
@@ -228,7 +245,10 @@ mod tests {
             vec![Repr::Raw(RawKind::I8)],
             vec![
                 (
-                    vec![MirInst::Const { dst: l(0), val: Const::Int(1) }],
+                    vec![MirInst::Const {
+                        dst: l(0),
+                        val: Const::Int(1),
+                    }],
                     MirTerminator::Branch {
                         cond: op(0),
                         then: BlockId::new(1),

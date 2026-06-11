@@ -161,7 +161,10 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Str {
             return crate::string::rt_str_concat(a, b);
         }
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_add(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -193,7 +196,10 @@ pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let va = Value(a as u64);
         let vb = Value(b as u64);
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_sub(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -252,7 +258,10 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             };
             return crate::string::rt_str_mul(b, count);
         }
-        match (crate::bigint::classify_num(va_tagged), crate::bigint::classify_num(vb_tagged)) {
+        match (
+            crate::bigint::classify_num(va_tagged),
+            crate::bigint::classify_num(vb_tagged),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_mul(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -284,7 +293,10 @@ pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let va = Value(a as u64);
         let vb = Value(b as u64);
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_truediv(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -316,7 +328,10 @@ pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let va = Value(a as u64);
         let vb = Value(b as u64);
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_floordiv(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -348,7 +363,10 @@ pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let va = Value(a as u64);
         let vb = Value(b as u64);
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_mod(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -380,7 +398,10 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let va = Value(a as u64);
         let vb = Value(b as u64);
-        match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+        match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
             (Some(x), Some(y)) => crate::bigint::num_pow(x, y),
             _ => raise_exc!(
                 ExceptionType::TypeError,
@@ -409,7 +430,10 @@ macro_rules! bitwise_op {
             unsafe {
                 let va = Value(a as u64);
                 let vb = Value(b as u64);
-                match (crate::bigint::classify_num(va), crate::bigint::classify_num(vb)) {
+                match (
+                    crate::bigint::classify_num(va),
+                    crate::bigint::classify_num(vb),
+                ) {
                     (Some(x), Some(y)) => crate::bigint::$num(x, y),
                     _ => raise_exc!(
                         ExceptionType::TypeError,
@@ -427,9 +451,19 @@ macro_rules! bitwise_op {
     };
 }
 
-bitwise_op!(rt_obj_bitand, rt_obj_bitand_abi, "rt_obj_bitand", num_bitand);
+bitwise_op!(
+    rt_obj_bitand,
+    rt_obj_bitand_abi,
+    "rt_obj_bitand",
+    num_bitand
+);
 bitwise_op!(rt_obj_bitor, rt_obj_bitor_abi, "rt_obj_bitor", num_bitor);
-bitwise_op!(rt_obj_bitxor, rt_obj_bitxor_abi, "rt_obj_bitxor", num_bitxor);
+bitwise_op!(
+    rt_obj_bitxor,
+    rt_obj_bitxor_abi,
+    "rt_obj_bitxor",
+    num_bitxor
+);
 bitwise_op!(rt_obj_lshift, rt_obj_lshift_abi, "rt_obj_lshift", num_shl);
 bitwise_op!(rt_obj_rshift, rt_obj_rshift_abi, "rt_obj_rshift", num_shr);
 

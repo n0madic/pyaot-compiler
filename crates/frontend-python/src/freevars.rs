@@ -175,7 +175,12 @@ impl Walker {
                 for deco in &d.decorator_list {
                     self.expr(deco);
                 }
-                for awd in d.args.posonlyargs.iter().chain(&d.args.args).chain(&d.args.kwonlyargs)
+                for awd in d
+                    .args
+                    .posonlyargs
+                    .iter()
+                    .chain(&d.args.args)
+                    .chain(&d.args.kwonlyargs)
                 {
                     if let Some(dflt) = &awd.default {
                         self.expr(dflt);
@@ -432,7 +437,12 @@ impl Walker {
             }
             Expr::Lambda(l) => {
                 // Lambda defaults evaluate in this scope.
-                for awd in l.args.posonlyargs.iter().chain(&l.args.args).chain(&l.args.kwonlyargs)
+                for awd in l
+                    .args
+                    .posonlyargs
+                    .iter()
+                    .chain(&l.args.args)
+                    .chain(&l.args.kwonlyargs)
                 {
                     if let Some(dflt) = &awd.default {
                         self.expr(dflt);
@@ -474,7 +484,12 @@ impl Walker {
 
 /// Bind every parameter name of an `Arguments` node.
 fn bind_params(w: &mut Walker, args: &rustpython_parser::ast::Arguments) {
-    for awd in args.posonlyargs.iter().chain(&args.args).chain(&args.kwonlyargs) {
+    for awd in args
+        .posonlyargs
+        .iter()
+        .chain(&args.args)
+        .chain(&args.kwonlyargs)
+    {
         w.bind(awd.def.arg.as_str());
     }
     if let Some(v) = &args.vararg {
@@ -600,8 +615,12 @@ mod tests {
 
     fn def_facts(src: &str) -> ScopeFacts {
         let parsed = parse(src, Mode::Module, "<test>").expect("parse");
-        let rustpython_parser::ast::Mod::Module(m) = parsed else { panic!("module") };
-        let Stmt::FunctionDef(d) = &m.body[0] else { panic!("def") };
+        let rustpython_parser::ast::Mod::Module(m) = parsed else {
+            panic!("module")
+        };
+        let Stmt::FunctionDef(d) = &m.body[0] else {
+            panic!("def")
+        };
         analyze_def(d)
     }
 
@@ -618,9 +637,7 @@ mod tests {
 
     #[test]
     fn lambda_capture_and_builtin_not_bound() {
-        let facts = def_facts(
-            "def outer(n):\n    f = lambda y: y + n\n    return f\n",
-        );
+        let facts = def_facts("def outer(n):\n    f = lambda y: y + n\n    return f\n");
         assert!(facts.celled.contains("n"));
         // `f` is bound but never captured.
         assert!(!facts.celled.contains("f"));
@@ -639,9 +656,7 @@ mod tests {
     fn genexpr_outer_iterable_is_eager() {
         // `xs` is read in the enclosing scope (eager); `x` is bound inside the
         // genexpr and never escapes.
-        let facts = def_facts(
-            "def outer(xs):\n    g = (x * 2 for x in xs)\n    return g\n",
-        );
+        let facts = def_facts("def outer(xs):\n    g = (x * 2 for x in xs)\n    return g\n");
         // `xs` is read directly here (eager), NOT via the genexpr child — it
         // must not be celled; the genexpr receives it as an eager parameter.
         assert!(!facts.celled.contains("xs"));
@@ -661,7 +676,9 @@ def scaled(x):
     return x * scale
 ";
         let parsed = parse(src, Mode::Module, "<test>").expect("parse");
-        let Mod::Module(m) = parsed else { panic!("module") };
+        let Mod::Module(m) = parsed else {
+            panic!("module")
+        };
         let promoted = collect_promoted_globals(&m.body);
         // `counter` (a `global` decl) and `scale` (module-assigned, read in a
         // function) are promoted; the def names are not.
@@ -673,9 +690,7 @@ def scaled(x):
 
     #[test]
     fn global_declaration_is_not_free_or_bound() {
-        let facts = def_facts(
-            "def f():\n    global g\n    g = 1\n    return g\n",
-        );
+        let facts = def_facts("def f():\n    global g\n    g = 1\n    return g\n");
         assert!(facts.globals.contains("g"));
         assert!(!facts.bound.contains("g"));
         assert!(!facts.free.contains(&"g".to_string()));
