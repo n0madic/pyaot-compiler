@@ -79,15 +79,40 @@ debug = true
 # legal `rt_obj_add` / `rt_print_obj` argument). Build the runtime — and
 # `core-defs`, where the `#[inline]` `Value` shims and their `debug_assert!`s
 # live — without debug-assertions in dev too, so the linked staticlib honors
-# that contract. The front-half crates keep their assertions (incl. `mir::verify`),
-# and `cargo test -p pyaot-core-defs` (test profile) still exercises the
-# `#[cfg(debug_assertions)]` Value tests.
+# that contract. The front-half crates keep their assertions (incl. `mir::verify`).
+# NB: a `[profile.dev.package.X]` override also propagates to the `test` profile,
+# so these would silently compile OUT every `#[cfg(debug_assertions)]` test in
+# `runtime` / `core-defs` under `cargo test`. The `[profile.test.package.*]`
+# overrides below re-enable debug-assertions for those crates' own unit-test
+# builds (only) so those tests actually run.
 [profile.dev.package.pyaot-runtime]
 debug-assertions = false
 overflow-checks = false
 
+# Re-enable debug-assertions for the runtime's OWN unit-test build only, so the
+# defence-in-depth `debug_assert_type_tag!` seam guards (and the other
+# `#[cfg(debug_assertions)]` runtime tests) actually compile in and fire under
+# `cargo test -p pyaot-runtime`. The dev/release package override above keeps the
+# staticlib `cli` links (and ships) with debug-assertions OFF, so the corpus
+# differential and release binaries are unaffected — the guards stay compiled out
+# there (verified: the cli corpus runtime is not rebuilt by this test override).
+# `overflow-checks` stays off to preserve the runtime's wrapping/bignum contract.
+[profile.test.package.pyaot-runtime]
+debug-assertions = true
+overflow-checks = false
+
 [profile.dev.package.pyaot-core-defs]
 debug-assertions = false
+overflow-checks = false
+
+# Same rationale as the runtime test override above: re-enable debug-assertions
+# for core-defs' OWN unit-test build so its `#[cfg(debug_assertions)]` Value
+# tests (int-overflow panic, wrong-tag `unwrap_int/bool/ptr` panics) actually
+# run under `cargo test -p pyaot-core-defs`. Scoped to the test harness only —
+# the inlined `Value` shims `runtime` links keep debug-assertions OFF via the
+# block above, so the shipped staticlib/ABI contract is unchanged.
+[profile.test.package.pyaot-core-defs]
+debug-assertions = true
 overflow-checks = false
 
 [profile.release]

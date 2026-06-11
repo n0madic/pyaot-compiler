@@ -267,6 +267,27 @@ release *with the new opt level* before shipping Phase 9 — and if it breaks,
 the fallbacks are per-frame `volatile`-style loads via `MemFlags` or fencing
 the setjmp block boundary, never "hope the regalloc behaves".
 
+### B18. Widening the checked-unbox shapes without a runtime guard
+**Trap:** the MIR verifier admits exactly two *checked* coercions —
+`Tagged → Raw(F64)` and `Tagged → Raw(I64)` (`mir/src/verify.rs`,
+`CoerceInst::new_checked`). Each is sound *only* because a matching runtime guard
+(`rt_unbox_float` / `rt_unbox_int`, `runtime/src/boxing.rs`) inspects the tag and
+raises `TypeError` on a wrong shape instead of casting blind. Adding a third
+checked shape — e.g. `Tagged → Heap(List)` — because "inference should prove it"
+silently extends the set to a pair with **no** runtime guard: the wrong-shape
+`Value` is then blind-cast to a typed heap pointer in a frozen `rt_*` and
+dereferenced → **SEGV in the runtime, not a `TypeError`**. This is the same trust
+the proof-trusted `Tagged → Heap` no-op already places in `typeck` (A2, B5), and
+the same blind-unbox hazard B16 warns about for possibly-bignum ints. **Why it
+bites:** both `new_checked` and the verifier gate only test `from == Tagged`, so a
+newly-added shape is accepted with nothing failing at compile time; the SEGV
+appears at runtime on the gradual-seam path — the exact Phase 8B–8F family.
+**Avoided by:** treating the two-shape set as load-bearing — never widen it
+without first landing the matching `rt_unbox_*`-style guard that raises instead of
+dereferencing, plus corpus coverage that drives the wrong-shape path. The
+debug-only `debug_assert_type_tag!` guards at the string/iterator stdlib seam are
+the second layer behind this same seam, not a substitute for the raising guard.
+
 ---
 
 ## How to use this file

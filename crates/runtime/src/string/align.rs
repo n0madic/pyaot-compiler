@@ -5,6 +5,8 @@
 //! `String`s BEFORE any allocation, so no GC rooting is needed.
 
 use crate::object::{Obj, StrObj, TypeTagKind};
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;
@@ -32,6 +34,7 @@ pub fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut 
         return str_obj;
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_center");
         let s = str_obj_to_string(str_obj);
         let chars = s.chars().count() as i64;
         if chars >= width {
@@ -69,6 +72,7 @@ pub fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
         return str_obj;
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_ljust");
         let s = str_obj_to_string(str_obj);
         let chars = s.chars().count() as i64;
         if chars >= width {
@@ -99,6 +103,7 @@ pub fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
         return str_obj;
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_rjust");
         let s = str_obj_to_string(str_obj);
         let chars = s.chars().count() as i64;
         if chars >= width {
@@ -130,6 +135,7 @@ pub fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
         return str_obj;
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_zfill");
         let s = str_obj_to_string(str_obj);
         let chars = s.chars().count() as i64;
         if chars >= width {

@@ -3,7 +3,9 @@
 //! Uses Boyer-Moore-Horspool algorithm for efficient O(n/m) substring search
 //! when pattern length >= BMH_THRESHOLD.
 
-use crate::object::{Obj, StrObj};
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 /// Convert a byte offset to a character (codepoint) offset in a UTF-8 string
@@ -157,6 +159,8 @@ pub fn rt_str_startswith(str_obj: *mut Obj, prefix: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_startswith");
+        debug_assert_type_tag!(prefix, TypeTagKind::Str, "rt_str_startswith");
         let src = str_obj as *mut StrObj;
         let pre = prefix as *mut StrObj;
 
@@ -193,6 +197,8 @@ pub fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_endswith");
+        debug_assert_type_tag!(suffix, TypeTagKind::Str, "rt_str_endswith");
         let src = str_obj as *mut StrObj;
         let suf = suffix as *mut StrObj;
 
@@ -230,6 +236,8 @@ pub fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_find");
+        debug_assert_type_tag!(sub, TypeTagKind::Str, "rt_str_find");
         let src = str_obj as *mut StrObj;
         let needle = sub as *mut StrObj;
 
@@ -273,6 +281,8 @@ pub fn rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(a, TypeTagKind::Str, "rt_str_eq");
+        debug_assert_type_tag!(b, TypeTagKind::Str, "rt_str_eq");
         let str_a = a as *mut StrObj;
         let str_b = b as *mut StrObj;
 
@@ -313,6 +323,8 @@ pub fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(needle, TypeTagKind::Str, "rt_str_contains");
+        debug_assert_type_tag!(haystack, TypeTagKind::Str, "rt_str_contains");
         let needle_str = needle as *mut StrObj;
         let haystack_str = haystack as *mut StrObj;
 
@@ -353,6 +365,8 @@ pub fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_count");
+        debug_assert_type_tag!(sub, TypeTagKind::Str, "rt_str_count");
         let src = str_obj as *mut StrObj;
         let needle = sub as *mut StrObj;
 
@@ -425,6 +439,8 @@ pub fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_rfind");
+        debug_assert_type_tag!(sub, TypeTagKind::Str, "rt_str_rfind");
         let src = str_obj as *mut StrObj;
         let needle = sub as *mut StrObj;
 

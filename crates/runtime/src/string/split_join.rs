@@ -4,6 +4,8 @@
 
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::list::{rt_list_len, rt_list_push, rt_make_list};
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 use pyaot_core_defs::Value;
@@ -18,6 +20,7 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_split");
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
         let src_data = (*src).data.as_ptr();
@@ -48,6 +51,7 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
                 rt_list_push(list, word);
             }
         } else {
+            debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_split");
             let sep_str = sep as *mut StrObj;
             let sep_len = (*sep_str).len;
             let sep_data = (*sep_str).data.as_ptr();
@@ -138,11 +142,15 @@ pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(list_obj, TypeTagKind::List, "rt_str_join");
         let sep_str = if sep.is_null() {
             std::ptr::null()
         } else {
             sep as *mut StrObj
         };
+        if !sep.is_null() {
+            debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_join");
+        }
         let sep_len = if sep_str.is_null() { 0 } else { (*sep_str).len };
 
         let list = list_obj as *mut ListObj;
@@ -233,6 +241,7 @@ pub fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_splitlines");
         let str_obj = s as *mut StrObj;
         let str_len = (*str_obj).len;
         let str_data = (*str_obj).data.as_ptr();
@@ -349,6 +358,8 @@ pub fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_partition");
+        debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_partition");
         let str_obj = s as *mut StrObj;
         let sep_obj = sep as *mut StrObj;
 
@@ -460,6 +471,8 @@ pub fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_rpartition");
+        debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_rpartition");
         let str_obj = s as *mut StrObj;
         let sep_obj = sep as *mut StrObj;
 
@@ -546,6 +559,7 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_rsplit");
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
         let src_data = (*src).data.as_ptr();
@@ -573,6 +587,7 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
                 rt_list_push(list, word);
             }
         } else {
+            debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_rsplit");
             let sep_str = sep as *mut StrObj;
             let sep_len = (*sep_str).len;
             let sep_data = (*sep_str).data.as_ptr();

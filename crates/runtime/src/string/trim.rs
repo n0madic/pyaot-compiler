@@ -1,5 +1,7 @@
 //! Trimming operations: strip, lstrip, rstrip
 
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
@@ -14,6 +16,7 @@ pub fn rt_str_strip(str_obj: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_strip");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -80,6 +83,7 @@ pub fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_lstrip");
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
 
@@ -98,6 +102,7 @@ pub fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
             }
         } else {
             // Strip specified characters
+            debug_assert_type_tag!(chars, TypeTagKind::Str, "rt_str_lstrip");
             let chars_str = chars as *mut StrObj;
             let chars_len = (*chars_str).len;
             let chars_data = (*chars_str).data.as_ptr();
@@ -155,6 +160,7 @@ pub fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_rstrip");
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
 
@@ -173,6 +179,7 @@ pub fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
             }
         } else {
             // Strip specified characters
+            debug_assert_type_tag!(chars, TypeTagKind::Str, "rt_str_rstrip");
             let chars_str = chars as *mut StrObj;
             let chars_len = (*chars_str).len;
             let chars_data = (*chars_str).data.as_ptr();

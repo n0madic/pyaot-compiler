@@ -4,6 +4,8 @@ use crate::exceptions;
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::slice_utils::{normalize_slice_indices, slice_length};
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use pyaot_core_defs::Value;
 
 /// Collect the byte offset of every codepoint start in `data[..byte_len]`.
@@ -33,6 +35,7 @@ pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_slice");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
         let data = (*src).data.as_ptr();
@@ -106,6 +109,7 @@ pub fn rt_str_slice_step(str_obj: *mut Obj, start: i64, end: i64, step: i64) -> 
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_slice_step");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
         let src_data = (*src).data.as_ptr();
@@ -232,6 +236,7 @@ pub fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_getchar");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len as i64;
 
@@ -294,6 +299,7 @@ pub fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_subscript");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
         let data = (*src).data.as_ptr();

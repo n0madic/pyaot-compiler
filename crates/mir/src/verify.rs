@@ -340,7 +340,13 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // — kept as defense-in-depth against in-crate construction.
             if c.checked {
                 // A checked (runtime-validated) unbox is legal ONLY for the two
-                // stdlib raw-ABI boundary shapes (Phase 8H, D3).
+                // stdlib raw-ABI boundary shapes (Phase 8H, D3). These two shapes
+                // (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`) are the only checked
+                // admissions because each has a matching runtime guard that raises
+                // `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int`,
+                // `runtime/src/boxing.rs`). Never widen this set without adding the
+                // matching `rt_*` guard first — doing so reopens the Phase 8B–8F
+                // gradual-seam SEGV family. See PITFALLS B18.
                 let legal = c.from == Repr::Tagged
                     && matches!(c.to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
                 if !legal {

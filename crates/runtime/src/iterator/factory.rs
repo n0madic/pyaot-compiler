@@ -18,6 +18,7 @@ pub fn rt_iter_list(list: *mut Obj) -> *mut Obj {
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
 
     unsafe {
+        debug_assert_type_tag!(list, TypeTagKind::List, "rt_iter_list");
         let iter = obj as *mut IteratorObj;
         (*iter).kind = IteratorKind::List as u8;
         (*iter).exhausted = false;
@@ -45,6 +46,7 @@ pub fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
 
     unsafe {
+        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_iter_tuple");
         let iter = obj as *mut IteratorObj;
         (*iter).kind = IteratorKind::Tuple as u8;
         (*iter).exhausted = false;
@@ -68,6 +70,8 @@ pub extern "C" fn rt_iter_tuple_abi(tuple: Value) -> Value {
 pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj};
+
+    unsafe { debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_iter_dict"); }
 
     // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
     // (the iterator allocation below) so GC stress test cannot collect it.

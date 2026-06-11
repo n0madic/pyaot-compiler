@@ -5,6 +5,8 @@
 //! The source bytes are copied into a Rust `String` BEFORE any allocation, so
 //! no GC rooting is needed.
 
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
@@ -30,6 +32,7 @@ pub fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
         return std::ptr::null_mut();
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_upper");
         let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_uppercase()).collect();
         rt_make_str(result.as_ptr(), result.len())
     }
@@ -47,6 +50,7 @@ pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
         return std::ptr::null_mut();
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_lower");
         let result: String = str_obj_to_string(str_obj).chars().flat_map(|c| c.to_lowercase()).collect();
         rt_make_str(result.as_ptr(), result.len())
     }
@@ -66,6 +70,7 @@ pub fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_title");
         let mut result = String::new();
         let mut prev_cased = false;
         for c in str_obj_to_string(str_obj).chars() {
@@ -92,6 +97,7 @@ pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_capitalize");
         let mut result = String::new();
         for (i, c) in str_obj_to_string(str_obj).chars().enumerate() {
             if i == 0 {
@@ -116,6 +122,7 @@ pub fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_swapcase");
         let mut result = String::new();
         for c in str_obj_to_string(str_obj).chars() {
             if c.is_uppercase() {

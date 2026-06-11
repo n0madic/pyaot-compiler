@@ -37,6 +37,14 @@ impl CoerceInst {
     /// A CHECKED (runtime-validated) unbox at a stdlib raw-ABI boundary
     /// (Phase 8H, D3) — `Some` iff `from` is `Tagged` and `to` is `Raw(F64)`
     /// or `Raw(I64)` (the `rt_unbox_float` / `rt_unbox_int` shapes).
+    ///
+    /// These two shapes (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`) are the only
+    /// checked admissions because each has a matching runtime guard that raises
+    /// `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int`,
+    /// `runtime/src/boxing.rs`). Never widen this set without adding the matching
+    /// `rt_*` guard first — doing so reopens the Phase 8B–8F gradual-seam SEGV
+    /// family (a wrong-shape `Value` blind-cast to a typed heap pointer in a
+    /// frozen `rt_*`). See PITFALLS B18.
     pub fn new_checked(dst: LocalId, src: Operand, from: Repr, to: Repr) -> Option<Self> {
         let legal = from == Repr::Tagged
             && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));

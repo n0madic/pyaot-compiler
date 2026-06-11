@@ -2,6 +2,8 @@
 //!
 //! Uses Boyer-Moore-Horspool for efficient substring search in replace.
 
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
@@ -15,6 +17,9 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_replace");
+        debug_assert_type_tag!(old, TypeTagKind::Str, "rt_str_replace");
+        debug_assert_type_tag!(new, TypeTagKind::Str, "rt_str_replace");
         let src = str_obj as *mut StrObj;
         let old_str = old as *mut StrObj;
         let new_str = new as *mut StrObj;
@@ -191,6 +196,7 @@ pub fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_mul");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
         let count = count as usize;
@@ -253,6 +259,8 @@ pub fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_removeprefix");
+        debug_assert_type_tag!(prefix, TypeTagKind::Str, "rt_str_removeprefix");
         let str_obj = s as *mut StrObj;
         let prefix_obj = prefix as *mut StrObj;
 
@@ -334,6 +342,8 @@ pub fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_removesuffix");
+        debug_assert_type_tag!(suffix, TypeTagKind::Str, "rt_str_removesuffix");
         let str_obj = s as *mut StrObj;
         let suffix_obj = suffix as *mut StrObj;
 
@@ -409,6 +419,7 @@ pub fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
     }
 
     unsafe {
+        debug_assert_type_tag!(s, TypeTagKind::Str, "rt_str_expandtabs");
         let str_obj = s as *mut StrObj;
         let str_len = (*str_obj).len;
         let str_data = (*str_obj).data.as_ptr();

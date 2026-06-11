@@ -1,6 +1,8 @@
 //! Character predicate operations: isdigit, isalpha, isalnum, isspace, isupper, islower
 
-use crate::object::{Obj, StrObj};
+use crate::object::{Obj, StrObj, TypeTagKind};
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use pyaot_core_defs::Value;
 
 /// Check if all characters are digits
@@ -11,6 +13,7 @@ pub fn rt_str_isdigit(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isdigit");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -41,6 +44,7 @@ pub fn rt_str_isalpha(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isalpha");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -71,6 +75,7 @@ pub fn rt_str_isalnum(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isalnum");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -101,6 +106,7 @@ pub fn rt_str_isspace(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isspace");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -132,6 +138,7 @@ pub fn rt_str_isupper(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isupper");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -171,6 +178,7 @@ pub fn rt_str_islower(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_islower");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
@@ -211,6 +219,7 @@ pub fn rt_str_isascii(str_obj: *mut Obj) -> i8 {
     }
 
     unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_isascii");
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
