@@ -20,7 +20,14 @@
 
 #![forbid(unsafe_code)]
 
-use pyaot_mir::{verify, MirProgram, VerifyError};
+pub mod analysis;
+pub mod dce;
+#[cfg(test)]
+pub(crate) mod testutil;
+
+#[cfg(debug_assertions)]
+use pyaot_mir::verify;
+use pyaot_mir::{MirProgram, VerifyError};
 
 /// A representation-preserving rewrite over typed MIR. Passes are infallible
 /// transformations; the verifier (run by the [`PassManager`] after each pass) is
@@ -40,8 +47,15 @@ pub struct PassManager {
 impl PassManager {
     /// The Phase 1 pipeline: no passes. The boundary verify still runs, so the
     /// verifier discipline is exercised end-to-end before any pass exists.
+    /// Kept as the `--opt-level none` off-switch.
     pub fn phase1() -> Self {
         Self { passes: Vec::new() }
+    }
+
+    /// The Phase 9 pipeline (grows as the passes land; final order:
+    /// inline → constfold → peephole → dce → constfold → peephole → dce).
+    pub fn phase9() -> Self {
+        Self { passes: vec![Box::new(dce::Dce)] }
     }
 
     /// Append a pass (used as the pipeline grows in later phases).

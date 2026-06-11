@@ -447,6 +447,247 @@ impl MirInst {
             MirInst::Raise(_) => true,
         }
     }
+
+    /// Does executing this instruction have an effect observable outside its
+    /// own `dst`? "Effect" = may raise, performs I/O, or stores to memory
+    /// another instruction can read. **The single source of truth** for DCE
+    /// (Phase 9): an instruction with no side effects whose `dst` is never
+    /// read is removable. Allocation by itself is NOT an effect (an
+    /// unobserved fresh object is garbage from birth) — this predicate is
+    /// deliberately distinct from [`MirInst::may_allocate`].
+    ///
+    /// The match is exhaustive with NO catch-all arm — adding a `MirInst`
+    /// variant is a compile error here, never a silently-deleted effect.
+    /// `locals` resolves operand representations: a non-`Raw` operand routes
+    /// an arithmetic/comparison op through the runtime's tag dispatch, which
+    /// can raise (TypeError, ZeroDivisionError, …).
+    pub fn has_side_effects(&self, locals: &[LocalDecl]) -> bool {
+        let repr_of = |op: &Operand| match op {
+            Operand::Local(id) => &locals[id.index()].repr,
+        };
+        let non_raw = |op: &Operand| !matches!(repr_of(op), Repr::Raw(_));
+        match self {
+            // Materializing a constant (even a heap Str/Bytes/BigInt) only
+            // produces a fresh value in `dst`.
+            MirInst::Const { .. } => false,
+            // A `checked` unbox raises TypeError on a bad tag; every
+            // unchecked bridge is bit ops / a box allocation.
+            MirInst::Coerce(c) => c.checked(),
+            // Raw +,-,* and bitwise and/or/xor cannot raise; raw
+            // Div/FloorDiv/Mod (ZeroDivisionError), Pow / shifts (negative
+            // operand raises) can. Any non-raw operand tag-dispatches through
+            // the runtime, which can raise.
+            MirInst::BinOp { dst: _, op, l, r } => {
+                if non_raw(l) || non_raw(r) {
+                    return true;
+                }
+                match op {
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor => false,
+                    BinOp::Div
+                    | BinOp::FloorDiv
+                    | BinOp::Mod
+                    | BinOp::Pow
+                    | BinOp::Shl
+                    | BinOp::Shr => true,
+                }
+            }
+            MirInst::Unary { dst: _, op: _, operand } => non_raw(operand),
+            // A raw compare is a machine instruction; tagged comparison can
+            // re-enter user `__eq__` through the runtime.
+            MirInst::Compare { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
+            // Truthiness is a tag test / len check — never raises.
+            MirInst::Truthy { .. } => false,
+            // Calls run arbitrary code.
+            MirInst::Call { .. }
+            | MirInst::CallBuiltin { .. }
+            | MirInst::CallContainer { .. }
+            | MirInst::CallRuntime { .. }
+            | MirInst::CallVirtual { .. }
+            | MirInst::CallIndirect { .. } => true,
+            // Fresh-object construction observable only through `dst`.
+            MirInst::MakeInstance { .. }
+            | MirInst::MakeClosure { .. }
+            | MirInst::MakeCell { .. }
+            | MirInst::MakeGenerator { .. } => false,
+            // Reads of existing objects.
+            MirInst::GetField { .. }
+            | MirInst::GetClassAttr { .. }
+            | MirInst::IsInstance { .. }
+            | MirInst::CellGet { .. }
+            | MirInst::GlobalGet { .. } => false,
+            // Stores observable elsewhere.
+            MirInst::SetField { .. }
+            | MirInst::SetClassAttr { .. }
+            | MirInst::CellSet { .. }
+            | MirInst::GlobalSet { .. } => true,
+            // The by-name forms raise AttributeError on a miss (and the set
+            // form is a store besides).
+            MirInst::GetFieldNamed { .. } | MirInst::SetFieldNamed { .. } => true,
+            MirInst::AssertFail => true,
+            MirInst::Print { .. } => true,
+            // Generator state reads are loads off the generator object; the
+            // writes mutate it; Next/Send/Close re-enter the body.
+            MirInst::GenOpInst { dst: _, op, gen: _, imm: _, value: _ } => match op {
+                GenOp::GetLocal | GenOp::GetState | GenOp::GetSentValue | GenOp::IsClosing => {
+                    false
+                }
+                GenOp::SetLocal
+                | GenOp::SetState
+                | GenOp::SetExhausted
+                | GenOp::Next
+                | GenOp::Send
+                | GenOp::Close => true,
+            },
+            // Exception-frame bookkeeping mutates the runtime frame stack.
+            MirInst::ExcOp(_) => true,
+            // `Current` lazily materializes + caches the exception instance
+            // (a store into runtime state); `Matches*` are pure walks.
+            MirInst::ExcQuery { dst: _, query } => match query {
+                ExcQuery::Current => true,
+                ExcQuery::MatchesBuiltin(_) | ExcQuery::MatchesClass(_) => false,
+            },
+            // Formats through the runtime (may invoke user __str__ via the
+            // registered dunder for custom exception classes).
+            MirInst::ExcInstanceStr { .. } => true,
+            MirInst::Raise(_) => true,
+        }
+    }
+
+    /// The destination local this instruction writes, if any. The complement
+    /// of [`MirInst::has_side_effects`] for DCE: a side-effect-free
+    /// instruction whose `dst` (this) is never read is removable.
+    pub fn dst(&self) -> Option<LocalId> {
+        match self {
+            MirInst::Const { dst, .. }
+            | MirInst::BinOp { dst, .. }
+            | MirInst::Unary { dst, .. }
+            | MirInst::Compare { dst, .. }
+            | MirInst::Truthy { dst, .. }
+            | MirInst::MakeInstance { dst, .. }
+            | MirInst::GetField { dst, .. }
+            | MirInst::GetFieldNamed { dst, .. }
+            | MirInst::IsInstance { dst, .. }
+            | MirInst::GetClassAttr { dst, .. }
+            | MirInst::MakeClosure { dst, .. }
+            | MirInst::MakeCell { dst, .. }
+            | MirInst::CellGet { dst, .. }
+            | MirInst::GlobalGet { dst, .. }
+            | MirInst::MakeGenerator { dst, .. }
+            | MirInst::ExcQuery { dst, .. }
+            | MirInst::ExcInstanceStr { dst, .. } => Some(*dst),
+            MirInst::Coerce(c) => Some(c.dst()),
+            MirInst::Call { dst, .. }
+            | MirInst::CallBuiltin { dst, .. }
+            | MirInst::CallContainer { dst, .. }
+            | MirInst::CallRuntime { dst, .. }
+            | MirInst::CallVirtual { dst, .. }
+            | MirInst::CallIndirect { dst, .. }
+            | MirInst::GenOpInst { dst, .. } => *dst,
+            MirInst::SetField { .. }
+            | MirInst::SetFieldNamed { .. }
+            | MirInst::SetClassAttr { .. }
+            | MirInst::CellSet { .. }
+            | MirInst::GlobalSet { .. }
+            | MirInst::AssertFail
+            | MirInst::Print { .. }
+            | MirInst::ExcOp(_)
+            | MirInst::Raise(_) => None,
+        }
+    }
+
+    /// Visit every operand this instruction reads (NOT its `dst`). The shared
+    /// traversal for the optimizer's use-counting and rewriting.
+    pub fn for_each_operand(&self, mut f: impl FnMut(&Operand)) {
+        match self {
+            MirInst::Const { .. } => {}
+            MirInst::Coerce(c) => f(c.src()),
+            MirInst::BinOp { l, r, .. } | MirInst::Compare { l, r, .. } => {
+                f(l);
+                f(r);
+            }
+            MirInst::Unary { operand, .. } | MirInst::Truthy { operand, .. } => f(operand),
+            MirInst::Call { args, .. }
+            | MirInst::CallBuiltin { args, .. }
+            | MirInst::CallContainer { args, .. }
+            | MirInst::CallRuntime { args, .. } => args.iter().for_each(f),
+            MirInst::CallVirtual { recv, args, .. } => {
+                f(recv);
+                args.iter().for_each(f);
+            }
+            MirInst::CallIndirect { callee, args, .. } => {
+                f(callee);
+                args.iter().for_each(f);
+            }
+            MirInst::MakeInstance { .. } => {}
+            MirInst::GetField { base, .. } | MirInst::GetFieldNamed { base, .. } => f(base),
+            MirInst::SetField { base, value, .. }
+            | MirInst::SetFieldNamed { base, value, .. } => {
+                f(base);
+                f(value);
+            }
+            MirInst::IsInstance { value, .. }
+            | MirInst::SetClassAttr { value, .. }
+            | MirInst::ExcInstanceStr { value, .. } => f(value),
+            MirInst::GetClassAttr { .. } => {}
+            MirInst::AssertFail => {}
+            MirInst::Print { arg, .. } => {
+                if let Some(a) = arg {
+                    f(a);
+                }
+            }
+            MirInst::MakeClosure { captures, .. } => captures.iter().for_each(f),
+            MirInst::MakeCell { init, .. } => f(init),
+            MirInst::CellGet { cell, .. } => f(cell),
+            MirInst::CellSet { cell, value } => {
+                f(cell);
+                f(value);
+            }
+            MirInst::GlobalGet { .. } => {}
+            MirInst::GlobalSet { value, .. } => f(value),
+            MirInst::MakeGenerator { .. } => {}
+            MirInst::GenOpInst { gen, value, .. } => {
+                f(gen);
+                if let Some(v) = value {
+                    f(v);
+                }
+            }
+            MirInst::ExcOp(_) => {}
+            MirInst::ExcQuery { .. } => {}
+            MirInst::Raise(raise) => match raise {
+                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
+                    if let Some(m) = msg {
+                        f(m);
+                    }
+                }
+                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
+                    if let Some(m) = msg {
+                        f(m);
+                    }
+                    if let Some(m) = cause_msg {
+                        f(m);
+                    }
+                }
+                MirRaise::CustomWithInstance { msg, instance, .. } => {
+                    if let Some(m) = msg {
+                        f(m);
+                    }
+                    f(instance);
+                }
+                MirRaise::Stdlib { msg, .. } => {
+                    if let Some(m) = msg {
+                        f(m);
+                    }
+                }
+                MirRaise::Instance { value } => f(value),
+                MirRaise::Reraise => {}
+            },
+        }
+    }
 }
 
 /// The resolved shape of a `raise` (Phase 7). Mirrors the `rt_exc_*` raise

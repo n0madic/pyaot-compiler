@@ -145,7 +145,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     let opt_level = cli.effective_opt_level();
     let passes = match opt_level {
         OptLevelArg::None => pyaot_optimizer::PassManager::phase1(),
-        OptLevelArg::Speed | OptLevelArg::SpeedAndSize => pyaot_optimizer::PassManager::phase1(),
+        OptLevelArg::Speed | OptLevelArg::SpeedAndSize => pyaot_optimizer::PassManager::phase9(),
     };
     passes.run(&mut mir).map_err(verify_to_error)?;
 
