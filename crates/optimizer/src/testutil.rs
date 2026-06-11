@@ -25,7 +25,7 @@ pub fn function(locals: Vec<Repr>, blocks: Vec<(Vec<MirInst>, MirTerminator)>) -
         locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
         blocks: blocks
             .into_iter()
-            .map(|(insts, term)| MirBlock { insts, term })
+            .map(|(insts, term)| MirBlock { insts, term, handler: None })
             .collect(),
         entry: BlockId::new(0),
     }

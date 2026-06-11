@@ -94,7 +94,7 @@ pub fn current_depth() -> usize {
     unsafe { STACK_DEPTH }
 }
 
-/// Restore depth after longjmp (mirrors `gc::unwind_to`).
+/// Restore depth after an exception unwind (mirrors `gc::unwind_below`).
 pub fn unwind_to(depth: usize) {
     unsafe {
         STACK_DEPTH = depth;

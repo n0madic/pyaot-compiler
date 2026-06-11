@@ -72,6 +72,9 @@ fn blank_unreachable_blocks(f: &mut MirFunction) {
         if !reachable[i] && !already_blank {
             block.insts.clear();
             block.term = MirTerminator::Unreachable;
+            // A blanked block has no raising code; dropping its handler edge
+            // keeps the (now unreferenced) handler block collectable too.
+            block.handler = None;
         }
     }
 }

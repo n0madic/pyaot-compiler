@@ -1053,9 +1053,11 @@ fn resolve_relative(
 
 /// One active control scope, pushed while lowering its body (Phase 7
 /// generalization of the loop stack). Early exits (`return` / `break` /
-/// `continue`) walk this stack emitting each scope's cleanup; the stack is the
-/// single owner of frame-pop discipline (every protected-region exit pops its
-/// frame exactly once; handler entry never pops).
+/// `continue`) walk this stack emitting each scope's cleanup. Protected
+/// scopes carry the handler context OUTSIDE them (`outer`): leaving one on an
+/// early exit switches `cur_handler` back to `outer` in a fresh block, so the
+/// cleanup code itself (a finalbody, an `__exit__` call) is not protected by
+/// the region it is leaving — the static equivalent of the old frame pop.
 #[derive(Clone)]
 enum ScopeCtx {
     /// A loop body: `break`/`continue` jump targets; no cleanup of its own.
@@ -1063,15 +1065,21 @@ enum ScopeCtx {
         continue_to: Idx<HirBlock>,
         break_to: Idx<HirBlock>,
     },
-    /// A `try` body protected by an except frame. Cleanup: `PopFrame`.
-    TryFrame,
+    /// A `try` body protected by an except handler. Cleanup: exit the region.
+    TryFrame { outer: Option<Idx<HirBlock>> },
     /// An `except` handler body. Cleanup: `EndHandling`.
     Handler,
-    /// A `try` body protected by a finally frame. Cleanup: `PopFrame` + the
-    /// re-lowered (cloned) finalbody.
-    Finally { stmts: Vec<Stmt> },
-    /// A `with` body. Cleanup: `PopFrame` + `mgr.__exit__(None, None, None)`.
-    WithCleanup { mgr: LocalId },
+    /// A `try` body protected by a finally handler. Cleanup: exit the region +
+    /// the re-lowered (cloned) finalbody.
+    Finally {
+        outer: Option<Idx<HirBlock>>,
+        stmts: Vec<Stmt>,
+    },
+    /// A `with` body. Cleanup: exit the region + `mgr.__exit__(None, None, None)`.
+    WithCleanup {
+        outer: Option<Idx<HirBlock>>,
+        mgr: LocalId,
+    },
 }
 
 /// The element action of a comprehension: append to a list/set, or insert into a
@@ -1159,6 +1167,16 @@ pub(crate) struct FnLowerer<'a> {
     /// not by inspecting the placeholder `Unreachable` terminator — an explicit
     /// `Unreachable` seal (the `raise` shape) must stay sealed (Phase 7).
     sealed: HashSet<Idx<HirBlock>>,
+    /// The handler block protecting code emitted RIGHT NOW (table-based
+    /// unwinding): set while lowering a `try`/`with` body, restored on exit.
+    /// Stamped onto each block the first time it receives a statement or
+    /// terminator ([`Self::stamp_handler`]) — fill-time, not creation-time,
+    /// because join blocks are created inside a region but filled after it.
+    cur_handler: Option<Idx<HirBlock>>,
+    /// Blocks whose `handler` field has been stamped (distinguishes a stamped
+    /// `None` from "not filled yet", and backs the one-context-per-block
+    /// debug assertion).
+    stamped: HashSet<Idx<HirBlock>>,
     scope_stack: Vec<ScopeCtx>,
     /// Uniquifier for sibling synthetic functions (lambdas / nested defs).
     synth_counter: u32,
@@ -1198,6 +1216,7 @@ impl<'a> FnLowerer<'a> {
         let entry = blocks.alloc(HirBlock {
             stmts: Vec::new(),
             term: HirTerminator::Unreachable,
+            handler: None,
         });
         Self {
             interner,
@@ -1220,6 +1239,8 @@ impl<'a> FnLowerer<'a> {
             entry,
             cur: entry,
             sealed: HashSet::new(),
+            cur_handler: None,
+            stamped: HashSet::new(),
             scope_stack: Vec::new(),
             synth_counter: 0,
             self_capture: None,
@@ -1393,10 +1414,31 @@ impl<'a> FnLowerer<'a> {
         self.blocks.alloc(HirBlock {
             stmts: Vec::new(),
             term: HirTerminator::Unreachable,
+            handler: None,
         })
     }
 
+    /// Stamp the current block with the active handler context, first fill
+    /// wins. A block must only ever be filled under one context — the
+    /// structural lowerers split blocks whenever `cur_handler` changes — so a
+    /// re-stamp under a different context is a frontend bug (dead statements
+    /// pushed into an already-sealed block are exempt: they never run).
+    fn stamp_handler(&mut self) {
+        if !self.cur_open() {
+            return;
+        }
+        if self.stamped.insert(self.cur) {
+            self.blocks[self.cur].handler = self.cur_handler;
+        } else {
+            debug_assert_eq!(
+                self.blocks[self.cur].handler, self.cur_handler,
+                "block filled under two different handler contexts"
+            );
+        }
+    }
+
     fn push_stmt(&mut self, stmt: HirStmt) {
+        self.stamp_handler();
         self.blocks[self.cur].stmts.push(stmt);
     }
 
@@ -1406,6 +1448,7 @@ impl<'a> FnLowerer<'a> {
     /// terminator) because an explicit `Unreachable` seal — the Phase-7 `raise`
     /// shape — must not be overwritten by a later structural seal.
     fn seal(&mut self, term: HirTerminator) {
+        self.stamp_handler();
         if self.sealed.insert(self.cur) {
             self.blocks[self.cur].term = term;
         }
@@ -1525,18 +1568,23 @@ impl<'a> FnLowerer<'a> {
     /// `continue`) leaving every scope at index `down_to..`, innermost first.
     /// The stack itself is not popped — control statements elsewhere in the
     /// same scopes still need the entries.
+    ///
+    /// `cur_handler` is deliberately LEFT at the exit edge's final (outer)
+    /// context: the caller must seal the exit terminator in that context,
+    /// then restore `cur_handler` itself (lowering continues with dead-or-
+    /// live code in the original context). Use [`Self::with_exit_cleanups`].
     fn emit_exit_cleanups(&mut self, down_to: usize, span: Span) -> Result<()> {
         for i in (down_to..self.scope_stack.len()).rev() {
             match self.scope_stack[i].clone() {
                 ScopeCtx::Loop { .. } => {}
-                ScopeCtx::TryFrame => {
-                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                ScopeCtx::TryFrame { outer } => {
+                    self.exit_protected(outer);
                 }
                 ScopeCtx::Handler => {
                     self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
                 }
-                ScopeCtx::Finally { stmts } => {
-                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                ScopeCtx::Finally { outer, stmts } => {
+                    self.exit_protected(outer);
                     // Re-lower the finalbody on this exit edge. The scopes above
                     // `i` are already cleaned up, so the finalbody must see only
                     // the scopes BELOW this entry (a nested `return` inside it
@@ -1545,13 +1593,41 @@ impl<'a> FnLowerer<'a> {
                     self.lower_body(&stmts)?;
                     self.scope_stack.extend(saved);
                 }
-                ScopeCtx::WithCleanup { mgr } => {
-                    self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+                ScopeCtx::WithCleanup { outer, mgr } => {
+                    self.exit_protected(outer);
                     self.emit_exit_none_call(mgr, span);
                 }
             }
         }
         Ok(())
+    }
+
+    /// Run [`Self::emit_exit_cleanups`] plus the caller's exit-edge seal
+    /// under the exit context, then restore `cur_handler`.
+    fn with_exit_cleanups(
+        &mut self,
+        down_to: usize,
+        span: Span,
+        seal_exit: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        let saved = self.cur_handler;
+        self.emit_exit_cleanups(down_to, span)?;
+        seal_exit(self)?;
+        self.cur_handler = saved;
+        Ok(())
+    }
+
+    /// Leave a protected region on an exit path: the code that follows (the
+    /// region's cleanup, the rest of the exit edge) runs under the region's
+    /// OUTER handler, in a fresh block — the current block is already stamped
+    /// with the inner handler.
+    fn exit_protected(&mut self, outer: Option<Idx<HirBlock>>) {
+        if self.cur_open() && self.cur_handler != outer {
+            let b = self.new_block();
+            self.seal(HirTerminator::Jump(b));
+            self.switch(b);
+        }
+        self.cur_handler = outer;
     }
 
     /// Emit `mgr.__exit__(None, None, None)` as a statement (the normal-path
@@ -1701,8 +1777,10 @@ impl<'a> FnLowerer<'a> {
                 let ScopeCtx::Loop { break_to, .. } = self.scope_stack[loop_idx] else {
                     unreachable!()
                 };
-                self.emit_exit_cleanups(loop_idx + 1, span)?;
-                self.seal(HirTerminator::Jump(break_to));
+                self.with_exit_cleanups(loop_idx + 1, span, |this| {
+                    this.seal(HirTerminator::Jump(break_to));
+                    Ok(())
+                })?;
                 Ok(true)
             }
             Stmt::Continue(c) => {
@@ -1713,8 +1791,10 @@ impl<'a> FnLowerer<'a> {
                 let ScopeCtx::Loop { continue_to, .. } = self.scope_stack[loop_idx] else {
                     unreachable!()
                 };
-                self.emit_exit_cleanups(loop_idx + 1, span)?;
-                self.seal(HirTerminator::Jump(continue_to));
+                self.with_exit_cleanups(loop_idx + 1, span, |this| {
+                    this.seal(HirTerminator::Jump(continue_to));
+                    Ok(())
+                })?;
                 Ok(true)
             }
             Stmt::Return(r) => {
@@ -1725,8 +1805,10 @@ impl<'a> FnLowerer<'a> {
                     if let Some(e) = &r.value {
                         let _ = self.lower_expr(e.as_ref())?;
                     }
-                    self.emit_exit_cleanups(0, span)?;
-                    self.emit_gen_exhaust(span);
+                    self.with_exit_cleanups(0, span, |this| {
+                        this.emit_gen_exhaust(span);
+                        Ok(())
+                    })?;
                     return Ok(true);
                 }
                 if self
@@ -1756,9 +1838,11 @@ impl<'a> FnLowerer<'a> {
                     }
                     None => None,
                 };
-                self.emit_exit_cleanups(0, span)?;
-                let val = val.map(|tmp| self.local_ref(tmp, span));
-                self.seal(HirTerminator::Return(val));
+                self.with_exit_cleanups(0, span, |this| {
+                    let val = val.map(|tmp| this.local_ref(tmp, span));
+                    this.seal(HirTerminator::Return(val));
+                    Ok(())
+                })?;
                 Ok(true)
             }
             // Nested `def` (Phase 6A): a flat synthetic function plus a closure
@@ -2615,20 +2699,20 @@ impl<'a> FnLowerer<'a> {
         Ok(false)
     }
 
-    /// `try X finally F`: normal edge `PopFrame; <F>`; exceptional edge
-    /// `StartHandling; <F>; Reraise`. Early exits re-lower `<F>` via the
-    /// [`ScopeCtx::Finally`] entry.
+    /// `try X finally F`: normal edge exits the region then runs `<F>`;
+    /// exceptional edge `StartHandling; <F>; Reraise`. Early exits re-lower
+    /// `<F>` via the [`ScopeCtx::Finally`] entry.
     fn lower_try_finally(&mut self, t: &rustpython_parser::ast::StmtTry, span: Span) -> Result<()> {
         let try_b = self.new_block();
         let exc_b = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter {
-            normal: try_b,
-            handler: exc_b,
-        });
+        self.seal(HirTerminator::Jump(try_b));
 
         self.switch(try_b);
+        let outer = self.cur_handler;
+        self.cur_handler = Some(exc_b);
         self.scope_stack.push(ScopeCtx::Finally {
+            outer,
             stmts: t.finalbody.clone(),
         });
         if t.handlers.is_empty() {
@@ -2642,14 +2726,18 @@ impl<'a> FnLowerer<'a> {
         }
         self.scope_stack.pop();
         if self.cur_open() {
-            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+            // The finalbody runs OUTSIDE the region it guards (its own raise
+            // propagates outward, and `finally` must not re-run): exit to a
+            // fresh block under the outer handler.
+            self.exit_protected(outer);
             self.lower_body(&t.finalbody)?;
             self.seal(HirTerminator::Jump(join));
         }
+        self.cur_handler = outer;
 
-        // Exceptional edge: the frame is already popped by the dispatch. Park
-        // the in-flight exception (so a nested raise chains it as __context__),
-        // run the finalbody, then re-raise it.
+        // Exceptional edge (runs under the OUTER handler). Park the in-flight
+        // exception (so a nested raise chains it as __context__), run the
+        // finalbody, then re-raise it.
         self.switch(exc_b);
         self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
         self.lower_body(&t.finalbody)?;
@@ -2662,10 +2750,10 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
-    /// `try/except[/else]`: seal `TryEnter`, lower the body (frame popped on
-    /// normal exit, `else` after the pop so its exceptions escape), then the
-    /// handler chain (`Matches*` tests; tuple clause = OR-chain), with a
-    /// no-match tail that re-raises.
+    /// `try/except[/else]`: lower the body under the handler context, exit
+    /// the region on the normal edge (`else` after the exit so its exceptions
+    /// escape), then the handler chain (`Matches*` tests; tuple clause =
+    /// OR-chain), with a no-match tail that re-raises.
     fn lower_try_except(
         &mut self,
         body: &[Stmt],
@@ -2680,24 +2768,25 @@ impl<'a> FnLowerer<'a> {
         let try_b = self.new_block();
         let h_test = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter {
-            normal: try_b,
-            handler: h_test,
-        });
+        self.seal(HirTerminator::Jump(try_b));
 
         // ── try body ──
         self.switch(try_b);
-        self.scope_stack.push(ScopeCtx::TryFrame);
+        let outer = self.cur_handler;
+        self.cur_handler = Some(h_test);
+        self.scope_stack.push(ScopeCtx::TryFrame { outer });
         self.lower_body(body)?;
         self.scope_stack.pop();
         if self.cur_open() {
-            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
-            // `else` runs after the pop: its exceptions are NOT caught here.
+            // `else` runs after the region exit: its exceptions are NOT
+            // caught here.
+            self.exit_protected(outer);
             self.lower_body(orelse)?;
             self.seal(HirTerminator::Jump(join));
         }
+        self.cur_handler = outer;
 
-        // ── handler chain ──
+        // ── handler chain (runs under the OUTER handler) ──
         self.switch(h_test);
         for (hi, handler) in handlers.iter().enumerate() {
             let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = handler;
@@ -3195,23 +3284,25 @@ impl<'a> FnLowerer<'a> {
         let body_b = self.new_block();
         let exit_exc = self.new_block();
         let join = self.new_block();
-        self.seal(HirTerminator::TryEnter {
-            normal: body_b,
-            handler: exit_exc,
-        });
+        self.seal(HirTerminator::Jump(body_b));
 
         // ── body (or the next nested item) ──
         self.switch(body_b);
-        self.scope_stack.push(ScopeCtx::WithCleanup { mgr });
+        let outer = self.cur_handler;
+        self.cur_handler = Some(exit_exc);
+        self.scope_stack.push(ScopeCtx::WithCleanup { outer, mgr });
         self.lower_with_items(rest, body, span)?;
         self.scope_stack.pop();
         if self.cur_open() {
-            self.push_stmt(HirStmt::ExcOp(ExcOp::PopFrame));
+            // `__exit__` runs outside the region (its own raise propagates).
+            self.exit_protected(outer);
             self.emit_exit_none_call(mgr, span);
             self.seal(HirTerminator::Jump(join));
         }
+        self.cur_handler = outer;
 
-        // ── exceptional edge: r = mgr.__exit__(e, e, None); truthy swallows ──
+        // ── exceptional edge (under the OUTER handler):
+        //    r = mgr.__exit__(e, e, None); truthy swallows ──
         self.switch(exit_exc);
         let e_local = self.fresh_local_tagged();
         let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), SemTy::Dyn, span);

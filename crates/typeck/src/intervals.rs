@@ -595,28 +595,37 @@ fn refine_edge(
     }
 }
 
-/// A CFG edge label: `Some((cond, taken))` for a branch arm (carrying the
-/// condition expr and whether this is the taken side), or `None` for an
-/// unconditional edge.
-type Edge = Option<(Idx<HirExpr>, bool)>;
+/// A CFG edge label: plain flow, a branch arm (carrying the condition expr
+/// and whether this is the taken side), or the exceptional edge into a
+/// handler block.
+enum Edge {
+    Flow,
+    Branch(Idx<HirExpr>, bool),
+    /// A raise can leave the protected block at ANY mid-instruction point, so
+    /// no out-env describes the handler's in-state — the edge erases every
+    /// interval fact (all-⊤). Handlers are cold; the precision loss is
+    /// confined to handler blocks and their joins.
+    Handler,
+}
 
-/// The successors of a block as `(dense_index, edge)`.
+/// The successors of a block as `(dense_index, edge)`: the terminator's
+/// targets plus the handler edge for a protected block.
 fn successors(
-    term: &HirTerminator,
+    block: &HirBlock,
     index_of: &HashMap<Idx<HirBlock>, usize>,
 ) -> Vec<(usize, Edge)> {
-    match term {
+    let mut succ = match &block.term {
         HirTerminator::Return(_) | HirTerminator::Unreachable => Vec::new(),
-        HirTerminator::Jump(b) => vec![(index_of[b], None)],
+        HirTerminator::Jump(b) => vec![(index_of[b], Edge::Flow)],
         HirTerminator::Branch { cond, then, else_ } => vec![
-            (index_of[then], Some((*cond, true))),
-            (index_of[else_], Some((*cond, false))),
+            (index_of[then], Edge::Branch(*cond, true)),
+            (index_of[else_], Edge::Branch(*cond, false)),
         ],
-        // Handler entry carries the pre-`try` state unrefined (conservative).
-        HirTerminator::TryEnter { normal, handler } => {
-            vec![(index_of[normal], None), (index_of[handler], None)]
-        }
+    };
+    if let Some(h) = block.handler {
+        succ.push((index_of[&h], Edge::Handler));
     }
+    succ
 }
 
 /// The set of **loop-head** block indices — the targets of a back-edge (a DFS
@@ -675,7 +684,7 @@ fn analyze_func(
     let succ_of: Vec<Vec<usize>> = order
         .iter()
         .map(|&b| {
-            successors(&func.blocks[b].term, &index_of)
+            successors(&func.blocks[b], &index_of)
                 .into_iter()
                 .map(|(s, _)| s)
                 .collect()
@@ -697,10 +706,11 @@ fn analyze_func(
             let Some(env_b) = &in_env[bi] else { continue };
             let mut out = env_b.clone();
             transfer_block(func, resolve, &func.blocks[order[bi]], &mut out);
-            for (succ, edge) in successors(&func.blocks[order[bi]].term, &index_of) {
+            for (succ, edge) in successors(&func.blocks[order[bi]], &index_of) {
                 let refined = match edge {
-                    None => Some(out.clone()),
-                    Some((cond, taken)) => refine_edge(func, resolve, &out, cond, taken),
+                    Edge::Flow => Some(out.clone()),
+                    Edge::Branch(cond, taken) => refine_edge(func, resolve, &out, cond, taken),
+                    Edge::Handler => Some(top_env()),
                 };
                 if let Some(r) = refined {
                     if succ == entry {

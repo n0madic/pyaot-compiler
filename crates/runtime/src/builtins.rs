@@ -402,7 +402,7 @@ fn get_builtin_func_ptr_impl(builtin_id: i64) -> i64 {
 
 /// Get function pointer for a builtin by its ID.
 /// Called from codegen via BuiltinAddr instruction.
-/// Raises a RuntimeError (via longjmp) if `builtin_id` is out of range.
+/// Raises a RuntimeError (via the exception unwinder) if `builtin_id` is out of range.
 #[no_mangle]
 pub extern "C" fn rt_get_builtin_func_ptr(builtin_id: i64) -> i64 {
     match builtin_id {
@@ -472,7 +472,7 @@ mod tests {
     #[should_panic(expected = "Invalid builtin ID")]
     fn test_get_builtin_func_ptr_invalid() {
         // Use internal impl because the extern "C" version raises a Python exception
-        // (via longjmp) instead of panicking.
+        // (via the exception unwinder) instead of panicking.
         get_builtin_func_ptr_impl(100);
     }
 }

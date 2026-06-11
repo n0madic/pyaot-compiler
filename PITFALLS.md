@@ -126,17 +126,29 @@ truncate / sign-of-dividend. **Cooperate by:** routing `int//int` and `int%int`
 through the runtime ops (which apply the branchless `(r ^ b) < 0` adjustment) —
 never emit a raw machine `div`/`rem` for Python semantics.
 
-### B2. `longjmp` skips Rust destructors → leaks
-Exception unwinding via `longjmp` does not run `Drop`, so a `format!()` `String`
-built just before a raise leaks. **Cooperate by:** using the runtime's owned-
-message raise path (ownership transferred before the jump) for dynamic messages;
-byte-string literals for static messages.
+### B2. Exception unwinding skips Rust destructors → leaks
+The unwinder abandons every frame between the raise and the handler — Rust
+runtime frames included — without running `Drop` (exactly as the retired
+`longjmp` mechanism did), so a `format!()` `String` built just before a raise
+leaks. **Cooperate by:** using the runtime's owned-message raise path
+(ownership transferred to the `ExceptionObject` before the unwind) for dynamic
+messages; byte-string literals for static messages.
 
-### B3. `setjmp` must be called *directly* from generated code
-If `setjmp` is wrapped in a Rust function, by the time `longjmp` fires that
-frame is dead → SIGILL. It *appears* to work in release (LTO inlines the wrapper)
-and breaks in debug. **Cooperate by:** emitting the `setjmp` call directly in
-generated code at the handler site.
+### B3. Protected calls must present a `Tail`-convention callee
+Cranelift marks the EXCEPTIONAL edge of a `try_call` as clobbering ALL
+registers only when the *callee's* convention is `Tail`; for a `SystemV`
+callee the edge keeps callee-saved registers live — it assumes an
+Itanium-style unwinder that restores callee-saves from CFI while walking. Our
+unwinder restores SP/FP only, so a `try_call` directly to a SystemV target
+lets regalloc keep handler-live values in callee-saved registers, which hold
+runtime-Rust garbage at resume. **Why it bites:** the debug-built runtime
+barely touches callee-saved registers, so everything *appears* to work and
+breaks only against the optimized runtime — a debug-vs-release tell. (It bit
+exactly this way the day table-based unwinding landed: `preserve()` in
+`p7_raise_tryexcept.py` returned −1 under the release runtime only.)
+**Cooperate by:** routing every protected call through the generated
+`CallConv::Tail` trampolines (`Trampolines` in codegen) — never `try_call` a
+SystemV signature directly.
 
 ### B4. Empty container literals have no element type
 `[]` / `{}` infer no element type and default to a heap-element assumption; later
@@ -246,26 +258,21 @@ dispatch on the tag (fixnum fast path + `num-bigint`, demote on fit). A range-pr
 `Raw(I64)` fast path is a deliberate Phase-3 optimization gated on a proof that the
 operands cannot be bignum — never the default.
 
-### B17. Raising Cranelift `opt_level` re-opens the setjmp soundness argument
-**Trap:** the Phase-7 memory-backing of locals in `has_try` functions is sound
-*today* because codegen runs at `opt_level=none` (the default — no flag is set):
-every read is a `stack_load`, every write a `stack_store`, and nothing is
-scheduled or forwarded across the direct `setjmp` call. Turning on
-`opt_level=speed[_and_size]` (the obvious Phase-9 knob) enables Cranelift's
-e-graph optimizations, and the argument then silently starts depending on
-Cranelift's alias analysis treating *every call* as a memory clobber — if a
-store-to-load forwarding ever ran past the `setjmp` call into the handler edge,
-the handler would observe the pre-`try` value of a local reassigned inside the
-body (the classic setjmp-clobber miscompile, in its memory form). **Why it
-bites:** nothing fails at the moment the flag flips — the divergence appears
-only on the exceptional path of an optimized build, the exact debug-vs-release
-tell B3 warns about. **Avoided by:** treating the clobber assumption as a
-*tested* invariant, not a given: the corpus pins it (`test_exceptions.py`
-variable-preservation section; `p7_raise_tryexcept.py` `preserve()` covers
-Raw-spilled floats and rooted strs/ints), so re-run the differential gate in
-release *with the new opt level* before shipping Phase 9 — and if it breaks,
-the fallbacks are per-frame `volatile`-style loads via `MemFlags` or fencing
-the setjmp block boundary, never "hope the regalloc behaves".
+### B17. The unwinder's frame-walk preconditions are link-time, not local
+**Trap:** table-based unwinding (the Phase-7 follow-up that replaced setjmp)
+walks the frame-pointer chain from inside the runtime and restores SP/FP
+from `frame_offset` metadata. Three preconditions live OUTSIDE the unwinder
+and silently break it when violated: (1) Cranelift's
+`preserve_frame_pointers=true` flag — dropping it severs the chain mid-walk;
+(2) the runtime must be built with frame pointers (mandatory ABI on macOS
+arm64; needs `force-frame-pointers` on Linux x86-64); (3) every protected
+call goes through a `Tail` trampoline (B3). **Why it bites:** a violation
+shows up only on the exceptional path — usually as a "handler not found"
+unhandled-exit or a resume into garbage — while the happy path stays green.
+**Avoided by:** the corpus pins the behavior (`test_exceptions.py`
+variable-preservation; `p7_raise_tryexcept.py` `preserve()`), and the gate
+must run in BOTH debug and release (the register-state class of bug only
+reproduces against the optimized runtime).
 
 ### B18. Widening the checked-unbox shapes without a runtime guard
 **Trap:** the MIR verifier admits exactly two *checked* coercions —

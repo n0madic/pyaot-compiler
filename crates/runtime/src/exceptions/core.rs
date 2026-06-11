@@ -1,74 +1,16 @@
 //! Core exception types and internal raise machinery.
 //!
-//! Contains `ExceptionObject`, `ExceptionFrame`, and the internal functions
+//! Contains `ExceptionObject` and the internal functions
 //! `dispatch_to_handler`, `raise_with_owned_message`, `dispatch_existing_exception`,
-//! `copy_message_to_owned`, and exception printing utilities.
+//! `copy_message_to_owned`, and exception printing utilities. The control
+//! transfer itself (frame-pointer walk + jump) lives in [`super::unwind`].
 
 use std::ptr;
 
-use pyaot_core_defs::layout;
 use pyaot_core_defs::BuiltinExceptionKind;
 use std::cell::UnsafeCell;
 
 use super::state::{with_exception_state, with_exception_state_ref};
-
-/// Re-export from core-defs for backwards compatibility within the runtime crate.
-pub const JMP_BUF_SIZE: usize = layout::JMP_BUF_SIZE;
-
-// Compile-time assertions that JMP_BUF_SIZE is large enough for the platform's jmp_buf.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const _: () = assert!(
-    JMP_BUF_SIZE >= 192,
-    "JMP_BUF_SIZE too small for macOS arm64 jmp_buf (192 bytes)"
-);
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const _: () = assert!(
-    JMP_BUF_SIZE >= 148,
-    "JMP_BUF_SIZE too small for macOS x86_64 jmp_buf (148 bytes)"
-);
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const _: () = assert!(
-    JMP_BUF_SIZE >= 200,
-    "JMP_BUF_SIZE too small for Linux x86_64 jmp_buf (200 bytes)"
-);
-
-/// Assert at runtime that `JMP_BUF_SIZE` is large enough for the current platform's
-/// `jmp_buf`. Called from `rt_init` on startup so any mismatch fails loudly rather
-/// than silently corrupting the stack.
-///
-/// The platform-specific sizes match the compile-time `const` assertions above;
-/// this function covers any platform not handled by those `#[cfg]` guards.
-pub fn assert_jmp_buf_size() {
-    // Known platform sizes (bytes), mirroring the documented comment on JMP_BUF_SIZE.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let platform_size: usize = 192;
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    let platform_size: usize = 148;
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let platform_size: usize = 200;
-    // On unrecognized platforms, skip the check rather than refuse to compile.
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-    )))]
-    let platform_size: usize = 0;
-
-    assert!(
-        JMP_BUF_SIZE >= platform_size,
-        "JMP_BUF_SIZE ({JMP_BUF_SIZE}) is smaller than the platform jmp_buf size \
-         ({platform_size} bytes); update JMP_BUF_SIZE in exceptions.rs"
-    );
-}
-
-extern "C" {
-    // Note: setjmp is called directly from Cranelift-generated code, not from Rust.
-    // Only longjmp is called from the runtime.
-
-    /// longjmp: restore execution context saved by setjmp
-    /// val should be non-zero (typically 1)
-    pub(super) fn longjmp(env: *mut u8, val: i32) -> !;
-}
 
 /// Type alias: the runtime uses `BuiltinExceptionKind` directly from `core-defs`
 /// as its exception type enum. Both share the same `#[repr(u8)]` discriminant
@@ -84,48 +26,6 @@ pub const fn exception_type_from_tag(tag: u8) -> BuiltinExceptionKind {
     match BuiltinExceptionKind::from_tag(tag) {
         Some(kind) => kind,
         None => BuiltinExceptionKind::Exception,
-    }
-}
-
-/// Exception handler frame (linked list on stack)
-/// This structure is allocated on the stack in each function that has a try block
-#[repr(C)]
-pub struct ExceptionFrame {
-    /// Pointer to previous exception frame in the chain
-    pub prev: *mut ExceptionFrame,
-    /// Jump buffer for setjmp/longjmp
-    pub jmp_buf: [u8; JMP_BUF_SIZE],
-    /// Saved GC shadow stack top - restored when unwinding
-    pub gc_stack_top: *mut u8,
-    /// Saved traceback call stack depth - restored when unwinding
-    pub traceback_depth: usize,
-}
-
-// Compile-time assertions: ExceptionFrame layout must match codegen constants
-const _: () = assert!(
-    std::mem::size_of::<ExceptionFrame>() == layout::EXCEPTION_FRAME_SIZE as usize,
-    "ExceptionFrame size does not match layout::EXCEPTION_FRAME_SIZE"
-);
-const _: () = assert!(
-    std::mem::offset_of!(ExceptionFrame, jmp_buf) == layout::EXCEPTION_JMP_BUF_OFFSET as usize,
-    "ExceptionFrame jmp_buf offset does not match layout::EXCEPTION_JMP_BUF_OFFSET"
-);
-
-impl ExceptionFrame {
-    /// Create a new zeroed exception frame
-    pub const fn new() -> Self {
-        Self {
-            prev: ptr::null_mut(),
-            jmp_buf: [0u8; JMP_BUF_SIZE],
-            gc_stack_top: ptr::null_mut(),
-            traceback_depth: 0,
-        }
-    }
-}
-
-impl Default for ExceptionFrame {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -196,7 +96,7 @@ impl Drop for ExceptionObject {
 /// Collect all heap object pointers from exception state for GC root scanning.
 ///
 /// Exception instances are stored in thread-local `ExceptionState` (Rust heap),
-/// not in the GC shadow stack. When `longjmp` unwinds the shadow stack, these
+/// not in the GC shadow stack. When an exception unwind prunes the shadow stack, these
 /// pointers would be lost without explicit scanning. This function walks the
 /// current and handling exceptions (including cause/context chains) and returns
 /// all non-null instance pointers so the GC can mark them as roots.
@@ -226,7 +126,8 @@ pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
 
 // ==================== Internal raise machinery ====================
 
-/// Core exception raise logic: stores exception object and longjmps to nearest handler.
+/// Core exception raise logic: stores the exception object, then unwinds to
+/// the nearest handler (table-based: frame-pointer walk + jump).
 ///
 /// Called by `rt_exc_raise` (after copying message), `rt_exc_raise_owned` (zero-copy),
 /// and other raise variants after they build their ExceptionObject.
@@ -234,37 +135,10 @@ pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
 /// # Safety
 /// `exc_obj` must be a valid, fully initialized ExceptionObject.
 pub(super) unsafe fn dispatch_to_handler(exc_obj: Box<ExceptionObject>) -> ! {
-    let handler_frame = with_exception_state(|state| {
-        state.current_exception = Some(exc_obj);
-        state.handler_stack
-    });
-
-    // If no handler, print error and abort
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
-    }
-
-    // Unwind GC stack to saved position
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-
-    // Unwind traceback stack to saved position
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-
-    // Pop the handler frame (we're jumping to it)
     with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
+        state.current_exception = Some(exc_obj);
     });
-
-    // Jump to handler
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    dispatch_existing_exception()
 }
 
 /// Build an ExceptionObject from message parts and raise it.
@@ -324,32 +198,23 @@ pub(super) unsafe fn copy_message_to_owned(
     }
 }
 
-/// Dispatch an already-stored exception to the nearest handler.
-/// Used by rt_exc_reraise where the exception is already in current_exception.
+/// Dispatch the exception already stored in `current_exception` to the
+/// nearest handler: walk the frame-pointer chain, prune the GC shadow stack
+/// of the frames being abandoned, and jump. Exits with the CPython-style
+/// unhandled print when no handler protects any live frame.
 pub(super) unsafe fn dispatch_existing_exception() -> ! {
-    let handler_frame = with_exception_state(|state| state.handler_stack);
-
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
+    if let Some(h) = super::unwind::find_handler() {
+        // Shadow frames are stack slots of their owning functions; everything
+        // below the handler frame's SP belongs to abandoned frames.
+        crate::gc::unwind_below(h.sp);
+        super::unwind::resume(h)
     }
-
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-
     with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
+        if let Some(ref exc) = state.current_exception {
+            print_unhandled_exception_full(exc);
+        }
     });
-
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    std::process::exit(1);
 }
 
 // ==================== Exception printing ====================

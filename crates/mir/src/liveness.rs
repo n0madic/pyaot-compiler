@@ -11,11 +11,12 @@
 //! * **live after `I`** (excluding `I`'s own def — the allocation precedes the
 //!   definition, so the not-yet-written dst cannot be stale).
 //!
-//! plus the **handler rule**: a local live-in at any `TryEnter` handler block
-//! is rooted for the whole function. A longjmp can leave the try body from
-//! *any* potential raise point, so ordinary CFG liveness through the
-//! `TryEnter` edge under-approximates; whole-function store-on-def is exactly
-//! today's (sound) behavior for such locals.
+//! plus the **handler rule**: a local live-in at any handler block
+//! ([`crate::MirBlock::handler`]) is rooted. An unwind can leave a protected
+//! block from *any* raising instruction in it — including one before a
+//! mid-block redefinition — so ordinary CFG liveness through a block-level
+//! handler edge under-approximates; rooting every handler live-in (root slot
+//! + store-on-def) is sound and is exactly the old frame-stack behavior.
 //!
 //! The result only ever *narrows* the `Repr::is_gc_root()` set — rootness
 //! itself stays derived from `Repr` (Invariant 5); a `Raw` local is never
@@ -62,9 +63,11 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     }
 
     // ── classic backward worklist: live_in/live_out per block ──
+    // A protected block's handler is a CFG successor (control can transfer
+    // there from any raising instruction in the block).
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nblocks];
     for (bi, b) in f.blocks.iter().enumerate() {
-        for s in successors(&b.term) {
+        for s in successors(b) {
             preds[s].push(bi);
         }
     }
@@ -74,7 +77,7 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     while let Some(bi) = work.pop() {
         // live_out = ∪ live_in[succ]
         let mut out = vec![false; nlocals];
-        for s in successors(&f.blocks[bi].term) {
+        for s in successors(&f.blocks[bi]) {
             for (o, i) in out.iter_mut().zip(&live_in[s]) {
                 *o |= *i;
             }
@@ -131,7 +134,7 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
 
     // ── handler rule (see module docs) ──
     for b in &f.blocks {
-        if let MirTerminator::TryEnter { normal: _, handler } = &b.term {
+        if let Some(handler) = b.handler {
             for l in 0..nlocals {
                 if live_in[handler.index()][l] {
                     needed[l] = true;
@@ -147,18 +150,22 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     needed
 }
 
-/// The CFG successors of a terminator (exhaustive — no catch-all).
-fn successors(t: &MirTerminator) -> Vec<usize> {
-    match t {
+/// The CFG successors of a block: its terminator's targets plus its handler
+/// edge, if protected (exhaustive over terminators — no catch-all).
+fn successors(b: &crate::MirBlock) -> Vec<usize> {
+    let mut succ = match &b.term {
         MirTerminator::Return(_) | MirTerminator::Unreachable => vec![],
-        MirTerminator::Jump(b) => vec![b.index()],
+        MirTerminator::Jump(t) => vec![t.index()],
         MirTerminator::Branch {
             cond: _,
             then,
             else_,
         } => vec![then.index(), else_.index()],
-        MirTerminator::TryEnter { normal, handler } => vec![normal.index(), handler.index()],
+    };
+    if let Some(h) = b.handler {
+        succ.push(h.index());
     }
+    succ
 }
 
 /// The locals a terminator reads (exhaustive — no catch-all).
@@ -174,7 +181,7 @@ fn term_uses(t: &MirTerminator, mut f: impl FnMut(LocalId)) {
             then: _,
             else_: _,
         } => f(*l),
-        MirTerminator::Jump(_) | MirTerminator::TryEnter { .. } | MirTerminator::Unreachable => {}
+        MirTerminator::Jump(_) | MirTerminator::Unreachable => {}
     }
 }
 
@@ -508,6 +515,7 @@ mod tests {
                     print_str(1),
                 ],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
         );
         let needed = roots_needed(&f);
@@ -527,6 +535,7 @@ mod tests {
             vec![MirBlock {
                 insts: vec![alloc_str(0), alloc_str(1), print_str(0)],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
         );
         let needed = roots_needed(&f);
@@ -542,6 +551,7 @@ mod tests {
             vec![MirBlock {
                 insts: vec![alloc_str(0), print_str(0)],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
         );
         assert!(
@@ -559,6 +569,7 @@ mod tests {
             vec![MirBlock {
                 insts: vec![alloc_str(0)],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
         );
         assert!(
@@ -582,6 +593,7 @@ mod tests {
                     quiet_use(1, 0),
                 ],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
         );
         let needed = roots_needed(&f);
@@ -603,6 +615,7 @@ mod tests {
                 MirBlock {
                     insts: vec![alloc_str(0)],
                     term: MirTerminator::Jump(BlockId::new(1)),
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![alloc_str(1)],
@@ -611,10 +624,12 @@ mod tests {
                         then: BlockId::new(1),
                         else_: BlockId::new(2),
                     },
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![print_str(0)],
                     term: MirTerminator::Return(None),
+                    handler: None,
                 },
             ],
         );
@@ -640,18 +655,22 @@ mod tests {
                         then: BlockId::new(1),
                         else_: BlockId::new(2),
                     },
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![alloc_str(1)],
                     term: MirTerminator::Jump(BlockId::new(3)),
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![],
                     term: MirTerminator::Jump(BlockId::new(3)),
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![quiet_use(3, 0)],
                     term: MirTerminator::Return(None),
+                    handler: None,
                 },
             ],
         );
@@ -661,29 +680,30 @@ mod tests {
     }
 
     #[test]
-    fn handler_live_in_roots_for_whole_function() {
-        // b0: s0 := "a" (pre-try value printed in the handler); TryEnter -> b1 | b2
-        // b1 (try body): return
+    fn handler_live_in_is_rooted() {
+        // b0: s0 := "a" (pre-try value printed in the handler); jump b1
+        // b1 (protected try body, handler = b2): return
         // b2 (handler): print s0; return
         // The try body itself never allocates with s0 live, but the handler
-        // rule must root s0 anyway (longjmp can enter b2 from any raise).
+        // rule must root s0 anyway (an unwind can enter b2 from any raising
+        // instruction in b1).
         let f = func(
             vec![STR],
             vec![
                 MirBlock {
                     insts: vec![alloc_str(0)],
-                    term: MirTerminator::TryEnter {
-                        normal: BlockId::new(1),
-                        handler: BlockId::new(2),
-                    },
+                    term: MirTerminator::Jump(BlockId::new(1)),
+                    handler: None,
                 },
                 MirBlock {
                     insts: vec![],
                     term: MirTerminator::Return(None),
+                    handler: Some(BlockId::new(2)),
                 },
                 MirBlock {
                     insts: vec![print_str(0)],
                     term: MirTerminator::Return(None),
+                    handler: None,
                 },
             ],
         );

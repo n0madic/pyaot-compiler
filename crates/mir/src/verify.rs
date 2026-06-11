@@ -126,8 +126,9 @@ pub enum VerifyError {
     /// A `Raise`/`AssertFail` that is not the last instruction of its block, or
     /// whose block terminator is not `Unreachable` (Phase 7A).
     BadRaiseShape,
-    /// A `TryEnter` whose handler is the entry block (Phase 7A).
-    TryHandlerIsEntry,
+    /// A block whose `handler` annotation is the entry block (the entry has
+    /// no predecessor frame state to land in) or is out of range.
+    BadHandler { block: usize },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -260,8 +261,11 @@ impl std::fmt::Display for VerifyError {
                      with an Unreachable terminator"
                 )
             }
-            VerifyError::TryHandlerIsEntry => {
-                write!(f, "TryEnter handler must not be the entry block")
+            VerifyError::BadHandler { block } => {
+                write!(
+                    f,
+                    "block {block}: handler annotation is out of range or the entry block"
+                )
             }
         }
     }
@@ -373,7 +377,14 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
         });
     }
 
-    for block in &f.blocks {
+    for (bi, block) in f.blocks.iter().enumerate() {
+        // A handler annotation must name a real, non-entry block (the entry
+        // holds parameter setup and has no frame state to land in).
+        if let Some(h) = block.handler {
+            if h.index() >= nblocks || h == f.entry {
+                return Err(VerifyError::BadHandler { block: bi });
+            }
+        }
         for (i, inst) in block.insts.iter().enumerate() {
             verify_inst(f, funcs, inst)?;
             // A diverging instruction must be last, with `Unreachable` after it
@@ -396,13 +407,6 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
                 }
                 check_block(f, *then)?;
                 check_block(f, *else_)?;
-            }
-            MirTerminator::TryEnter { normal, handler } => {
-                check_block(f, *normal)?;
-                check_block(f, *handler)?;
-                if *handler == f.entry {
-                    return Err(VerifyError::TryHandlerIsEntry);
-                }
             }
             MirTerminator::Unreachable => {}
         }
@@ -1032,7 +1036,11 @@ mod tests {
             params: Vec::new(),
             ret: Repr::Tagged,
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
-            blocks: vec![MirBlock { insts, term }],
+            blocks: vec![MirBlock {
+                insts,
+                term,
+                handler: None,
+            }],
             entry: BlockId::new(0),
         }
     }
@@ -1490,6 +1498,7 @@ mod tests {
             blocks: vec![MirBlock {
                 insts: vec![],
                 term: MirTerminator::Return(None),
+                handler: None,
             }],
             entry: BlockId::new(0),
         };
@@ -1635,18 +1644,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_try_enter_handler_at_entry() {
-        let f = single_block(
-            vec![],
-            vec![],
-            MirTerminator::TryEnter {
-                normal: BlockId::new(0),
-                handler: BlockId::new(0),
-            },
-        );
+    fn rejects_handler_at_entry() {
+        let mut f = single_block(vec![], vec![], MirTerminator::Return(None));
+        f.blocks[0].handler = Some(BlockId::new(0));
         assert!(matches!(
             verify(&f, &[]),
-            Err(VerifyError::TryHandlerIsEntry)
+            Err(VerifyError::BadHandler { block: 0 })
+        ));
+    }
+
+    #[test]
+    fn rejects_handler_out_of_range() {
+        let mut f = single_block(vec![], vec![], MirTerminator::Return(None));
+        f.blocks[0].handler = Some(BlockId::new(7));
+        assert!(matches!(
+            verify(&f, &[]),
+            Err(VerifyError::BadHandler { block: 0 })
         ));
     }
 

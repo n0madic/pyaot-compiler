@@ -216,6 +216,13 @@ impl HirFunction {
 pub struct HirBlock {
     pub stmts: Vec<HirStmt>,
     pub term: HirTerminator,
+    /// The exception-handler block protecting this block's code, if it is
+    /// lexically inside a `try` body / `with` body (table-based unwinding —
+    /// the static replacement for the Phase-7 frame stack). A raise anywhere
+    /// in this block — directly or from any call — lands at `handler`.
+    /// Handler blocks themselves carry the *outer* handler (or `None`), which
+    /// is what makes a raise inside an `except` body propagate outward.
+    pub handler: Option<Idx<HirBlock>>,
 }
 
 // ============================================================================
@@ -572,14 +579,13 @@ pub fn semty_from_typespec(spec: &pyaot_stdlib_defs::TypeSpec) -> SemTy {
 // Exceptions (Phase 7)
 // ============================================================================
 
-/// An exception-frame bookkeeping op (Phase 7A), emitted only by the frontend's
+/// An exception-state bookkeeping op (Phase 7A), emitted only by the frontend's
 /// `try`/`with`/`finally` desugar. Each maps 1:1 to a runtime call:
-/// `rt_exc_pop_frame` / `rt_exc_start_handling` / `rt_exc_end_handling`.
+/// `rt_exc_start_handling` / `rt_exc_end_handling`. (The frame push/pop ops
+/// are gone — protected regions are static [`HirBlock::handler`] annotations
+/// consumed by table-based unwinding, not runtime frames.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExcOp {
-    /// Normal exit from a protected region pops its frame exactly once.
-    /// Handler entry never pops — `dispatch_to_handler` already did.
-    PopFrame,
     /// Handler entry: move the current exception into "handling" state (so a
     /// nested raise chains it as `__context__`).
     StartHandling,
@@ -1201,13 +1207,6 @@ pub enum HirTerminator {
         cond: Idx<HirExpr>,
         then: Idx<HirBlock>,
         else_: Idx<HirBlock>,
-    },
-    /// Enter a protected region (Phase 7A): push an exception frame + `setjmp`.
-    /// Falls through to `normal`; a raise inside the region longjmps to
-    /// `handler` (with the frame already popped by `dispatch_to_handler`).
-    TryEnter {
-        normal: Idx<HirBlock>,
-        handler: Idx<HirBlock>,
     },
     /// Provably unreachable (e.g. the fall-through of an `assert` fail block).
     Unreachable,

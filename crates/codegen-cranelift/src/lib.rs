@@ -20,15 +20,17 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use cranelift_codegen::ir::{
-    condcodes::IntCC, types, AbiParam, InstBuilder, MemFlags, Signature, StackSlot, StackSlotData,
-    StackSlotKind, TrapCode, Type, Value,
+    condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
+    ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
+    StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
+use cranelift_codegen::FinalizedMachExceptionHandler;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
@@ -212,12 +214,10 @@ struct RuntimeFns {
     gen_is_closing: FuncId,
     gen_send: FuncId,
     gen_close: FuncId,
-    // ── exceptions (Phase 7) ──
-    /// libc `setjmp` — called DIRECTLY from generated code (B3; a Rust wrapper
-    /// would return and invalidate the saved frame).
-    setjmp: FuncId,
-    exc_push_frame: FuncId,
-    exc_pop_frame: FuncId,
+    // ── exceptions (Phase 7, table-based unwinding) ──
+    /// `rt_exc_register_table(ptr, count)` — called once from `main` before
+    /// user code; hands the runtime this module's PC→handler table.
+    exc_register_table: FuncId,
     exc_raise: FuncId,
     exc_raise_from: FuncId,
     exc_raise_from_none: FuncId,
@@ -237,6 +237,11 @@ struct RuntimeFns {
     exc_register_class_name: FuncId,
     str_data: FuncId,
     str_len: FuncId,
+    /// Runtime helpers that can NEVER reach a raise path: inside a protected
+    /// block these stay plain `call`s (everything else becomes a `try_call`
+    /// with the handler edge). Conservative — a function missing here only
+    /// costs a needless exceptional edge, never a missed handler.
+    never_raises: HashSet<FuncId>,
 }
 
 impl RuntimeFns {
@@ -246,7 +251,7 @@ impl RuntimeFns {
         let t32 = types::I32;
         let tf = types::F64;
         let mut d = |name: &str, p: &[Type], r: &[Type]| declare_import(m, cc, name, p, r);
-        Ok(Self {
+        let mut fns = Self {
             init: d("rt_init", &[t32, ptr], &[])?,
             shutdown: d("rt_shutdown", &[], &[])?,
             make_str: d("rt_make_str", &[ptr, ti], &[ti])?,
@@ -406,11 +411,10 @@ impl RuntimeFns {
             gen_is_closing: d("rt_generator_is_closing", &[ti], &[t8])?,
             gen_send: d("rt_generator_send", &[ti, ti], &[ti])?,
             gen_close: d("rt_generator_close", &[ti], &[])?,
-            // Exceptions (Phase 7). Tags / class ids are u8 at the ABI; message
-            // pointers + lengths come from rt_str_data/rt_str_len of a StrObj.
-            setjmp: d("setjmp", &[ptr], &[t32])?,
-            exc_push_frame: d("rt_exc_push_frame", &[ptr], &[])?,
-            exc_pop_frame: d("rt_exc_pop_frame", &[], &[])?,
+            // Exceptions (Phase 7, table-based unwinding). Tags / class ids
+            // are u8 at the ABI; message pointers + lengths come from
+            // rt_str_data/rt_str_len of a StrObj.
+            exc_register_table: d("rt_exc_register_table", &[ptr, ti], &[])?,
             exc_raise: d("rt_exc_raise", &[t8, ptr, ti], &[])?,
             exc_raise_from: d("rt_exc_raise_from", &[t8, ptr, ti, t8, ptr, ti], &[])?,
             exc_raise_from_none: d("rt_exc_raise_from_none", &[t8, ptr, ti], &[])?,
@@ -430,7 +434,46 @@ impl RuntimeFns {
             exc_register_class_name: d("rt_exc_register_class_name", &[t8, ptr, ti], &[])?,
             str_data: d("rt_str_data", &[ti], &[ptr])?,
             str_len: d("rt_str_len", &[ti], &[ti])?,
-        })
+            never_raises: HashSet::new(),
+        };
+        fns.never_raises = [
+            fns.gc_push,
+            fns.gc_pop,
+            fns.str_data,
+            fns.str_len,
+            fns.exc_start_handling,
+            fns.exc_end_handling,
+            fns.exc_isinstance_class,
+            fns.exc_get_current,
+        ]
+        .into_iter()
+        .collect();
+        Ok(fns)
+    }
+}
+
+/// Build an [`AbiParam`] for a GENERATED function's signature. Plain — both
+/// sides of every generated↔generated call are Cranelift+SystemV, which
+/// assumes no sub-word extension (Cranelift's `get_ext_mode` ignores
+/// extension attributes for SystemV), so caller and callee agree by
+/// construction.
+fn abi_param(ty: Type) -> AbiParam {
+    AbiParam::new(ty)
+}
+
+/// Import-signature param: sub-word integers are declared (and passed) as
+/// I32. Rust/Clang callees may assume `zeroext` on `u8`/`bool` parameters
+/// (the Apple aarch64 ABI mandates the extension; LLVM emits the assumption
+/// on x86-64 SysV too), but Cranelift's SystemV lowering IGNORES `uext`
+/// attributes — so the widening lives in the signature itself, with an
+/// explicit `uextend` at each call site ([`FnGen::call`] inserts it on type
+/// mismatch). The register-level contents satisfy both sides: low byte is
+/// the value, high bits are zero.
+fn import_param(ty: Type) -> AbiParam {
+    if ty == types::I8 || ty == types::I16 {
+        AbiParam::new(types::I32)
+    } else {
+        AbiParam::new(ty)
     }
 }
 
@@ -442,7 +485,9 @@ fn declare_import(
     returns: &[Type],
 ) -> Result<FuncId> {
     let mut sig = Signature::new(cc);
-    sig.params.extend(params.iter().copied().map(AbiParam::new));
+    sig.params.extend(params.iter().copied().map(import_param));
+    // Returns keep their narrow type: Cranelift only ever reads the low bits
+    // of a sub-word return, so no extension assumption is made either way.
     sig.returns
         .extend(returns.iter().copied().map(AbiParam::new));
     module
@@ -464,17 +509,10 @@ pub enum OptLevel {
 
 /// Codegen knobs threaded from the CLI into [`compile`].
 ///
-/// PITFALLS B17: locals of `has_try` functions are memory-backed (stack
-/// slots), and the soundness of that under `opt_level=speed` rests on
-/// Cranelift's alias analysis treating every call as a potential clobber of
-/// memory — so a load of a stack slot after `rt_exc_try_enter` (a call) can
-/// never be forwarded from a store that preceded the call. If a Cranelift
-/// upgrade ever sharpens alias analysis across calls, the fallback ladder is:
-/// (1) the differential corpus run in release pins the invariant and catches
-/// the divergence; (2) set `alias_analysis: false` (the `--no-alias-analysis`
-/// escape hatch — disables the redundant-load pass while keeping the rest of
-/// `speed`); (3) compile `has_try` functions in a separate `opt_level=none`
-/// module.
+/// Exception handling is table-based (`try_call` + the unwind table), so no
+/// opt-level/aliasing interaction with the exceptional path remains: handler
+/// edges are ordinary CFG edges Cranelift understands (PITFALLS B17 now
+/// covers the unwinder's frame-walk preconditions instead).
 #[derive(Debug, Clone, Copy)]
 pub struct CodegenOptions {
     pub opt_level: OptLevel,
@@ -521,6 +559,12 @@ pub fn compile(
             if opts.alias_analysis { "true" } else { "false" },
         )
         .map_err(|e| cg_error(format!("set enable_alias_analysis: {e}")))?;
+    // The runtime unwinder walks the FP chain to find handlers — every frame
+    // (leaf functions included) must link it (mandatory on macOS arm64
+    // anyway; this makes Linux x86_64 behave the same).
+    flag_builder
+        .set("preserve_frame_pointers", "true")
+        .map_err(|e| cg_error(format!("set preserve_frame_pointers: {e}")))?;
     let flags = settings::Flags::new(flag_builder);
 
     let isa_builder =
@@ -534,7 +578,14 @@ pub fn compile(
     let mut module = ObjectModule::new(builder);
 
     let ptr_ty = module.target_config().pointer_type();
-    let call_conv = CallConv::triple_default(module.isa().triple());
+    // `CallConv::SystemV` everywhere — `try_call` callees must use a
+    // convention with `supports_exceptions()` (SystemV/Tail), which rules out
+    // `AppleAarch64`. On aarch64 SystemV is standard AAPCS64; it diverges from
+    // Apple's convention only for sub-8-byte stack arguments and varargs,
+    // neither of which crosses our seam (every cross-ABI argument is a
+    // register-class i64/f64/pointer, and sub-word register args are
+    // explicitly `uext`-extended via [`abi_param`]).
+    let call_conv = CallConv::SystemV;
 
     let rt = RuntimeFns::declare(&mut module, call_conv, ptr_ty)?;
 
@@ -559,7 +610,7 @@ pub fn compile(
     for (i, mf) in program.funcs.iter().enumerate() {
         let mut sig = Signature::new(call_conv);
         for p in &mf.params {
-            sig.params.push(AbiParam::new(clif_ty(p)));
+            sig.params.push(abi_param(clif_ty(p)));
         }
         sig.returns.push(AbiParam::new(clif_ty(&mf.ret)));
         // Symbol = index + sanitized Python name (Phase 9E debug polish):
@@ -614,9 +665,12 @@ pub fn compile(
         vtable_ids.insert(c.class_id.0, data_id);
     }
 
-    // Define each function body.
+    // Define each function body, harvesting its protected call sites for the
+    // program-wide unwind table.
+    let mut exc_sites: Vec<(FuncId, Vec<ExcSite>)> = Vec::new();
+    let mut trampolines = Trampolines::default();
     for (i, mf) in program.funcs.iter().enumerate() {
-        define_function(
+        let sites = define_function(
             &mut module,
             mf,
             func_ids[i],
@@ -625,8 +679,15 @@ pub fn compile(
             &data_ids,
             ptr_ty,
             call_conv,
+            &mut trampolines,
         )?;
+        if !sites.is_empty() {
+            exc_sites.push((func_ids[i], sites));
+        }
     }
+    define_trampolines(&mut module, trampolines)?;
+
+    let exc_table = emit_exc_table(&mut module, &exc_sites)?;
 
     // Class registration (`__pyaot_classinit`) runs before `__main__`, so every
     // class is registered before any instance is created (incl. module-top-level
@@ -650,6 +711,7 @@ pub fn compile(
         &mut module,
         func_ids[program.entry.index()],
         classinit,
+        exc_table,
         &rt,
         ptr_ty,
         call_conv,
@@ -765,7 +827,7 @@ fn emit_classinit(
         builder.seal_block(entry);
 
         for c in &program.classes {
-            let cid8 = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+            let cid8 = builder.ins().iconst(types::I32, c.class_id.0 as i64);
             // Runtime parent: a user parent; else, for an exception class, its
             // builtin base tag (builtin tags ARE runtime class ids, so the
             // registry walk reaches the pre-seeded builtin hierarchy — 7C);
@@ -775,7 +837,7 @@ fn emit_classinit(
                 .map(|p| p.0 as i64)
                 .or(c.exception_base.map(|t| t as i64))
                 .unwrap_or(255);
-            let parent8 = builder.ins().iconst(types::I8, parent);
+            let parent8 = builder.ins().iconst(types::I32, parent);
             let rc = module.declare_func_in_func(rt.register_class, builder.func);
             builder.ins().call(rc, &[cid8, parent8]);
 
@@ -787,12 +849,12 @@ fn emit_classinit(
                 let gv = module.declare_data_in_func(data_id, builder.func);
                 let nptr = builder.ins().global_value(_ptr_ty, gv);
                 let nlen = builder.ins().iconst(types::I64, len as i64);
-                let cid8n = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let cid8n = builder.ins().iconst(types::I32, c.class_id.0 as i64);
                 let regn = module.declare_func_in_func(rt.exc_register_class_name, builder.func);
                 builder.ins().call(regn, &[cid8n, nptr, nlen]);
             }
 
-            let cid8b = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+            let cid8b = builder.ins().iconst(types::I32, c.class_id.0 as i64);
             let fc = builder.ins().iconst(types::I64, c.field_count as i64);
             let rfc = module.declare_func_in_func(rt.register_class_field_count, builder.func);
             builder.ins().call(rfc, &[cid8b, fc]);
@@ -816,7 +878,7 @@ fn emit_classinit(
             if let Some(vt_data) = vtable_ids.get(&c.class_id.0) {
                 let gv = module.declare_data_in_func(*vt_data, builder.func);
                 let vptr = builder.ins().global_value(_ptr_ty, gv);
-                let cid8c = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let cid8c = builder.ins().iconst(types::I32, c.class_id.0 as i64);
                 let rv = module.declare_func_in_func(rt.register_vtable, builder.func);
                 builder.ins().call(rv, &[cid8c, vptr]);
 
@@ -856,7 +918,7 @@ fn emit_classinit(
             // store it into its (class_id, attr_idx) slot.
             for (attr_idx, val) in &c.class_attr_inits {
                 let v = materialize_const(&mut builder, module, rt, data_ids, _ptr_ty, val)?;
-                let cida = builder.ins().iconst(types::I8, c.class_id.0 as i64);
+                let cida = builder.ins().iconst(types::I32, c.class_id.0 as i64);
                 let idxa = builder.ins().iconst(types::I32, *attr_idx as i64);
                 let setp = module.declare_func_in_func(rt.class_attr_set_ptr, builder.func);
                 builder.ins().call(setp, &[cida, idxa, v]);
@@ -941,11 +1003,73 @@ fn materialize_const(
     Ok(v)
 }
 
-/// `main(argc, argv)` → rt_init → (classinit) → call `__main__` → rt_shutdown → 0.
+/// Emit the unwind-table data object: `count` 24-byte records
+/// `{ func_addr: ptr (relocated), site_off: u32, handler_off: u32,
+/// frame_off: u32, _pad: u32 }`, one per protected machine call site (layout
+/// pinned in `pyaot_core_defs::layout`). The runtime resolves each record to
+/// an absolute return-PC at registration time and binary-searches it when a
+/// raise unwinds. Returns `None` when the program has no protected sites.
+fn emit_exc_table(
+    module: &mut ObjectModule,
+    sites: &[(FuncId, Vec<ExcSite>)],
+) -> Result<Option<(DataId, u64)>> {
+    use pyaot_core_defs::layout::{
+        EXC_RECORD_FRAME_OFF_OFFSET, EXC_RECORD_HANDLER_OFF_OFFSET, EXC_RECORD_SITE_OFF_OFFSET,
+        EXC_TABLE_RECORD_SIZE,
+    };
+    let count: usize = sites.iter().map(|(_, s)| s.len()).sum();
+    if count == 0 {
+        return Ok(None);
+    }
+    let rec = EXC_TABLE_RECORD_SIZE as usize;
+    let mut bytes = vec![0u8; count * rec];
+    {
+        let mut off = 0usize;
+        for (_, fsites) in sites {
+            for s in fsites {
+                let w = |b: &mut [u8], at: usize, v: u32| {
+                    b[at..at + 4].copy_from_slice(&v.to_le_bytes())
+                };
+                w(&mut bytes, off + EXC_RECORD_SITE_OFF_OFFSET as usize, s.ret_off);
+                w(
+                    &mut bytes,
+                    off + EXC_RECORD_HANDLER_OFF_OFFSET as usize,
+                    s.handler_off,
+                );
+                w(&mut bytes, off + EXC_RECORD_FRAME_OFF_OFFSET as usize, s.frame_off);
+                off += rec;
+            }
+        }
+    }
+    let data_id = module
+        .declare_data("pyaot_exc_table", Linkage::Local, false, false)
+        .map_err(|e| cg_error(format!("declare exc table: {e}")))?;
+    let mut desc = DataDescription::new();
+    desc.set_align(8);
+    desc.define(bytes.into_boxed_slice());
+    let mut off = 0usize;
+    for (fid, fsites) in sites {
+        let fref = module.declare_func_in_data(*fid, &mut desc);
+        for _ in fsites {
+            // func_addr at record offset 0 — a pointer-sized relocation.
+            desc.write_function_addr(off as u32, fref);
+            off += rec;
+        }
+    }
+    module
+        .define_data(data_id, &desc)
+        .map_err(|e| cg_error(format!("define exc table: {e}")))?;
+    Ok(Some((data_id, count as u64)))
+}
+
+/// `main(argc, argv)` → rt_init → register unwind table → (classinit) →
+/// call `__main__` → rt_shutdown → 0.
+#[allow(clippy::too_many_arguments)]
 fn emit_main(
     module: &mut ObjectModule,
     entry_fn: FuncId,
     classinit: Option<FuncId>,
+    exc_table: Option<(DataId, u64)>,
     rt: &RuntimeFns,
     ptr_ty: Type,
     cc: CallConv,
@@ -973,6 +1097,16 @@ fn emit_main(
 
         let init = module.declare_func_in_func(rt.init, builder.func);
         builder.ins().call(init, &[argc, argv]);
+
+        // Hand the runtime the PC→handler unwind table before any user code
+        // can raise.
+        if let Some((data_id, count)) = exc_table {
+            let gv = module.declare_data_in_func(data_id, builder.func);
+            let ptr = builder.ins().global_value(ptr_ty, gv);
+            let cnt = builder.ins().iconst(types::I64, count as i64);
+            let reg = module.declare_func_in_func(rt.exc_register_table, builder.func);
+            builder.ins().call(reg, &[ptr, cnt]);
+        }
 
         // Register all classes before running module-body code (which may build
         // instances at the top level).
@@ -1008,10 +1142,11 @@ fn define_function(
     data_ids: &HashMap<InternedString, (DataId, u32)>,
     ptr_ty: Type,
     cc: CallConv,
-) -> Result<()> {
+    trampolines: &mut Trampolines,
+) -> Result<Vec<ExcSite>> {
     let mut sig = Signature::new(cc);
     for p in &mf.params {
-        sig.params.push(AbiParam::new(clif_ty(p)));
+        sig.params.push(abi_param(clif_ty(p)));
     }
     sig.returns.push(AbiParam::new(clif_ty(&mf.ret)));
 
@@ -1070,52 +1205,6 @@ fn define_function(
             (None, None)
         };
 
-        // ── setjmp-clobbered locals (Phase 7A, the B3 correctness design) ──
-        // A function containing any `TryEnter` gets FULL memory-backing: every
-        // read re-loads from a stack home, every write stores. Rooted locals'
-        // home is their roots-array slot (already stored on def); each raw
-        // local gets a zero-initialized spill slot. The lying setjmp→handler
-        // edge then only ever observes memory, which `dispatch_to_handler`
-        // leaves intact — no Cranelift `Variable` is live across the setjmp,
-        // so register allocation cannot cache a stale copy (no `returns_twice`
-        // attribute needed). Functions without try keep the fast Variable path.
-        let has_try = mf
-            .blocks
-            .iter()
-            .any(|b| matches!(b.term, MirTerminator::TryEnter { .. }));
-        let mut spill_slot_of: Vec<Option<StackSlot>> = vec![None; mf.locals.len()];
-        if has_try {
-            // Every local WITHOUT a roots-array slot needs a memory home —
-            // raw locals AND gc-rootable locals the liveness narrowing
-            // de-rooted (their home is a plain spill slot; the GC need not
-            // scan it, the analysis proved they are never live at a
-            // collection point).
-            for (i, _local) in mf.locals.iter().enumerate() {
-                if root_slot_of[i].is_none() {
-                    spill_slot_of[i] = Some(builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    )));
-                }
-            }
-        }
-        // One ExceptionFrame stack slot per `TryEnter` occurrence (nested
-        // regions need distinct frames), keyed by the block that ends in it.
-        let mut exc_frame_slots: HashMap<usize, StackSlot> = HashMap::new();
-        for (bi, b) in mf.blocks.iter().enumerate() {
-            if matches!(b.term, MirTerminator::TryEnter { .. }) {
-                exc_frame_slots.insert(
-                    bi,
-                    builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        pyaot_core_defs::layout::EXCEPTION_FRAME_SIZE,
-                        3,
-                    )),
-                );
-            }
-        }
-
         let entry_idx = mf.entry.index();
         builder.append_block_params_for_function_params(cl_blocks[entry_idx]);
 
@@ -1134,26 +1223,18 @@ fn define_function(
             nroots,
             roots_slot,
             frame_slot,
-            has_try,
-            spill_slot_of,
-            exc_frame_slots,
-            cur_block: entry_idx,
+            cur_handler: None,
+            trampolines,
         };
 
         for (bi, mblock) in mf.blocks.iter().enumerate() {
             fb.builder.switch_to_block(cl_blocks[bi]);
-            fb.cur_block = bi;
+            // Calls in a protected block route their exceptional edge to the
+            // handler (try_call); plain blocks compile exactly as before.
+            fb.cur_handler = mblock.handler.map(|h| h.index());
             if bi == entry_idx {
                 // GC frame setup must precede any rooted store (incl. params).
                 fb.emit_gc_prologue();
-                // Zero the raw spill slots so a load-before-def reads 0, not
-                // garbage (memory-backed mode only).
-                if fb.has_try {
-                    let zero = fb.builder.ins().iconst(types::I64, 0);
-                    for slot in fb.spill_slot_of.iter().flatten() {
-                        fb.builder.ins().stack_store(zero, *slot, 0);
-                    }
-                }
                 // Prologue: define parameter variables from block params.
                 let params: Vec<Value> = fb.builder.block_params(cl_blocks[bi]).to_vec();
                 for (i, pv) in params.iter().enumerate() {
@@ -1172,7 +1253,166 @@ fn define_function(
     module
         .define_function(cl_func_id, &mut ctx)
         .map_err(|e| cg_error(format!("define function: {e}")))?;
+
+    // Harvest this function's exception metadata: every emitted `try_call`
+    // produced a machine call site carrying its handler's code offset. The
+    // records feed the program-wide PC→handler table the runtime unwinder
+    // searches at raise time.
+    let mut sites = Vec::new();
+    let compiled = ctx
+        .compiled_code()
+        .ok_or_else(|| cg_error("compiled_code missing after define_function"))?;
+    for site in compiled.buffer.call_sites() {
+        for h in site.exception_handlers {
+            match h {
+                FinalizedMachExceptionHandler::Default(off) => {
+                    let frame_off = site.frame_offset.ok_or_else(|| {
+                        cg_error(
+                            "call site with handler but no frame_offset \
+                             (preserve_frame_pointers must be on)"
+                                                        )
+                    })?;
+                    sites.push(ExcSite {
+                        ret_off: site.ret_addr,
+                        handler_off: *off,
+                        frame_off,
+                    });
+                }
+                FinalizedMachExceptionHandler::Tag(..)
+                | FinalizedMachExceptionHandler::Context(_) => {
+                    return Err(cg_error(
+                        "unexpected tagged/context exception handler (codegen only \
+                         emits Default edges)"
+                                                ));
+                }
+            }
+        }
+    }
+
     module.clear_context(&mut ctx);
+    Ok(sites)
+}
+
+/// One protected machine call site of a compiled function: the return-address
+/// offset, its handler's entry offset (both relative to the function start),
+/// and the FP-to-SP distance the unwinder needs to reconstruct SP.
+struct ExcSite {
+    ret_off: u32,
+    handler_off: u32,
+    frame_off: u32,
+}
+
+/// Tail-convention trampolines for protected calls.
+///
+/// Cranelift treats the EXCEPTIONAL edge of a `try_call` as clobbering ALL
+/// registers only when the callee uses `CallConv::Tail`; for a SystemV
+/// callee the edge keeps callee-saved registers live — it assumes an
+/// Itanium-style unwinder that restores callee-saves from CFI while
+/// walking. Our unwinder restores SP/FP only, so every protected call must
+/// present a Tail callee: a one-jump trampoline forwarding to the real
+/// (SystemV) target. With the Tail callee, every value live into the
+/// handler is spilled to the protected frame and reloaded there — exactly
+/// what the SP/FP-only resume provides. The trampoline's own frame sits
+/// between the protected frame and the raise and is skipped by the FP walk
+/// like any other frame.
+#[derive(Default)]
+struct Trampolines {
+    /// target → its Tail trampoline (direct calls).
+    direct: HashMap<FuncId, FuncId>,
+    /// signature key → the Tail trampoline taking `(args…, fnptr)` (indirect).
+    indirect: HashMap<String, FuncId>,
+    /// Declared trampolines awaiting body emission.
+    pending: Vec<PendingTramp>,
+}
+
+enum PendingTramp {
+    /// `tramp(args…) -> target(args…)`.
+    Direct { tramp: FuncId, target: FuncId },
+    /// `tramp(args…, fnptr) -> fnptr(args…)` through `sig`.
+    Indirect { tramp: FuncId, sig: Signature },
+}
+
+impl Trampolines {
+    fn direct(&mut self, module: &mut ObjectModule, target: FuncId, sig: &Signature) -> FuncId {
+        if let Some(t) = self.direct.get(&target) {
+            return *t;
+        }
+        let mut tsig = sig.clone();
+        tsig.call_conv = CallConv::Tail;
+        let name = format!("pyaot_exc_tramp_d{}", target.as_u32());
+        let t = module
+            .declare_function(&name, Linkage::Local, &tsig)
+            .expect("trampoline declaration cannot fail: unique local symbol");
+        self.direct.insert(target, t);
+        self.pending.push(PendingTramp::Direct { tramp: t, target });
+        t
+    }
+
+    fn indirect(&mut self, module: &mut ObjectModule, sig: &Signature) -> FuncId {
+        let key = sig.to_string();
+        if let Some(t) = self.indirect.get(&key) {
+            return *t;
+        }
+        let mut tsig = sig.clone();
+        tsig.call_conv = CallConv::Tail;
+        tsig.params.push(AbiParam::new(types::I64)); // trailing target fnptr
+        let name = format!("pyaot_exc_tramp_i{}", self.indirect.len());
+        let t = module
+            .declare_function(&name, Linkage::Local, &tsig)
+            .expect("trampoline declaration cannot fail: unique local symbol");
+        self.indirect.insert(key, t);
+        self.pending.push(PendingTramp::Indirect {
+            tramp: t,
+            sig: sig.clone(),
+        });
+        t
+    }
+}
+
+/// Emit the bodies of all declared trampolines (after every user function is
+/// defined, so direct targets exist).
+fn define_trampolines(module: &mut ObjectModule, tramps: Trampolines) -> Result<()> {
+    let mut fctx = FunctionBuilderContext::new();
+    for p in tramps.pending {
+        let mut ctx = module.make_context();
+        let tramp_id = match &p {
+            PendingTramp::Direct { tramp, .. } | PendingTramp::Indirect { tramp, .. } => *tramp,
+        };
+        ctx.func.signature = module
+            .declarations()
+            .get_function_decl(tramp_id)
+            .signature
+            .clone();
+        {
+            let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let params: Vec<Value> = builder.block_params(entry).to_vec();
+            let results: Vec<Value> = match &p {
+                PendingTramp::Direct { target, .. } => {
+                    let fref = module.declare_func_in_func(*target, builder.func);
+                    let call = builder.ins().call(fref, &params);
+                    builder.inst_results(call).to_vec()
+                }
+                PendingTramp::Indirect { sig, .. } => {
+                    let sigref = builder.import_signature(sig.clone());
+                    let (fnptr, args) = params
+                        .split_last()
+                        .expect("indirect trampoline has the fnptr param");
+                    let call = builder.ins().call_indirect(sigref, *fnptr, args);
+                    builder.inst_results(call).to_vec()
+                }
+            };
+            builder.ins().return_(&results);
+            builder.finalize();
+        }
+        module
+            .define_function(tramp_id, &mut ctx)
+            .map_err(|e| cg_error(format!("define trampoline: {e}")))?;
+        module.clear_context(&mut ctx);
+    }
     Ok(())
 }
 
@@ -1198,30 +1438,16 @@ struct FnGen<'a, 'b> {
     nroots: u32,
     roots_slot: Option<StackSlot>,
     frame_slot: Option<StackSlot>,
-    /// Phase 7A: this function contains a `TryEnter` → every local is
-    /// memory-backed (loads/stores only; no `Variable` is live across setjmp).
-    has_try: bool,
-    /// Spill slot per non-rooted local (memory-backed mode only).
-    spill_slot_of: Vec<Option<StackSlot>>,
-    /// The `ExceptionFrame` slot of each block ending in `TryEnter`.
-    exc_frame_slots: HashMap<usize, StackSlot>,
-    /// Index of the MIR block currently being lowered.
-    cur_block: usize,
+    /// The handler MIR-block index protecting the block being lowered, if
+    /// any: every raising call becomes a `try_call` with this handler as its
+    /// exceptional edge.
+    cur_handler: Option<usize>,
+    /// Program-wide Tail-trampoline registry for protected calls.
+    trampolines: &'a mut Trampolines,
 }
 
 impl FnGen<'_, '_> {
     fn use_local(&mut self, id: LocalId) -> Value {
-        if self.has_try {
-            // Memory-backed read: rooted locals live in the roots array,
-            // raw locals in their spill slot.
-            let ty = clif_ty(&self.locals[id.index()].repr);
-            if let Some(slot_idx) = self.root_slot_of[id.index()] {
-                let rs = self.roots_slot.expect("rooted local needs a roots slot");
-                return self.builder.ins().stack_load(ty, rs, (slot_idx * 8) as i32);
-            }
-            let slot = self.spill_slot_of[id.index()].expect("raw local needs a spill slot");
-            return self.builder.ins().stack_load(ty, slot, 0);
-        }
         self.builder.use_var(Variable::from_u32(id.index() as u32))
     }
 
@@ -1239,16 +1465,10 @@ impl FnGen<'_, '_> {
     }
 
     /// Define a local. If it is a GC root, mirror the value into the frame roots
-    /// array (store-on-def) so the collector can find it (PITFALLS B15). In
-    /// memory-backed mode (`has_try`) the store IS the definition — rooted
-    /// locals' home is their roots slot, raw locals' home their spill slot.
+    /// array (store-on-def) so the collector can find it (PITFALLS B15).
     fn def_local(&mut self, id: LocalId, val: Value) {
-        if !self.has_try {
-            self.builder
-                .def_var(Variable::from_u32(id.index() as u32), val);
-        } else if let Some(slot) = self.spill_slot_of[id.index()] {
-            self.builder.ins().stack_store(val, slot, 0);
-        }
+        self.builder
+            .def_var(Variable::from_u32(id.index() as u32), val);
         if let Some(slot_idx) = self.root_slot_of[id.index()] {
             let rs = self.roots_slot.expect("rooted local needs a roots slot");
             self.builder
@@ -1289,12 +1509,109 @@ impl FnGen<'_, '_> {
         }
     }
 
+    /// Widen call arguments to the declared parameter types (`I8`/`I16`
+    /// values into `I32` params — see [`import_param`]). A no-op for
+    /// already-matching signatures.
+    fn adapt_args(&mut self, params: &[AbiParam], args: &[Value]) -> Vec<Value> {
+        args.iter()
+            .zip(params)
+            .map(|(&v, p)| {
+                let have = self.builder.func.dfg.value_type(v);
+                if have != p.value_type && (have == types::I8 || have == types::I16) {
+                    self.builder.ins().uextend(p.value_type, v)
+                } else {
+                    v
+                }
+            })
+            .collect()
+    }
+
     /// Call a runtime/user function, returning its single result (if any).
+    /// Inside a protected block, any callee that can raise is routed through
+    /// a `CallConv::Tail` trampoline emitted as a `try_call` whose
+    /// exceptional edge lands at the handler block (see [`Trampolines`] for
+    /// why the indirection is mandatory); the never-raising helpers (and all
+    /// calls in unprotected blocks) stay plain `call`s with no unwind
+    /// metadata.
     fn call(&mut self, fid: FuncId, args: &[Value]) -> Option<Value> {
         let fref = self.module.declare_func_in_func(fid, self.builder.func);
-        let inst = self.builder.ins().call(fref, args);
+        let sig_ref = self.builder.func.dfg.ext_funcs[fref].signature;
+        let params = self.builder.func.dfg.signatures[sig_ref].params.clone();
+        let args = self.adapt_args(&params, args);
+        if let Some(h) = self.cur_handler {
+            if !self.rt.never_raises.contains(&fid) {
+                let sig = self.builder.func.dfg.signatures[sig_ref].clone();
+                let tramp = self.trampolines.direct(self.module, fid, &sig);
+                let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+                let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
+                return self.emit_protected_call(tramp_sig_ref, h, |b, et| {
+                    b.ins().try_call(tref, &args, et)
+                });
+            }
+        }
+        let inst = self.builder.ins().call(fref, &args);
         let results = self.builder.inst_results(inst);
         results.first().copied()
+    }
+
+    /// Indirect-call counterpart of [`Self::call`] (closures, vtable
+    /// methods). The protected form becomes a DIRECT `try_call` to a
+    /// per-signature Tail trampoline taking the function pointer as its
+    /// trailing parameter.
+    fn call_indirect(&mut self, sig_ref: SigRef, callee: Value, args: &[Value]) -> Option<Value> {
+        if let Some(h) = self.cur_handler {
+            let sig = self.builder.func.dfg.signatures[sig_ref].clone();
+            let tramp = self.trampolines.indirect(self.module, &sig);
+            let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+            let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
+            let mut targs = args.to_vec();
+            targs.push(callee);
+            return self.emit_protected_call(tramp_sig_ref, h, |b, et| {
+                b.ins().try_call(tref, &targs, et)
+            });
+        }
+        let inst = self.builder.ins().call_indirect(sig_ref, callee, args);
+        self.builder.inst_results(inst).first().copied()
+    }
+
+    /// Emit a `try_call` (a block terminator): the normal edge continues in a
+    /// fresh block whose params are bound to the callee's returns
+    /// (`BlockArg::TryCallRet`); the exceptional edge is a catch-all
+    /// `Default` into the handler block (exception payloads unused — the
+    /// exception object lives in runtime thread-local state). Lowering then
+    /// resumes in the continuation block.
+    fn emit_protected_call(
+        &mut self,
+        sig_ref: SigRef,
+        handler_mir_block: usize,
+        emit: impl FnOnce(&mut FunctionBuilder<'_>, ExceptionTable) -> cranelift_codegen::ir::Inst,
+    ) -> Option<Value> {
+        let ret_types: Vec<Type> = self.builder.func.dfg.signatures[sig_ref]
+            .returns
+            .iter()
+            .map(|p| p.value_type)
+            .collect();
+        let cont = self.builder.create_block();
+        let mut rets = Vec::with_capacity(ret_types.len());
+        for ty in &ret_types {
+            rets.push(self.builder.append_block_param(cont, *ty));
+        }
+        let handler_block = self.cl_blocks[handler_mir_block];
+        let pool = &mut self.builder.func.dfg.value_lists;
+        let normal = BlockCall::new(
+            cont,
+            (0..ret_types.len() as u32).map(BlockArg::TryCallRet),
+            pool,
+        );
+        let exceptional = BlockCall::new(handler_block, std::iter::empty::<BlockArg>(), pool);
+        let et = self.builder.func.dfg.exception_tables.push(ExceptionTableData::new(
+            sig_ref,
+            normal,
+            [ExceptionTableItem::Default(exceptional)],
+        ));
+        emit(self.builder, et);
+        self.builder.switch_to_block(cont);
+        rets.first().copied()
     }
 
     /// Declare (idempotently) the import for a stdlib runtime descriptor and
@@ -1521,7 +1838,6 @@ impl FnGen<'_, '_> {
             // ── exceptions (Phase 7) ──
             MirInst::ExcOp(op) => {
                 let fid = match op {
-                    pyaot_mir::ExcOp::PopFrame => self.rt.exc_pop_frame,
                     pyaot_mir::ExcOp::StartHandling => self.rt.exc_start_handling,
                     pyaot_mir::ExcOp::EndHandling => self.rt.exc_end_handling,
                 };
@@ -1760,7 +2076,7 @@ impl FnGen<'_, '_> {
         let mut csig = Signature::new(self.cc);
         csig.params.push(AbiParam::new(types::I64)); // env tuple
         for p in &sig.params {
-            csig.params.push(AbiParam::new(clif_ty(p)));
+            csig.params.push(abi_param(clif_ty(p)));
         }
         csig.returns.push(AbiParam::new(clif_ty(&sig.ret)));
         let sigref = self.builder.import_signature(csig);
@@ -1770,8 +2086,7 @@ impl FnGen<'_, '_> {
         for a in args {
             call_args.push(self.use_operand(a));
         }
-        let call = self.builder.ins().call_indirect(sigref, fnaddr, &call_args);
-        let res = self.builder.inst_results(call).first().copied();
+        let res = self.call_indirect(sigref, fnaddr, &call_args);
         if let (Some(d), Some(v)) = (dst, res) {
             self.def_local(*d, v);
         }
@@ -2144,10 +2459,10 @@ impl FnGen<'_, '_> {
         // Indirect-call signature: (self: I64, args…) -> ret.
         let mut sig = Signature::new(self.cc);
         sig.params
-            .push(AbiParam::new(clif_ty(self.operand_repr(recv))));
+            .push(abi_param(clif_ty(self.operand_repr(recv))));
         for a in args {
             sig.params
-                .push(AbiParam::new(clif_ty(self.operand_repr(a))));
+                .push(abi_param(clif_ty(self.operand_repr(a))));
         }
         sig.returns.push(AbiParam::new(clif_ty(ret)));
         let sigref = self.builder.import_signature(sig);
@@ -2157,8 +2472,7 @@ impl FnGen<'_, '_> {
         for a in args {
             call_args.push(self.use_operand(a));
         }
-        let call = self.builder.ins().call_indirect(sigref, fnptr, &call_args);
-        let res = self.builder.inst_results(call).first().copied();
+        let res = self.call_indirect(sigref, fnptr, &call_args);
         if let (Some(d), Some(v)) = (dst, res) {
             self.def_local(*d, v);
         }
@@ -2241,23 +2555,6 @@ impl FnGen<'_, '_> {
                 let t = self.cl_blocks[then.index()];
                 let e = self.cl_blocks[else_.index()];
                 self.builder.ins().brif(c, t, &[], e, &[]);
-            }
-            // Enter a protected region (Phase 7A). Emitted atomically — nothing
-            // schedulable sits between the DIRECT setjmp call and the brif (B3),
-            // and in `has_try` mode no Variable is live across it (every value
-            // the handler edge reads is a memory load).
-            MirTerminator::TryEnter { normal, handler } => {
-                let slot = self.exc_frame_slots[&self.cur_block];
-                let frame = self.builder.ins().stack_addr(self.ptr_ty, slot, 0);
-                self.call(self.rt.exc_push_frame, &[frame]);
-                let jb = self.builder.ins().iadd_imm(
-                    frame,
-                    pyaot_core_defs::layout::EXCEPTION_JMP_BUF_OFFSET as i64,
-                );
-                let rc = self.call(self.rt.setjmp, &[jb]).unwrap();
-                let n = self.cl_blocks[normal.index()];
-                let h = self.cl_blocks[handler.index()];
-                self.builder.ins().brif(rc, h, &[], n, &[]);
             }
             MirTerminator::Unreachable => {
                 self.builder.ins().trap(TrapCode::unwrap_user(1));

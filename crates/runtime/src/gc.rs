@@ -117,21 +117,24 @@ pub fn get_stack_top() -> *mut ShadowFrame {
     unsafe { gc_state().stack_top }
 }
 
-pub fn unwind_to(target: *mut ShadowFrame) {
+/// Pop every shadow frame that lives BELOW `sp` (exception unwinding).
+///
+/// Shadow frames are stack slots of the functions that pushed them, and the
+/// machine stack grows down — so when an unwind abandons all frames deeper
+/// than the handler's, exactly the shadow frames at addresses `< sp` belong
+/// to dead functions. The handler function's own shadow frame (an address
+/// within its frame, `>= sp`) survives.
+pub fn unwind_below(sp: usize) {
     unsafe {
         let s = gc_state();
         let mut popped = 0;
         let mut cur = s.stack_top;
-        while !cur.is_null() && cur != target {
+        while !cur.is_null() && (cur as usize) < sp {
             popped += 1;
             cur = (*cur).prev;
         }
-        s.stack_top = target;
+        s.stack_top = cur;
         s.stack_depth = s.stack_depth.saturating_sub(popped);
-        if cur.is_null() && !target.is_null() {
-            eprintln!("FATAL: unwind_to: target frame not in shadow stack");
-            std::process::abort();
-        }
     }
 }
 

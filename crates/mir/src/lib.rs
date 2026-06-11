@@ -144,6 +144,14 @@ pub struct LocalDecl {
 pub struct MirBlock {
     pub insts: Vec<MirInst>,
     pub term: MirTerminator,
+    /// The exception-handler block protecting this block (table-based
+    /// unwinding). When `Some`, every raising instruction in this block —
+    /// a `Raise` or any call that can raise — transfers control to the
+    /// handler block; codegen emits such calls as `try_call` with the
+    /// handler as the exceptional edge. Handler blocks themselves carry the
+    /// *outer* handler (or `None`): a raise inside an `except` body
+    /// propagates outward.
+    pub handler: Option<BlockId>,
 }
 
 // ============================================================================
@@ -1025,15 +1033,6 @@ pub enum MirTerminator {
         cond: Operand,
         then: BlockId,
         else_: BlockId,
-    },
-    /// Enter a protected region (Phase 7A): codegen allocates an
-    /// `ExceptionFrame` stack slot, calls `rt_exc_push_frame`, calls `setjmp`
-    /// **directly** (B3), and branches `rc == 0 → normal`, else `handler`.
-    /// Handler entry must NOT pop the frame (`dispatch_to_handler` already
-    /// popped it and unwound the GC shadow stack / traceback).
-    TryEnter {
-        normal: BlockId,
-        handler: BlockId,
     },
     Unreachable,
 }

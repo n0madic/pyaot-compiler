@@ -5,7 +5,6 @@
 
 use pyaot_core_defs::BuiltinExceptionKind;
 
-use super::core::ExceptionFrame;
 use super::core::{
     copy_message_to_owned, create_builtin_exception_instance, dispatch_existing_exception,
     dispatch_to_handler, exception_type_from_tag, get_custom_exception_name,
@@ -14,53 +13,12 @@ use super::core::{
 };
 use super::state::with_exception_state;
 
-/// Push an exception frame onto the handler stack
-/// Called at the start of a try block
-///
-/// # Safety
-/// `frame` must be a valid pointer to an ExceptionFrame that will remain
-/// valid until the corresponding rt_exc_pop_frame is called.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_push_frame(frame: *mut ExceptionFrame) {
-    if frame.is_null() {
-        return;
-    }
-
-    with_exception_state(|state| {
-        // Link to previous frame
-        (*frame).prev = state.handler_stack;
-        state.handler_stack = frame;
-
-        // Save current GC stack top for unwinding
-        // This is obtained from the GC module
-        (*frame).gc_stack_top = crate::gc::get_stack_top() as *mut u8;
-
-        // Save current traceback stack depth for unwinding
-        (*frame).traceback_depth = crate::traceback::current_depth();
-    });
-}
-
-/// Pop an exception frame from the handler stack
-/// Called at normal exit from a try block (no exception occurred)
-#[no_mangle]
-pub extern "C" fn rt_exc_pop_frame() {
-    with_exception_state(|state| {
-        if !state.handler_stack.is_null() {
-            unsafe {
-                state.handler_stack = (*state.handler_stack).prev;
-            }
-        }
-    });
-}
-
-// Note: setjmp is now called directly from Cranelift-generated code (not through
-// a Rust wrapper) to avoid UB. When setjmp is called from a wrapper function that
-// returns, the later longjmp tries to restore a dead stack frame — causing SIGILL
-// in debug builds. The codegen computes jmp_buf address as frame_ptr + 8 and calls
-// setjmp directly.
+// Frame push/pop is gone: protected regions are static table entries
+// (see `super::unwind`); the happy path of a `try` block emits no runtime
+// calls at all.
 
 /// Raise an exception with the given type and message
-/// This function does not return - it longjmps to the nearest handler
+/// This function does not return - it unwinds to the nearest handler
 ///
 /// # Safety
 /// If `len > 0`, `message` must be a valid pointer to `len` bytes.
@@ -74,7 +32,7 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
 /// Raise an exception, taking ownership of a heap-allocated message buffer.
 ///
 /// Unlike `rt_exc_raise` which copies the message, this function takes direct
-/// ownership of the caller's buffer, avoiding the leak that occurs when longjmp
+/// ownership of the caller's buffer, avoiding the leak that occurs when the unwind
 /// skips Rust destructors. This eliminates both the leak AND an unnecessary copy.
 ///
 /// # Safety
@@ -222,7 +180,7 @@ pub extern "C" fn rt_exc_end_handling() {
 /// This is used when an except block wants to propagate the exception
 ///
 /// # Safety
-/// This function uses longjmp to unwind the stack to the nearest exception handler.
+/// This function unwinds the stack to the nearest exception handler (FP walk + jump).
 /// The caller must ensure a valid exception handler frame exists on the handler stack.
 #[no_mangle]
 pub unsafe extern "C" fn rt_exc_reraise() -> ! {
@@ -658,7 +616,7 @@ pub extern "C" fn rt_exc_isinstance(type_tag: u8) -> i8 {
 // ==================== Custom Exception Class Support ====================
 
 /// Raise a custom exception with the given class ID and message.
-/// This function does not return - it longjmps to the nearest handler.
+/// This function does not return - it unwinds to the nearest handler.
 ///
 /// Custom exception classes use class IDs 27+ (0-26 are reserved for built-in exceptions).
 /// The class hierarchy is looked up via rt_class_inherits_from() for exception matching.

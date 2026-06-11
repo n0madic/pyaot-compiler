@@ -6,15 +6,15 @@
 //!
 //! A direct `Call { func: F }` splices iff:
 //! * F's body is ≤ `max_insts` instructions;
-//! * F contains no `TryEnter` terminator and no `MakeGenerator` /
-//!   `GenOpInst` (exception-frame and generator state machines keep their
-//!   own frames — a v1 refusal, not a soundness limit);
+//! * F has no protected blocks (`MirBlock::handler` annotations) and no
+//!   `MakeGenerator` / `GenOpInst` (handler-block remapping and generator
+//!   state machines — a v1 refusal, not a soundness limit);
 //! * F is not the caller and not in the caller's call-graph SCC (no
 //!   self/mutual recursion).
 //!
-//! A `Raise` in the callee is fine: codegen emits no `rt_stack_push/pop`,
-//! and raise dispatches dynamically through the exception-frame stack, so an
-//! inlined raise lands in exactly the same handler.
+//! A `Raise` in the callee is fine: spliced blocks inherit the call site's
+//! handler annotation, so an inlined raise lands in exactly the handler the
+//! replaced call would have unwound to.
 //!
 //! ## Order
 //!
@@ -155,7 +155,10 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
         return false;
     }
     for block in &f.blocks {
-        if matches!(block.term, MirTerminator::TryEnter { .. }) {
+        // A callee with its own protected region would need handler-block
+        // remapping AND nesting into the call site's handler — refused (the
+        // Phase-9 v1 rule, carried over to handler annotations).
+        if block.handler.is_some() {
             return false;
         }
         for inst in &block.insts {
@@ -180,6 +183,7 @@ fn clone_body(f: &MirFunction) -> CalleeBody {
             .map(|b| MirBlock {
                 insts: b.insts.clone(),
                 term: b.term.clone(),
+                handler: b.handler,
             })
             .collect(),
         entry: f.entry,
@@ -192,6 +196,11 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     let l_off = caller.locals.len() as u32;
     let b_off = caller.blocks.len() as u32;
     let cont = BlockId::new(b_off + body.blocks.len() as u32);
+    // Inlining into a protected block: every spliced callee block (and the
+    // continuation) inherits the call site's handler — a raise from inlined
+    // code must land in exactly the handler the call would have unwound to.
+    // (Callee-own handlers cannot occur: `inlineable()` refuses them.)
+    let site_handler = caller.blocks[bi].handler;
 
     // (1) Callee locals append after the caller's (params are locals 0..P).
     caller.locals.extend(body.locals.iter().cloned());
@@ -254,17 +263,19 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
                 }
             }
             MirTerminator::Unreachable => MirTerminator::Unreachable,
-            MirTerminator::TryEnter { .. } => {
-                unreachable!("TryEnter callees are refused by inlineable()")
-            }
         };
-        caller.blocks.push(MirBlock { insts, term });
+        caller.blocks.push(MirBlock {
+            insts,
+            term,
+            handler: site_handler,
+        });
     }
 
     // The continuation block: the call block's suffix + original terminator.
     caller.blocks.push(MirBlock {
         insts: suffix,
         term: orig_term,
+        handler: site_handler,
     });
     cont.index()
 }
@@ -372,7 +383,7 @@ mod tests {
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
             blocks: blocks
                 .into_iter()
-                .map(|(insts, term)| MirBlock { insts, term })
+                .map(|(insts, term)| MirBlock { insts, term, handler: None })
                 .collect(),
             entry: BlockId::new(0),
         }
@@ -514,24 +525,20 @@ mod tests {
     }
 
     #[test]
-    fn try_enter_callee_refused() {
+    fn protected_callee_refused() {
         let i64r = Repr::Raw(RawKind::I64);
-        let callee = func(
+        let mut callee = func(
             vec![],
             Repr::Tagged,
             vec![],
             vec![
-                (
-                    vec![],
-                    MirTerminator::TryEnter {
-                        normal: BlockId::new(1),
-                        handler: BlockId::new(2),
-                    },
-                ),
+                (vec![], MirTerminator::Jump(BlockId::new(1))),
                 (vec![], MirTerminator::Return(None)),
                 (vec![], MirTerminator::Return(None)),
             ],
         );
+        // A callee with its own protected region must be refused.
+        callee.blocks[1].handler = Some(BlockId::new(2));
         let caller = func(
             vec![],
             Repr::Tagged,

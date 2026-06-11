@@ -24,7 +24,6 @@ pub fn read_counts(f: &MirFunction) -> Vec<u32> {
             MirTerminator::Branch { cond, .. } => bump(cond),
             MirTerminator::Return(None)
             | MirTerminator::Jump(_)
-            | MirTerminator::TryEnter { .. }
             | MirTerminator::Unreachable => {}
         }
     }
@@ -32,8 +31,8 @@ pub fn read_counts(f: &MirFunction) -> Vec<u32> {
 }
 
 /// Which blocks are reachable from `entry` — a worklist over `Jump` /
-/// `Branch` / `TryEnter{normal, handler}` edges. Indexed by
-/// `BlockId::index()`.
+/// `Branch` edges plus each reachable block's handler edge (a protected
+/// block keeps its handler alive). Indexed by `BlockId::index()`.
 pub fn reachable_blocks(f: &MirFunction) -> Vec<bool> {
     let mut reachable = vec![false; f.blocks.len()];
     let mut work = vec![f.entry];
@@ -42,16 +41,16 @@ pub fn reachable_blocks(f: &MirFunction) -> Vec<bool> {
             continue;
         }
         reachable[b.index()] = true;
+        let block = &f.blocks[b.index()];
         let mut push = |t: BlockId| work.push(t);
-        match &f.blocks[b.index()].term {
+        if let Some(h) = block.handler {
+            push(h);
+        }
+        match &block.term {
             MirTerminator::Jump(t) => push(*t),
             MirTerminator::Branch { then, else_, .. } => {
                 push(*then);
                 push(*else_);
-            }
-            MirTerminator::TryEnter { normal, handler } => {
-                push(*normal);
-                push(*handler);
             }
             MirTerminator::Return(_) | MirTerminator::Unreachable => {}
         }

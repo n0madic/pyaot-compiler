@@ -133,8 +133,8 @@ pub unsafe fn raise_io_error(msg: &str) -> ! {
 /// exception. Where a proper TypeError is preferable, call this helper first.
 ///
 /// # Safety
-/// Calls `raise_exc!` on mismatch, which uses `longjmp`. Caller must hold no
-/// Rust references that need dropping (the longjmp will skip destructors).
+/// Calls `raise_exc!` on mismatch, which never returns. Caller must hold no
+/// Rust references that need dropping (the unwind skips destructors).
 #[inline]
 pub unsafe fn expect_ptr_or_type_error<T>(v: Value, op: &'static str) -> *mut T {
     if !v.is_ptr() {

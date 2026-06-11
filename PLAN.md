@@ -292,6 +292,23 @@ None of these are gates; all of them are the places to be deliberate.
    (PITFALLS B2 owned-message leaks, B3 dead-frame longjmp) for a constant
    factor on a path that needs an asymptotic change.
 
+   **Status: DONE (unwinding).** setjmp is gone: protected regions are
+   static `MirBlock::handler` annotations; every raising call inside one is
+   a Cranelift `try_call` routed through a `CallConv::Tail` trampoline
+   (mandatory — see the rewritten PITFALLS B3), and codegen bakes a
+   PC→handler table the runtime unwinder binary-searches at raise time
+   (frame-pointer walk + SP/FP-restoring resume stub; GC shadow frames are
+   pruned address-wise via `gc::unwind_below`). The happy path of a `try`
+   emits ZERO runtime calls and the `has_try` memory-backing of locals is
+   deleted — handler edges are ordinary CFG edges the regalloc understands.
+   `bench_exc_hotpath` 0.19x → 0.40x, now at parity with the same loop's
+   non-try tagged-arithmetic gap (`bench_int_loop` 0.46x) — the exception
+   tax itself is gone; the residual is raw-int specialization territory.
+   Real tracebacks remain a follow-up: the unwinder's FP walk can collect
+   the PC chain, and the unwind table already maps PCs to functions, but
+   capture/printing is not wired (traceback module stays dormant —
+   `rt_stack_push/pop` are still never emitted).
+
 7. **Benchmark-gap pressure is the named adversary of Part A.** Every
    side-table, marker bit, and parallel `rt_*_tagged` variant in the old
    compiler was born as a quick win against a benchmark or a failing corpus

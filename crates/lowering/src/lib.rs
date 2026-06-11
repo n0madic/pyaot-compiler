@@ -221,6 +221,9 @@ struct FnLower<'a> {
     /// Instructions accumulating for the current MIR block.
     cur_insts: Vec<MirInst>,
     cur_id: BlockId,
+    /// Handler annotation (already block-mapped) of the HIR block being
+    /// lowered — stamped onto every MIR block sealed while it is active.
+    cur_handler: Option<BlockId>,
 }
 
 impl<'a> FnLower<'a> {
@@ -255,6 +258,7 @@ impl<'a> FnLower<'a> {
             block_map: HashMap::new(),
             cur_insts: Vec::new(),
             cur_id: BlockId::new(0),
+            cur_handler: None,
         }
     }
 
@@ -272,6 +276,11 @@ impl<'a> FnLower<'a> {
             self.cur_id = first;
             self.cur_insts = Vec::new();
             let block = &self.func.blocks[*hidx];
+            // Every MIR block materialized from this HIR block — including
+            // the extra ones synthesized mid-stream (short-circuit, staged
+            // loops) — carries the HIR block's handler annotation: a
+            // synthesized call inside a protected block is just as protected.
+            self.cur_handler = block.handler.map(|h| self.block_map[&h]);
             for stmt in &block.stmts {
                 self.lower_stmt(stmt)?;
             }
@@ -298,14 +307,19 @@ impl<'a> FnLower<'a> {
         self.blocks.push(MirBlock {
             insts: Vec::new(),
             term: MirTerminator::Unreachable,
+            handler: None,
         });
         id
     }
 
-    /// Finalize the current block with `term`.
+    /// Finalize the current block with `term`, stamping the active handler.
     fn seal(&mut self, term: MirTerminator) {
         let insts = std::mem::take(&mut self.cur_insts);
-        self.blocks[self.cur_id.index()] = MirBlock { insts, term };
+        self.blocks[self.cur_id.index()] = MirBlock {
+            insts,
+            term,
+            handler: self.cur_handler,
+        };
     }
 
     fn switch(&mut self, id: BlockId) {
@@ -808,10 +822,6 @@ impl<'a> FnLower<'a> {
                 Ok(MirTerminator::Return(Some(Operand::Local(coerced))))
             }
             HirTerminator::Jump(target) => Ok(MirTerminator::Jump(self.block_map[target])),
-            HirTerminator::TryEnter { normal, handler } => Ok(MirTerminator::TryEnter {
-                normal: self.block_map[normal],
-                handler: self.block_map[handler],
-            }),
             HirTerminator::Branch { cond, then, else_ } => {
                 let cond_op = self.lower_cond(*cond)?;
                 Ok(MirTerminator::Branch {

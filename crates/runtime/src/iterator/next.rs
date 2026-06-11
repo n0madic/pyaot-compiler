@@ -34,7 +34,7 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
     unsafe {
         // Check if this is a generator (generators are their own iterators)
         if (*iter_obj).header.type_tag == TypeTagKind::Generator {
-            // For generators, we must use the normal path since they use longjmp internally
+            // For generators, we must use the normal path since they raise internally
             // This is OK because generators properly set exhausted flag before raising
             let result = rt_generator_next(iter_obj);
             // Match the non-generator branch (below): surface exhaustion as
@@ -329,7 +329,7 @@ unsafe fn iter_next_enumerate(
     use crate::object::TupleObj;
 
     let inner = (*iter).source;
-    // Use internal version for inner iterator to avoid longjmp
+    // Use internal version for inner iterator to avoid raising
     let elem = rt_iter_next_internal(inner, false);
 
     if elem == EXHAUSTED_SENTINEL {
@@ -401,7 +401,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
 
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
-    // Use internal version to avoid longjmp issues
+    // Use internal version to avoid raising StopIteration
     let item1 = rt_iter_next_internal((*zip_iter).iter1, false);
     if item1 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;

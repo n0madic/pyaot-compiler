@@ -476,8 +476,8 @@ pub fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
 
         use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
-        // Use rt_iter_next_no_exc to avoid longjmp issues
-        // rt_iter_next raises StopIteration via longjmp, making null checks unreachable
+        // Use rt_iter_next_no_exc to avoid raising StopIteration
+        // rt_iter_next raises StopIteration (never returns), making null checks unreachable
         let item1 = rt_iter_next_no_exc((*zip_iter).iter1);
         if item1.is_null() {
             (*zip_iter).exhausted = true;

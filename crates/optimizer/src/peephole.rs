@@ -101,15 +101,16 @@ fn thread_jumps(f: &mut MirFunction) {
         .collect();
     let r = |t: BlockId| resolved[t.index()];
     for block in &mut f.blocks {
+        // Handler annotations thread the same way: an empty handler block
+        // that just jumps on contains nothing an unwind could observe.
+        if let Some(h) = &mut block.handler {
+            *h = r(*h);
+        }
         match &mut block.term {
             MirTerminator::Jump(t) => *t = r(*t),
             MirTerminator::Branch { then, else_, .. } => {
                 *then = r(*then);
                 *else_ = r(*else_);
-            }
-            MirTerminator::TryEnter { normal, handler } => {
-                *normal = r(*normal);
-                *handler = r(*handler);
             }
             MirTerminator::Return(_) | MirTerminator::Unreachable => {}
         }

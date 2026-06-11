@@ -78,3 +78,15 @@
 | bench_containers | 0.100211s | 0.171625s | 1.71x |
 | bench_exc_hotpath | 0.632070s | 0.118084s | 0.19x |
 | microgpt | 0.041095s | 0.045740s | 1.11x |
+
+## 2026-06-12 01:39 — d077a3e — table-unwinding
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.735292s | 0.339220s | 0.46x |
+| bench_float_kernel | 0.156167s | 0.362431s | 2.32x |
+| bench_calls | 0.566472s | 0.915726s | 1.62x |
+| bench_str | 0.230776s | 0.117939s | 0.51x |
+| bench_containers | 0.097907s | 0.169309s | 1.73x |
+| bench_exc_hotpath | 0.286616s | 0.115857s | 0.40x |
+| microgpt | 0.039816s | 0.044601s | 1.12x |

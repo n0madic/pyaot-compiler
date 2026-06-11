@@ -117,25 +117,29 @@ pub const fn gc_root_offset(root_idx: usize) -> i32 {
 }
 
 // =============================================================================
-// ExceptionFrame layout
+// Unwind-table record layout (table-based exception handling)
 // =============================================================================
+//
+// Codegen emits one data object per program: `count` records, each describing
+// one protected machine call site. The runtime resolves `func_addr + site_off`
+// to the absolute return-PC at registration, sorts, and binary-searches at
+// raise time.
+//
+// ```text
+// ExcTableRecord {
+//     func_addr: *const u8,  // 8 bytes — relocated function base address
+//     site_off: u32,         // return-address offset within the function
+//     handler_off: u32,      // handler entry offset within the function
+//     frame_off: u32,        // FP-to-SP distance at the call site
+//     _pad: u32,
+// }
+// ```
 
-/// Size of `jmp_buf` in bytes. Must be large enough for all supported
-/// platforms (macOS arm64: 192, macOS x86_64: 148, Linux x86_64: 200).
-pub const JMP_BUF_SIZE: usize = 200;
-
-/// Offset of `jmp_buf` field within `ExceptionFrame` (after `prev` pointer).
-pub const EXCEPTION_JMP_BUF_OFFSET: i32 = PTR_SIZE as i32;
-
-/// Total size of `ExceptionFrame` in bytes.
-///
-/// ```text
-/// ExceptionFrame {
-///     prev: *mut ExceptionFrame,   // 8 bytes
-///     jmp_buf: [u8; JMP_BUF_SIZE], // JMP_BUF_SIZE bytes
-///     gc_stack_top: *mut u8,       // 8 bytes
-///     traceback_depth: usize,      // 8 bytes
-/// }
-/// ```
-pub const EXCEPTION_FRAME_SIZE: u32 =
-    PTR_SIZE as u32 + JMP_BUF_SIZE as u32 + PTR_SIZE as u32 + PTR_SIZE as u32;
+/// Size of one unwind-table record in bytes.
+pub const EXC_TABLE_RECORD_SIZE: u32 = 24;
+/// Offset of `site_off` within a record (after the function pointer).
+pub const EXC_RECORD_SITE_OFF_OFFSET: u32 = 8;
+/// Offset of `handler_off` within a record.
+pub const EXC_RECORD_HANDLER_OFF_OFFSET: u32 = 12;
+/// Offset of `frame_off` within a record.
+pub const EXC_RECORD_FRAME_OFF_OFFSET: u32 = 16;

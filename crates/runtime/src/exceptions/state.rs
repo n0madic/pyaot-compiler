@@ -5,15 +5,12 @@
 
 use std::cell::RefCell;
 
-use super::core::ExceptionFrame;
 use super::core::ExceptionObject;
 
 /// Thread-local exception state
 pub(super) struct ExceptionState {
     /// Pointer to current exception object (owned, must be freed)
     pub current_exception: Option<Box<ExceptionObject>>,
-    /// Stack of exception handler frames (linked list)
-    pub handler_stack: *mut ExceptionFrame,
     /// Exception being handled in current except block (for __context__ capture)
     /// When we enter an except handler, we save the current exception here.
     /// If a new exception is raised during handling, this becomes its __context__.
@@ -24,7 +21,6 @@ impl ExceptionState {
     pub const fn new() -> Self {
         Self {
             current_exception: None,
-            handler_stack: std::ptr::null_mut(),
             handling_exception: None,
         }
     }

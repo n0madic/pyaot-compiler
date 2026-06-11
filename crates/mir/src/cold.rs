@@ -8,11 +8,12 @@ use crate::{MirFunction, MirInst, MirTerminator};
 use pyaot_utils::BlockId;
 
 /// `true` per block iff it is COLD: not reachable from the entry through
-/// normal control flow (a `TryEnter`'s `handler` edge does not count — the
+/// normal control flow (a block's `handler` edge does not count — the
 /// handler only runs on a raise), or it diverges into a raise
 /// (`Raise`/`AssertFail` + `Unreachable` — the verifier-enforced shape).
 pub fn cold_blocks(f: &MirFunction) -> Vec<bool> {
-    // Warm = reachable from entry, TryEnter contributing only `normal`.
+    // Warm = reachable from entry through terminator edges only (handler
+    // annotations deliberately not followed).
     let mut warm = vec![false; f.blocks.len()];
     let mut work = vec![f.entry];
     while let Some(b) = work.pop() {
@@ -27,7 +28,6 @@ pub fn cold_blocks(f: &MirFunction) -> Vec<bool> {
                 push(*then);
                 push(*else_);
             }
-            MirTerminator::TryEnter { normal, .. } => push(*normal),
             MirTerminator::Return(_) | MirTerminator::Unreachable => {}
         }
     }
@@ -69,7 +69,11 @@ mod tests {
             locals: Vec::<LocalDecl>::new(),
             blocks: blocks
                 .into_iter()
-                .map(|(insts, term)| MirBlock { insts, term })
+                .map(|(insts, term)| MirBlock {
+                    insts,
+                    term,
+                    handler: None,
+                })
                 .collect(),
             entry: BlockId::new(0),
         }
@@ -77,17 +81,14 @@ mod tests {
 
     #[test]
     fn handler_is_cold_normal_is_warm() {
-        let f = function(vec![
-            (
-                vec![],
-                MirTerminator::TryEnter {
-                    normal: BlockId::new(1),
-                    handler: BlockId::new(2),
-                },
-            ),
+        // Block 0 is protected (handler = block 2) and jumps to block 1; the
+        // handler edge must not warm the handler block.
+        let mut f = function(vec![
+            (vec![], MirTerminator::Jump(BlockId::new(1))),
             (vec![], MirTerminator::Return(None)), // normal path
             (vec![], MirTerminator::Return(None)), // handler
         ]);
+        f.blocks[0].handler = Some(BlockId::new(2));
         assert_eq!(cold_blocks(&f), vec![false, false, true]);
     }
 

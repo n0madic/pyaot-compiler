@@ -39,12 +39,12 @@ macro_rules! debug_assert_type_tag {
 /// Raise a runtime exception with a formatted message without leaking memory.
 ///
 /// Creates a formatted String, transfers ownership of its buffer to the exception
-/// system via `rt_exc_raise_owned`, and raises the exception via longjmp. The buffer
+/// system via `rt_exc_raise_owned`, and raises the exception via the unwinder. The buffer
 /// is freed when the ExceptionObject is dropped — no leak occurs because the String
-/// is `forget`-ted before longjmp, and ownership is transferred to the exception.
+/// is `forget`-ted before the unwind, and ownership is transferred to the exception.
 ///
 /// # Safety
-/// Must be called within an `unsafe` block (calls `rt_exc_raise_owned` which uses longjmp).
+/// Must be called within an `unsafe` block (calls `rt_exc_raise_owned` which never returns).
 ///
 /// # Usage
 /// ```text
@@ -67,7 +67,7 @@ macro_rules! raise_exc {
 ///
 /// Like `raise_exc!` but takes an already-constructed String instead of format
 /// arguments. Transfers ownership of the String buffer to the exception system
-/// before longjmp, preventing memory leaks.
+/// before the unwind, preventing memory leaks.
 ///
 /// # Safety
 /// Must be called within an `unsafe` block.
@@ -196,7 +196,6 @@ pub use object::Obj;
 /// `argv` must be a valid pointer to an array of at least `argc` null-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn rt_init(argc: i32, argv: *const *const i8) {
-    exceptions::assert_jmp_buf_size();
     gc::init();
     string::init_string_pool();
     globals::init_globals();
