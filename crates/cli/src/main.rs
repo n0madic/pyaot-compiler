@@ -171,7 +171,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         },
         alias_analysis: !cli.no_alias_analysis,
     };
-    pyaot_codegen_cranelift::compile(&mir, &object_path, &codegen_opts)?;
+    pyaot_codegen_cranelift::compile(&mir, &object_path, &codegen_opts, &interner)?;
 
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);

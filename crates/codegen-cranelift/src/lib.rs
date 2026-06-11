@@ -40,7 +40,7 @@ use pyaot_mir::{
     MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{RawKind, Repr};
-use pyaot_utils::{InternedString, LocalId};
+use pyaot_utils::{InternedString, LocalId, StringInterner};
 
 const FLOAT_VALUE_OFFSET: i32 = pyaot_core_defs::layout::FLOAT_OBJ_VALUE_OFFSET;
 
@@ -487,8 +487,15 @@ impl Default for CodegenOptions {
     }
 }
 
-/// Compile a [`MirProgram`] to a native object file at `out_obj`.
-pub fn compile(program: &MirProgram, out_obj: &Path, opts: &CodegenOptions) -> Result<()> {
+/// Compile a [`MirProgram`] to a native object file at `out_obj`. `interner`
+/// resolves each function's Python name into its symbol
+/// (`pyaot_fn_<i>_<name>`), so backtraces and profiles read as Python.
+pub fn compile(
+    program: &MirProgram,
+    out_obj: &Path,
+    opts: &CodegenOptions,
+    interner: &StringInterner,
+) -> Result<()> {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("is_pic", "true")
@@ -551,7 +558,15 @@ pub fn compile(program: &MirProgram, out_obj: &Path, opts: &CodegenOptions) -> R
             sig.params.push(AbiParam::new(clif_ty(p)));
         }
         sig.returns.push(AbiParam::new(clif_ty(&mf.ret)));
-        let name = format!("pyaot_fn_{i}");
+        // Symbol = index + sanitized Python name (Phase 9E debug polish):
+        // `pyaot_fn_7___add__` in a backtrace/profile beats `pyaot_fn_7`. The
+        // index prefix keeps symbols unique across same-named methods.
+        let py_name: String = interner
+            .resolve(mf.name)
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        let name = format!("pyaot_fn_{i}_{py_name}");
         let id = module
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| cg_error(format!("declare `{name}`: {e}")))?;

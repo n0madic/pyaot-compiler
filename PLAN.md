@@ -187,6 +187,19 @@ rewrites over typed MIR (they read `Repr`, never inference state — Principle 6
 binary-size gating (feature-gated runtime, strip, gc-sections); DWARF debug info.
 The runtime's slab allocator + shadow-stack leaf optimization are already in place.
 **Gate:** performance targets met; size targets met; all prior gates still green.
+**Status: DONE** (devirtualize / flatten-properties had already landed in
+lowering during Phase 5; benchmarks in `benchmarks/`, results in
+`benchmarks/results.md`). Deferred follow-ups, by decision:
+- **Full DWARF line tables** (~3-5 days): MIR carries no spans today. The
+  sketch: a per-instruction span side-channel threaded `lowering →
+  MirInst`, `FunctionBuilder::set_srcloc` per instruction at codegen, then
+  a `gimli` `DebugLine` program assembled from the `SourceLoc → (file,
+  line)` map and attached through `ObjectProduct::object` before write-out
+  (the cg_clif pattern). Until then `--debug` gives symbol names
+  (`pyaot_fn_<i>_<py_name>`), readable lldb backtraces and profiles.
+- **MIR-level devirtualization pass**: documented stretch item — lowering
+  already devirtualizes everything `method_overridden_below` proves, so a
+  MIR pass would rewrite ~nothing on the corpus.
 
 ---
 
