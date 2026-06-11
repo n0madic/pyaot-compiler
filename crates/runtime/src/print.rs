@@ -1,7 +1,7 @@
 //! Print and input operations for runtime objects
 
 use crate::gc;
-use crate::object::{BytesObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{BytesObj, Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -174,11 +174,12 @@ pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
             // Allocate and return string
             let bytes = line.as_bytes();
             unsafe {
-                let size =
-                    std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + bytes.len();
+                let size = crate::string::str_alloc_size(bytes.len());
                 let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
                 let str_obj = obj as *mut StrObj;
                 (*str_obj).len = bytes.len();
+                (*str_obj).char_len =
+                    crate::string::count_codepoints(bytes.as_ptr(), bytes.len());
                 if !bytes.is_empty() {
                     std::ptr::copy_nonoverlapping(
                         bytes.as_ptr(),

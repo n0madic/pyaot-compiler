@@ -17,7 +17,7 @@ dynamic attribute names, `import *`) are out of scope by design.
 
 ```
 crates/
-  # frozen substrate + contract — frozen by default, yields when the plan needs it (e.g. bignum); see ARCHITECTURE.md
+  # substrate + runtime contract — stable, changed deliberately when compiler development requires (e.g. bignum); see ARCHITECTURE.md
   core-defs/  format-shared/  utils/  diagnostics/  linker/  stdlib-defs/  runtime/
   # compiler front-half (built fresh from the design)
   types/             # SemTy (semantic) + Repr (physical) — the two-layer split  [implemented]
@@ -29,7 +29,7 @@ corpus/              # .py files: the CPython differential-test gate
 
 ```bash
 cargo check --workspace --exclude pyaot-runtime   # fast: type-check the front-half
-cargo build -p pyaot-runtime                      # build the frozen runtime staticlib
+cargo build -p pyaot-runtime                      # build the runtime staticlib
 cargo build --workspace                           # everything
 ```
 

@@ -35,11 +35,12 @@ pub fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut 
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_center");
-        let s = str_obj_to_string(str_obj);
-        let chars = s.chars().count() as i64;
+        // Cached codepoint count: the no-op path returns without decoding.
+        let chars = (*(str_obj as *mut StrObj)).char_len as i64;
         if chars >= width {
             return str_obj;
         }
+        let s = str_obj_to_string(str_obj);
         let fill = fill_char(fillchar);
         let marg = width - chars;
         // CPython's stringlib pad: left = marg/2 + (marg & width & 1).
@@ -73,11 +74,12 @@ pub fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_ljust");
-        let s = str_obj_to_string(str_obj);
-        let chars = s.chars().count() as i64;
+        // Cached codepoint count: the no-op path returns without decoding.
+        let chars = (*(str_obj as *mut StrObj)).char_len as i64;
         if chars >= width {
             return str_obj;
         }
+        let s = str_obj_to_string(str_obj);
         let fill = fill_char(fillchar);
         let mut result = s;
         for _ in 0..(width - chars) {
@@ -104,11 +106,12 @@ pub fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut O
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_rjust");
-        let s = str_obj_to_string(str_obj);
-        let chars = s.chars().count() as i64;
+        // Cached codepoint count: the no-op path returns without decoding.
+        let chars = (*(str_obj as *mut StrObj)).char_len as i64;
         if chars >= width {
             return str_obj;
         }
+        let s = str_obj_to_string(str_obj);
         let fill = fill_char(fillchar);
         let mut result = String::with_capacity(s.len());
         for _ in 0..(width - chars) {
@@ -136,11 +139,12 @@ pub fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_zfill");
-        let s = str_obj_to_string(str_obj);
-        let chars = s.chars().count() as i64;
+        // Cached codepoint count: the no-op path returns without decoding.
+        let chars = (*(str_obj as *mut StrObj)).char_len as i64;
         if chars >= width {
             return str_obj;
         }
+        let s = str_obj_to_string(str_obj);
         let padding = (width - chars) as usize;
         let mut result = String::with_capacity(s.len() + padding);
         let mut rest: &str = &s;

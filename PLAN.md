@@ -14,7 +14,7 @@ A `pyaot` binary that:
   real script) unchanged or with only standard-syntax tweaks;
 - produces output **identical to CPython** on every corpus file (differential gate);
 - has **arbitrary-precision `int`**;
-- links against the frozen `runtime` and produces a native executable;
+- links against `runtime` and produces a native executable;
 - reaches competitive performance *after* the optimization phase — not before
   (correctness never waits on the optimizer; see Principle 2).
 
@@ -59,20 +59,19 @@ These are *why* the phases are ordered the way they are.
    no ABI-repair stage. HOF callbacks are uniform `fn(Value)→Value` at baseline;
    unboxed call paths are a proven optimization, not an escape hatch (PITFALLS A4).
 
-7. **Build the front-half fresh from the design; the substrate is frozen.** Front-
-   half crates are implemented from ARCHITECTURE.md + each crate's `lib.rs`, using
-   established algorithms (constraint solving, C3 MRO, standard optimizer passes)
-   on their own merits. The substrate (`runtime`, `core-defs`, …) is a sealed
-   dependency.
+7. **Build the front-half fresh from the design; the substrate is a stable
+   base.** Front-half crates are implemented from ARCHITECTURE.md + each crate's
+   `lib.rs`, using established algorithms (constraint solving, C3 MRO, standard
+   optimizer passes) on their own merits. The substrate (`runtime`, `core-defs`,
+   …) is a stable dependency, edited deliberately rather than rewritten.
 
-8. **The runtime is a frozen contract — frozen only while the freeze serves this
-   plan.** Its `Value` ABI + `rt_*` signatures are the seam, so it is frozen by
-   default. The freeze is a discipline, not an absolute prohibition: when fully
-   realizing a planned feature genuinely requires a runtime change — as bignum
-   did — the plan wins and the runtime is extended deliberately (new `rt_*`/ABI,
-   documented, with corpus coverage). Bignum is the precedent, not the only ever
-   permitted extension. What stays forbidden is editing the runtime to paper over
-   a front-half bug or to dodge front-half work.
+8. **The runtime contract evolves deliberately with the compiler.** Its `Value`
+   ABI + `rt_*` signatures are the seam the whole compiler targets, so changes
+   are deliberate, never casual. When compiler development requires a runtime
+   change — fixing a runtime bug, a new `rt_*`/ABI, a layout extension — make
+   it, document it as a contract change, and back it with corpus coverage
+   (precedents: bignum, `StrObj.char_len`). What stays forbidden is editing the
+   runtime to paper over a front-half bug or to dodge front-half work.
 
 9. **Differential testing is the spine.** The corpus-vs-CPython harness is built
    in Phase 1 and gates every subsequent feature.
@@ -97,7 +96,7 @@ phase may ship code that is correct-but-unoptimized (Principle 2).
 **Build:** every seam on the trivial case before any breadth — the HIR shape, a
 stub `typeck` (annotations + obvious literals; everything else `Dyn`), `lowering`
 + `legalize`, the `mir` verifier, `codegen` → Cranelift, the `linker` call
-against the frozen runtime, and the **differential harness** (compile each
+against the runtime, and the **differential harness** (compile each
 `corpus/*.py`, run, diff vs `python3`).
 **Gate:** one trivial program compiles, runs, diffs clean.
 
@@ -237,7 +236,7 @@ None of these are gates; all of them are the places to be deliberate.
 3. **Defence-in-depth at the proof-trusted `Tagged → Heap` seam.** The
    `TaggedToHeap` coercion is a bit-identical no-op justified entirely by a
    `typeck` proof — which means any future inference bug surfaces as a SEGV
-   in the frozen runtime, not as a `TypeError`. This already happened once
+   in the runtime, not as a `TypeError`. This already happened once
    (the Phase 8B–8F gradual-seam SEGV family: `join` on a non-list,
    `urlencode` with non-str values, `environ.get` miss) and was fixed
    correctly via checked coercions. Two cheap guards remain worth adding:
@@ -274,6 +273,17 @@ None of these are gates; all of them are the places to be deliberate.
    reverts an operation to byte indexing: the old compiler shipped byte-`len`
    / byte-slices / char-`s[i]` simultaneously, and the three-way inconsistency
    was worse than either consistent model.
+
+   **Status: DONE.** `StrObj` carries a cached `char_len` (codepoint count by
+   the non-continuation-byte rule — `char_len == len` ⟺ ASCII, so no separate
+   bit), filled at every allocation site (greedily via `count_codepoints`,
+   arithmetically for concat/mul/slice/join/strip/remove-fix) and guarded by
+   a `str_alloc_size` helper + `offset_of!(StrObj, data)` const assert against
+   under-allocation, plus a debug validator in `rt_str_len_int`. `len()` is
+   O(1); subscript/slice/slice-step/find/rfind take byte==char shortcuts only
+   under *proven* ASCII and a single walk otherwise (no offsets `Vec` for
+   plain slices); align ops early-return on the cached count. Observable
+   semantics unchanged (corpus byte-exact); `bench_str` 0.36x → 0.50x.
 
 6. **Exception hot path (0.15x) waits for table-based unwinding — not for a
    faster setjmp.** The deferred Phase 7 follow-up (zero-cost unwinding +

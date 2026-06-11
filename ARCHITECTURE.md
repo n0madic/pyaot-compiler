@@ -9,23 +9,24 @@ minimal changes *within standard Python syntax*. Consciously **out of scope**
 dynamic `getattr(obj, name_var)`, `globals()`/`locals()`, `inspect`,
 `import *`, runtime class creation. `int` is **arbitrary precision** (bignum).
 
-## The seam: a frozen runtime contract
+## The seam: the runtime contract
 
 The compiler's type/IR layer is entirely *upstream* of the runtime. The runtime
 only ever sees `Value` and `rt_*` calls — it is agnostic to the compiler's type
 system. So the architectural seam is the **runtime's `Value`-level ABI**: it is
-frozen as a contract, and everything above it is built to target it.
+a stable contract, and everything above it is built to target it.
 
-The freeze is a default discipline, not an absolute prohibition: it holds only
-as long as it serves the plan. When fully realizing a planned feature genuinely
-requires a runtime change — as bignum did — the plan wins, and the seam is
-extended deliberately (a new `rt_*`/ABI, documented as such, with corpus
-coverage). The freeze exists to keep front-half bugs from being papered over in
-the runtime, not to block the plan.
+Stability is a discipline, not a prohibition: the runtime can be fixed and
+changed whenever compiler development requires it — as bignum did, and as the
+cached `StrObj.char_len` codepoint count did for string performance. Such
+changes are made deliberately (a new `rt_*`/ABI or layout change, documented as
+a contract change, with corpus coverage). The discipline exists to keep
+front-half bugs from being papered over in the runtime, not to block runtime
+evolution.
 
 | Layer | Crates | Status |
 |---|---|---|
-| **Frozen substrate + contract** | `core-defs`, `format-shared`, `utils`, `diagnostics`, `linker`, `stdlib-defs`, `runtime` | sealed; treated as a fixed dependency |
+| **Substrate + runtime contract** | `core-defs`, `format-shared`, `utils`, `diagnostics`, `linker`, `stdlib-defs`, `runtime` | stable; changed deliberately when compiler development requires |
 | **Compiler front-half** | `types`, `hir`, `semantics`, `typeck`, `mir`, `lowering`, `optimizer`, `codegen-cranelift`, `frontend-python`, `cli` | built fresh from this design |
 
 ## The six invariants (the constitution)
@@ -88,8 +89,8 @@ source ─▶ frontend-python ─▶ HIR ─▶ semantics ─▶ typeck ─▶ l
 A principled `SemTy` + constraint solver handles cross-instance class-field
 inference (e.g. autograd `child.grad += …`) and polymorphic dunders as ordinary
 unification, on top of an always-correct tagged baseline. Real scripts
-additionally need bignum (invariant scope) and broad stdlib coverage (the frozen
-`stdlib-defs` + `runtime`).
+additionally need bignum (invariant scope) and broad stdlib coverage
+(`stdlib-defs` + `runtime`).
 
 ## Status
 

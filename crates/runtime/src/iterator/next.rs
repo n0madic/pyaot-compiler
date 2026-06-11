@@ -544,7 +544,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         roots: items.as_mut_ptr(),
     };
     gc_push(&mut frame);
-    for i in 0..count {
+    for (i, slot) in items.iter_mut().enumerate() {
         let iter_i = (*(*iters_list).data.add(i)).0 as *mut Obj;
         let item = rt_iter_next_internal(iter_i, false);
         if item == EXHAUSTED_SENTINEL {
@@ -555,7 +555,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
             }
             return EXHAUSTED_SENTINEL;
         }
-        items[i] = item;
+        *slot = item;
     }
 
     let root_tuple: *mut Obj = crate::tuple::rt_make_tuple(count as i64);

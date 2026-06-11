@@ -2,24 +2,43 @@
 
 use crate::exceptions;
 use crate::gc;
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::slice_utils::{normalize_slice_indices, slice_length};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use pyaot_core_defs::Value;
 
-/// Collect the byte offset of every codepoint start in `data[..byte_len]`.
-/// `offsets[i]` is where the i-th character begins; a trailing `byte_len`
-/// entry is appended so `offsets[i+1]` is always the exclusive byte end.
-unsafe fn codepoint_offsets(data: *const u8, byte_len: usize) -> Vec<usize> {
-    let mut offsets = Vec::with_capacity(byte_len + 1);
-    let mut i = 0usize;
-    while i < byte_len {
-        offsets.push(i);
-        i += utf8_char_width(*data.add(i));
+/// Map the character range `[char_start, char_start + char_count)` to a byte
+/// range, where codepoint starts are non-continuation bytes
+/// (`(b & 0xC0) != 0x80`) — the same rule as `count_codepoints`, so the result
+/// is always consistent with the `char_len` cache, even on malformed UTF-8.
+/// `char_start + char_count` must be <= the total codepoint count.
+unsafe fn char_range_to_byte_range(
+    data: *const u8,
+    byte_len: usize,
+    char_start: usize,
+    char_count: usize,
+) -> (usize, usize) {
+    let char_end = char_start + char_count;
+    let mut byte_start = byte_len;
+    let mut byte_end = byte_len;
+    let mut cp = 0usize;
+    for i in 0..byte_len {
+        if (*data.add(i)) & 0xC0 != 0x80 {
+            if cp == char_start {
+                byte_start = i;
+            }
+            if cp == char_end {
+                byte_end = i;
+                break;
+            }
+            cp += 1;
+        }
     }
-    offsets.push(byte_len);
-    offsets
+    if char_count == 0 {
+        byte_end = byte_start;
+    }
+    (byte_start, byte_end)
 }
 
 /// Slice a string: s[start:end]
@@ -38,18 +57,21 @@ pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_slice");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
+        let char_len = (*src).char_len;
         let data = (*src).data.as_ptr();
 
-        let offsets = codepoint_offsets(data, byte_len);
-        let char_len = (offsets.len() - 1) as i64;
-
         // Normalize indices in CHARACTER space (step=1 for simple slice).
-        let (start, end) = normalize_slice_indices(start, end, char_len, 1);
+        let (start, end) = normalize_slice_indices(start, end, char_len as i64, 1);
         let char_count = slice_length(start, end);
 
-        // Convert the character range to a byte range.
-        let byte_start = offsets[start as usize];
-        let byte_end = offsets[(start as usize) + char_count];
+        // Convert the character range to a byte range. Proven ASCII
+        // (char_len == byte_len) means char index == byte index; otherwise a
+        // single forward walk finds both boundaries (no offsets Vec).
+        let (byte_start, byte_end) = if char_len == byte_len {
+            (start as usize, start as usize + char_count)
+        } else {
+            char_range_to_byte_range(data, byte_len, start as usize, char_count)
+        };
         let slice_len = byte_end - byte_start;
 
         // Root str_obj across gc_alloc which may trigger a collection.
@@ -62,11 +84,12 @@ pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
         gc::gc_push(&mut frame);
 
         // Allocate new string
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + slice_len;
+        let size = crate::string::core::str_alloc_size(slice_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = slice_len;
+        (*new_str).char_len = char_count;
 
         // Copy slice data (re-derive src pointer after gc_alloc for clarity)
         if slice_len > 0 {
@@ -112,28 +135,47 @@ pub fn rt_str_slice_step(str_obj: *mut Obj, start: i64, end: i64, step: i64) -> 
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_slice_step");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
+        let char_len = (*src).char_len;
         let src_data = (*src).data.as_ptr();
 
         // Step over CODEPOINTS, not bytes (CPython semantics — covers [::-1]
         // reversal of multi-byte text).
-        let offsets = codepoint_offsets(src_data, byte_len);
-        let char_len = (offsets.len() - 1) as i64;
-
-        let (start, end) = normalize_slice_indices(start, end, char_len, step);
+        let (start, end) = normalize_slice_indices(start, end, char_len as i64, step);
         let char_indices = crate::slice_utils::collect_step_indices(start, end, step);
+        // Fix the codepoint count before the consuming loop below.
+        let char_count = char_indices.len();
 
         // Pre-copy the selected codepoints' bytes before gc_alloc.
         let mut result_chars = Vec::new();
-        for ci in char_indices {
-            let b0 = offsets[ci];
-            let b1 = offsets[ci + 1];
-            for b in b0..b1 {
-                result_chars.push(*src_data.add(b));
+        if char_len == byte_len {
+            // Proven ASCII: char index == byte index, no offsets Vec needed.
+            for ci in char_indices {
+                result_chars.push(*src_data.add(ci));
+            }
+        } else {
+            // Bidirectional stepping needs random access to codepoint starts;
+            // build the offsets Vec (offsets[i] = byte start of char i, with a
+            // trailing byte_len entry so offsets[i+1] is the exclusive end).
+            // Codepoint starts are non-continuation bytes — the same rule as
+            // count_codepoints, so char_len entries are produced.
+            let mut offsets = Vec::with_capacity(char_len + 1);
+            for i in 0..byte_len {
+                if (*src_data.add(i)) & 0xC0 != 0x80 {
+                    offsets.push(i);
+                }
+            }
+            offsets.push(byte_len);
+            for ci in char_indices {
+                let b0 = offsets[ci];
+                let b1 = offsets[ci + 1];
+                for b in b0..b1 {
+                    result_chars.push(*src_data.add(b));
+                }
             }
         }
 
         let result_len = result_chars.len();
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
 
         // Root str_obj across gc_alloc for consistency (data already copied to result_chars)
         let mut roots: [*mut Obj; 1] = [str_obj];
@@ -148,6 +190,7 @@ pub fn rt_str_slice_step(str_obj: *mut Obj, start: i64, end: i64, step: i64) -> 
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
+        (*new_str).char_len = char_count;
 
         // Copy result data (from stack Vec, safe regardless of GC)
         if result_len > 0 {
@@ -181,50 +224,6 @@ pub(crate) fn utf8_char_width(first_byte: u8) -> usize {
     } else {
         4
     }
-}
-
-/// Walk the UTF-8 bytes and return the byte offset of the n-th codepoint.
-/// Negative `char_index` is interpreted as counting from the end.
-/// Returns `None` if the index is out of range.
-pub(crate) unsafe fn char_index_to_byte_offset(
-    data: *const u8,
-    byte_len: usize,
-    char_index: i64,
-) -> Option<usize> {
-    // Count total codepoints so we can handle negative indices.
-    let total_chars: i64 = {
-        let mut n: i64 = 0;
-        let mut i = 0usize;
-        while i < byte_len {
-            let w = utf8_char_width(*data.add(i));
-            n += 1;
-            i += w;
-        }
-        n
-    };
-
-    let normalized = if char_index < 0 {
-        total_chars + char_index
-    } else {
-        char_index
-    };
-
-    if normalized < 0 || normalized >= total_chars {
-        return None;
-    }
-
-    // Walk again to find the byte offset of the normalized codepoint.
-    let mut byte_off = 0usize;
-    let mut cp = 0i64;
-    while byte_off < byte_len {
-        if cp == normalized {
-            return Some(byte_off);
-        }
-        let w = utf8_char_width(*data.add(byte_off));
-        byte_off += w;
-        cp += 1;
-    }
-    None
 }
 
 /// Get single character at a byte index (for string iteration).
@@ -266,7 +265,7 @@ pub fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
         gc::gc_push(&mut frame);
 
         // Allocate string for one full codepoint
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + copy_len;
+        let size = crate::string::core::str_alloc_size(copy_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
@@ -278,6 +277,10 @@ pub fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
             (*new_str).data.as_mut_ptr(),
             copy_len,
         );
+        // One codepoint for well-formed UTF-8; recount for the malformed-clamp
+        // case so the cache invariant holds unconditionally.
+        (*new_str).char_len =
+            crate::string::core::count_codepoints((*new_str).data.as_ptr(), copy_len);
 
         gc::gc_pop();
         obj
@@ -302,17 +305,41 @@ pub fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_subscript");
         let src = str_obj as *mut StrObj;
         let byte_len = (*src).len;
+        let char_len = (*src).char_len;
         let data = (*src).data.as_ptr();
 
-        match char_index_to_byte_offset(data, byte_len, char_index) {
-            Some(byte_off) => rt_str_getchar(str_obj, byte_off as i64),
-            None => {
-                raise_exc!(
-                    exceptions::ExceptionType::IndexError,
-                    "string index out of range"
-                );
-            }
+        let normalized = if char_index < 0 {
+            char_len as i64 + char_index
+        } else {
+            char_index
+        };
+        if normalized < 0 || normalized >= char_len as i64 {
+            raise_exc!(
+                exceptions::ExceptionType::IndexError,
+                "string index out of range"
+            );
         }
+
+        // Proven ASCII: char index == byte index, O(1). Otherwise one forward
+        // walk to the n-th codepoint start (non-continuation byte — same rule
+        // as count_codepoints).
+        let byte_off = if char_len == byte_len {
+            normalized as usize
+        } else {
+            let mut off = byte_len;
+            let mut cp = 0i64;
+            for i in 0..byte_len {
+                if (*data.add(i)) & 0xC0 != 0x80 {
+                    if cp == normalized {
+                        off = i;
+                        break;
+                    }
+                    cp += 1;
+                }
+            }
+            off
+        };
+        rt_str_getchar(str_obj, byte_off as i64)
     }
 }
 #[export_name = "rt_str_subscript"]

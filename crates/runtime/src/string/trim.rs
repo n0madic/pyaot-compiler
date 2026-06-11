@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;
@@ -45,14 +45,18 @@ pub fn rt_str_strip(str_obj: *mut Obj) -> *mut Obj {
         }
 
         let result_len = end - start;
+        // Stripped bytes are ASCII whitespace (one codepoint each), so the
+        // codepoint count drops by exactly the number of stripped bytes.
+        let result_char_len = (*src).char_len - (len - result_len);
 
         // Allocate new string — gc_alloc may trigger a collection, which would
         // invalidate any raw pointer derived from str_obj before this call.
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
+        (*new_str).char_len = result_char_len;
 
         // Re-derive src data pointer AFTER gc_alloc to avoid use-after-free.
         // str_obj is a GC root held by the caller, so the object is still live;
@@ -124,14 +128,24 @@ pub fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
         }
 
         let result_len = src_len - start;
+        // Compute the result's codepoint count BEFORE gc_alloc. Whitespace
+        // strips remove ASCII bytes (one codepoint each); a chars-set strip is
+        // byte-wise and may remove continuation bytes, so recount the kept
+        // range with the canonical rule.
+        let result_char_len = if chars.is_null() {
+            (*src).char_len - start
+        } else {
+            crate::string::core::count_codepoints(src_data.add(start), result_len)
+        };
 
         // Allocate result string — gc_alloc may trigger a collection, which would
         // invalidate src_data. Re-derive it from str_obj (a live GC root) afterwards.
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
+        (*new_str).char_len = result_char_len;
 
         if result_len > 0 {
             // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
@@ -201,14 +215,22 @@ pub fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
         }
 
         let result_len = end;
+        // Same rule as lstrip: arithmetic for ASCII-whitespace strips, recount
+        // for byte-wise chars-set strips (see comment there).
+        let result_char_len = if chars.is_null() {
+            (*src).char_len - (src_len - result_len)
+        } else {
+            crate::string::core::count_codepoints(src_data, result_len)
+        };
 
         // Allocate result string — gc_alloc may trigger a collection, which would
         // invalidate src_data. Re-derive it from str_obj (a live GC root) afterwards.
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
+        (*new_str).char_len = result_char_len;
 
         if result_len > 0 {
             // Re-derive src_data AFTER gc_alloc to avoid use-after-free.

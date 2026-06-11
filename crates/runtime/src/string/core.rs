@@ -4,8 +4,44 @@
 use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
 use crate::gc;
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
+
+/// Count codepoints in `data[..len]` using the non-continuation-byte rule
+/// `(b & 0xC0) != 0x80`. This is the single source of truth for the
+/// `StrObj::char_len` invariant — every allocation site either calls this or
+/// derives the value arithmetically from inputs whose `char_len` was itself
+/// produced by this rule (so even malformed UTF-8 stays self-consistent).
+///
+/// # Safety
+/// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
+#[inline]
+pub(crate) unsafe fn count_codepoints(data: *const u8, len: usize) -> usize {
+    let mut count = 0usize;
+    for i in 0..len {
+        if (*data.add(i)) & 0xC0 != 0x80 {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Allocation size for a `StrObj` holding `byte_len` payload bytes.
+/// Mandatory at every StrObj allocation site: the header/field part is
+/// `size_of::<StrObj>()` (asserted equal to `offset_of!(StrObj, data)`),
+/// so adding a field to `StrObj` can never silently under-allocate.
+///
+/// # Safety
+/// Raises MemoryError on overflow (caller must be in a context where
+/// `raise_exc!` is valid).
+#[inline]
+pub(crate) unsafe fn str_alloc_size(byte_len: usize) -> usize {
+    std::mem::size_of::<StrObj>()
+        .checked_add(byte_len)
+        .unwrap_or_else(|| {
+            raise_exc!(ExceptionType::MemoryError, "string size overflow");
+        })
+}
 
 /// Create a new string object on the heap (internal implementation)
 /// This is the low-level implementation that always allocates.
@@ -16,20 +52,12 @@ use pyaot_core_defs::Value;
 pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
     use std::ptr;
 
-    // Calculate size: header + len field + data bytes
-    // Use checked arithmetic to prevent overflow
-    let raw_size = std::mem::size_of::<ObjHeader>()
-        .checked_add(std::mem::size_of::<usize>())
-        .and_then(|s| s.checked_add(len))
-        .unwrap_or_else(|| {
-            raise_exc!(ExceptionType::MemoryError, "string size overflow");
-        });
+    let raw_size = str_alloc_size(len);
 
     // Round up to slab size class for small strings to benefit from
-    // O(1) bump allocation instead of system malloc
-    let size = if raw_size <= 24 {
-        24
-    } else if raw_size <= 32 {
+    // O(1) bump allocation instead of system malloc. The minimum class is 32
+    // because size_of::<StrObj>() is already 32 (header + len + char_len).
+    let size = if raw_size <= 32 {
         32
     } else if raw_size <= 48 {
         48
@@ -44,6 +72,11 @@ pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
 
     let str_obj = obj as *mut StrObj;
     (*str_obj).len = len;
+    (*str_obj).char_len = if len > 0 && !data.is_null() {
+        count_codepoints(data, len)
+    } else {
+        0
+    };
 
     // Copy string data
     if len > 0 && !data.is_null() {
@@ -59,12 +92,12 @@ pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
 /// Returns: pointer to allocated StrObj
 ///
 /// For single-byte strings, this will use the interned string pool
-/// which is pre-populated with all 256 single-byte strings.
+/// (populated lazily on first use of each byte value).
 ///
 /// # Safety
 /// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
 pub unsafe fn rt_make_str(data: *const u8, len: usize) -> *mut Obj {
-    // For single-byte strings, use the interned pool (pre-populated in init_string_pool)
+    // For single-byte strings, use the lazily-populated interned pool
     if len == 1 {
         use crate::string::rt_make_str_interned;
         return rt_make_str_interned(data, len);
@@ -114,7 +147,7 @@ pub extern "C" fn rt_str_len_abi(str_obj: Value) -> usize {
 }
 
 /// Get the length of a string (as i64 for Python's len()).
-/// Counts Unicode codepoints (non-continuation UTF-8 bytes), matching
+/// Returns the cached codepoint count (`StrObj::char_len`), matching
 /// CPython's character-based len. Internal byte length is `rt_str_len`.
 pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     if str_obj.is_null() {
@@ -123,15 +156,15 @@ pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_len_int");
         let str_obj = str_obj as *mut StrObj;
-        let byte_len = (*str_obj).len;
-        let data = (*str_obj).data.as_ptr();
-        let mut count: i64 = 0;
-        for i in 0..byte_len {
-            if (*data.add(i)) & 0xC0 != 0x80 {
-                count += 1;
-            }
-        }
-        count
+        // Shared debug validator for the char_len invariant: this is the
+        // hottest read of the cache, so every runtime test and debug corpus
+        // run re-checks that allocation sites filled char_len correctly.
+        debug_assert_eq!(
+            (*str_obj).char_len,
+            count_codepoints((*str_obj).data.as_ptr(), (*str_obj).len),
+            "StrObj::char_len cache out of sync with data"
+        );
+        (*str_obj).char_len as i64
     }
 }
 #[export_name = "rt_str_len_int"]
@@ -158,6 +191,8 @@ pub fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 
         let len_a = (*str_a).len;
         let len_b = (*str_b).len;
+        // Read char_len BEFORE gc_alloc (concat of two valid caches is exact).
+        let total_char_len = (*str_a).char_len + (*str_b).char_len;
         let total_len = match len_a.checked_add(len_b) {
             Some(l) => l,
             None => {
@@ -168,8 +203,7 @@ pub fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             }
         };
 
-        // Calculate size: header + len field + data bytes
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
+        let size = str_alloc_size(total_len);
 
         // Root a and b across gc_alloc: a GC collection triggered inside
         // gc_alloc would free a or b if they are not reachable from the shadow
@@ -195,6 +229,7 @@ pub fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 
         let str_obj = obj as *mut StrObj;
         (*str_obj).len = total_len;
+        (*str_obj).char_len = total_char_len;
 
         // Copy data from both strings
         if len_a > 0 {

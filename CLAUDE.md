@@ -32,25 +32,24 @@ modes they prevent are catalogued in `PITFALLS.md`).
 
 ## Working discipline
 
-- **The substrate is frozen; the front-half is built fresh.** The substrate
-  crates (`core-defs`, `runtime`, `stdlib-defs`, …) are a sealed dependency —
-  don't retype or casually edit them. The front-half crates (`types`, `hir`,
-  `typeck`, `mir`, `lowering`, `optimizer`, `codegen-cranelift`,
-  `frontend-python`, `cli`) are implemented from the design in this repo
-  (ARCHITECTURE.md + each crate's `lib.rs` doc), not transcribed from any prior
-  implementation. Reach for established algorithms (constraint solving, C3 MRO,
-  standard optimizer passes) on their own merits.
+- **The substrate is a stable base; the front-half is built fresh.** The
+  substrate crates (`core-defs`, `runtime`, `stdlib-defs`, …) are a stable
+  dependency — don't retype or casually rewrite them. The front-half crates
+  (`types`, `hir`, `typeck`, `mir`, `lowering`, `optimizer`,
+  `codegen-cranelift`, `frontend-python`, `cli`) are implemented from the
+  design in this repo (ARCHITECTURE.md + each crate's `lib.rs` doc), not
+  transcribed from any prior implementation. Reach for established algorithms
+  (constraint solving, C3 MRO, standard optimizer passes) on their own merits.
 - **Do not reintroduce the anti-patterns in `PITFALLS.md`.** They are why the
   invariants exist.
-- **The runtime is a frozen contract — but only as long as the freeze serves
-  the plan.** Its `Value`-level ABI and `rt_*` signatures are the seam the whole
-  compiler targets, so it is frozen by default. The freeze is a discipline, not
-  an absolute prohibition: when fully realizing a planned feature genuinely
-  requires a runtime change — as bignum did — the plan wins, and the runtime is
-  extended deliberately (a new `rt_*`/ABI, documented as such, with corpus
-  coverage). What the freeze forbids is papering over a front-half bug in the
-  runtime, or casually editing it to dodge front-half work — never a change the
-  plan actually needs.
+- **The runtime is a stable contract that evolves with the compiler.** Its
+  `Value`-level ABI and `rt_*` signatures are the seam the whole compiler
+  targets, so changes to it are deliberate, not casual. When compiler
+  development requires a runtime change — fixing a runtime bug, a new
+  `rt_*`/ABI, a layout extension (precedents: bignum, `StrObj.char_len`) —
+  make it, document it as a contract change, and back it with corpus
+  coverage. The one thing that stays forbidden is papering over a front-half
+  bug in the runtime instead of fixing the front-half.
 - `#![forbid(unsafe_code)]` in every compiler crate; only `runtime` uses unsafe.
 - After any change: `cargo check --workspace --exclude pyaot-runtime`, and
   `cargo build -p pyaot-runtime` if the runtime was touched.
@@ -59,7 +58,7 @@ modes they prevent are catalogued in `PITFALLS.md`).
 
 ```bash
 cargo check --workspace --exclude pyaot-runtime   # fast front-half check
-cargo build -p pyaot-runtime                       # frozen runtime staticlib
+cargo build -p pyaot-runtime                       # runtime staticlib
 cargo build --workspace                            # full
 ```
 
@@ -67,6 +66,6 @@ cargo build --workspace                            # full
 
 | Crate | Role | State |
 |---|---|---|
-| core-defs, format-shared, utils, diagnostics, linker, stdlib-defs, runtime | frozen substrate + contract | sealed |
+| core-defs, format-shared, utils, diagnostics, linker, stdlib-defs, runtime | substrate + runtime contract | stable; changed deliberately when the plan requires |
 | types | `SemTy` + `Repr` + `repr_of` + lattice | **implemented** |
 | hir, semantics, typeck, mir, lowering, optimizer, codegen-cranelift, frontend-python, cli | front-half | scaffolds |

@@ -7,7 +7,7 @@ forward: **the trap**, **why it bites**, **how this architecture avoids it**.
 Two kinds of pitfall: **(A) architecture-level** — the deep ones the six
 invariants exist to prevent; and **(B) concrete semantics/runtime gotchas** — the
 rake that bites at implementation time no matter how clean the architecture. The
-frozen `runtime` already handles most of (B) correctly; the danger is the
+`runtime` already handles most of (B) correctly; the danger is the
 front-half failing to *cooperate* with it.
 
 ---
@@ -116,7 +116,7 @@ is chosen only when a range proof guarantees no overflow.
 
 ## B. Concrete semantics / runtime gotchas
 
-The frozen runtime already implements the correct behavior for most of these. The
+The runtime already implements the correct behavior for most of these. The
 trap is the *front-half* not cooperating. "Cooperate by" = what lowering/typeck
 must do.
 
@@ -275,7 +275,7 @@ the setjmp block boundary, never "hope the regalloc behaves".
 raises `TypeError` on a wrong shape instead of casting blind. Adding a third
 checked shape — e.g. `Tagged → Heap(List)` — because "inference should prove it"
 silently extends the set to a pair with **no** runtime guard: the wrong-shape
-`Value` is then blind-cast to a typed heap pointer in a frozen `rt_*` and
+`Value` is then blind-cast to a typed heap pointer in an `rt_*` and
 dereferenced → **SEGV in the runtime, not a `TypeError`**. This is the same trust
 the proof-trusted `Tagged → Heap` no-op already places in `typeck` (A2, B5), and
 the same blind-unbox hazard B16 warns about for possibly-bignum ints. **Why it

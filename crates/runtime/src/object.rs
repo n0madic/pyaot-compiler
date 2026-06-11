@@ -130,11 +130,30 @@ pub struct BigIntObj {
 #[repr(C)]
 pub struct StrObj {
     pub header: ObjHeader,
+    /// Byte length of `data`
     pub len: usize,
+    /// Cached codepoint count — deliberate Principle-8 runtime extension
+    /// (precedent: bignum) sanctioned for string performance.
+    ///
+    /// Invariant: `char_len` equals the number of non-continuation bytes in
+    /// `data[..len]`, i.e. bytes with `(b & 0xC0) != 0x80` — exactly the
+    /// counting rule used by `rt_str_len_int` (including its behavior on
+    /// invalid UTF-8). For valid UTF-8, `char_len == len` ⟺ pure ASCII,
+    /// which gates all ASCII fast paths. Strings are immutable after
+    /// creation, so the cache is never invalidated.
+    pub char_len: usize,
     pub data: [u8; 0], // Flexible array member
 }
 
-/// Bytes object (same layout as StrObj)
+// The `data` flexible array must start exactly at size_of::<StrObj>() so that
+// `str_alloc_size` (header + fields + payload) is the correct allocation size.
+const _: () = assert!(
+    std::mem::offset_of!(StrObj, data) == std::mem::size_of::<StrObj>(),
+    "StrObj data offset must equal size_of::<StrObj>()"
+);
+
+/// Bytes object (header + byte length + flexible payload; unlike `StrObj`
+/// it has no cached codepoint count — bytes semantics are byte-based)
 #[repr(C)]
 pub struct BytesObj {
     pub header: ObjHeader,

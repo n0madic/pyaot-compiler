@@ -258,7 +258,11 @@ pub fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         if byte_pos < 0 {
             return -1;
         }
-        // Convert byte offset to character offset for CPython compatibility
+        // Proven ASCII haystack (char_len == byte_len): byte offset IS the
+        // character offset. Otherwise convert for CPython compatibility.
+        if (*src).char_len == src_len {
+            return byte_pos;
+        }
         let haystack_bytes = std::slice::from_raw_parts(src_data, src_len);
         let char_offset = byte_offset_to_char_offset(haystack_bytes, byte_pos as usize);
         char_offset as i64
@@ -375,9 +379,7 @@ pub fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
 
         if needle_len == 0 {
             // Empty string count = number of characters + 1 (matching CPython)
-            let src_bytes = std::slice::from_raw_parts((*src).data.as_ptr(), src_len);
-            let char_count = src_bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count();
-            return (char_count + 1) as i64;
+            return ((*src).char_len + 1) as i64;
         }
         if needle_len > src_len {
             return 0;
@@ -449,10 +451,7 @@ pub fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
 
         if needle_len == 0 {
             // Return character count (not byte count) for CPython compatibility
-            let src_data = (*src).data.as_ptr();
-            let src_bytes = std::slice::from_raw_parts(src_data, src_len);
-            let char_count = src_bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count();
-            return char_count as i64;
+            return (*src).char_len as i64;
         }
         if needle_len > src_len {
             return -1;
@@ -473,6 +472,10 @@ pub fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
                 }
             }
             if matches {
+                // Proven ASCII haystack: byte offset IS the character offset.
+                if (*src).char_len == src_len {
+                    return i as i64;
+                }
                 // Convert byte offset to character offset for CPython compatibility
                 let haystack_bytes = std::slice::from_raw_parts(src_data, src_len);
                 let char_offset = byte_offset_to_char_offset(haystack_bytes, i);

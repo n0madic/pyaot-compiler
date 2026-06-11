@@ -5,7 +5,7 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
-use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 use pyaot_core_defs::Value;
 
@@ -139,7 +139,7 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
         };
 
         // Allocate new string (gc_alloc may collect; inputs stay alive via shadow frame)
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let result = obj as *mut StrObj;
@@ -167,6 +167,10 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
             }
         }
 
+        // Recounting the result is simpler than splicing arithmetic from three
+        // inputs and stays exact even on malformed UTF-8.
+        (*result).char_len = crate::string::core::count_codepoints(dst_data, result_len);
+
         gc_pop();
         obj
     }
@@ -186,13 +190,14 @@ pub extern "C" fn rt_str_replace_abi(str_obj: Value, old: Value, new: Value) -> 
 pub fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
     if str_obj.is_null() || count <= 0 {
         // Return empty string
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>();
-        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         unsafe {
+            let size = crate::string::core::str_alloc_size(0);
+            let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
             let new_str = obj as *mut StrObj;
             (*new_str).len = 0;
+            (*new_str).char_len = 0;
+            return obj;
         }
-        return obj;
     }
 
     unsafe {
@@ -220,13 +225,17 @@ pub fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
         };
         gc_push(&mut frame);
 
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        // Read char_len before gc_alloc; n repetitions multiply it exactly.
+        let result_char_len = (*src).char_len * count;
+
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         gc_pop();
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
+        (*new_str).char_len = result_char_len;
 
         // Re-derive src_data AFTER gc_alloc using the original (still valid) pointer.
         // GC is non-moving, so str_obj address is unchanged, but re-reading makes
@@ -298,13 +307,17 @@ pub fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj {
             gc_push(&mut frame);
 
             let result_len = str_len - prefix_len;
-            let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+            // The removed bytes equal the prefix exactly, so its char_len is
+            // the exact codepoint count removed. Read before gc_alloc.
+            let result_char_len = (*str_obj).char_len - (*prefix_obj).char_len;
+            let size = crate::string::core::str_alloc_size(result_len);
             let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
             gc_pop();
 
             let result = obj as *mut StrObj;
             (*result).len = result_len;
+            (*result).char_len = result_char_len;
 
             if result_len > 0 {
                 // Re-derive str_data after gc_alloc so it reflects the live object.
@@ -382,13 +395,17 @@ pub fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj {
             gc_push(&mut frame);
 
             let result_len = str_len - suffix_len;
-            let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+            // The removed bytes equal the suffix exactly, so its char_len is
+            // the exact codepoint count removed. Read before gc_alloc.
+            let result_char_len = (*str_obj).char_len - (*suffix_obj).char_len;
+            let size = crate::string::core::str_alloc_size(result_len);
             let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
             gc_pop();
 
             let result = obj as *mut StrObj;
             (*result).len = result_len;
+            (*result).char_len = result_char_len;
 
             if result_len > 0 {
                 // Re-derive str_data after gc_alloc so it reflects the live object.
@@ -465,7 +482,7 @@ pub fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
         gc_push(&mut frame);
 
         // Allocate result string
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let size = crate::string::core::str_alloc_size(result_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         gc_pop();
@@ -506,6 +523,10 @@ pub fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
                 }
             }
         }
+
+        // Recounting the written result is safer than arithmetic over the
+        // variable-width tab expansion.
+        (*result).char_len = crate::string::core::count_codepoints(dst_data, result_len);
 
         obj
     }

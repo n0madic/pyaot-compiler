@@ -66,3 +66,15 @@
 | bench_containers | 0.093405s | 0.169267s | 1.81x |
 | bench_exc_hotpath | 0.627176s | 0.116622s | 0.19x |
 | microgpt | 0.040722s | 0.044863s | 1.10x |
+
+## 2026-06-11 23:52 — 0373ba2 — cached-charlen
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.724764s | 0.342219s | 0.47x |
+| bench_float_kernel | 0.156409s | 0.374029s | 2.39x |
+| bench_calls | 0.576996s | 0.928673s | 1.61x |
+| bench_str | 0.242066s | 0.120422s | 0.50x |
+| bench_containers | 0.100211s | 0.171625s | 1.71x |
+| bench_exc_hotpath | 0.632070s | 0.118084s | 0.19x |
+| microgpt | 0.041095s | 0.045740s | 1.11x |

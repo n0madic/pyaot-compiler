@@ -6,7 +6,7 @@ use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::list::{rt_list_len, rt_list_push, rt_make_list};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
-use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{ListObj, Obj, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 use pyaot_core_defs::Value;
 
@@ -152,6 +152,11 @@ pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
             debug_assert_type_tag!(sep, TypeTagKind::Str, "rt_str_join");
         }
         let sep_len = if sep_str.is_null() { 0 } else { (*sep_str).len };
+        let sep_char_len = if sep_str.is_null() {
+            0
+        } else {
+            (*sep_str).char_len
+        };
 
         let list = list_obj as *mut ListObj;
         let len = rt_list_len(list_obj);
@@ -160,18 +165,21 @@ pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
             return rt_make_str(std::ptr::null(), 0);
         }
 
-        // Calculate total length
+        // Calculate total byte length and codepoint count
         let mut total_len = 0;
+        let mut total_char_len = 0;
         for i in 0..len as usize {
             let item = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if !item.is_null() {
                 let item_str = item as *mut StrObj;
                 total_len += (*item_str).len;
+                total_char_len += (*item_str).char_len;
             }
         }
         // Add separators between elements
         if len > 1 {
             total_len += sep_len * ((len - 1) as usize);
+            total_char_len += sep_char_len * ((len - 1) as usize);
         }
 
         // Root sep and list_obj across gc_alloc: the collector may run during
@@ -187,10 +195,11 @@ pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
         gc_push(&mut frame);
 
         // Allocate result (may trigger GC; sep and list_obj stay alive via frame)
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
+        let size = crate::string::core::str_alloc_size(total_len);
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = total_len;
+        (*result).char_len = total_char_len;
 
         // Copy strings with separators
         let dst_data = (*result).data.as_mut_ptr();

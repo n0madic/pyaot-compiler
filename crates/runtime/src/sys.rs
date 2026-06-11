@@ -106,6 +106,7 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
             size: str_size,
         };
         (*str_ptr).len = len;
+        (*str_ptr).char_len = crate::string::count_codepoints(bytes.as_ptr(), len);
 
         // Copy string data
         if len > 0 {
@@ -256,6 +257,7 @@ unsafe fn build_str_list<S: AsRef<str>>(entries: &[S]) -> *mut Obj {
             size: str_size,
         };
         (*str_ptr).len = len;
+        (*str_ptr).char_len = crate::string::count_codepoints(bytes.as_ptr(), len);
         if len > 0 {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_ptr).data.as_mut_ptr(), len);
         }
