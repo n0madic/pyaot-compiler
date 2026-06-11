@@ -29,9 +29,11 @@ use pyaot_types::{HeapShape, RawKind, Repr, SigRepr};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
 
 mod coerce;
+pub mod cold;
 pub mod liveness;
 pub mod verify;
 pub use coerce::CoerceInst;
+pub use cold::cold_blocks;
 pub use liveness::roots_needed;
 pub use verify::{verify, VerifyError};
 

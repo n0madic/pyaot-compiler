@@ -962,8 +962,15 @@ fn define_function(
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
 
-        // One Cranelift block per MIR block.
+        // One Cranelift block per MIR block. Exception handlers and raise
+        // paths are marked cold (Phase 9C.5) so layout moves them out of the
+        // hot instruction stream.
         let cl_blocks: Vec<_> = mf.blocks.iter().map(|_| builder.create_block()).collect();
+        for (i, cold) in pyaot_mir::cold_blocks(mf).into_iter().enumerate() {
+            if cold {
+                builder.set_cold_block(cl_blocks[i]);
+            }
+        }
 
         // Declare a Variable per MIR local. Cranelift assigns indices 0..n in
         // declaration order, so Variable index == LocalId.
