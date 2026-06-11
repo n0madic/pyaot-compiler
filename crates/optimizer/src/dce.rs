@@ -69,7 +69,9 @@ fn run_func(f: &mut MirFunction) {
 fn blank_unreachable_blocks(f: &mut MirFunction) {
     let reachable = reachable_blocks(f);
     for (i, block) in f.blocks.iter_mut().enumerate() {
-        if !reachable[i] && !(block.insts.is_empty() && matches!(block.term, MirTerminator::Unreachable)) {
+        let already_blank =
+            block.insts.is_empty() && matches!(block.term, MirTerminator::Unreachable);
+        if !reachable[i] && !already_blank {
             block.insts.clear();
             block.term = MirTerminator::Unreachable;
         }
