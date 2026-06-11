@@ -108,7 +108,7 @@ const WIDEN_LIMIT: usize = 16;
 pub fn infer(
     module: &mut HirModule,
     resolve: &ResolveResult,
-    classes: &ClassTable,
+    classes: &mut ClassTable,
     interner: &StringInterner,
 ) -> Result<()> {
     let n_funcs = module.functions.len();
@@ -202,12 +202,54 @@ pub fn infer(
             global_authoritative[vid] = true;
         }
     }
+    // ── field-type variables (B10) ──
+    // One solver variable per `(defining class, field name)` pair, where the
+    // defining class is the LAST class in the MRO whose layout has the field
+    // (fields are flattened parent-first, so the most-base declarer owns the
+    // variable; a write through a subclass receiver feeds the base's
+    // variable). Constants of the system — no variable — are: fields
+    // annotated anywhere in the hierarchy (`name: T` is a contract,
+    // `check_repr_boundaries` enforces every write), and fields defined by a
+    // GENERIC class (their types mention type params; `apply_subst` keeps the
+    // static path).
+    let mut field_const: HashSet<(ClassId, InternedString)> = HashSet::new();
+    for c in &module.classes {
+        for (name, _) in &c.field_annotations {
+            if let Some(d) = defining_class(classes, c.class_id, *name) {
+                field_const.insert((d, *name));
+            }
+        }
+    }
+    let mut field_vars: HashMap<(ClassId, InternedString), usize> = HashMap::new();
+    let mut field_var_names: Vec<InternedString> = Vec::new();
+    for info in classes.iter() {
+        if !info.type_params.is_empty() {
+            continue;
+        }
+        for f in &info.fields {
+            let Some(d) = defining_class(classes, info.class_id, f.name) else { continue };
+            // Create the variable when visiting the definer itself, so the
+            // generic-class skip applies to the DEFINING class.
+            if d != info.class_id || field_const.contains(&(d, f.name)) {
+                continue;
+            }
+            field_vars.entry((d, f.name)).or_insert_with(|| {
+                field_var_names.push(f.name);
+                field_var_names.len() - 1
+            });
+        }
+    }
+    let n_field_vars = field_var_names.len();
+
     let mut vars = ModuleVars {
         ret_ty,
         global_ty,
+        field_ty: vec![SemTy::Never; n_field_vars],
         ret_moves: vec![0; n_funcs],
         global_moves: vec![0; n_globals],
+        field_moves: vec![0; n_field_vars],
         global_pinned: vec![false; n_globals],
+        field_pinned: vec![false; n_field_vars],
     };
 
     // `__main__` is solved FIRST each round: its solution defines the global
@@ -238,6 +280,7 @@ pub fn infer(
     loop {
         let mut moved_rets = vec![false; n_funcs];
         let mut moved_globals = vec![false; n_globals];
+        let mut moved_fields = vec![false; n_field_vars];
         for &idx in &order {
             if !dirty[idx] {
                 continue;
@@ -249,10 +292,11 @@ pub fn infer(
                 vars: &vars,
                 resolve,
                 closure_sigs: &closure_sigs,
-                classes,
+                classes: &*classes,
                 interner,
                 global_demoted: &demoted,
                 global_authoritative: &global_authoritative,
+                field_vars: &field_vars,
                 reads: RefCell::new(ReadSet::default()),
             }
             .solve();
@@ -286,20 +330,104 @@ pub fn infer(
                 moved_rets[i] = true;
             }
         }
-        if !moved_rets.contains(&true) && !moved_globals.contains(&true) {
-            break;
+        // Move the field variables (B10): a direct recompute from EVERY
+        // function's writes (any function can write `obj.field`), after all
+        // sweeps — like returns, so readers re-solve next round.
+        move_field_tys(&states, classes, &field_vars, &field_var_names, &mut vars, &mut moved_fields);
+        if !moved_rets.contains(&true)
+            && !moved_globals.contains(&true)
+            && !moved_fields.contains(&true)
+        {
+            // Convergence — close the two `Never`-materializes-to-`Dyn` gaps
+            // the per-round recompute cannot see (a still-`Never` expr keeps
+            // its frontend type — `Dyn` — at materialize). Doing this earlier
+            // would be premature: a transiently-`Never` receiver/value may
+            // still climb. Each demotion pins, so this adds at most one extra
+            // round per variable.
+            //
+            // 1. A `Never` RECEIVER lowers to a by-name write
+            //    (`SetFieldNamed` can hit any class with that field name) —
+            //    demote every same-named variable.
+            // 2. A `Never` VALUE through a class receiver materializes `Dyn`
+            //    into that one field — demote its variable (e.g. microgpt's
+            //    `self.data = data` with an unannotated, never-written
+            //    parameter, next to a float write of the same field).
+            let demote_pin = |vi: usize, vars: &mut ModuleVars, moved: &mut [bool]| {
+                if vars.field_pinned[vi] {
+                    return;
+                }
+                if vars.field_ty[vi] != SemTy::Dyn {
+                    moved[vi] = true;
+                }
+                vars.field_ty[vi] = SemTy::Dyn;
+                vars.field_pinned[vi] = true;
+            };
+            for st in &states {
+                for (base, name, value) in &st.attr_writes {
+                    let bt = st.ety(*base);
+                    if bt == SemTy::Never {
+                        for (vi, vn) in field_var_names.iter().enumerate() {
+                            if vn == name {
+                                demote_pin(vi, &mut vars, &mut moved_fields);
+                            }
+                        }
+                        continue;
+                    }
+                    if st.ety(*value) == SemTy::Never {
+                        let Some(cid) = class_of(&bt, classes) else { continue };
+                        let Some(d) = defining_class(classes, cid, *name) else { continue };
+                        if let Some(&vi) = field_vars.get(&(d, *name)) {
+                            demote_pin(vi, &mut vars, &mut moved_fields);
+                        }
+                    }
+                }
+            }
+            if !moved_fields.contains(&true) {
+                break;
+            }
         }
         // Mark next round's dirty set: exactly the readers of what moved.
         // Globals move right after `__main__`'s sweep — the FIRST of the round
         // — so a function solved this round already read the post-move slot
         // types and needs no global-driven re-solve (`__main__` itself reads
         // its own variable slots through the live `global_writes` join, never
-        // through `vars`). Returns move after all sweeps, so their readers
-        // re-solve unconditionally.
+        // through `vars`). Returns and fields move after all sweeps, so their
+        // readers re-solve unconditionally.
         for f in 0..n_funcs {
             let reads = &states[f].reads;
             dirty[f] = reads.rets.iter().any(|&r| moved_rets[r])
+                || reads.fields.iter().any(|&v| moved_fields[v])
                 || (!dirty[f] && reads.globals.iter().any(|&g| moved_globals[g]));
+        }
+    }
+
+    // ── write the solved field types back into the ClassTable (B10) ──
+    // A terminal forward step: downstream consumers (the SetAttr reinterpret
+    // check below, lowering's field-read legalization, codegen) all read the
+    // same solved types the final sweep used. Every flattened copy of a field
+    // (the defining class AND each subclass layout) gets the type; `Never` (a
+    // field never written with an evaluated value) maps to `Dyn` like any
+    // genuinely-unconstrained slot.
+    let field_updates: Vec<(ClassId, InternedString, SemTy)> = classes
+        .iter()
+        .flat_map(|info| {
+            let cid = info.class_id;
+            info.fields
+                .iter()
+                .filter_map(|f| {
+                    let d = defining_class(classes, cid, f.name)?;
+                    let &vi = field_vars.get(&(d, f.name))?;
+                    let t = vars.field_ty[vi].clone();
+                    Some((cid, f.name, if t == SemTy::Never { SemTy::Dyn } else { t }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (cid, name, ty) in field_updates {
+        if let Some(info) = classes.get_mut(cid) {
+            if let Some(f) = info.fields.iter_mut().find(|f| f.name == name) {
+                f.ty = ty;
+            }
         }
     }
 
@@ -310,6 +438,92 @@ pub fn infer(
     // boundaries before lowering can emit an unsound coercion.
     check_repr_boundaries(module, resolve, classes, interner)?;
     Ok(())
+}
+
+/// The class that *defines* field `name` for `cid`: the LAST class in `cid`'s
+/// MRO (self-first) whose layout contains the field. Fields are flattened
+/// parent-first (semantics), so the most-base declarer owns the B10 inference
+/// variable, and a write through a subclass receiver feeds it.
+fn defining_class(classes: &ClassTable, cid: ClassId, name: InternedString) -> Option<ClassId> {
+    let info = classes.get(cid)?;
+    info.mro
+        .iter()
+        .rev()
+        .find(|a| classes.get(**a).is_some_and(|ai| ai.field_slot(name).is_some()))
+        .copied()
+}
+
+/// Move the field-type variables (B10): a DIRECT recompute of each variable —
+/// the [`raw_uniform`]-guarded join of every `obj.field = value` write whose
+/// receiver resolves to a class defining the field — never a join with the old
+/// value (the guard is non-monotone, same reasoning as [`move_global_tys`]).
+/// A write through a `Dyn`/`Union` receiver goes by NAME at runtime
+/// (`SetFieldNamed` can hit any class with that field name), so it demotes
+/// every same-named variable to `Dyn` and pins it. Oscillation is cut by the
+/// per-variable move counter (widen to `Dyn` + pin at [`WIDEN_LIMIT`]).
+fn move_field_tys(
+    states: &[FuncState],
+    classes: &ClassTable,
+    field_vars: &HashMap<(ClassId, InternedString), usize>,
+    field_var_names: &[InternedString],
+    vars: &mut ModuleVars,
+    moved: &mut [bool],
+) {
+    let nvars = field_var_names.len();
+    let mut contribs: Vec<Vec<SemTy>> = vec![Vec::new(); nvars];
+    let mut demote: Vec<bool> = vec![false; nvars];
+    for st in states {
+        for (base, name, value) in &st.attr_writes {
+            let bt = st.ety(*base);
+            if bt == SemTy::Never {
+                continue; // receiver not evaluated yet — contributes nothing
+            }
+            if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+                for (vi, vn) in field_var_names.iter().enumerate() {
+                    if vn == name {
+                        demote[vi] = true;
+                    }
+                }
+                continue;
+            }
+            let Some(cid) = class_of(&bt, classes) else { continue };
+            let Some(d) = defining_class(classes, cid, *name) else { continue };
+            let Some(&vi) = field_vars.get(&(d, *name)) else { continue };
+            let vt = erase_vars(&st.ety(*value));
+            if vt == SemTy::Never {
+                continue;
+            }
+            contribs[vi].push(vt);
+        }
+    }
+    for vi in 0..nvars {
+        if vars.field_pinned[vi] {
+            continue;
+        }
+        if demote[vi] {
+            if vars.field_ty[vi] != SemTy::Dyn {
+                moved[vi] = true;
+            }
+            vars.field_ty[vi] = SemTy::Dyn;
+            vars.field_pinned[vi] = true;
+            continue;
+        }
+        let tys = &contribs[vi];
+        let joined = raw_uniform(tys.iter().fold(SemTy::Never, |acc, t| acc.join(t)), tys);
+        if joined == SemTy::Never {
+            continue; // no write evaluated yet — the variable stays at bottom
+        }
+        if joined != vars.field_ty[vi] {
+            vars.field_moves[vi] += 1;
+            if vars.field_moves[vi] >= WIDEN_LIMIT {
+                vars.field_ty[vi] = SemTy::Dyn;
+                vars.field_pinned[vi] = true;
+            } else {
+                vars.field_ty[vi] = joined;
+            }
+            moved[vi] = true;
+        }
+    }
 }
 
 /// Move the `global_ty` variables from `__main__`'s freshly-solved writes: a
@@ -355,23 +569,49 @@ fn move_global_tys(
     }
 }
 
+/// The Raw-uniformity guard ("stay Tagged when in doubt", PITFALLS A2/B6),
+/// shared by every join that decides a slot representation — locals
+/// ([`FuncState::join_writes`]), container element slots (literals and
+/// element-level writes), and inferred returns: if the joined type would take
+/// a `Raw` representation, every contributor must *already* have that
+/// representation; otherwise the slot falls back to `Dyn` (→ `Tagged`).
+/// Without this, a numerically-promoted contributor (a tagged int feeding a
+/// `Float` slot) would be silently unboxed. A still-`Never` contributor (not
+/// yet evaluated this sweep) adds nothing to the join, so it must not
+/// spuriously block the narrowing and force a sticky `Dyn`.
+fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
+    if joined == SemTy::Never {
+        return SemTy::Never;
+    }
+    if matches!(repr_of(&joined), Repr::Raw(_)) {
+        let target = repr_of(&joined);
+        let uniform = contribs.iter().all(|t| *t == SemTy::Never || repr_of(t) == target);
+        if !uniform {
+            return SemTy::Dyn;
+        }
+    }
+    joined
+}
+
 /// The inferred return type of a function (Phase 8E): the join of every
 /// `return <v>` expression's solved type, with a value-less `return` / fall-off
 /// (`Return(None)`) contributing `NoneTy`. `Never` (no contributors yet) means
 /// "not known", and `join` treats it as the identity, so it never poisons a
-/// caller — the round loop lifts it as the body's expr types settle.
+/// caller — the round loop lifts it as the body's expr types settle. The
+/// result is [`raw_uniform`]-guarded: a function returning both `2.25` and
+/// `16` must NOT get a `Raw(F64)` return ABI (the int return would be
+/// blindly unboxed at the boundary) — it demotes to `Dyn`.
 fn inferred_return_ty(func: &HirFunction, st: &FuncState) -> SemTy {
-    let mut joined = SemTy::Never;
+    let mut contribs: Vec<SemTy> = Vec::new();
     for (_b, block) in func.blocks.iter() {
         match &block.term {
-            HirTerminator::Return(Some(v)) => {
-                joined = joined.join(&erase_vars(&st.ety(*v)));
-            }
-            HirTerminator::Return(None) => joined = joined.join(&SemTy::NoneTy),
+            HirTerminator::Return(Some(v)) => contribs.push(erase_vars(&st.ety(*v))),
+            HirTerminator::Return(None) => contribs.push(SemTy::NoneTy),
             _ => {}
         }
     }
-    joined
+    let joined = contribs.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+    raw_uniform(joined, &contribs)
 }
 
 /// How a slot's representation *reinterprets a tagged value by its assumed type*
@@ -420,7 +660,12 @@ fn reinterpret_kind(ty: &SemTy) -> Option<ReinterpretKind> {
 /// unbox, a deferred container-op crash for the `Heap` re-type. Rather than
 /// accept-then-crash, we treat the annotation as a contract and reject the
 /// violation loudly. (A future whole-program pass could instead demote such a slot
-/// to `Tagged` when a call site proves it polymorphic — PITFALLS B10, deferred.)
+/// to `Tagged` when a call site proves it polymorphic — PITFALLS B10. The
+/// FIELD half of B10 is now solved: unannotated instance fields are inference
+/// variables joined over every module-wide write ([`move_field_tys`]).
+/// Still deferred: inferring unannotated `__init__` PARAMETER types from call
+/// sites — that is parameter inference, a separate feature; a field fed by a
+/// `Dyn` parameter simply stays `Dyn`, which is safe.)
 fn check_repr_boundaries(
     module: &HirModule,
     resolve: &ResolveResult,
@@ -919,13 +1164,22 @@ struct ModuleVars {
     /// (demoted / never written by main), or the recomputed join of
     /// `__main__`'s writes, starting at `Never` (Phase 6B / 8).
     global_ty: Vec<SemTy>,
+    /// `field_ty[vi]` — an unannotated, non-generic instance field's type
+    /// (B10): the recomputed join of every `obj.field = value` write across
+    /// the module, starting at `Never`. Indexed by the variable table built
+    /// in [`infer`] (one variable per defining class + field name).
+    field_ty: Vec<SemTy>,
     /// Strict-move counters driving the [`WIDEN_LIMIT`] widening.
     ret_moves: Vec<usize>,
     global_moves: Vec<usize>,
+    field_moves: Vec<usize>,
     /// Globals widened to `Dyn` — excluded from further recomputes (the direct
     /// recompute in [`move_global_tys`] is non-monotone, so without the pin it
     /// could oscillate forever).
     global_pinned: Vec<bool>,
+    /// Field variables widened/demoted to `Dyn` — same pinning rationale as
+    /// globals, plus the `Dyn`-receiver demotion (see [`move_field_tys`]).
+    field_pinned: Vec<bool>,
 }
 
 /// The module variables one sweep actually READ: which `ret_ty[fid]` /
@@ -937,6 +1191,8 @@ struct ModuleVars {
 struct ReadSet {
     rets: HashSet<usize>,
     globals: HashSet<usize>,
+    /// Field variables read through `attribute_ty` (B10).
+    fields: HashSet<usize>,
 }
 
 /// One write into a local slot (Phase 8H, D1). Beyond plain assignments, the
@@ -977,6 +1233,11 @@ struct FuncState {
     /// any when the slot is not demoted, making its reads a live worklist join
     /// (and feeding the module-level `global_ty` recompute).
     global_writes: Vec<Vec<Idx<HirExpr>>>,
+    /// Every `SetAttr` in this function — `(base, field name, value)` — the
+    /// raw material of the B10 field-variable recompute ([`move_field_tys`]).
+    /// Augmented writes (`x.f += v`) are already desugared to `SetAttr` by the
+    /// frontend, so they contribute for free.
+    attr_writes: Vec<(Idx<HirExpr>, InternedString, Idx<HirExpr>)>,
     /// Current per-expr type (absent = `Never`, the lattice bottom).
     expr_ty: HashMap<Idx<HirExpr>, SemTy>,
     /// Current per-local type.
@@ -1017,9 +1278,14 @@ impl FuncState {
         let mut assignments: Vec<Vec<Write>> = vec![Vec::new(); n];
         let mut cell_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n];
         let mut global_writes: Vec<Vec<Idx<HirExpr>>> = vec![Vec::new(); n_globals];
+        let mut attr_writes: Vec<(Idx<HirExpr>, InternedString, Idx<HirExpr>)> = Vec::new();
         for (_bidx, block) in func.blocks.iter() {
             for stmt in &block.stmts {
                 match stmt {
+                    // ── field writes (B10): feed the module-level field vars ──
+                    HirStmt::SetAttr { base, name, value } => {
+                        attr_writes.push((*base, *name, *value));
+                    }
                     HirStmt::Assign { target, value } => {
                         assignments[target.index()].push(Write::Val(*value));
                         // A `MakeCell` init is the cell's first write.
@@ -1079,6 +1345,7 @@ impl FuncState {
             assignments,
             cell_writes,
             global_writes,
+            attr_writes,
             expr_ty: HashMap::new(),
             local_ty,
             reads: ReadSet::default(),
@@ -1109,38 +1376,22 @@ impl FuncState {
     /// an injected `Dyn` would instead absorb and poison them irreversibly.
     /// Genuinely-unconstrained slots are mapped to `Dyn` once, in materialize.
     fn join_writes(&self, writes: &[Idx<HirExpr>]) -> SemTy {
-        let mut joined = SemTy::Never;
-        for &v in writes {
-            joined = joined.join(&self.ety(v));
-        }
-        if joined == SemTy::Never {
-            return SemTy::Never;
-        }
-        // A `Raw` slot is only sound if every assigned value already has that
-        // representation — otherwise a numerically-promoted contributor (a tagged
-        // int feeding a `Float` slot) would be silently unboxed (PITFALLS A2/B6).
-        if matches!(repr_of(&joined), Repr::Raw(_)) {
-            let target = repr_of(&joined);
-            // A still-`Never` contributor (not yet evaluated this sweep) is skipped
-            // — it adds nothing to the join, so it must not spuriously block the
-            // narrowing and force a sticky `Dyn`.
-            let uniform = writes.iter().all(|&v| {
-                let t = self.ety(v);
-                t == SemTy::Never || repr_of(&t) == target
-            });
-            if !uniform {
-                return SemTy::Dyn;
-            }
-        }
-        joined
+        // The Raw-uniformity discipline (PITFALLS A2/B6) lives in
+        // [`raw_uniform`], shared with element-slot and return-type joins.
+        let tys: Vec<SemTy> = writes.iter().map(|&v| self.ety(v)).collect();
+        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+        raw_uniform(joined, &tys)
     }
 
     /// Join a local's writes — whole-value assignments plus the element-level
     /// container writes (Phase 8H, D1). The base comes from the `Val` writes
-    /// (with the Raw-uniformity guard); each push then contributes
-    /// `list_of/set_of/dict_of(elem)` in the base's container family. A
-    /// `Never` base (seed literal not evaluated yet) stays bottom — monotone;
-    /// a `Dyn` base absorbs the pushes outright.
+    /// (with the Raw-uniformity guard); each push then contributes to the
+    /// matching element slot in the base's container family. A `Never` base
+    /// (seed literal not evaluated yet) stays bottom — monotone; a `Dyn` base
+    /// absorbs the pushes outright. Each element slot is [`raw_uniform`]-
+    /// guarded independently: `xs = [2.25]; xs.append(16)` must not leave a
+    /// `Raw(F64)` element slot holding a tagged int — the slot demotes to
+    /// `Dyn` (elements stay `Tagged`).
     fn join_local_writes(&self, writes: &[Write]) -> SemTy {
         let vals: Vec<Idx<HirExpr>> =
             writes.iter().filter_map(|w| match w { Write::Val(v) => Some(*v), _ => None }).collect();
@@ -1157,44 +1408,56 @@ impl FuncState {
         if !is_list && !is_set && !is_dict {
             return base;
         }
-        let mut joined = base;
+        // Per-slot contributor lists: the base's own element slot(s) plus each
+        // element-level write that lands in that slot.
+        let mut elems: Vec<SemTy> = Vec::new();
+        let mut keys: Vec<SemTy> = Vec::new();
+        let mut dvals: Vec<SemTy> = Vec::new();
+        if is_list {
+            elems.push(base.list_elem().expect("is_list").clone());
+        } else if is_set {
+            elems.push(base.set_elem().expect("is_set").clone());
+        } else {
+            let (k, v) = base.dict_kv().expect("is_dict");
+            keys.push(k.clone());
+            dvals.push(v.clone());
+        }
         for w in writes {
-            let contrib = match w {
-                Write::Val(_) => continue,
+            match w {
+                Write::Val(_) => {}
                 Write::Push(v) => {
-                    let e = self.ety(*v);
-                    if is_list {
-                        SemTy::list_of(e)
-                    } else if is_set {
-                        SemTy::set_of(e)
-                    } else {
-                        continue; // dict has no push
+                    if is_list || is_set {
+                        elems.push(self.ety(*v));
                     }
+                    // dict has no push
                 }
                 Write::PushIter(it) => {
-                    let e = iter_elem_ty(&self.ety(*it));
-                    if is_list {
-                        SemTy::list_of(e)
-                    } else if is_set {
-                        SemTy::set_of(e)
-                    } else {
-                        continue;
+                    if is_list || is_set {
+                        elems.push(iter_elem_ty(&self.ety(*it)));
                     }
                 }
                 Write::Insert(k, v) => {
                     if is_dict {
-                        SemTy::dict_of(self.ety(*k), self.ety(*v))
+                        keys.push(self.ety(*k));
+                        dvals.push(self.ety(*v));
                     } else if is_list {
                         // `xs[i] = v` constrains the element type only.
-                        SemTy::list_of(self.ety(*v))
-                    } else {
-                        continue;
+                        elems.push(self.ety(*v));
                     }
                 }
-            };
-            joined = joined.join(&contrib);
+            }
         }
-        joined
+        let join_slot = |tys: &[SemTy]| {
+            let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+            raw_uniform(joined, tys)
+        };
+        if is_list {
+            SemTy::list_of(join_slot(&elems))
+        } else if is_set {
+            SemTy::set_of(join_slot(&elems))
+        } else {
+            SemTy::dict_of(join_slot(&keys), join_slot(&dvals))
+        }
     }
 }
 
@@ -1219,6 +1482,10 @@ struct Sweeper<'a> {
     /// Slots with a module-level annotation — their declared type is
     /// authoritative and overrides demotion (Phase 8).
     global_authoritative: &'a [bool],
+    /// The B10 field-variable table: `(defining class, field name)` → index
+    /// into [`ModuleVars::field_ty`]. Absent pairs (annotated / generic-class
+    /// fields) keep the static `ClassInfo::field_ty` path.
+    field_vars: &'a HashMap<(ClassId, InternedString), usize>,
     /// Module variables read so far in this sweep (interior mutability — the
     /// recording happens inside `&self` eval helpers). Moved into
     /// [`FuncState::reads`] when the sweep finishes.
@@ -1295,6 +1562,13 @@ impl<'a> Sweeper<'a> {
         self.vars.global_ty.get(vid).cloned().unwrap_or(SemTy::Dyn)
     }
 
+    /// A field's current `field_ty` module variable (B10), recording the read
+    /// in the sweep's [`ReadSet`].
+    fn field_var_ty(&self, vi: usize) -> SemTy {
+        self.reads.borrow_mut().fields.insert(vi);
+        self.vars.field_ty[vi].clone()
+    }
+
     /// The type of an expr node from its kind and its operands' current types.
     fn eval_expr(&self, idx: Idx<HirExpr>) -> SemTy {
         match &self.func.exprs[idx].kind {
@@ -1354,8 +1628,12 @@ impl<'a> Sweeper<'a> {
                 SemTy::tuple_of(elems.iter().map(|e| self.ety(*e)).collect())
             }
             HirExprKind::DictLit { pairs } => {
-                let k = pairs.iter().fold(SemTy::Never, |acc, (k, _)| acc.join(&self.ety(*k)));
-                let v = pairs.iter().fold(SemTy::Never, |acc, (_, v)| acc.join(&self.ety(*v)));
+                // Key/value slots take the same Raw-uniformity guard as list
+                // elements — stored values keep their own representation.
+                let kt: Vec<SemTy> = pairs.iter().map(|(k, _)| self.ety(*k)).collect();
+                let vt: Vec<SemTy> = pairs.iter().map(|(_, v)| self.ety(*v)).collect();
+                let k = raw_uniform(kt.iter().fold(SemTy::Never, |acc, t| acc.join(t)), &kt);
+                let v = raw_uniform(vt.iter().fold(SemTy::Never, |acc, t| acc.join(t)), &vt);
                 SemTy::dict_of(k, v)
             }
             HirExprKind::BytesLit(_) => SemTy::Bytes,
@@ -1634,6 +1912,15 @@ impl<'a> Sweeper<'a> {
         let raw = if let Some(p) = info.property(name) {
             p.ty.clone()
         } else if let Some(t) = info.field_ty(name) {
+            // B10: an unannotated field of a non-generic defining class reads
+            // its solver variable (`Never` while still climbing — the working
+            // bottom, exactly like `callee_ret_ty`). Annotated /
+            // generic-class fields keep the static type.
+            if let Some(d) = defining_class(self.classes, cid, name) {
+                if let Some(&vi) = self.field_vars.get(&(d, name)) {
+                    return self.field_var_ty(vi);
+                }
+            }
             t.clone()
         } else if let Some(a) = info.class_attr(name) {
             a.ty.clone()
@@ -1644,9 +1931,15 @@ impl<'a> Sweeper<'a> {
         self.apply_subst(&recv, raw)
     }
 
-    /// Join the types of every expr in `elems` (the lattice bottom for empty).
+    /// Join the types of every expr in `elems` (the lattice bottom for empty),
+    /// as a container ELEMENT slot type — [`raw_uniform`]-guarded, because the
+    /// elements are stored as-is: `[2.25, 16]` must be `list[Dyn]` (tagged
+    /// elements), never `list[float]` whose reads would blindly unbox the
+    /// stored tagged int.
     fn join_all(&self, elems: &[Idx<HirExpr>]) -> SemTy {
-        elems.iter().fold(SemTy::Never, |acc, e| acc.join(&self.ety(*e)))
+        let tys: Vec<SemTy> = elems.iter().map(|e| self.ety(*e)).collect();
+        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t));
+        raw_uniform(joined, &tys)
     }
 
     /// The declared return type of a concrete-class dunder `name` on `ty`, if any

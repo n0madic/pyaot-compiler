@@ -63,6 +63,17 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
     if obj.is_bool() {
         return if obj.unwrap_bool() { 1.0 } else { 0.0 };
     }
+    // The immediate None tag is not a pointer; `unwrap_ptr` on it would
+    // fabricate a garbage address. The CHECKED-unbox contract (Phase 8H,
+    // D3) is TypeError on any non-numeric tag — same as `rt_unbox_int`.
+    if obj.is_none() {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "must be real number, not NoneType"
+            );
+        }
+    }
     rt_unbox_float(obj.unwrap_ptr())
 }
 

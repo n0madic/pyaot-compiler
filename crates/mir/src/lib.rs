@@ -28,7 +28,11 @@ use std::collections::HashMap;
 use pyaot_types::{HeapShape, RawKind, Repr, SigRepr};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
 
+mod coerce;
+pub mod liveness;
 pub mod verify;
+pub use coerce::CoerceInst;
+pub use liveness::roots_needed;
 pub use verify::{verify, VerifyError};
 
 // Re-exported so consumers (`lowering`, `codegen`) can name builtin kinds.
@@ -150,7 +154,9 @@ pub enum MirInst {
     Const { dst: LocalId, val: Const },
     /// Bridge a value's representation from `from` to `to`. **Only**
     /// `lowering::legalize` emits this, and only when [`classify_coercion`]
-    /// accepts `(from, to)`; the verifier re-checks both facts.
+    /// accepts `(from, to)` — enforced by the type system: the payload
+    /// [`CoerceInst`] is constructible outside `mir` only through its
+    /// validating constructors. The verifier re-checks as defense-in-depth.
     ///
     /// `checked: true` (Phase 8H, D3) marks a RUNTIME-validated unbox at a
     /// stdlib raw-ABI boundary: a `Tagged` value whose static type is gradual
@@ -158,13 +164,7 @@ pub enum MirInst {
     /// `rt_unbox_float`/`rt_unbox_int`, which raise `TypeError` on a
     /// mismatched tag instead of silently reinterpreting bits. Only legal for
     /// `(Tagged, Raw(F64))` and `(Tagged, Raw(I64))`.
-    Coerce {
-        dst: LocalId,
-        src: Operand,
-        from: Repr,
-        to: Repr,
-        checked: bool,
-    },
+    Coerce(CoerceInst),
     /// A binary op on the tagged baseline. ALL ops (arithmetic *and* bitwise /
     /// shift) take and produce `Tagged` and dispatch on the tag in the runtime
     /// (`rt_obj_*`), so they are bignum-safe: an `int` operand may dynamically be
@@ -354,6 +354,99 @@ pub enum MirInst {
     /// `str`), read out with `rt_str_data`/`rt_str_len` at the call (B2-safe:
     /// the runtime copies the bytes; the StrObj itself is a rooted MIR temp).
     Raise(MirRaise),
+}
+
+impl MirInst {
+    /// May executing this instruction trigger a GC allocation (and therefore a
+    /// collection)? **The single source of truth** for the liveness-based GC
+    /// root narrowing ([`liveness::roots_needed`]): a local must hold a root
+    /// slot exactly while it is live across (or used by) an instruction this
+    /// returns `true` for.
+    ///
+    /// The match is exhaustive with NO catch-all arm — adding a `MirInst`
+    /// variant is a compile error here, never a silently-unrooted local.
+    /// `locals` resolves operand representations (the tagged baseline of an
+    /// arithmetic op can promote to a heap `BigInt`; the raw fast paths
+    /// cannot allocate).
+    pub fn may_allocate(&self, locals: &[LocalDecl]) -> bool {
+        let repr_of = |op: &Operand| match op {
+            Operand::Local(id) => &locals[id.index()].repr,
+        };
+        // A non-Raw operand routes the op through the runtime's tag dispatch
+        // (`rt_obj_*`), which may allocate (bignum promotion, float results).
+        let non_raw = |op: &Operand| !matches!(repr_of(op), Repr::Raw(_));
+        match self {
+            // Str/Bytes/BigInt literals materialize heap objects; scalar
+            // constants are immediates.
+            MirInst::Const { dst: _, val } => {
+                matches!(val, Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_))
+            }
+            // `checked` unboxes call `rt_unbox_float/int`, which can RAISE
+            // (TypeError allocates the exception); `BoxFloat` allocates a
+            // `FloatObj`. Every other bridge is bit ops / a load.
+            MirInst::Coerce(c) => {
+                c.checked() || classify_coercion(c.from(), c.to()) == Some(Coercion::BoxFloat)
+            }
+            MirInst::BinOp { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
+            MirInst::Compare { dst: _, op: _, l, r } => non_raw(l) || non_raw(r),
+            MirInst::Unary { dst: _, op: _, operand } => non_raw(operand),
+            // Truthiness never allocates (tag test / len check).
+            MirInst::Truthy { dst: _, operand: _ } => false,
+            // Any call can re-enter user code or the allocating runtime.
+            MirInst::Call { .. }
+            | MirInst::CallBuiltin { .. }
+            | MirInst::CallContainer { .. }
+            | MirInst::CallVirtual { .. }
+            | MirInst::CallIndirect { .. } => true,
+            // `RuntimeFuncDef` carries no allocation flag and the substrate is
+            // frozen — conservatively allocating.
+            MirInst::CallRuntime { .. } => true,
+            MirInst::MakeInstance { .. }
+            | MirInst::MakeClosure { .. }
+            | MirInst::MakeCell { .. }
+            | MirInst::MakeGenerator { .. } => true,
+            // Field/cell/global/class-attr traffic is load/store on existing
+            // objects (uniform tagged storage, no allocation).
+            MirInst::GetField { .. } | MirInst::SetField { .. } => false,
+            // The by-name forms can RAISE AttributeError (allocates).
+            MirInst::GetFieldNamed { .. } | MirInst::SetFieldNamed { .. } => true,
+            MirInst::IsInstance { .. } => false,
+            MirInst::GetClassAttr { .. } | MirInst::SetClassAttr { .. } => false,
+            // Raises AssertionError through the runtime.
+            MirInst::AssertFail => true,
+            // `rt_print_obj` of a bignum/container formats through the
+            // runtime — conservatively allocating.
+            MirInst::Print { .. } => true,
+            MirInst::CellGet { .. } | MirInst::CellSet { .. } => false,
+            MirInst::GlobalGet { .. } | MirInst::GlobalSet { .. } => false,
+            // Pure state reads/writes on the generator object are loads/
+            // stores; `Next`/`Send`/`Close` re-enter the generator body
+            // (arbitrary user code).
+            MirInst::GenOpInst { dst: _, op, gen: _, imm: _, value: _ } => match op {
+                GenOp::GetLocal
+                | GenOp::SetLocal
+                | GenOp::GetState
+                | GenOp::SetState
+                | GenOp::GetSentValue
+                | GenOp::SetExhausted
+                | GenOp::IsClosing => false,
+                GenOp::Next | GenOp::Send | GenOp::Close => true,
+            },
+            // Frame bookkeeping — no allocation.
+            MirInst::ExcOp(_) => false,
+            // `Current` (`rt_exc_get_current`) LAZILY materializes the
+            // exception instance (rt_make_instance/str/tuple) on first query;
+            // the `Matches*` forms are pure class-hierarchy walks.
+            MirInst::ExcQuery { dst: _, query } => match query {
+                ExcQuery::Current => true,
+                ExcQuery::MatchesBuiltin(_) | ExcQuery::MatchesClass(_) => false,
+            },
+            // Builds a StrObj.
+            MirInst::ExcInstanceStr { .. } => true,
+            // Every raise allocates the exception value / traceback entry.
+            MirInst::Raise(_) => true,
+        }
+    }
 }
 
 /// The resolved shape of a `raise` (Phase 7). Mirrors the `rt_exc_*` raise

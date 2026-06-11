@@ -431,6 +431,7 @@ pub extern "C" fn rt_tuple_from_range_abi(start: i64, stop: i64, step: i64) -> V
 /// Create a tuple by consuming an iterator
 /// Returns: pointer to new TupleObj
 pub fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::iterator::rt_iter_next_no_exc;
     use crate::list::{rt_list_push, rt_make_list};
 
@@ -438,19 +439,34 @@ pub fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
         return rt_make_tuple(0);
     }
 
-    // First collect into a list (since we don't know the size)
+    // First collect into a list (since we don't know the size).
     let list = rt_make_list(8);
+
+    // Root the scratch list across every allocation below — next() may
+    // allocate, rt_list_push may grow, and rt_tuple_from_list allocates the
+    // tuple; each can trigger a collection (gc_stress: every one does), and
+    // the list is otherwise reachable only from this Rust frame. Same
+    // pattern as rt_list_from_iter.
+    let mut roots: [*mut Obj; 1] = [list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
 
     loop {
         let elem = rt_iter_next_no_exc(iter);
         if elem.is_null() {
             break;
         }
-        rt_list_push(list, elem);
+        rt_list_push(roots[0], elem);
     }
 
-    // Convert list to tuple
-    rt_tuple_from_list(list)
+    // Convert list to tuple (allocates — the list stays rooted until after).
+    let tuple = rt_tuple_from_list(roots[0]);
+    gc_pop();
+    tuple
 }
 #[export_name = "rt_tuple_from_iter"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

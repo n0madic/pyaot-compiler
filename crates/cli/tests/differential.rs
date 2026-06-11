@@ -176,11 +176,33 @@ const PHASE_CORPUS: &[&str] = &[
     // rt_unbox_int (TypeError on a bad tag) while proven types keep the
     // unchecked fast path.
     "p8h_checked_unbox.py",
+    // Phase 8H D3 (extended) — checked-unbox seams beyond the basics:
+    // Optional/None into raw-f64 (TypeError, not a null-deref), Dyn container
+    // elements and dict.get misses, raw-i64 params (gcd/comb/factorial/perm)
+    // fed from Dyn/bool/str sources, and chained Dyn producers. Also pins the
+    // Raw-uniformity guard on element slots: `[2.25, 16, True]` stays tagged
+    // (list[Dyn]) instead of a `Raw(F64)` slot blindly unboxing a tagged int.
+    "p8h_checked_unbox2.py",
     // Phase 8H D4 — by-name field access on a Dyn receiver: fields resolve at
     // runtime through the FIELD_NAME_REGISTRY (rt_getattr_name/rt_setattr_name,
     // AttributeError on a miss/non-instance); sum() over class elements rides
     // the inferred __add__ returns. Method calls on Dyn stay a loud error.
     "p8h_dyn_attr.py",
+    // Phase 9 — GC root-set narrowing via liveness (B15 -> real dataflow):
+    // strs consumed before vs live across allocation loops, the uses(I) rule
+    // (argument of an allocating call), the TryEnter handler rule (pre-try
+    // value read in the handler), generator locals across yields, and bignum
+    // promotion as an allocating tagged BinOp. Run under the gc_stress
+    // runtime to surface any missed root as a use-after-free.
+    "p9_root_narrowing_gc_stress.py",
+    // B10 — field-type inference as solver variables: unannotated fields are
+    // joined over every module-wide write (the autograd pattern:
+    // `child.grad = child.grad + local * out.grad` through non-self
+    // receivers), mixed int/float writes demote the field to Dyn instead of
+    // rejecting, a Dyn-receiver write demotes by name (it lowers to
+    // SetFieldNamed, which can hit any class), a subclass write feeds the
+    // base class's variable, and annotated fields stay authoritative.
+    "b10_field_inference.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

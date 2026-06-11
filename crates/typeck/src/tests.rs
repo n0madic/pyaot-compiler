@@ -13,9 +13,9 @@ fn typed(src: &str) -> (HirModule, StringInterner) {
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
     let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
-    let classes =
+    let mut classes =
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
-    infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     (module, interner)
 }
 
@@ -25,9 +25,9 @@ fn try_infer(src: &str) -> pyaot_diagnostics::Result<()> {
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
     let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
-    let classes =
+    let mut classes =
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
-    infer(&mut module, &resolve, &classes, &interner)
+    infer(&mut module, &resolve, &mut classes, &interner)
 }
 
 /// The synthetic `__main__` function (module body).
@@ -206,9 +206,12 @@ fn infers_list_literal_element_type() {
 
 #[test]
 fn list_literal_joins_heterogeneous_elements() {
-    // `[1, 2.0]` joins int ⊔ float = float per the numeric tower.
+    // `[1, 2.0]` must NOT numeric-promote the element slot to `float`: the
+    // stored tagged int would be blindly unboxed as an f64 on read (PITFALLS
+    // A2). The Raw-uniformity guard demotes the slot to `Dyn` (tagged
+    // elements) — CPython semantics keep `xs[0]` an int.
     let (m, i) = typed("xs = [1, 2.0]\nprint(xs)\n");
-    assert_eq!(local_ty(main_fn(&m), &i, "xs"), SemTy::list_of(SemTy::Float));
+    assert_eq!(local_ty(main_fn(&m), &i, "xs"), SemTy::list_of(SemTy::Dyn));
 }
 
 #[test]
@@ -673,6 +676,50 @@ fn call_result_takes_inferred_callee_return() {
 }
 
 #[test]
+fn mixed_numeric_return_demotes_to_dyn() {
+    // `return 2.25` / `return 16`: the numeric tower joins to Float, but a
+    // `Raw(F64)` return ABI would blindly unbox the tagged int return — the
+    // Raw-uniformity guard demotes the inferred return to Dyn (tagged).
+    let src = "\
+def f(flag: bool):
+    if flag:
+        return 2.25
+    return 16
+
+x = f(False)
+print(x)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Dyn);
+}
+
+#[test]
+fn mixed_numeric_append_demotes_element_slot() {
+    // `xs = [2.25]; xs.append(16)`: the element slot must NOT promote to
+    // `float` — the pushed tagged int would be blindly unboxed on read.
+    let src = "\
+xs = [2.25]
+xs.append(16)
+print(xs[1])
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "xs"), SemTy::list_of(SemTy::Dyn));
+}
+
+#[test]
+fn mixed_numeric_dict_value_demotes_slot() {
+    // `{1: 2.25}` then `d[2] = 7`: the value slot demotes to Dyn, the int
+    // key slot stays uniform Int.
+    let src = "\
+d = {1: 2.25}
+d[2] = 7
+print(d[2])
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "d"), SemTy::dict_of(SemTy::Int, SemTy::Dyn));
+}
+
+#[test]
 fn recursive_inferred_return_converges() {
     // Self-recursion: `fact`'s return feeds its own body through `ret_ty`;
     // the rounds climb Never → Int and settle.
@@ -854,9 +901,9 @@ print(acc[1])
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
     let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
-    let classes =
+    let mut classes =
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
-    infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     let main = main_fn(&module);
     assert!(
         main.locals.iter().any(|l| l.ty == SemTy::list_of(SemTy::Float)),
@@ -884,6 +931,144 @@ fn comp_element_type_infers_from_pushes() {
     let src = "\
 xs: list[float] = [i * 0.5 for i in range(4)]
 print(xs[2])
+";
+    assert!(try_infer(src).is_ok());
+}
+
+// ── B10: field-type inference as solver variables ──
+
+#[test]
+fn field_climbs_to_float_through_self_referential_write() {
+    // `grad` is written `0.0` in __init__ and `o.grad = o.grad + 1.5` through
+    // a NON-self receiver — the variable must climb Never → Float across
+    // rounds (the read feeds the write's own contribution).
+    let src = "\
+class V:
+    def __init__(self):
+        self.grad = 0.0
+        self.other = self
+
+    def step(self):
+        o = self.other
+        o.grad = o.grad + 1.5
+
+
+x = V()
+x.step()
+g = x.grad
+print(g)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "g"), SemTy::Float);
+}
+
+#[test]
+fn mixed_numeric_field_writes_demote_to_dyn() {
+    // Float and int writes into one field: the Raw-uniformity guard demotes
+    // the field to Dyn (tagged) — and the program still infers cleanly
+    // (today's best-effort Float field would loudly reject the int write).
+    let src = "\
+class M:
+    def __init__(self, flag: bool):
+        if flag:
+            self.v = 1.5
+        else:
+            self.v = 7
+
+
+m = M(True)
+y = m.v
+print(y)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "y"), SemTy::Dyn);
+}
+
+#[test]
+fn dyn_receiver_write_demotes_field() {
+    // A write through a Dyn receiver goes by NAME at runtime (SetFieldNamed
+    // can hit any class with that field name) — every same-named field
+    // variable demotes to Dyn.
+    let src = "\
+class A:
+    def __init__(self):
+        self.w = 1.5
+
+
+def poke(x):
+    x.w = \"s\"
+
+
+a = A()
+poke(a)
+z = a.w
+print(z)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "z"), SemTy::Dyn);
+}
+
+#[test]
+fn annotated_field_stays_authoritative() {
+    // A class-level `name: T` annotation is a constant of the system — no
+    // solver variable, reads keep the declared type.
+    let src = "\
+class T:
+    lbl: str
+
+    def __init__(self):
+        self.lbl = \"x\"
+
+
+t = T()
+s = t.lbl
+print(s)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "s"), SemTy::Str);
+}
+
+#[test]
+fn subclass_write_feeds_base_class_variable() {
+    // `self.t = ...` in a subclass method writes the field DEFINED by the
+    // base — the contribution lands in the base's variable, and a read
+    // through the subclass resolves to it.
+    let src = "\
+class B:
+    def __init__(self):
+        self.t = 0.0
+
+
+class D(B):
+    def bump(self):
+        self.t = self.t + 1.5
+
+
+d = D()
+d.bump()
+u = d.t
+print(u)
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "u"), SemTy::Float);
+}
+
+#[test]
+fn generic_class_fields_keep_static_path() {
+    // Fields defined by a generic class get NO solver variable (their types
+    // mention type params; apply_subst keeps the static path) — inference
+    // must still complete cleanly.
+    let src = "\
+class Box[T]:
+    def __init__(self, item: T):
+        self.item = item
+
+    def get(self) -> T:
+        return self.item
+
+
+b = Box(5)
+print(b.get())
 ";
     assert!(try_infer(src).is_ok());
 }

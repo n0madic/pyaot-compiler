@@ -919,14 +919,19 @@ fn define_function(
             builder.declare_var(clif_ty(&local.repr));
         }
 
-        // GC root set (PITFALLS B15): every local whose `Repr::is_gc_root()` gets
-        // a slot in a frame roots array. Over-approximate — root each such local
-        // for the whole function (store-on-def). The GC is non-moving, so the
-        // Variable copy stays valid; the roots array only keeps the value marked.
+        // GC root set (PITFALLS B15): a local gets a slot in the frame roots
+        // array iff its `Repr::is_gc_root()` holds (Invariant 5 — rootness
+        // derives from `Repr`) AND the liveness analysis proves it live
+        // across / used by a potential allocation
+        // ([`pyaot_mir::roots_needed`], on this final post-optimizer MIR).
+        // Rooted locals are stored on every def, so the GC sees the value for
+        // the whole function; `nroots == 0` legitimately takes the leaf path
+        // even in functions that allocate.
+        let needed = pyaot_mir::roots_needed(mf);
         let mut root_slot_of = vec![None; mf.locals.len()];
         let mut nroots: u32 = 0;
         for (i, local) in mf.locals.iter().enumerate() {
-            if local.repr.is_gc_root() {
+            if local.repr.is_gc_root() && needed[i] {
                 root_slot_of[i] = Some(nroots);
                 nroots += 1;
             }
@@ -962,8 +967,13 @@ fn define_function(
             .any(|b| matches!(b.term, MirTerminator::TryEnter { .. }));
         let mut spill_slot_of: Vec<Option<StackSlot>> = vec![None; mf.locals.len()];
         if has_try {
-            for (i, local) in mf.locals.iter().enumerate() {
-                if !local.repr.is_gc_root() {
+            // Every local WITHOUT a roots-array slot needs a memory home —
+            // raw locals AND gc-rootable locals the liveness narrowing
+            // de-rooted (their home is a plain spill slot; the GC need not
+            // scan it, the analysis proved they are never live at a
+            // collection point).
+            for (i, _local) in mf.locals.iter().enumerate() {
+                if root_slot_of[i].is_none() {
                     spill_slot_of[i] = Some(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         8,
@@ -1189,8 +1199,8 @@ impl FnGen<'_, '_> {
     fn lower_inst(&mut self, inst: &MirInst) -> Result<()> {
         match inst {
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
-            MirInst::Coerce { dst, src, from, to, checked } => {
-                self.lower_coerce(*dst, src, from, to, *checked)
+            MirInst::Coerce(c) => {
+                self.lower_coerce(c.dst(), c.src(), c.from(), c.to(), c.checked())
             }
             MirInst::BinOp { dst, op, l, r } => self.lower_binop(*dst, *op, l, r),
             MirInst::Unary { dst, op, operand } => self.lower_unary(*dst, *op, operand),

@@ -34,9 +34,9 @@ use pyaot_hir::{
     HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
-    BinOp as MBinOp, CmpOp as MCmpOp, Const, ExcQuery, GenOp, LocalDecl, MirBlock, MirClass,
-    MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand, PrintKind, StrPool,
-    UnaryOp as MUnaryOp,
+    BinOp as MBinOp, CmpOp as MCmpOp, CoerceInst, Const, ExcQuery, GenOp, LocalDecl, MirBlock,
+    MirClass, MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand, PrintKind,
+    StrPool, UnaryOp as MUnaryOp,
 };
 use pyaot_types::{repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner};
@@ -319,11 +319,12 @@ impl<'a> FnLower<'a> {
             let tagged = self.coerce(src, from, Repr::Tagged)?;
             return self.coerce(tagged, Repr::Tagged, to);
         }
-        if legalize::coerce(from.clone(), to.clone()).is_none() {
-            return Err(cg_illegal(&from, &to));
-        }
+        // `CoerceInst::new` IS the legality check (the same table behind
+        // `legalize::coerce`): an illegal pair is unconstructible.
         let dst = self.alloc_temp(to.clone());
-        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to, checked: false });
+        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
+            .ok_or_else(|| cg_illegal(&from, &to))?;
+        self.emit(MirInst::Coerce(inst));
         Ok(dst)
     }
 
@@ -335,10 +336,9 @@ impl<'a> FnLower<'a> {
             let tagged = self.coerce(src, from, Repr::Tagged)?;
             return self.coerce_into(dst, tagged, Repr::Tagged, to);
         }
-        if legalize::coerce(from.clone(), to.clone()).is_none() {
-            return Err(cg_illegal(&from, &to));
-        }
-        self.emit(MirInst::Coerce { dst, src: Operand::Local(src), from, to, checked: false });
+        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
+            .ok_or_else(|| cg_illegal(&from, &to))?;
+        self.emit(MirInst::Coerce(inst));
         Ok(())
     }
 
@@ -1212,13 +1212,23 @@ impl<'a> FnLower<'a> {
                     let coerced = if needs_check {
                         let tagged = self.coerce(al, ar, Repr::Tagged)?;
                         let dst = self.alloc_temp(want.clone());
-                        self.emit(MirInst::Coerce {
+                        // `needs_check` only fires for Raw(F64)/Raw(I64)
+                        // targets, exactly `new_checked`'s domain — the
+                        // `None` arm is unreachable by construction, but a
+                        // loud internal error beats an `unwrap`.
+                        let inst = CoerceInst::new_checked(
                             dst,
-                            src: Operand::Local(tagged),
-                            from: Repr::Tagged,
-                            to: want.clone(),
-                            checked: true,
-                        });
+                            Operand::Local(tagged),
+                            Repr::Tagged,
+                            want.clone(),
+                        )
+                        .ok_or_else(|| {
+                            CompilerError::codegen_error(
+                                format!("internal: checked coerce to non-unbox repr {want:?}"),
+                                None,
+                            )
+                        })?;
+                        self.emit(MirInst::Coerce(inst));
                         dst
                     } else {
                         self.coerce(al, ar, want)?

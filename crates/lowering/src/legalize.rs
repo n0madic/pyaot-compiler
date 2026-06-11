@@ -5,13 +5,17 @@
 //! int→float / heap→tagged), or `None` if the pair is not a legal coercion. No
 //! other part of the compiler may emit a boxing coercion.
 //!
-//! The legality *table* itself lives in `pyaot-mir` ([`pyaot_mir::classify_coercion`])
-//! so the MIR verifier can enforce it without `mir` depending on `lowering`;
-//! [`coerce`] is the thin, by-value front door the lowering walk calls.
+//! Three layers share one legality table, each with its own enforcement role:
+//! the *table* lives in `pyaot-mir` ([`pyaot_mir::classify_coercion`]); the
+//! [`CoerceInst`] *constructors* turn it into type-level coercion — an illegal
+//! `MirInst::Coerce` cannot be built outside `mir` at all; and the MIR
+//! *verifier* re-checks at every pass boundary as defense-in-depth. [`coerce`]
+//! is the thin, by-value front door the lowering walk calls for legality
+//! queries that don't construct an instruction.
 
 use pyaot_types::Repr;
 
-pub use pyaot_mir::Coercion;
+pub use pyaot_mir::{CoerceInst, Coercion};
 
 /// Classify the coercion from `have` to `need`, or `None` if illegal.
 pub fn coerce(have: Repr, need: Repr) -> Option<Coercion> {

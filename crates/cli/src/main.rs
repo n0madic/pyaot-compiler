@@ -95,8 +95,8 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     let mut module = program.module;
     let namespaces = program.namespaces;
     let resolve = pyaot_semantics::resolve(&mut module, &namespaces, &interner)?;
-    let classes = pyaot_semantics::collect_classes(&module, &namespaces, &interner)?;
-    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner)?;
+    let mut classes = pyaot_semantics::collect_classes(&module, &namespaces, &interner)?;
+    pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner)?;
     let mut mir = pyaot_lowering::lower(&module, &resolve, &interner, &classes)?;
 
     // ── verify after lowering (debug): the first MIR is checked before any pass. ──

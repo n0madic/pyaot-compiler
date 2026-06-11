@@ -13,9 +13,9 @@ fn lowered(src: &str) -> MirProgram {
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
     let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
-    let classes =
+    let mut classes =
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
-    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     let program = super::lower(&module, &resolve, &interner, &classes).expect("lower");
     for f in &program.funcs {
         pyaot_mir::verify(f, &program.funcs).expect("verify");
@@ -34,9 +34,9 @@ fn try_lower(src: &str) -> pyaot_diagnostics::Result<MirProgram> {
     let mut module = pyaot_frontend_python::parse(src, &mut interner).expect("parse");
     let ns = pyaot_hir::NamespaceTable::single(module.functions.len());
     let resolve = pyaot_semantics::resolve(&mut module, &ns, &interner).expect("resolve");
-    let classes =
+    let mut classes =
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
-    pyaot_typeck::infer(&mut module, &resolve, &classes, &interner).expect("infer");
+    pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     super::lower(&module, &resolve, &interner, &classes)
 }
 
@@ -62,8 +62,8 @@ fn binops_with_repr(f: &MirFunction) -> Vec<(BinOp, Repr)> {
 /// Does `f` contain any float-boxing coercion (`Raw(F64)` → `Tagged`)?
 fn has_box_float(f: &MirFunction) -> bool {
     f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
-        matches!(i, MirInst::Coerce { from, to, .. }
-                 if pyaot_mir::classify_coercion(from, to) == Some(Coercion::BoxFloat))
+        matches!(i, MirInst::Coerce(c)
+                 if pyaot_mir::classify_coercion(c.from(), c.to()) == Some(Coercion::BoxFloat))
     })
 }
 
@@ -889,7 +889,7 @@ print(data)
     // Binary-mode typing shows as a Coerce(Tagged → Heap(Bytes)) after the read.
     let to_bytes = p.funcs.iter().any(|f| {
         f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
-            matches!(i, MirInst::Coerce { to, .. } if *to == Repr::Heap(HeapShape::Bytes))
+            matches!(i, MirInst::Coerce(c) if *c.to() == Repr::Heap(HeapShape::Bytes))
         })
     });
     assert!(to_bytes, "binary read legalizes to Heap(Bytes)");
@@ -1144,11 +1144,39 @@ print(math.sqrt(pick(True)))
         f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
             matches!(
                 i,
-                MirInst::Coerce { checked: true, to: Repr::Raw(RawKind::F64), .. }
+                MirInst::Coerce(c) if c.checked() && *c.to() == Repr::Raw(RawKind::F64)
             )
         })
     });
     assert!(has_checked, "Dyn -> Raw(F64) stdlib arg must be a checked Coerce");
+}
+
+#[test]
+fn dyn_stdlib_int_arg_takes_checked_unbox() {
+    // A Dyn argument into a raw-i64 stdlib param (math.gcd) takes the CHECKED
+    // Coerce (runtime-validated rt_unbox_int), not a blind untag.
+    let src = "\
+import math
+
+
+def pick(flag):
+    if flag:
+        return 12
+    return \"oops\"
+
+
+print(math.gcd(pick(True), 18))
+";
+    let p = lowered(src);
+    let has_checked = p.funcs.iter().any(|f| {
+        f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(
+                i,
+                MirInst::Coerce(c) if c.checked() && *c.to() == Repr::Raw(RawKind::I64)
+            )
+        })
+    });
+    assert!(has_checked, "Dyn -> Raw(I64) stdlib arg must be a checked Coerce");
 }
 
 #[test]

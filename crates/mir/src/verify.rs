@@ -312,38 +312,48 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 return Err(VerifyError::ReprMismatch { ctx: "Const dst", expected, actual: repr.clone() });
             }
         }
-        MirInst::Coerce { dst, src, from, to, checked } => {
-            check_local(f, *dst)?;
-            check_operand(f, src)?;
-            let src_repr = f.operand_repr(src);
-            if src_repr != from {
+        // Direct field access: `verify` is in-crate, and its negative tests
+        // build deliberately-illegal payloads the public constructors refuse.
+        MirInst::Coerce(c) => {
+            check_local(f, c.dst)?;
+            check_operand(f, &c.src)?;
+            // The repr cross-check against the locals table is NOT reachable
+            // through the constructors (they validate the pair, not the
+            // tables) — it stays load-bearing.
+            let src_repr = f.operand_repr(&c.src);
+            if *src_repr != c.from {
                 return Err(VerifyError::ReprMismatch {
                     ctx: "Coerce.from",
-                    expected: from.clone(),
+                    expected: c.from.clone(),
                     actual: src_repr.clone(),
                 });
             }
-            let dst_repr = f.local_repr(*dst);
-            if dst_repr != to {
+            let dst_repr = f.local_repr(c.dst);
+            if *dst_repr != c.to {
                 return Err(VerifyError::ReprMismatch {
                     ctx: "Coerce.to",
-                    expected: to.clone(),
+                    expected: c.to.clone(),
                     actual: dst_repr.clone(),
                 });
             }
-            if *checked {
+            // Pair-legality is unreachable via `CoerceInst::new`/`new_checked`
+            // — kept as defense-in-depth against in-crate construction.
+            if c.checked {
                 // A checked (runtime-validated) unbox is legal ONLY for the two
                 // stdlib raw-ABI boundary shapes (Phase 8H, D3).
-                let legal = *from == Repr::Tagged
-                    && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
+                let legal = c.from == Repr::Tagged
+                    && matches!(c.to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
                 if !legal {
                     return Err(VerifyError::IllegalCoercion {
-                        from: from.clone(),
-                        to: to.clone(),
+                        from: c.from.clone(),
+                        to: c.to.clone(),
                     });
                 }
-            } else if classify_coercion(from, to).is_none() {
-                return Err(VerifyError::IllegalCoercion { from: from.clone(), to: to.clone() });
+            } else if classify_coercion(&c.from, &c.to).is_none() {
+                return Err(VerifyError::IllegalCoercion {
+                    from: c.from.clone(),
+                    to: c.to.clone(),
+                });
             }
         }
         MirInst::BinOp { dst, op, l, r } => {
@@ -790,7 +800,7 @@ fn verify_call_container(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BinOp, CmpOp, Const, LocalDecl, MirBlock, MirFunction, Operand};
+    use crate::{BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand};
     use pyaot_types::HeapShape;
     use pyaot_utils::{BlockId, InternedString, StringInterner};
 
@@ -814,13 +824,13 @@ mod tests {
             vec![Repr::Heap(HeapShape::Str), Repr::Tagged],
             vec![
                 MirInst::Const { dst: LocalId::new(0), val: Const::Str(interned("hello")) },
-                MirInst::Coerce {
+                MirInst::Coerce(CoerceInst {
                     dst: LocalId::new(1),
                     src: Operand::Local(LocalId::new(0)),
                     from: Repr::Heap(HeapShape::Str),
                     to: Repr::Tagged,
                     checked: false,
-                },
+                }),
                 MirInst::Print { kind: PrintKind::StrObj, arg: Some(Operand::Local(LocalId::new(1))) },
                 MirInst::Print { kind: PrintKind::Newline, arg: None },
             ],
@@ -1001,25 +1011,27 @@ mod tests {
         // (Tagged, Raw(I64)) and nothing else.
         let ok = single_block(
             vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
-            vec![MirInst::Coerce {
+            vec![MirInst::Coerce(CoerceInst {
                 dst: LocalId::new(1),
                 src: Operand::Local(LocalId::new(0)),
                 from: Repr::Tagged,
                 to: Repr::Raw(RawKind::F64),
                 checked: true,
-            }],
+            })],
             MirTerminator::Return(None),
         );
         assert_eq!(verify(&ok, &[]), Ok(()));
+        // A `checked` pair the public constructor refuses — built directly
+        // (in-crate field access) to prove the verifier's own re-check.
         let bad = single_block(
             vec![Repr::Tagged, Repr::Raw(RawKind::I8)],
-            vec![MirInst::Coerce {
+            vec![MirInst::Coerce(CoerceInst {
                 dst: LocalId::new(1),
                 src: Operand::Local(LocalId::new(0)),
                 from: Repr::Tagged,
                 to: Repr::Raw(RawKind::I8),
                 checked: true,
-            }],
+            })],
             MirTerminator::Return(None),
         );
         assert!(matches!(verify(&bad, &[]), Err(VerifyError::IllegalCoercion { .. })));
@@ -1060,15 +1072,17 @@ mod tests {
     #[test]
     fn rejects_illegal_coercion() {
         // A raw float ↔ raw int reinterpretation is not in the legality table.
+        // Built directly (in-crate field access) — `CoerceInst::new` refuses
+        // this pair, so the verifier's table re-check needs the back door.
         let f = single_block(
             vec![Repr::Raw(RawKind::F64), Repr::Raw(RawKind::I64)],
-            vec![MirInst::Coerce {
+            vec![MirInst::Coerce(CoerceInst {
                 dst: LocalId::new(1),
                 src: Operand::Local(LocalId::new(0)),
                 from: Repr::Raw(RawKind::F64),
                 to: Repr::Raw(RawKind::I64),
                 checked: false,
-            }],
+            })],
             MirTerminator::Return(None),
         );
         assert!(matches!(verify(&f, &[]), Err(VerifyError::IllegalCoercion { .. })));

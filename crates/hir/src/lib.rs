@@ -1409,6 +1409,11 @@ impl ClassTable {
     pub fn get(&self, cid: ClassId) -> Option<&ClassInfo> {
         self.classes.get(&cid)
     }
+    /// Mutable access for `typeck`'s B10 field-type write-back — the one
+    /// consumer that updates the table after construction.
+    pub fn get_mut(&mut self, cid: ClassId) -> Option<&mut ClassInfo> {
+        self.classes.get_mut(&cid)
+    }
     pub fn iter(&self) -> impl Iterator<Item = &ClassInfo> {
         self.classes.values()
     }
