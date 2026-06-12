@@ -815,8 +815,9 @@ unsafe fn iter_next_filter_tagged(iter_obj: *mut Obj, raise_on_exhausted: bool) 
 }
 
 /// Next for chain iterator
-/// Advances through iterators sequentially
+/// Advances through the iterables sequentially, `iter()`-wrapping each lazily.
 unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Obj {
+    use crate::iterator::factory::rt_iter_value_dyn;
     use crate::object::{ChainIterObj, ListObj};
 
     let chain_iter = iter_obj as *mut ChainIterObj;
@@ -828,11 +829,25 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
         return EXHAUSTED_SENTINEL;
     }
 
-    // Try to get an element from the current iterator, advancing to next on exhaustion
-    while (*chain_iter).current_idx < (*chain_iter).num_iters {
-        let iters_list = (*chain_iter).iters as *mut ListObj;
-        let current_iter =
-            (*(*iters_list).data.add((*chain_iter).current_idx as usize)).0 as *mut Obj;
+    let iters_list = (*chain_iter).iters as *mut ListObj;
+    let num_iters = if iters_list.is_null() {
+        0
+    } else {
+        (*iters_list).len as i64
+    };
+
+    // Try to get an element from the current iterable, advancing on exhaustion.
+    while (*chain_iter).current_idx < num_iters {
+        // Lazily `iter()`-wrap the current iterable on first use. `iter()` is
+        // idempotent on generators/iterators and raises TypeError on a
+        // non-iterable. The result is rooted in `current_iter` so the GC can
+        // trace it across the inner `next()`'s allocations.
+        if (*chain_iter).current_iter.is_null() {
+            let iterable =
+                (*(*iters_list).data.add((*chain_iter).current_idx as usize)).0 as *mut Obj;
+            (*chain_iter).current_iter = rt_iter_value_dyn(iterable);
+        }
+        let current_iter = (*chain_iter).current_iter;
 
         let elem = rt_iter_next_internal(current_iter, false);
         if elem != EXHAUSTED_SENTINEL {
@@ -851,11 +866,12 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
             }
         }
 
-        // Current iterator exhausted, move to next
+        // Current iterable exhausted: drop its iterator and move to the next.
+        (*chain_iter).current_iter = std::ptr::null_mut();
         (*chain_iter).current_idx += 1;
     }
 
-    // All iterators exhausted
+    // All iterables exhausted
     (*chain_iter).exhausted = true;
     if raise_on_exhausted {
         raise_exc!(exceptions::ExceptionType::StopIteration, "");

@@ -445,17 +445,20 @@ pub struct FilterIterObj {
     pub captures: *mut Obj, // Captures tuple (null if no captures)
 }
 
-/// Chain iterator object - chains multiple iterators sequentially
+/// Chain iterator object - chains multiple iterables sequentially
 /// Layout is compatible with IteratorObj's first fields for kind detection
 #[repr(C)]
 pub struct ChainIterObj {
     pub header: ObjHeader,
-    pub kind: u8,         // Always IteratorKind::Chain
-    pub exhausted: bool,  // True when all iterators are exhausted
-    pub _pad: [u8; 6],    // Padding for alignment
-    pub iters: *mut Obj,  // ListObj of iterators
-    pub current_idx: i64, // Index of current iterator in the list
-    pub num_iters: i64,   // Total number of iterators
+    pub kind: u8,        // Always IteratorKind::Chain
+    pub exhausted: bool, // True when all iterables are exhausted
+    pub _pad: [u8; 6],   // Padding for alignment
+    pub iters: *mut Obj, // ListObj of the raw iterables (length read from it)
+    pub current_idx: i64, // Index of the current iterable in the list
+    // The active iterator for `iters[current_idx]`, produced lazily by
+    // `iter()`-wrapping the iterable on first use (null at a boundary). Stored
+    // as a field so the GC can trace it across the inner `next()` allocations.
+    pub current_iter: *mut Obj,
 }
 
 /// ISlice iterator object - slices an iterator (itertools.islice)

@@ -331,7 +331,9 @@ fn mark_object(root: Value) {
                         }
                         Ok(IteratorKind::Zip) => fields!(obj, ZipIterObj, iter1, iter2),
                         Ok(IteratorKind::Zip3) => fields!(obj, Zip3IterObj, iter1, iter2, iter3),
-                        Ok(IteratorKind::Chain) => fields!(obj, ChainIterObj, iters),
+                        Ok(IteratorKind::Chain) => {
+                            fields!(obj, ChainIterObj, iters, current_iter)
+                        }
                         Ok(IteratorKind::ISlice) => fields!(obj, ISliceIterObj, inner_iter),
                         Ok(IteratorKind::ZipN) => fields!(obj, ZipNIterObj, iters),
                         _ => enqueue_ptr!((*(obj as *mut IteratorObj)).source),

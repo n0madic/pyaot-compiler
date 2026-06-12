@@ -171,6 +171,12 @@ pub struct LoweringHints {
     /// "called with N+1 args where some are filled by defaults". Useful when a
     /// sentinel default value collides with a valid user-supplied value.
     pub pass_arg_count: bool,
+
+    /// Slice an iterable by `(start, stop, step)` (itertools.islice). Lowering
+    /// `iter()`-wraps the first argument and resolves start/stop/step from the
+    /// argument count (a lone numeric arg is the STOP; start defaults to 0, step
+    /// to 1) — the generic positional path can express neither.
+    pub slice_iterator: bool,
 }
 
 impl LoweringHints {
@@ -179,6 +185,7 @@ impl LoweringHints {
         variadic_to_list: false,
         auto_box: true,
         pass_arg_count: false,
+        slice_iterator: false,
     };
 
     /// Hints for variadic functions that collect args to list
@@ -186,6 +193,7 @@ impl LoweringHints {
         variadic_to_list: true,
         auto_box: true,
         pass_arg_count: false,
+        slice_iterator: false,
     };
 
     /// Hints with no auto-boxing (for functions that handle primitives directly)
@@ -193,6 +201,7 @@ impl LoweringHints {
         variadic_to_list: false,
         auto_box: false,
         pass_arg_count: false,
+        slice_iterator: false,
     };
 
     /// Hints with no auto-boxing and an appended argument count parameter.
@@ -201,6 +210,16 @@ impl LoweringHints {
         variadic_to_list: false,
         auto_box: false,
         pass_arg_count: true,
+        slice_iterator: false,
+    };
+
+    /// Hints for itertools.islice — dedicated `iter()`-wrap + count-resolved
+    /// start/stop/step lowering (`lower_islice`).
+    pub const SLICE_ITERATOR: Self = Self {
+        variadic_to_list: false,
+        auto_box: true,
+        pass_arg_count: false,
+        slice_iterator: true,
     };
 }
 

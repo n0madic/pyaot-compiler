@@ -146,6 +146,14 @@ const PHASE_CORPUS: &[&str] = &[
     "test_stdlib_os.py",
     "test_stdlib_subprocess.py",
     "test_stdlib_urllib_core.py",
+    // itertools.chain regression: chain folds its variadic iterables into one
+    // list (VARIADIC_TO_LIST) and the runtime iter()-wraps each element lazily.
+    // Formerly chain dropped every arg past the first and passed the first
+    // iterable where a list-of-iterators was expected -> null deref / SIGSEGV
+    // (the crash test_generators.py's `itertools.chain` section hit). Covers
+    // lists, generators, mixed kinds, empty/single/nested chain, and chain fed
+    // to list/tuple/sum/for/comprehension.
+    "test_stdlib_itertools.py",
     // Phase 8E — language gaps for real scripts: f-string format specs, slicing
     // (list/str/tuple, negative/stepped/open-ended), str.join / list.index, the
     // tuple `()` parameter default + `__slots__`, and the cross-function

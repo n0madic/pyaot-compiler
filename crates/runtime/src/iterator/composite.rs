@@ -790,11 +790,11 @@ pub extern "C" fn rt_filter_new_tagged_abi(
 
 // ==================== Chain Iterator ====================
 
-/// Create a chain iterator from a list of iterators
-/// iters: ListObj containing iterators
-/// num_iters: number of iterators
-/// Returns: new iterator that chains all iterators sequentially
-pub fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
+/// Create a chain iterator from a list of iterables (`itertools.chain`).
+/// iters: ListObj of the raw iterables; its length is the iterable count, and
+/// each element is `iter()`-wrapped lazily on first use (see `iter_next_chain`).
+/// Returns: a new iterator that yields from each iterable in turn.
+pub fn rt_chain_new(iters: *mut Obj) -> *mut Obj {
     use crate::object::{ChainIterObj, IteratorKind};
 
     let size = std::mem::size_of::<ChainIterObj>();
@@ -807,15 +807,15 @@ pub fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
         (*chain_iter)._pad = [0; 6];
         (*chain_iter).iters = iters;
         (*chain_iter).current_idx = 0;
-        (*chain_iter).num_iters = num_iters;
+        (*chain_iter).current_iter = std::ptr::null_mut();
     }
 
     obj
 }
 #[export_name = "rt_chain_new"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_chain_new_abi(iters: Value, num_iters: i64) -> Value {
-    Value::from_ptr(rt_chain_new(iters.unwrap_ptr(), num_iters))
+pub extern "C" fn rt_chain_new_abi(iters: Value) -> Value {
+    Value::from_ptr(rt_chain_new(iters.unwrap_ptr()))
 }
 
 // ==================== ISlice Iterator ====================
@@ -827,7 +827,36 @@ pub extern "C" fn rt_chain_new_abi(iters: Value, num_iters: i64) -> Value {
 /// step: step value (1 or more)
 /// Returns: new iterator that yields selected elements
 pub fn rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj {
+    use crate::exceptions::ExceptionType;
     use crate::object::{ISliceIterObj, IteratorKind};
+
+    // CPython parity: islice indices must be non-negative and step positive. Our
+    // typed lowering never passes the `None`/-1 "no stop" sentinel (the typed
+    // subset has no `islice(it, None)` form), so a negative here is always a user
+    // error. Message wording follows CPython, distinguished by which slot is bad
+    // — exact for `islice(it, -1)` (stop) and `islice(it, -2, 3)` (start). The
+    // lone divergence is `islice(it, 0, -1)`: CPython says "Indices…" (3-arg
+    // form) but we report "Stop argument…"; matching that needs the arg count.
+    unsafe {
+        if step <= 0 {
+            crate::raise_exc!(
+                ExceptionType::ValueError,
+                "Step for islice() must be a positive integer or None."
+            );
+        }
+        if start < 0 {
+            crate::raise_exc!(
+                ExceptionType::ValueError,
+                "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize."
+            );
+        }
+        if stop < 0 {
+            crate::raise_exc!(
+                ExceptionType::ValueError,
+                "Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize."
+            );
+        }
+    }
 
     let size = std::mem::size_of::<ISliceIterObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);

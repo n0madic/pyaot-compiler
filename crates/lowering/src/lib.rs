@@ -1336,6 +1336,14 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         use pyaot_hir::RuntimeCallTarget;
         let def = target.codegen();
+        // `itertools.islice` needs the iterable `iter()`-wrapped (the runtime
+        // advances it with the iterator protocol) and start/stop/step resolved
+        // from the argument count — the one-numeric form is the STOP, not the
+        // start. The generic positional path can express neither; the descriptor
+        // declares this via the `slice_iterator` hint (not a symbol-name match).
+        if matches!(target, RuntimeCallTarget::Func(f) if f.hints.slice_iterator) {
+            return self.lower_islice(expr_idx, def, args, provided);
+        }
         let (params, ret_spec, pass_arg_count): (
             &[pyaot_stdlib_defs::ParamDef],
             &pyaot_stdlib_defs::TypeSpec,
@@ -1432,6 +1440,72 @@ impl<'a> FnLower<'a> {
         }
 
         self.emit_runtime_call(expr_idx, def, ops, ret_spec)
+    }
+
+    /// Lower `itertools.islice(iterable, stop)` /
+    /// `islice(iterable, start, stop[, step])`. The iterable is `iter()`-wrapped
+    /// (the runtime walks it with the iterator protocol) and start/stop/step are
+    /// resolved from the provided argument count, matching CPython: a lone
+    /// numeric arg is the STOP (start defaults to 0); step defaults to 1.
+    fn lower_islice(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        args: &[Option<Idx<HirExpr>>],
+        provided: u32,
+    ) -> Result<(LocalId, Repr)> {
+        let span = self.func.exprs[call_idx].span;
+        let iterable = args.first().copied().flatten().ok_or_else(|| {
+            CompilerError::codegen_error("internal: islice without an iterable", Some(span))
+        })?;
+        let (it, _) = self.lower_iter_arg(iterable)?;
+
+        // islice(it, stop)               → start=0, stop,      step=1
+        // islice(it, start, stop[, step])→ start,   stop,      step (default 1)
+        let (start, stop, step) = if provided <= 2 {
+            let stop = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
+            (self.raw_i64_const(0), stop, self.raw_i64_const(1))
+        } else {
+            let start = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
+            let stop = self.lower_raw_index(args.get(2).copied().flatten(), span)?;
+            let step = if provided >= 4 {
+                self.lower_raw_index(args.get(3).copied().flatten(), span)?
+            } else {
+                self.raw_i64_const(1)
+            };
+            (start, stop, step)
+        };
+
+        let ops = vec![
+            Operand::Local(it),
+            Operand::Local(start),
+            Operand::Local(stop),
+            Operand::Local(step),
+        ];
+        self.emit_runtime_call(call_idx, def, ops, &pyaot_stdlib_defs::TypeSpec::Any)
+    }
+
+    /// Lower an islice index/step argument into a `Raw(I64)` register. An integer
+    /// literal materializes directly (no tagged round-trip); anything else is
+    /// lowered and coerced.
+    fn lower_raw_index(
+        &mut self,
+        slot: Option<Idx<HirExpr>>,
+        span: pyaot_utils::Span,
+    ) -> Result<LocalId> {
+        let arg = slot.ok_or_else(|| {
+            CompilerError::codegen_error("internal: islice missing a numeric argument", Some(span))
+        })?;
+        if let HirExprKind::IntLit(v) = self.func.exprs[arg].kind {
+            let dst = self.alloc_temp(Repr::Raw(RawKind::I64));
+            self.emit(MirInst::Const {
+                dst,
+                val: Const::Int(v),
+            });
+            return Ok(dst);
+        }
+        let (l, r) = self.lower_expr(arg)?;
+        self.coerce(l, r, Repr::Raw(RawKind::I64))
     }
 
     /// Emit a `CallRuntime` for descriptor `def` with already-legalized arg
