@@ -146,6 +146,24 @@ pub(super) fn find_handler() -> Option<Handler> {
     None
 }
 
+/// Walk the frame-pointer chain from the current frame outward, visiting
+/// each return PC (innermost first) — the traceback capture's view of the
+/// same walk [`find_handler`] performs. Stops on the same sanity conditions.
+pub(crate) fn walk_return_pcs(mut visit: impl FnMut(usize)) {
+    let mut fp = current_fp();
+    for _ in 0..MAX_FRAMES {
+        if fp == 0 || fp & 0x7 != 0 {
+            return;
+        }
+        let (caller_fp, ret_pc) = unsafe { (*(fp as *const usize), *((fp + 8) as *const usize)) };
+        visit(ret_pc);
+        if caller_fp <= fp {
+            return;
+        }
+        fp = caller_fp;
+    }
+}
+
 /// Read the current frame pointer.
 #[inline(always)]
 fn current_fp() -> usize {

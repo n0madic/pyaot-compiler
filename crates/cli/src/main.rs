@@ -127,7 +127,12 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     let mut loader = DirModuleSource { root };
-    let program = pyaot_frontend_python::parse_program(source, &mut loader, &mut interner)?;
+    let program = pyaot_frontend_python::parse_program(
+        source,
+        &cli.input.display().to_string(),
+        &mut loader,
+        &mut interner,
+    )?;
     let mut module = program.module;
     let namespaces = program.namespaces;
     let resolve = pyaot_semantics::resolve(&mut module, &namespaces, &interner)?;
@@ -272,12 +277,18 @@ mod tests {
     /// One-block function: `locals` declares the Repr table, `insts` the body,
     /// `term` the terminator. Mirrors `verify.rs`'s `single_block` test helper.
     fn single_block(locals: Vec<Repr>, insts: Vec<MirInst>, term: MirTerminator) -> MirFunction {
+        let mut interner = StringInterner::new();
         MirFunction {
-            name: StringInterner::new().intern("__main__"),
+            name: interner.intern("__main__"),
+            file: interner.intern("test.py"),
             params: Vec::new(),
             ret: Repr::Tagged,
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
-            blocks: vec![MirBlock { insts, term }],
+            blocks: vec![MirBlock {
+                insts,
+                term,
+                handler: None,
+            }],
             entry: BlockId::new(0),
         }
     }

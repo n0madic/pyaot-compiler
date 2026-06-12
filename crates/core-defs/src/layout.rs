@@ -143,3 +143,41 @@ pub const EXC_RECORD_SITE_OFF_OFFSET: u32 = 8;
 pub const EXC_RECORD_HANDLER_OFF_OFFSET: u32 = 12;
 /// Offset of `frame_off` within a record.
 pub const EXC_RECORD_FRAME_OFF_OFFSET: u32 = 16;
+
+// =============================================================================
+// Traceback-table record layout (real tracebacks)
+// =============================================================================
+//
+// One blob per program: `count` fixed records followed by an auxiliary area
+// (name/file strings, per-function line entries). All `*_off` fields are byte
+// offsets from the BLOB BASE (the pointer handed to `rt_tb_register_table`).
+//
+// ```text
+// TbRecord {
+//     func_addr: *const u8,  // 8 bytes — relocated function base address
+//     code_size: u32,        // function's machine-code size in bytes
+//     name_off:  u32,        // display name (UTF-8, e.g. "<module>", "foo")
+//     name_len:  u32,
+//     file_off:  u32,        // display file path (UTF-8)
+//     file_len:  u32,
+//     loc_off:   u32,        // line area: count:u32, then count × LocEntry
+// }
+// LocEntry { start: u32, end: u32, line: u32 }   // [start, end) code offsets
+// ```
+
+/// Size of one traceback-table record in bytes.
+pub const TB_RECORD_SIZE: u32 = 32;
+/// Offset of `code_size` within a record.
+pub const TB_RECORD_CODE_SIZE_OFFSET: u32 = 8;
+/// Offset of `name_off` within a record.
+pub const TB_RECORD_NAME_OFF_OFFSET: u32 = 12;
+/// Offset of `name_len` within a record.
+pub const TB_RECORD_NAME_LEN_OFFSET: u32 = 16;
+/// Offset of `file_off` within a record.
+pub const TB_RECORD_FILE_OFF_OFFSET: u32 = 20;
+/// Offset of `file_len` within a record.
+pub const TB_RECORD_FILE_LEN_OFFSET: u32 = 24;
+/// Offset of `loc_off` within a record.
+pub const TB_RECORD_LOC_OFF_OFFSET: u32 = 28;
+/// Size of one line-area entry (`start`, `end`, `line` — u32 each).
+pub const TB_LOC_ENTRY_SIZE: u32 = 12;

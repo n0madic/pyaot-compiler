@@ -417,6 +417,8 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
 
 fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result<(), VerifyError> {
     match inst {
+        // Pure compile-time metadata — nothing to check.
+        MirInst::LineMarker(_) => {}
         MirInst::Const { dst, val } => {
             check_local(f, *dst)?;
             let repr = f.local_repr(*dst);
@@ -1021,6 +1023,10 @@ fn verify_call_container(
 
 #[cfg(test)]
 mod tests {
+
+    fn interned_file() -> pyaot_utils::InternedString {
+        pyaot_utils::StringInterner::new().intern("test.py")
+    }
     use super::*;
     use crate::{BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand};
     use pyaot_types::HeapShape;
@@ -1033,6 +1039,7 @@ mod tests {
     fn single_block(locals: Vec<Repr>, insts: Vec<MirInst>, term: MirTerminator) -> MirFunction {
         MirFunction {
             name: interned("__main__"),
+            file: interned_file(),
             params: Vec::new(),
             ret: Repr::Tagged,
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
@@ -1492,6 +1499,7 @@ mod tests {
         // funcs[0] = the target: (env: Tagged, p0: Tagged) -> Tagged.
         let target = MirFunction {
             name: interned("f"),
+            file: interned_file(),
             params: vec![Repr::Tagged, Repr::Tagged],
             ret: Repr::Tagged,
             locals: vec![LocalDecl { repr: Repr::Tagged }],

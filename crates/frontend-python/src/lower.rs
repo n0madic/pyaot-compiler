@@ -28,7 +28,7 @@ use pyaot_hir::{
     UnaryOp,
 };
 use pyaot_types::{SemTy, Sig};
-use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, Span, StringInterner};
+use pyaot_utils::{ClassId, FuncId, InternedString, LineMap, LocalId, Span, StringInterner};
 
 use crate::freevars::{self, ScopeFacts};
 
@@ -150,6 +150,12 @@ pub(crate) struct Shared {
     /// Generator resume functions indexed by dense `gen_id` (Phase 6E) — a
     /// single program-global, dense space across all modules.
     generators: Vec<FuncId>,
+    /// Display path of the module being lowered (real tracebacks): the entry
+    /// script's command-line path or the loader's resolved path. Saved and
+    /// restored around nested module lowering (imports lower recursively).
+    cur_file: Option<InternedString>,
+    /// Byte-offset → line map of the module being lowered (same discipline).
+    line_map: LineMap,
 }
 
 impl Shared {
@@ -160,6 +166,8 @@ impl Shared {
             current_ns: 0,
             thunks: HashMap::new(),
             generators: Vec::new(),
+            cur_file: None,
+            line_map: LineMap::new(""),
         }
     }
 
@@ -274,11 +282,19 @@ impl<'a> ProgramLowerer<'a> {
     }
 
     /// Discover the import graph from the entry script and lower every reachable
-    /// module into one shared [`HirProgram`].
-    pub(crate) fn run(mut self, body: Vec<Stmt>) -> Result<HirProgram> {
+    /// module into one shared [`HirProgram`]. `entry_src`/`entry_file` feed the
+    /// traceback line map and file attribution of the entry module.
+    pub(crate) fn run(
+        mut self,
+        body: Vec<Stmt>,
+        entry_src: &str,
+        entry_file: &str,
+    ) -> Result<HirProgram> {
         // Entry namespace = 0; `__main__` is `FuncId(0)` (codegen wraps it).
         self.namespace_imports.push(NamespaceImports::default());
         self.shared.current_ns = 0;
+        self.shared.cur_file = Some(self.interner.intern(entry_file));
+        self.shared.line_map = LineMap::new(entry_src);
         let main_id = self.shared.reserve();
         self.lower_module_into(&[], false, body, true, 0, main_id)?;
 
@@ -335,11 +351,19 @@ impl<'a> ProgramLowerer<'a> {
         self.namespace_imports.push(NamespaceImports::default());
         let saved_ns = self.shared.current_ns;
         self.shared.current_ns = ns;
+        // Traceback attribution: this module's file/line map, restored after
+        // (imports lower recursively inside the importer's own lowering).
+        let saved_file = self.shared.cur_file;
+        let saved_map = std::mem::replace(&mut self.shared.line_map, LineMap::new(&src));
+        let display = self.loader.display_path(path, is_package);
+        self.shared.cur_file = Some(self.interner.intern(&display));
         let init_fid = self.shared.reserve();
         self.loading.push(dotted.clone());
         let exports = self.lower_module_into(path, is_package, body, false, ns, init_fid)?;
         self.loading.pop();
         self.shared.current_ns = saved_ns;
+        self.shared.cur_file = saved_file;
+        self.shared.line_map = saved_map;
         self.loaded.insert(dotted, exports);
         Ok(true)
     }
@@ -1177,6 +1201,10 @@ pub(crate) struct FnLowerer<'a> {
     /// `None` from "not filled yet", and backs the one-context-per-block
     /// debug assertion).
     stamped: HashSet<Idx<HirBlock>>,
+    /// Last `HirStmt::Line` marker emitted into the CURRENT block (real
+    /// tracebacks). Reset on every `switch` — codegen's srcloc state follows
+    /// emission order, so each block must re-establish its line.
+    cur_line: Option<u32>,
     scope_stack: Vec<ScopeCtx>,
     /// Uniquifier for sibling synthetic functions (lambdas / nested defs).
     synth_counter: u32,
@@ -1241,6 +1269,7 @@ impl<'a> FnLowerer<'a> {
             sealed: HashSet::new(),
             cur_handler: None,
             stamped: HashSet::new(),
+            cur_line: None,
             scope_stack: Vec::new(),
             synth_counter: 0,
             self_capture: None,
@@ -1397,6 +1426,10 @@ impl<'a> FnLowerer<'a> {
         }
         HirFunction {
             name: self.name,
+            file: self
+                .shared
+                .cur_file
+                .expect("cur_file is set before any function is lowered"),
             params: self.params,
             varargs: false,
             kwargs: false,
@@ -1456,6 +1489,17 @@ impl<'a> FnLowerer<'a> {
 
     fn switch(&mut self, block: Idx<HirBlock>) {
         self.cur = block;
+        self.cur_line = None;
+    }
+
+    /// Emit a `HirStmt::Line` marker for `span`'s source line if the current
+    /// block has not already established it (real tracebacks).
+    fn mark_line(&mut self, span: Span) {
+        let line = self.shared.line_map.line_number(span.start);
+        if self.cur_line != Some(line) {
+            self.push_stmt(HirStmt::Line(line));
+            self.cur_line = Some(line);
+        }
     }
 
     fn alloc(&mut self, kind: HirExprKind, ty: SemTy, span: Span) -> Idx<HirExpr> {
@@ -1666,6 +1710,9 @@ impl<'a> FnLowerer<'a> {
     /// Lower one statement. Returns `true` if it terminated the current block
     /// (`break` / `continue` / `return`).
     fn lower_stmt(&mut self, stmt: &Stmt) -> Result<bool> {
+        // Real tracebacks: establish this statement's source line in the
+        // current block before any of its code is emitted.
+        self.mark_line(to_span(stmt.range()));
         match stmt {
             Stmt::Expr(s) => {
                 // `print(...)` is the one special statement (it carries sep/end).

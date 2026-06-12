@@ -291,6 +291,7 @@ impl<'a> FnLower<'a> {
         let params = self.func.params.iter().map(|p| repr_of(&p.ty)).collect();
         Ok(MirFunction {
             name: self.func.name,
+            file: self.func.file,
             params,
             ret: self.ret_repr.clone(),
             locals: std::mem::take(&mut self.locals),
@@ -408,6 +409,10 @@ impl<'a> FnLower<'a> {
 
     fn lower_stmt(&mut self, stmt: &HirStmt) -> Result<()> {
         match stmt {
+            HirStmt::Line(line) => {
+                self.emit(MirInst::LineMarker(*line));
+                Ok(())
+            }
             HirStmt::Print { args, sep, end } => self.lower_print(args, *sep, *end),
             HirStmt::Expr(idx) => {
                 // Evaluate for side effects; discard the result.

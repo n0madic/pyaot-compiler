@@ -304,10 +304,25 @@ None of these are gates; all of them are the places to be deliberate.
    `bench_exc_hotpath` 0.19x → 0.40x, now at parity with the same loop's
    non-try tagged-arithmetic gap (`bench_int_loop` 0.46x) — the exception
    tax itself is gone; the residual is raw-int specialization territory.
-   Real tracebacks remain a follow-up: the unwinder's FP walk can collect
-   the PC chain, and the unwind table already maps PCs to functions, but
-   capture/printing is not wired (traceback module stays dormant —
-   `rt_stack_push/pop` are still never emitted).
+   **Real tracebacks: DONE.** The frontend emits `HirStmt::Line` markers
+   (per statement + at every block head) from a per-module `LineMap`;
+   lowering threads them as `MirInst::LineMarker` (DCE-surviving, excluded
+   from inline size accounting) and codegen turns them into Cranelift
+   srclocs. A second baked table (`pyaot_tb_table`: per function — relocated
+   base address, code size, display name, file path, `[start,end)→line`
+   ranges from `get_srclocs_sorted()`) is registered via
+   `rt_tb_register_table`. Every raise snapshots the FP-chain's return PCs
+   (generated frames only — runtime/trampoline frames are not in the table);
+   resolution to `File "…", line N, in fn` happens lazily when an unhandled
+   exception prints, in CPython's frame format, `<module>` for module
+   bodies, per-module files for imports. Gated by
+   `crates/cli/tests/traceback.rs` (the differential corpus requires exit 0,
+   so unhandled output cannot be corpus-pinned). Documented divergences from
+   CPython: no source-line echo / `^^^` anchors (no embedded source text),
+   bare-`raise` keeps the original capture instead of appending the re-raise
+   site, and inlined callees collapse into their caller's frame (keeping the
+   innermost line) — compile with `--opt-level none` for full frame
+   fidelity.
 
 7. **Benchmark-gap pressure is the named adversary of Part A.** Every
    side-table, marker bit, and parallel `rt_*_tagged` variant in the old

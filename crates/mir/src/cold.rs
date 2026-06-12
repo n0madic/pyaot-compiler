@@ -56,6 +56,10 @@ pub fn cold_blocks(f: &MirFunction) -> Vec<bool> {
 
 #[cfg(test)]
 mod tests {
+
+    fn interned_file() -> pyaot_utils::InternedString {
+        pyaot_utils::StringInterner::new().intern("test.py")
+    }
     use super::cold_blocks;
     use crate::{LocalDecl, MirBlock, MirFunction, MirInst, MirRaise, MirTerminator};
     use pyaot_types::Repr;
@@ -64,6 +68,7 @@ mod tests {
     fn function(blocks: Vec<(Vec<MirInst>, MirTerminator)>) -> MirFunction {
         MirFunction {
             name: StringInterner::new().intern("f"),
+            file: interned_file(),
             params: Vec::new(),
             ret: Repr::Tagged,
             locals: Vec::<LocalDecl>::new(),

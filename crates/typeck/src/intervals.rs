@@ -825,6 +825,7 @@ fn record_stmt_exprs(
         record_all(func, resolve, env, idx, rec);
     };
     match stmt {
+        HirStmt::Line(_) => {}
         HirStmt::Expr(idx) => e(*idx, rec),
         HirStmt::Assign { value, .. } => e(*value, rec),
         HirStmt::Assert { cond } => e(*cond, rec),

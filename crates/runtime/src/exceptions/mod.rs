@@ -41,3 +41,4 @@ pub use ffi::{
 };
 
 pub use unwind::rt_exc_register_table;
+pub(crate) use unwind::walk_return_pcs;

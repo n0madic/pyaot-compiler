@@ -192,6 +192,10 @@ pub struct HirLocal {
 #[derive(Debug)]
 pub struct HirFunction {
     pub name: InternedString,
+    /// Display path of the source file this function was lowered from (real
+    /// tracebacks): the entry script's path as given on the command line, or
+    /// the loader-resolved path for imported modules.
+    pub file: InternedString,
     pub params: Vec<HirParam>,
     /// The trailing `*args` param (one `tuple[Dyn, ...]` slot) is present (6C).
     pub varargs: bool,
@@ -1118,6 +1122,13 @@ impl ContainerOp {
 
 #[derive(Debug, Clone)]
 pub enum HirStmt {
+    /// Source-line marker (real tracebacks): the statements that follow — up
+    /// to the next marker — originate from this 1-based source line. Emitted
+    /// by the frontend on every line change AND as the first statement of
+    /// every block (codegen's `srcloc` state follows emission order, not
+    /// control flow, so each block must re-establish its line). No runtime
+    /// effect; codegen turns it into Cranelift `set_srcloc` metadata.
+    Line(u32),
     /// An expression evaluated for its side effects.
     Expr(Idx<HirExpr>),
     /// Assign `value` into a local. Augmented and multiple assignment desugar to

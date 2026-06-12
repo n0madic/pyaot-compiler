@@ -110,6 +110,9 @@ pub struct MirClass {
 #[derive(Debug)]
 pub struct MirFunction {
     pub name: InternedString,
+    /// Display path of the source file (real tracebacks), threaded from
+    /// `HirFunction::file` — codegen bakes it into the traceback table.
+    pub file: InternedString,
     pub params: Vec<Repr>,
     pub ret: Repr,
     pub locals: Vec<LocalDecl>,
@@ -407,6 +410,12 @@ pub enum MirInst {
     /// `str`), read out with `rt_str_data`/`rt_str_len` at the call (B2-safe:
     /// the runtime copies the bytes; the StrObj itself is a rooted MIR temp).
     Raise(MirRaise),
+    /// Source-line marker (real tracebacks): instructions that follow — up
+    /// to the next marker — originate from this 1-based line. Codegen turns
+    /// it into Cranelift `set_srcloc` metadata (no machine code). Reported
+    /// as having side effects so DCE keeps it; excluded from the inliner's
+    /// size accounting.
+    LineMarker(u32),
 }
 
 impl MirInst {
@@ -518,6 +527,8 @@ impl MirInst {
             MirInst::ExcInstanceStr { .. } => true,
             // Every raise allocates the exception value / traceback entry.
             MirInst::Raise(_) => true,
+            // Compile-time metadata — no machine code at all.
+            MirInst::LineMarker(_) => false,
         }
     }
 
@@ -641,6 +652,9 @@ impl MirInst {
             // registered dunder for custom exception classes).
             MirInst::ExcInstanceStr { .. } => true,
             MirInst::Raise(_) => true,
+            // No dst and no reads — answering `false` would let DCE sweep
+            // it; the marker is load-bearing metadata for codegen.
+            MirInst::LineMarker(_) => true,
         }
     }
 
@@ -682,7 +696,8 @@ impl MirInst {
             | MirInst::AssertFail
             | MirInst::Print { .. }
             | MirInst::ExcOp(_)
-            | MirInst::Raise(_) => None,
+            | MirInst::Raise(_)
+            | MirInst::LineMarker(_) => None,
         }
     }
 
@@ -823,6 +838,7 @@ impl MirInst {
                 MirRaise::Instance { value } => map_op(value, &mut f),
                 MirRaise::Reraise => {}
             },
+            MirInst::LineMarker(_) => {}
         }
     }
 
@@ -911,6 +927,7 @@ impl MirInst {
                 MirRaise::Instance { value } => f(value),
                 MirRaise::Reraise => {}
             },
+            MirInst::LineMarker(_) => {}
         }
     }
 }

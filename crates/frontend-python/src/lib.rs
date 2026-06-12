@@ -40,6 +40,17 @@ pub trait ModuleSource {
     /// Resolve a dotted module path (`["pkg", "mod"]`) to its source text and
     /// whether it is a package (`__init__.py`). `None` if the module is not found.
     fn load(&mut self, path: &[String]) -> Option<(String, bool)>;
+
+    /// Display path for traceback `File "…"` lines. The default renders the
+    /// dotted path as a relative file name; the CLI loader overrides it with
+    /// the real resolved path.
+    fn display_path(&self, path: &[String], is_package: bool) -> String {
+        if is_package {
+            format!("{}/__init__.py", path.join("/"))
+        } else {
+            format!("{}.py", path.join("/"))
+        }
+    }
 }
 
 /// A loader with no modules — every import fails. Used by [`parse`] (single-file
@@ -56,20 +67,22 @@ impl ModuleSource for NoModules {
 /// Parse Python source into an [`HirModule`] (single-file, no user imports).
 pub fn parse(src: &str, interner: &mut StringInterner) -> Result<HirModule> {
     let mut loader = NoModules;
-    let program = parse_program(src, &mut loader, interner)?;
+    let program = parse_program(src, "<input>", &mut loader, interner)?;
     Ok(program.module)
 }
 
 /// Parse a whole program: discover the import graph from `src` (the entry
 /// script) via `loader`, and lower every reachable module into one shared
-/// [`HirProgram`] (Phase 8).
+/// [`HirProgram`] (Phase 8). `entry_file` is the entry script's display path
+/// for traceback `File "…"` attribution (the CLI passes the path as given).
 pub fn parse_program(
     src: &str,
+    entry_file: &str,
     loader: &mut dyn ModuleSource,
     interner: &mut StringInterner,
 ) -> Result<HirProgram> {
     let body = parse_module_body(src)?;
-    ProgramLowerer::new(interner, loader).run(body)
+    ProgramLowerer::new(interner, loader).run(body, src, entry_file)
 }
 
 /// Parse a module's source text into its top-level statement list.

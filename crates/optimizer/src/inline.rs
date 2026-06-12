@@ -118,8 +118,7 @@ fn inline_into(
             funcs[caller].blocks[bi].insts.iter().enumerate().find_map(|(i, inst)| {
                 if let MirInst::Call { func, .. } = inst {
                     let callee = func.index();
-                    let grown: usize =
-                        funcs[callee].blocks.iter().map(|b| b.insts.len()).sum();
+                    let grown: usize = real_size(&funcs[callee]);
                     if callee != caller
                         && scc_of[callee] != scc_of[caller]
                         && original_ok[callee]
@@ -148,10 +147,23 @@ fn inline_into(
     }
 }
 
+/// Instruction count for inlining decisions: `LineMarker`s are compile-time
+/// metadata (no machine code) and must not shift the tuned size thresholds.
+fn real_size(f: &MirFunction) -> usize {
+    f.blocks
+        .iter()
+        .map(|b| {
+            b.insts
+                .iter()
+                .filter(|i| !matches!(i, MirInst::LineMarker(_)))
+                .count()
+        })
+        .sum()
+}
+
 /// May this function be spliced into a caller at all (size + v1 refusals)?
 fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
-    let size: usize = f.blocks.iter().map(|b| b.insts.len()).sum();
-    if size > max_insts {
+    if real_size(f) > max_insts {
         return false;
     }
     for block in &f.blocks {
@@ -359,6 +371,10 @@ fn call_graph_sccs(funcs: &[MirFunction]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+
+    fn interned_file() -> pyaot_utils::InternedString {
+        pyaot_utils::StringInterner::new().intern("test.py")
+    }
     use pyaot_mir::{
         verify, BinOp, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator,
         StrPool,
@@ -378,6 +394,7 @@ mod tests {
     ) -> MirFunction {
         MirFunction {
             name: interned("f"),
+            file: interned_file(),
             params,
             ret,
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),

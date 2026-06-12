@@ -218,6 +218,9 @@ struct RuntimeFns {
     /// `rt_exc_register_table(ptr, count)` — called once from `main` before
     /// user code; hands the runtime this module's PC→handler table.
     exc_register_table: FuncId,
+    /// `rt_tb_register_table(ptr, count)` — the PC→(function, file, line)
+    /// traceback table (real tracebacks), registered alongside.
+    tb_register_table: FuncId,
     exc_raise: FuncId,
     exc_raise_from: FuncId,
     exc_raise_from_none: FuncId,
@@ -415,6 +418,7 @@ impl RuntimeFns {
             // are u8 at the ABI; message pointers + lengths come from
             // rt_str_data/rt_str_len of a StrObj.
             exc_register_table: d("rt_exc_register_table", &[ptr, ti], &[])?,
+            tb_register_table: d("rt_tb_register_table", &[ptr, ti], &[])?,
             exc_raise: d("rt_exc_raise", &[t8, ptr, ti], &[])?,
             exc_raise_from: d("rt_exc_raise_from", &[t8, ptr, ti, t8, ptr, ti], &[])?,
             exc_raise_from_none: d("rt_exc_raise_from_none", &[t8, ptr, ti], &[])?,
@@ -666,11 +670,12 @@ pub fn compile(
     }
 
     // Define each function body, harvesting its protected call sites for the
-    // program-wide unwind table.
+    // program-wide unwind table and its line ranges for the traceback table.
     let mut exc_sites: Vec<(FuncId, Vec<ExcSite>)> = Vec::new();
+    let mut tb_funcs: Vec<(FuncId, String, String, FnTb)> = Vec::new();
     let mut trampolines = Trampolines::default();
     for (i, mf) in program.funcs.iter().enumerate() {
-        let sites = define_function(
+        let (sites, tb) = define_function(
             &mut module,
             mf,
             func_ids[i],
@@ -684,10 +689,25 @@ pub fn compile(
         if !sites.is_empty() {
             exc_sites.push((func_ids[i], sites));
         }
+        // Display name: module bodies (`__main__`, imported-module `<init>`s)
+        // print as CPython's `<module>`; everything else by the Python name.
+        let py_name = interner.resolve(mf.name);
+        let display = if py_name == "__main__" || py_name.ends_with(".<init>") {
+            "<module>".to_string()
+        } else {
+            py_name.to_string()
+        };
+        tb_funcs.push((
+            func_ids[i],
+            display,
+            interner.resolve(mf.file).to_string(),
+            tb,
+        ));
     }
     define_trampolines(&mut module, trampolines)?;
 
     let exc_table = emit_exc_table(&mut module, &exc_sites)?;
+    let tb_table = emit_tb_table(&mut module, &tb_funcs)?;
 
     // Class registration (`__pyaot_classinit`) runs before `__main__`, so every
     // class is registered before any instance is created (incl. module-top-level
@@ -712,6 +732,7 @@ pub fn compile(
         func_ids[program.entry.index()],
         classinit,
         exc_table,
+        tb_table,
         &rt,
         ptr_ty,
         call_conv,
@@ -1062,14 +1083,87 @@ fn emit_exc_table(
     Ok(Some((data_id, count as u64)))
 }
 
-/// `main(argc, argv)` → rt_init → register unwind table → (classinit) →
-/// call `__main__` → rt_shutdown → 0.
+/// Emit the traceback-table blob (real tracebacks): `count` fixed records —
+/// one per compiled Python function — followed by an auxiliary area holding
+/// the display-name/file strings and the per-function line entries (layout
+/// pinned in `pyaot_core_defs::layout`). Offsets are relative to the blob
+/// base; only `func_addr` needs a relocation.
+fn emit_tb_table(
+    module: &mut ObjectModule,
+    funcs: &[(FuncId, String, String, FnTb)],
+) -> Result<Option<(DataId, u64)>> {
+    use pyaot_core_defs::layout::{
+        TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET, TB_RECORD_FILE_LEN_OFFSET,
+        TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET,
+        TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
+    };
+    if funcs.is_empty() {
+        return Ok(None);
+    }
+    let rec = TB_RECORD_SIZE as usize;
+    let mut bytes = vec![0u8; funcs.len() * rec];
+    let w32 = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    // Auxiliary area appended after the records; strings are interned so the
+    // (typically single) file path is stored once.
+    let mut aux_str: HashMap<&str, u32> = HashMap::new();
+    for (i, (_, name, file, tb)) in funcs.iter().enumerate() {
+        let base = i * rec;
+        w32(&mut bytes, base + TB_RECORD_CODE_SIZE_OFFSET as usize, tb.code_size);
+        for (s, off_at, len_at) in [
+            (name, TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET),
+            (file, TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_FILE_LEN_OFFSET),
+        ] {
+            let off = if let Some(&o) = aux_str.get(s.as_str()) {
+                o
+            } else {
+                let o = bytes.len() as u32;
+                bytes.extend_from_slice(s.as_bytes());
+                // SAFETY of the borrow: keys live as long as `funcs`.
+                aux_str.insert(s.as_str(), o);
+                o
+            };
+            w32(&mut bytes, base + off_at as usize, off);
+            w32(&mut bytes, base + len_at as usize, s.len() as u32);
+        }
+        // Line area: count + (start, end, line) triples. 4-align it.
+        while !bytes.len().is_multiple_of(4) {
+            bytes.push(0);
+        }
+        let loc_off = bytes.len() as u32;
+        bytes.extend_from_slice(&(tb.locs.len() as u32).to_le_bytes());
+        for (start, end, line) in &tb.locs {
+            bytes.extend_from_slice(&start.to_le_bytes());
+            bytes.extend_from_slice(&end.to_le_bytes());
+            bytes.extend_from_slice(&line.to_le_bytes());
+        }
+        debug_assert_eq!(TB_LOC_ENTRY_SIZE, 12);
+        w32(&mut bytes, base + TB_RECORD_LOC_OFF_OFFSET as usize, loc_off);
+    }
+    let data_id = module
+        .declare_data("pyaot_tb_table", Linkage::Local, false, false)
+        .map_err(|e| cg_error(format!("declare tb table: {e}")))?;
+    let mut desc = DataDescription::new();
+    desc.set_align(8);
+    desc.define(bytes.into_boxed_slice());
+    for (i, (fid, ..)) in funcs.iter().enumerate() {
+        let fref = module.declare_func_in_data(*fid, &mut desc);
+        desc.write_function_addr((i * rec) as u32, fref);
+    }
+    module
+        .define_data(data_id, &desc)
+        .map_err(|e| cg_error(format!("define tb table: {e}")))?;
+    Ok(Some((data_id, funcs.len() as u64)))
+}
+
+/// `main(argc, argv)` → rt_init → register unwind + traceback tables →
+/// (classinit) → call `__main__` → rt_shutdown → 0.
 #[allow(clippy::too_many_arguments)]
 fn emit_main(
     module: &mut ObjectModule,
     entry_fn: FuncId,
     classinit: Option<FuncId>,
     exc_table: Option<(DataId, u64)>,
+    tb_table: Option<(DataId, u64)>,
     rt: &RuntimeFns,
     ptr_ty: Type,
     cc: CallConv,
@@ -1105,6 +1199,14 @@ fn emit_main(
             let ptr = builder.ins().global_value(ptr_ty, gv);
             let cnt = builder.ins().iconst(types::I64, count as i64);
             let reg = module.declare_func_in_func(rt.exc_register_table, builder.func);
+            builder.ins().call(reg, &[ptr, cnt]);
+        }
+        // And the PC→(function, file, line) traceback table.
+        if let Some((data_id, count)) = tb_table {
+            let gv = module.declare_data_in_func(data_id, builder.func);
+            let ptr = builder.ins().global_value(ptr_ty, gv);
+            let cnt = builder.ins().iconst(types::I64, count as i64);
+            let reg = module.declare_func_in_func(rt.tb_register_table, builder.func);
             builder.ins().call(reg, &[ptr, cnt]);
         }
 
@@ -1143,7 +1245,7 @@ fn define_function(
     ptr_ty: Type,
     cc: CallConv,
     trampolines: &mut Trampolines,
-) -> Result<Vec<ExcSite>> {
+) -> Result<(Vec<ExcSite>, FnTb)> {
     let mut sig = Signature::new(cc);
     for p in &mf.params {
         sig.params.push(abi_param(clif_ty(p)));
@@ -1289,8 +1391,28 @@ fn define_function(
         }
     }
 
+    // Harvest the traceback metadata (real tracebacks): the function's code
+    // size plus the line ranges the `LineMarker`-driven srclocs produced.
+    let tb = FnTb {
+        code_size: compiled.buffer.total_size(),
+        locs: compiled
+            .buffer
+            .get_srclocs_sorted()
+            .iter()
+            .filter(|s| !s.loc.is_default())
+            .map(|s| (s.start, s.end, s.loc.bits()))
+            .collect(),
+    };
+
     module.clear_context(&mut ctx);
-    Ok(sites)
+    Ok((sites, tb))
+}
+
+/// A function's traceback metadata: machine-code size and the sorted
+/// `[start, end) → source line` ranges harvested from Cranelift srclocs.
+struct FnTb {
+    code_size: u32,
+    locs: Vec<(u32, u32, u32)>,
 }
 
 /// One protected machine call site of a compiled function: the return-address
@@ -1640,6 +1762,14 @@ impl FnGen<'_, '_> {
 
     fn lower_inst(&mut self, inst: &MirInst) -> Result<()> {
         match inst {
+            // Real tracebacks: stamp subsequent instructions with this source
+            // line; `get_srclocs_sorted()` hands the PC ranges back after
+            // compilation for the traceback table.
+            MirInst::LineMarker(line) => {
+                self.builder
+                    .set_srcloc(cranelift_codegen::ir::SourceLoc::new(*line));
+                Ok(())
+            }
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
             MirInst::Coerce(c) => {
                 self.lower_coerce(c.dst(), c.src(), c.from(), c.to(), c.checked())

@@ -221,7 +221,8 @@ fn inst_def(inst: &MirInst) -> Option<LocalId> {
         | MirInst::CellSet { .. }
         | MirInst::GlobalSet { .. }
         | MirInst::ExcOp(_)
-        | MirInst::Raise(_) => None,
+        | MirInst::Raise(_)
+        | MirInst::LineMarker(_) => None,
     }
 }
 
@@ -389,6 +390,7 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
             }
         }
         MirInst::ExcOp(_) => {}
+        MirInst::LineMarker(_) => {}
         MirInst::ExcQuery { dst: _, query: _ } => {}
         MirInst::ExcInstanceStr { dst: _, value } => one(value),
         MirInst::Raise(r) => match r {
@@ -437,6 +439,10 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
 
 #[cfg(test)]
 mod tests {
+
+    fn interned_file() -> pyaot_utils::InternedString {
+        pyaot_utils::StringInterner::new().intern("test.py")
+    }
     use pyaot_types::{HeapShape, RawKind, Repr};
     use pyaot_utils::{BlockId, InternedString, LocalId, StringInterner};
 
@@ -453,6 +459,7 @@ mod tests {
     fn func(locals: Vec<Repr>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {
             name: interned("f"),
+            file: interned_file(),
             params: Vec::new(),
             ret: Repr::Tagged,
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),

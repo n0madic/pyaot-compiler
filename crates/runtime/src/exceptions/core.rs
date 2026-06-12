@@ -54,8 +54,10 @@ pub struct ExceptionObject {
     pub context: Option<Box<ExceptionObject>>,
     /// Whether to suppress context display (True for `raise X from Y` including `from None`)
     pub suppress_context: bool,
-    /// Captured traceback at the point where the exception was raised
-    pub traceback: Option<Vec<crate::traceback::TracebackEntry>>,
+    /// Captured traceback at the point where the exception was raised: raw
+    /// return PCs, innermost first (resolved to names/files/lines only when
+    /// printed — see `crate::traceback`).
+    pub traceback: Option<Vec<usize>>,
     /// Heap-allocated exception instance (for full exception objects).
     /// Scanned by GC via `get_exception_pointers()`.
     /// null if no instance has been created yet (lazy creation for built-ins).

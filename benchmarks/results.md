@@ -90,3 +90,15 @@
 | bench_containers | 0.097907s | 0.169309s | 1.73x |
 | bench_exc_hotpath | 0.286616s | 0.115857s | 0.40x |
 | microgpt | 0.039816s | 0.044601s | 1.12x |
+
+## 2026-06-12 09:05 — 9db2a71 — real-tracebacks
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.725308s | 0.344865s | 0.48x |
+| bench_float_kernel | 0.156251s | 0.366695s | 2.35x |
+| bench_calls | 0.572772s | 0.928747s | 1.62x |
+| bench_str | 0.234721s | 0.119363s | 0.51x |
+| bench_containers | 0.099412s | 0.172583s | 1.74x |
+| bench_exc_hotpath | 0.288923s | 0.118514s | 0.41x |
+| microgpt | 0.040658s | 0.044952s | 1.11x |
