@@ -1,12 +1,22 @@
-# Implementation Plan — to a working compiler
+# Implementation Plan — broadening the language subset
 
-Strategic plan from the current skeleton to a working state. Deliberately
-high-level: the *ideas* to realize, the *order* to realize them in, and the
-principles baked into both. Mechanical detail lives in each crate's `lib.rs` and
-is decided when that crate is built. The failure modes these choices avoid are
-catalogued in **[PITFALLS.md](PITFALLS.md)**.
+The compiler reached the plan's original definition of "working" (see below):
+Phases 1–9 and the post-Phase-9 hardening backlog (items 1–7) are **all
+complete** — the gated `corpus/` + `microgpt.py` diff clean vs CPython, bignum,
+table-based zero-cost unwinding + real tracebacks, raw-int specialization
+(Phase 3c intervals + interprocedural), MRO-aware lattice joins, cached
+`StrObj.char_len`, and the release-safe pre-codegen MIR verifier all landed. That
+completed phase log now lives in git history (commits + each crate's `lib.rs`
+doc) and the auto-memory; this plan no longer carries it.
 
-## Definition of "working"
+What remains is **breadth**: the differential gate is green on its allowlist, but
+~17 aspirational `corpus/test_*.py` files exercise valid Python 3 the compiler
+does not yet accept. The full, deduplicated inventory of those gaps is the
+**[Remaining backlog](#remaining-backlog--broaden-the-language-subset)** below.
+The principles and anti-patterns that governed the build still govern every item
+in it.
+
+## Definition of "working" (reached)
 
 A `pyaot` binary that:
 
@@ -19,14 +29,16 @@ A `pyaot` binary that:
   (correctness never waits on the optimizer; see Principle 2).
 
 Out of scope (too dynamic for AOT): `eval`/`exec`/`compile`, metaclasses,
-`__dict__` mutation, dynamic `getattr(obj, name_var)`, `globals()`/`locals()`,
+`__dict__` mutation, **dynamic** `getattr(obj, name_var)` (a literal-name
+`getattr(obj, "x")` is in scope — see backlog §5), `globals()`/`locals()`,
 `inspect`, `import *`, runtime class creation.
 
 ---
 
 ## Guiding principles
 
-These are *why* the phases are ordered the way they are.
+These are *why* features are built the way they are, and they bind every backlog
+item below.
 
 1. **Vertical slice before breadth.** Get the thinnest program through the
    *entire* pipeline first, then widen feature-by-feature. Building each layer
@@ -73,8 +85,10 @@ These are *why* the phases are ordered the way they are.
    (precedents: bignum, `StrObj.char_len`). What stays forbidden is editing the
    runtime to paper over a front-half bug or to dodge front-half work.
 
-9. **Differential testing is the spine.** The corpus-vs-CPython harness is built
-   in Phase 1 and gates every subsequent feature.
+9. **Differential testing is the spine.** The corpus-vs-CPython harness gates
+   every feature. A backlog item is not done until its construct diffs clean vs
+   CPython on the corpus (lift the aspirational `test_*.py` files onto the gate
+   allowlist as their gaps close).
 
 ### Anti-patterns to avoid (do not reintroduce)
 
@@ -86,301 +100,119 @@ rationale in **[PITFALLS.md](PITFALLS.md)** — Part A.
 
 ---
 
-## Phases
+## Remaining backlog — broaden the language subset
 
-Each phase ends at a green differential gate over a growing corpus subset. A
-phase may ship code that is correct-but-unoptimized (Principle 2).
+Every gap below is **valid Python 3** that the current compiler rejects or
+crashes on, harvested by probing each failing `corpus/test_*.py` construct-by-
+construct (the parser stops at the first error, so whole-file compiles hide
+most of them) and confirmed two ways: `python3` accepts the snippet, `pyaot`
+does not. None of these widen the "Out of scope" list — they are subset breadth,
+not new dynamism.
 
-### Phase 1 — Tracer bullet (pipeline + seam)
-**Goal:** `print("hello")` → native exe, output matches CPython.
-**Build:** every seam on the trivial case before any breadth — the HIR shape, a
-stub `typeck` (annotations + obvious literals; everything else `Dyn`), `lowering`
-+ `legalize`, the `mir` verifier, `codegen` → Cranelift, the `linker` call
-against the runtime, and the **differential harness** (compile each
-`corpus/*.py`, run, diff vs `python3`).
-**Gate:** one trivial program compiles, runs, diffs clean.
+**Where the work lands.** Syntax/semantic gaps (§1–4, §7–8, §12–14) are
+front-half work — `frontend-python` (parse/desugar), `typeck` (constraints), and
+`lowering` — gated by Principle 9 and the verifier. Builtin **functions** (§5–6)
+and **methods** on builtin/stdlib types (§9–11) follow the declarative
+two-file pattern of Principle 8 (`stdlib-defs` descriptor + `runtime` `rt_*`),
+unless they need true HOF/representation handling (`map`/`filter`, `type()`).
+Keep every gradual/raw seam on the checked-coerce path (PITFALLS A2/A3).
 
-### Phase 2 — Scalars, control flow, functions
-**Goal:** integer/float/bool/None programs with `if`/`while`/`for range`,
-annotated functions, recursion. **Bignum lands here** (fixnum fast-path + heap
-`BigInt` promotion on overflow; new `rt_int_*` in the runtime — the one planned
-extension).
-**Build:** arithmetic/comparison/logical/bitwise ops with CPython floor-div/mod
-semantics (PITFALLS B1); truthiness; `typeck` still v1 (annotations + local
-literal inference, `Dyn` elsewhere). `int` stays `Tagged` (bignum-safe).
-**GC rooting becomes mandatory here** — Phase 1's no-shadow-frame leaf path is no
-longer always safe: bignum promotion (`2**100`) and function calls both allocate,
-so any `is_gc_root()` local live across them must be in a `ShadowFrame`. Emit
-`gc_push`/`gc_pop` + root every such local; keep the `nroots == 0` fast-path only
-for functions with no live-across-allocation roots (PITFALLS B15).
-**Codegen:** the Phase-1 `Vec<Option<Value>>` "one assignment per local" model
-breaks under loops/reassignment — switch to Cranelift `Variable`s
-(`declare_var`/`def_var`/`use_var`) and a real block-by-block CFG walk with
-jump/branch terminators.
-**Gate:** scalar + control-flow corpus subset green.
+### Highest-leverage first
+These few gaps block the most files — close them before the long tail.
 
-### Phase 3 — Real `typeck` + representation optimization
-**Goal:** turn inference from "annotations only" into a real solver, and start
-*specializing* representation.
-**Build:** full collect → solve → materialize over the lattice; bidirectional
-checking; cross-instance class-field inference as constraints (PITFALLS B10); the
-two proof-gated narrowings of Principle 3. Performance first appears here — and so
-does the proof that precision is decoupled from correctness (the Phase 2 gate must
-stay green throughout).
-**Gate:** Phase 2 corpus still green; unboxed int/float paths verified; no
-representation mismatch escapes the verifier.
+| Gap | Files blocked | First error |
+|---|---|---|
+| **kwargs on indirect/builtin calls** (`sorted(reverse=)`, `dict(a=1)`, `enumerate(start=)`) | ≥6 | `keyword arguments are not supported on indirect calls` |
+| **kwargs on method calls** (`list.sort(key=)`, `str.format(name=)`, `str.split(sep=)`) | ≥4 | `keyword arguments are not supported for method calls` |
+| **`is`/`is not` against non-`None`** (`x is True`, `a is b`) | 6 | `is / is not is only supported against None` |
+| **`del`** statement (`del d[k]`, `del name`, `del obj.attr`) | 4 | `unsupported statement for this milestone` |
+| **`*seq` spread into a non-`*args` callee** | 3 | `f() takes no *args, cannot spread * into it` |
+| **Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension) | 2 | `tuple/list unpacking assignment is not yet supported` |
+| **`type()` builtin** (incl. `type(x).__name__`) | 3 | `builtin Type not supported in Phase 2` |
+| **int→float numeric tower through a `float` slot** | 2 | `int cannot be returned/assigned to a float slot` |
 
-### Phase 4 — Containers & iteration
-**Goal:** `list`/`dict`/`set`/`tuple`(fixed+var)/`bytes`, comprehensions, the
-iterator protocol, slicing.
-**Build:** uniform tagged-`Value` element storage from day one (no `elem_tag` /
-heap-mask side-tables ever — PITFALLS A5); GC roots derived from
-`Repr::is_gc_root`; container element-type narrowing as constraints; empty-
-container bootstrap via expected-type propagation in `typeck` (PITFALLS B4);
-comprehension & iterator-protocol desugaring in `frontend-python`.
-**Gate:** collections corpus subset green; GC soak clean.
+### 1. Calls & arguments
+- **kwargs on indirect/builtin calls** — `sorted(xs, key=, reverse=)`, `dict(a=1,b=2)`, `enumerate(xs, start=1)`. (`min`/`max(key=)` already work — the exception.)
+- **kwargs on method calls** — `list.sort(key=)`, `str.format(name=)`, `str.split(sep=, maxsplit=)`, `str.encode(encoding=)`, `str.replace(count=)`.
+- **`*seq` spread** — four sub-cases: into a fixed-arity callee `f(*[1,2,3])`; mixed with positionals `f(1, *seq, 4)`; covering the leading fixed params of a varargs callee `def f(a, *rest)`; into a **decorated** function (distinct error).
+- **`**d` spread into a call** — `f(**{"a":1})` (was Phase 6C out-of-scope).
+- **Mutable default parameter** — `def f(x, lst=[])`, `d={}`.
+- **Non-literal default** — `def f(count=5+5)`.
 
-### Phase 5 — Classes & dispatch
-**Goal:** classes, fields, methods, inheritance, dunders, `super()`,
-`@property`/`@staticmethod`/`@classmethod`, generics.
-**Build:** **MRO via C3 linearization in `semantics` from the start**, so multiple
-inheritance and vtable layout share one authoritative order; name-based vtable +
-devirtualization when the receiver type is statically known; dunder dispatch
-(arithmetic / comparison / container / conversion) with the CPython reflected rule
-and `NotImplemented` fallback (PITFALLS B11); **monomorphization** erases
-`SemTy::Var` before codegen.
-**Gate:** classes/inheritance/dunders corpus subset green.
+### 2. Operators & expressions
+- **`is`/`is not` against non-`None`** — `x is True`, `a is b`, `type(x) is T`.
+- **Walrus `:=`** — in `if`/`while`/nested expressions, everywhere.
+- **Matrix-multiply `@` / `__matmul__`**.
 
-### Phase 6 — Closures, generators, decorators, varargs
-**Goal:** nested functions, `nonlocal`/`global`, lambdas, `*args`/`**kwargs`
-(def + call), generators (`yield`/`yield from`/`send`/`close`), user decorators.
-**Build:** cell-based capture with transitive free-variable bubbling; generators
-desugared at HIR level into regular functions; closures are plain `Repr::Closure`,
-dispatched uniformly (no marker-bit ABI — there is no unboxed/tagged ABI split to
-reconcile, per Principle 6).
-**Gate:** functions/generators/closures corpus subset green.
+### 3. Statements
+- **`del`** — entirely unimplemented: `del d[k]`, `del li[i]`, `del name`, `del obj.attr`.
+- **PEP 695 `type X = T`** — `type IntPair = tuple[int, int]`.
+- **`X: TypeAlias = T`** (PEP 613) — RHS type rejected as a value.
+- **`...` (Ellipsis) as a statement / stub body** — `def f() -> int: ...` (Protocol stubs).
 
-### Phase 7 — Exceptions, `with`, `match`
-**Goal:** `try/except/else/finally`, `raise` + chaining, full builtin exception
-hierarchy + custom exceptions, context managers, structural `match`.
-**Build:** setjmp/longjmp exception handling as the pragmatic first implementation
-(setjmp called directly from generated code — PITFALLS B3; leak-free owned-message
-raising — B2); **evaluate table-based zero-cost unwinding as a follow-up**, since
-real tracebacks need it.
-**Gate:** exceptions/match/with corpus subset green.
+### 4. Unpacking & loop targets
+- **Nested destructuring** — `a, (b, c) = …`, `(m1,m2),(m3,m4) = …`, `g, [h, i] = …` in assignment, `for`, and comprehension/genexpr targets. Flat and starred forms already work.
+- **Attribute / subscript as a `for` target** — `for obj.attr in …`, `for lst[i] in …`.
+- **`range()` for-loop with a non-literal step** — `range(10,0,-(-1))`, a variable step, `range(0,10,len(xs))` (the `list(range(...))` value form already works; the restriction is only in the for-loop desugar).
 
-### Phase 8 — Modules, stdlib, real scripts
-**Goal:** `import`/`from … import`, packages, cross-module classes/functions, the
-stdlib surface, and **`microgpt.py` running end-to-end**.
-**Build:** keep the declarative stdlib pattern (add a function = 2 files:
-`stdlib-defs` + `runtime`, no lowering/codegen changes); cross-module types
-round-trip through interned/placeholder ClassIds resolved before lowering; wire
-the package search path.
-**Gate:** full corpus + `microgpt.py` diff-clean against CPython.
+### 5. Builtins — `undefined name`
+`map`, `filter`, `round`, `pow`, `all`, `any`, `id`, `divmod`, `bin`, `hex`,
+`oct`, `format`, `ascii`, `getattr` (literal-name), `setattr`, `hasattr`,
+`issubclass`, `object` (`object.__new__`), `NotImplemented`.
 
-### Phase 9 — Optimization & polish
-**Goal:** competitive native performance and ergonomics.
-**Build:** the optimizer passes (devirtualize, flatten-properties, inline,
-constfold, peephole, dce, cold-block annotation) as representation-preserving
-rewrites over typed MIR (they read `Repr`, never inference state — Principle 6);
-binary-size gating (feature-gated runtime, strip, gc-sections); DWARF debug info.
-The runtime's slab allocator + shadow-stack leaf optimization are already in place.
-**Gate:** performance targets met; size targets met; all prior gates still green.
-**Status: DONE** (devirtualize / flatten-properties had already landed in
-lowering during Phase 5; benchmarks in `benchmarks/`, results in
-`benchmarks/results.md`). Deferred follow-ups, by decision:
-- **Full DWARF line tables** (~3-5 days): MIR carries no spans today. The
-  sketch: a per-instruction span side-channel threaded `lowering →
-  MirInst`, `FunctionBuilder::set_srcloc` per instruction at codegen, then
-  a `gimli` `DebugLine` program assembled from the `SourceLoc → (file,
-  line)` map and attached through `ObjectProduct::object` before write-out
-  (the cg_clif pattern). Until then `--debug` gives symbol names
-  (`pyaot_fn_<i>_<py_name>`), readable lldb backtraces and profiles.
-- **MIR-level devirtualization pass**: documented stretch item — lowering
-  already devirtualizes everything `method_overridden_below` proves, so a
-  MIR pass would rewrite ~nothing on the corpus.
+### 6. Builtins — `Phase 2 codegen not supported`
+- **`type()`** — incl. `type(x).__name__`, `str(type(x))`.
+- **`hash()`**.
 
----
+### 7. `isinstance`
+- **Tuple of types** — `isinstance(x, (int, str))` (single-type form works).
+- **Container targets** — `isinstance(x, list/dict/tuple/set)`.
+- **Gradual/`Any` receiver** — "runtime type query on a gradual value is out of scope" (decide: support via a runtime tag query, or keep out-of-scope and document).
 
-## Post-Phase-9 hardening backlog — lessons from the previous compiler
+### 8. Numeric tower (int↔float)
+- An `int`/widened local returned through `-> float`; a literal `return 0` in a `-> float` function; an unannotated mixed `return 1.5 / return 0` inferred as `Any` and rejected at a `float` slot. (bool↔int promotion already works — the gap is specifically int↔float.)
 
-Phase 9 closed the plan's definition of "working". What remains is a ranked
-backlog of items where the *previous* compiler is known to have gone wrong
-after this exact point — each entry names the old failure it guards against.
-None of these are gates; all of them are the places to be deliberate.
+### 9. Methods on builtin types
+- **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__`.
+- **`str`**: `format`, `split`, `rsplit`, `replace`, `lstrip`/`rstrip`, `removeprefix`/`removesuffix`, `expandtabs`, `splitlines`, `partition`/`rpartition`, `rindex`, `encode`, predicates `isdigit`/`isalpha`/`isalnum`/`isspace`/`isupper`/`islower`/`isascii`. (`upper`/`lower`/`strip`/`find`/`title`/`center`/… already work.)
+- **`bytes`**: `startswith`, `endswith`, `find`, `rfind`, `count`, `replace`, `split`/`rsplit`, `strip`/`lstrip`/`rstrip`, `upper`/`lower`, `join` — only `.decode()` is supported today.
+- **`tuple`**: `index`, `count`.
+- **`dict`**: `popitem`, `fromkeys`.
+- **`set`**: `issubset`, `issuperset`, `isdisjoint`, `intersection_update`, `difference_update`, `symmetric_difference_update`. (`union`/`intersection`/`|&-^` already work.)
 
-1. **Raw-int loop specialization must be a `typeck` proof, never an optimizer
-   demotion pass.** The biggest remaining performance lever (`bench_int_loop`
-   0.47x, `bench_containers` 0.74x vs CPython) is Principle 3's narrowing (a):
-   `Tagged` int → `Raw(I64)` under a range/no-overflow proof. The old compiler
-   attempted this as post-lowering `mir_ty` narrowing in the optimizer four
-   times; three attempts caused mass regressions (198+ unbox mismatches) and
-   the surviving one needed a producer-proof side-set plus an `abi_immutable`
-   guard flag — both PITFALLS Part A smells. The proof (loop-bound range
-   analysis) belongs in `typeck` *before* lowering, so `legalize` emits the
-   raw representation natively and the verifier sees consistent `Repr` from
-   the start. If the implementation ever needs a "repair" sweep after the
-   fact, that is the signal the design is wrong — stop and move the proof
-   earlier.
+### 10. `collections` module
+- **`Counter`** — `undefined symbol rt_make_counter` at link (the `rt_*` does not exist); `.total()`, `.most_common()` also unsupported.
+- **`defaultdict`** — a type passed as the factory (`defaultdict(int)`); subscript-store `dd[k]=v`.
+- **`deque`** — all mutating/query methods (`append`/`appendleft`/`pop`/`popleft`/`rotate`/…) and item assignment `dq[i]=v`. (Construction, read, iteration, `list/sum/sorted(dq)` already work.)
+- **`OrderedDict`** — `move_to_end`, `popitem`.
 
-2. **Promote the MIR verifier to release builds at the final pre-codegen
-   boundary.** Today the verifier is `#[cfg(debug_assertions)]`-only
-   (`cli/main.rs`, `optimizer/lib.rs`); release builds compile with zero
-   representation checking. The old compiler started the same way and ended
-   with hard-error verification in *both* build profiles after release-only
-   miscompiles slipped through (its Stage G.1). Per-boundary verification can
-   stay debug-only; one mandatory hard-error pass at final-pre-codegen is
-   cheap (linear in MIR) and catches optimizer bugs where they are introduced
-   rather than as corpus SEGVs.
+### 11. Classes / OOP
+- **`@abstractmethod`** and general method decorators.
+- **Class decorators** — any `@deco` on a class (incl. `@runtime_checkable`).
+- **`object` / `object.__new__(cls)`** and **`NotImplemented`** (see §5).
+- **`abs()` on a user class** — the `__abs__` result is not statically typed, so a later `.attr` on it fails.
 
-3. **Defence-in-depth at the proof-trusted `Tagged → Heap` seam.** The
-   `TaggedToHeap` coercion is a bit-identical no-op justified entirely by a
-   `typeck` proof — which means any future inference bug surfaces as a SEGV
-   in the runtime, not as a `TypeError`. This already happened once
-   (the Phase 8B–8F gradual-seam SEGV family: `join` on a non-list,
-   `urlencode` with non-str values, `environ.get` miss) and was fixed
-   correctly via checked coercions. Two cheap guards remain worth adding:
-   (a) a debug-runtime tag assert in the hot `rt_*` shape-dereferencing
-   entry points (the old compiler's `rt_*_abi` guards exist in the substrate
-   for exactly this reason — extend the pattern to the stdlib seam);
-   (b) keep every *new* gradual admission at a raw/heap ABI boundary on the
-   checked-`Coerce` path — never widen the verifier's two legal checked
-   shapes without a matching runtime guard.
+### 12. Typing / generics
+- **Subscripted instance annotation** — `b: Box[int] = …` (the `Generic[T]` base parses; the `Name[T]` *annotation use* fails).
+- **`Protocol` base class** — `unknown base class Protocol` (structural subtyping unsupported); also **`Protocol[T]`** subscripted base.
+- **`zip()` with 3+ iterables** — exactly two are supported.
 
-4. **Land MRO-aware nominal subtyping in the lattice before anything depends
-   on equality-only class joins.** `lattice.rs` still compares classes by
-   `id1 == id2` (TODO in-tree). In the old compiler the equivalent gap — class
-   joins collapsing to `Union`/`Any` instead of the common base — seeded the
-   entire class-field-widening cascade (six-pass harvester fixes, per-function
-   overlays). The C3 linearization already computed in `semantics` is the
-   single source of truth; wire `join(Class(a), Class(b))` to the nearest
-   common MRO ancestor while the consumer surface is still small.
+### 13. f-strings
+- **Dynamic/nested format specs** — `f"{x:.{n}f}"`, `f"{x:{w}d}"`.
+- **`!a` conversion** — `f"{x!a}"`, `f"{x=!a}"`. (`!r`/`!s`, debug `=`, static specs already work.)
 
-   **Status: DONE.** Every lattice operation now takes a `ClassHierarchy` env
-   (implemented by `ClassTable`, so the MRO data still lives only in `hir`):
-   `Class(a) <: Class(b)` iff `b ∈ mro(a)`, and union canonicalization merges
-   class members to their nearest common C3 ancestor (commutativity-guarded
-   under multiple inheritance; no-common-ancestor pairs still form a `Union`).
-   typeck's `nominal_subtype` shim is gone — the lattice covers its cases.
-   Corpus: `p5_mro_join.py` (unannotated sibling joins, diamond, base-typed
-   virtual dispatch).
-
-5. **String performance work must not re-open the byte/char model.**
-   `rt_str_len_int` and slicing are codepoint-correct but O(n) per call
-   (`bench_str` 0.36x). The acceptable fix is a cached char-length (and/or an
-   is-ASCII bit) in `StrObj` — a deliberate substrate extension under
-   Principle 8, like bignum. The unacceptable fix is any fast path that
-   reverts an operation to byte indexing: the old compiler shipped byte-`len`
-   / byte-slices / char-`s[i]` simultaneously, and the three-way inconsistency
-   was worse than either consistent model.
-
-   **Status: DONE.** `StrObj` carries a cached `char_len` (codepoint count by
-   the non-continuation-byte rule — `char_len == len` ⟺ ASCII, so no separate
-   bit), filled at every allocation site (greedily via `count_codepoints`,
-   arithmetically for concat/mul/slice/join/strip/remove-fix) and guarded by
-   a `str_alloc_size` helper + `offset_of!(StrObj, data)` const assert against
-   under-allocation, plus a debug validator in `rt_str_len_int`. `len()` is
-   O(1); subscript/slice/slice-step/find/rfind take byte==char shortcuts only
-   under *proven* ASCII and a single walk otherwise (no offsets `Vec` for
-   plain slices); align ops early-return on the cached count. Observable
-   semantics unchanged (corpus byte-exact); `bench_str` 0.36x → 0.50x.
-
-6. **Exception hot path (0.15x) waits for table-based unwinding — not for a
-   faster setjmp.** The deferred Phase 7 follow-up (zero-cost unwinding +
-   real tracebacks) is the only fix that pays. Caching or hoisting setjmp
-   frames breaks the two documented constraints that already bit once
-   (PITFALLS B2 owned-message leaks, B3 dead-frame longjmp) for a constant
-   factor on a path that needs an asymptotic change.
-
-   **Status: DONE (unwinding).** setjmp is gone: protected regions are
-   static `MirBlock::handler` annotations; every raising call inside one is
-   a Cranelift `try_call` routed through a `CallConv::Tail` trampoline
-   (mandatory — see the rewritten PITFALLS B3), and codegen bakes a
-   PC→handler table the runtime unwinder binary-searches at raise time
-   (frame-pointer walk + SP/FP-restoring resume stub; GC shadow frames are
-   pruned address-wise via `gc::unwind_below`). The happy path of a `try`
-   emits ZERO runtime calls and the `has_try` memory-backing of locals is
-   deleted — handler edges are ordinary CFG edges the regalloc understands.
-   `bench_exc_hotpath` 0.19x → 0.40x, now at parity with the same loop's
-   non-try tagged-arithmetic gap (`bench_int_loop` 0.46x) — the exception
-   tax itself is gone; the residual is raw-int specialization territory.
-   **Real tracebacks: DONE.** The frontend emits `HirStmt::Line` markers
-   (per statement + at every block head) from a per-module `LineMap`;
-   lowering threads them as `MirInst::LineMarker` (DCE-surviving, excluded
-   from inline size accounting) and codegen turns them into Cranelift
-   srclocs. A second baked table (`pyaot_tb_table`: per function — relocated
-   base address, code size, display name, file path, `[start,end)→line`
-   ranges from `get_srclocs_sorted()`) is registered via
-   `rt_tb_register_table`. Every raise snapshots the FP-chain's return PCs
-   (generated frames only — runtime/trampoline frames are not in the table);
-   resolution to `File "…", line N, in fn` happens lazily when an unhandled
-   exception prints, in CPython's frame format, `<module>` for module
-   bodies, per-module files for imports. Gated by
-   `crates/cli/tests/traceback.rs` (the differential corpus requires exit 0,
-   so unhandled output cannot be corpus-pinned). Documented divergences from
-   CPython: no source-line echo / `^^^` anchors (no embedded source text),
-   bare-`raise` keeps the original capture instead of appending the re-raise
-   site, and inlined callees collapse into their caller's frame (keeping the
-   innermost line) — compile with `--opt-level none` for full frame
-   fidelity.
-
-7. **Benchmark-gap pressure is the named adversary of Part A.** Every
-   side-table, marker bit, and parallel `rt_*_tagged` variant in the old
-   compiler was born as a quick win against a benchmark or a failing corpus
-   entry. The remaining gaps (`int_loop`, `str`, `containers`,
-   `exc_hotpath`) will generate exactly that pressure. The existing rule
-   stands and is restated here at the point of maximum temptation: before
-   adding a flag, side-table, or special case to win a benchmark, re-read
-   PITFALLS Part A — fix the representation or the constraint instead.
-
-   **Status: DONE — every gap closed the disciplined way, with zero new flags /
-   side-tables / marker bits / `rt_*_tagged` variants.**
-   - `containers` — already closed by Phase 3c (`bench_containers` 1.75x).
-   - `exc_hotpath` — closed by **interprocedural raw-int specialization** (fix
-     the *constraint*): the Phase-3c terminal interval analysis in
-     `crates/typeck/src/intervals.rs` is now whole-program. Proven-bounded `int`
-     values flow across **direct** call edges, so a specializable free
-     function's params and return become `Raw(I64)` instead of `Tagged` (the ABI
-     follows the `Repr` deterministically — no codegen edit, no ABI flag). It
-     stays A3-safe: runs after the SemTy solver converges + materializes, writes
-     only `raw_int_ok` / `ret_raw_int` representation flags, never feeds back
-     into `SemTy`. A function is specializable only when its address is never
-     taken (no `MakeClosure`, generator, or `ClassTable` method/static/class/
-     property slot), so every call site is a direct `Call` and the unchecked
-     `Tagged → Raw(I64)` arg untag is sound (an eligible arg is `≤ 2^48 < 2^60`
-     → a fixnum, never a heap `BigInt`). `bench_exc_hotpath` 0.41x → 0.82x —
-     past the non-try raw-int loop's gap, the exception tax AND the tagged-call
-     tax both gone. `safe_div`'s MIR signature is `(Raw(I64), Raw(I64)) ->
-     Raw(I64)`. Corpus: `p3c_interproc_raw.py` (the minimized bench shape; an
-     address-taken callback + a per-position unbounded bignum arg + a recursive
-     bounded function all correctly staying tagged — a mis-specialization would
-     untag a heap `BigInt` as garbage, so a clean run is the soundness proof).
-   - `str` — case-conversion family (`upper`/`lower`/`title`/`capitalize`/
-     `swapcase`) given a byte-wise ASCII fast path gated on item #5's cached
-     `char_len == len ⟺ ASCII` invariant (no new field, no re-opening the
-     byte/char model): pure-ASCII strings skip the UTF-8 decode + char iteration
-     + intermediate `String`, falling through to the Unicode path otherwise
-     (`"straße".upper()` → `"STRASSE"` stays correct). `bench_str` 0.51x →
-     1.05x. The dominant residual — 20000 build-phase `str(i)`+concat
-     allocations — is **inherent to a non-SSO heap-string representation**;
-     closing it would require an SSO/arena substrate change, exactly the big
-     risky machinery #7 warns against. Accepted as the documented residual.
-   - `int_loop` — **irreducible under Part A; documented, not hacked** (see
-     PITFALLS A7). Collatz `n`/`steps` and fib `a`/`b` are accumulators with no
-     static magnitude bound, unbounded in any sound interval domain. The only
-     closers are a representation-ambiguous speculative deopt-to-bignum (the
-     forbidden "could be raw or pointer" type) or a raise-on-overflow that breaks
-     Python's arbitrary-precision `int` semantics — both forbidden by Part A.
-     `bench_int_loop` stays ~0.51x and is correct to leave open.
+### 14. Literals
+- **Non-UTF-8 bytes literals** — any byte ≥ `\x80`, e.g. `b"\xff"` (this is what fails `test_file_io.py`; ASCII and `\x00`–`\x7f` already work).
 
 ---
 
 ## Cross-cutting
 
-- **Differential harness (Phase 1, used forever):** every corpus file is the
-  spec. A feature isn't done until its corpus entry diffs clean vs CPython.
+- **Differential harness (the spine):** every corpus file is the spec. A feature
+  isn't done until its corpus entry diffs clean vs CPython; close a backlog item
+  by lifting the relevant `test_*.py` onto the gate allowlist.
 - **Verifier discipline:** the MIR verifier is a debug-build invariant at every
-  pass boundary, from the first MIR ever produced.
+  pass boundary, plus one mandatory release-safe pass at final pre-codegen.
 - **Specialization is always optional:** if a representation optimization is
   unsure, it must fall back to `Tagged` / safe `repr_of` — never guess.
 - **Before adding a flag/side-table/special-case:** stop and re-read PITFALLS
