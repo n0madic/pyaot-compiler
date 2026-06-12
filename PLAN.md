@@ -117,6 +117,32 @@ two-file pattern of Principle 8 (`stdlib-defs` descriptor + `runtime` `rt_*`),
 unless they need true HOF/representation handling (`map`/`filter`, `type()`).
 Keep every gradual/raw seam on the checked-coerce path (PITFALLS A2/A3).
 
+**Already transferred from the previous compiler — use these, don't re-derive.**
+
+- **Corpus: fully absorbed.** Every `examples/test_*.py` of the previous
+  compiler exists in `corpus/` (verified file-by-file); three were deliberately
+  cleaned of old-compiler workarounds (`test_exceptions.py` `exc_type: int`
+  hack, `test_match.py`, `test_stdlib_sys.py`) — the `corpus/` versions are
+  authoritative, never re-sync from the old repo.
+- **`crates/types/src/dunders.rs`** — the dunder classification tables ported
+  name-level: `DunderKind`, `dunder_kind`, `canonical_dunder_name`,
+  `reflected_name` (incl. comparison pairs `__lt__`↔`__gt__`, self-reflected
+  `__eq__`/`__ne__`). Every backlog item touching operators or dunders (§2
+  `@`/`__matmul__`, §9 methods, §11 dunder results) must consume this table
+  instead of hardcoding name lists; `typeck` currently hardcodes
+  `["__add__", "__radd__"]` in one spot — migrate it onto the table when first
+  touching that code. The old `polymorphic_other_type` helper was deliberately
+  **not** ported: its blind `Self`-injection into the `other` Union was the
+  microgpt `loss=NaN` root cause — type `other` in the solver instead (see the
+  module docs).
+- **Runtime registries already in the fork.** `vtable.rs` method registry +
+  `ops/dunder_dispatch.rs` (FNV-1a name-hash probes) — §5 `hasattr` and §12
+  `Protocol`/`runtime_checkable` build on these; no new registry mechanism.
+- **Builtin-signature reference.** The old repo's `crates/stdlib-defs/`
+  (`../python-compiler-rust`) is the kwargs/signature catalogue to consult
+  when authoring §1/§5/§9 descriptors — read-only reference, not a code
+  source.
+
 ### Highest-leverage first
 These few gaps block the most files — close them before the long tail.
 
@@ -181,7 +207,7 @@ These few gaps block the most files — close them before the long tail.
 - **`set`**: `issubset`, `issuperset`, `isdisjoint`, `intersection_update`, `difference_update`, `symmetric_difference_update`. (`union`/`intersection`/`|&-^` already work.)
 
 ### 10. `collections` module
-- **`Counter`** — `undefined symbol rt_make_counter` at link (the `rt_*` does not exist); `.total()`, `.most_common()` also unsupported.
+- **`Counter`** — `undefined symbol rt_make_counter` at link. The runtime fork *already has* `counter.rs` (`rt_make_counter_empty` / `rt_make_counter_from_iter` / `rt_counter_most_common`) — the frontend emits a symbol name that doesn't exist, so this is pure wiring, not runtime work. `.total()`, `.most_common()` likewise.
 - **`defaultdict`** — a type passed as the factory (`defaultdict(int)`); subscript-store `dd[k]=v`.
 - **`deque`** — all mutating/query methods (`append`/`appendleft`/`pop`/`popleft`/`rotate`/…) and item assignment `dq[i]=v`. (Construction, read, iteration, `list/sum/sorted(dq)` already work.)
 - **`OrderedDict`** — `move_to_end`, `popitem`.
@@ -206,6 +232,90 @@ These few gaps block the most files — close them before the long tail.
 
 ---
 
+## Known traps — the previous compiler already shipped every backlog item
+
+Each construct above works in the previous compiler; these notes record where it
+got them *wrong first* (every one is backed by a documented fix in its history).
+Read the matching note before starting an item.
+
+- **§1 kwargs — two traps.** (a) Python evaluates call arguments left-to-right
+  *as written*; desugaring kwargs by reordering into the callee's positional
+  order reorders side effects — add a side-effecting-args corpus probe. (b) A
+  default expression that captures a free variable is evaluated in the *def*
+  scope, once — the previous compiler had an SSA/capture bug exactly there.
+- **§1 mutable defaults.** `lst=[]` is evaluated once at def time and shared
+  across calls. The naive per-call evaluation diffs clean on everything except
+  the aliasing probe (`f(1); f(2)` → `[1, 2]`) — put that probe in the corpus
+  *first*. Needs a per-default static cell that is a GC root.
+- **§2 `is` / `is not`.** Under fixnum tagging all equal small ints are
+  bit-identical, while CPython caches only −5..256; identity of value types is
+  implementation-defined in CPython anyway. Define `is` as bit-identity
+  (heap pointer / fixnum / bool / None), keep corpus probes to the defined
+  cases (`is True`, same-object, `type(x) is T`), and do not chase CPython's
+  int cache.
+- **§4 non-literal `range` step.** The previous compiler shipped
+  `sum(range(a, b, step)) == 0` for a negative variable step — the loop desugar
+  assumed an ascending direction. Unknown step ⇒ emit the runtime-direction
+  comparison (`step > 0 ? i < stop : i > stop`) and `ValueError` on
+  `step == 0`.
+- **§5 `map`/`filter`.** The single item that birthed PITFALLS A4 in the
+  previous compiler (parallel `rt_*_tagged` HOF variants, marker bits; `filter`
+  additionally broke on an i8-truthiness callback ABI). Implement as lazy
+  iterators over the uniform `fn(Value)→Value` callback first; unboxed-callback
+  specialization is a separate, proof-gated item.
+- **§5 `getattr`/`setattr`/`hasattr` (literal name).** Desugar in the frontend
+  to direct attribute access so the dynamic-`getattr` out-of-scope boundary
+  stays syntactic. For `hasattr` on a gradual receiver the previous compiler's
+  design is reusable: a name-hash method/field registry probe (existence-only,
+  no vtable lookup).
+- **§6 `type()`.** The previous compiler was still fixing diffs here in its
+  final weeks: `print(type(x))` needs the module-qualified
+  `<class '__main__.Foo'>`, `type(x).__name__` needs the bare name, and the
+  default instance repr is module-qualified again. Emit all three from one
+  metadata source, never parallel formatting paths.
+- **§8 numeric tower.** `int` is Tagged (fixnum-or-bignum) and `float` is
+  `Raw(F64)`, so int→float at a slot is a real `legalize` coercion with a
+  bignum arm (precision loss above 2⁵³ matches CPython's `float(int)`) — never
+  a noop. On the typeck side make `int ⊔ float = float` a deliberate lattice
+  rule; the previous compiler repeatedly leaked these joins to `Any` instead.
+- **§9 `str.format` + §13 dynamic f-string specs.** The same mini-language.
+  Both must call the one `format-shared::parse_format_spec` engine (a dynamic
+  spec becomes a runtime call into it); the previous compiler's repr/format
+  drift came from duplicated formatting paths.
+- **§10 `deque`.** Its method names collide with `list` (`append`, `pop`, …);
+  in the previous compiler that leaked wrong element-type constraints into the
+  solver for look-alike receivers. Key §9–§11 method constraints by receiver
+  `SemTy`, never by method name alone.
+- **§10 `defaultdict(int)`.** A type used as a value. Don't grow first-class
+  type objects for this — special-case the builtin factories
+  (`int`/`list`/`dict`/`set` → zero-value thunks) plus user functions, as the
+  previous compiler did.
+- **§11 method/class decorators.** The root of the previous compiler's
+  per-function-ABI saga was exactly here: `@property` getters with primitive
+  returns got return-ABI-flipped, then needed flags and side-tables to track
+  it. The immunizing rule: a function whose identity escapes through *any*
+  decorator is address-taken ⇒ uniform Tagged ABI, decided in `typeck`, no
+  per-function exceptions.
+- **§11 `abs()` / dunder results.** Two lessons: dunder return types must
+  enter the solver as ordinary constraints (post-hoc threading caused a
+  bound-result SEGV in the previous compiler), and the `other` param of a
+  binary dunder must not get `Self` blindly injected into its Union (that was
+  the microgpt `loss=NaN` root cause).
+- **§7 `isinstance`.** Accepting the syntax is the small half; the value is
+  flow-sensitive narrowing in `solve`, and retrofitting narrowing late was a
+  documented multi-pass cascade in the previous compiler — wire narrowing in
+  together with the syntax. For the gradual receiver: `ObjHeader.type_tag`
+  makes the runtime query one load — support it rather than carving an
+  out-of-scope hole.
+- **§3 `del name`.** `del d[k]` / `del lst[i]` are runtime calls; `del name`
+  changes definite-assignment (a later read is `UnboundLocalError`). That is
+  typeck/CFG work, not lowering work — scope it that way.
+- **§14 non-UTF-8 bytes.** Keep `bytes` permanently out of the string
+  interner/`StrObj`; one shared pool entry holding a byte ≥ `\x80` breaks the
+  codepoint invariant behind `char_len`.
+
+---
+
 ## Cross-cutting
 
 - **Differential harness (the spine):** every corpus file is the spec. A feature
@@ -217,3 +327,13 @@ These few gaps block the most files — close them before the long tail.
   unsure, it must fall back to `Tagged` / safe `repr_of` — never guess.
 - **Before adding a flag/side-table/special-case:** stop and re-read PITFALLS
   Part A — that is the smell. Fix the representation or the constraint instead.
+- **Interaction probes:** nearly every late bug in the previous compiler was a
+  *pair* of features (kwargs × closure capture, dunder × Union, decorator ×
+  varargs), not a single feature. When closing a backlog item, add at least one
+  corpus probe that crosses it with an already-green feature.
+- **Stdlib breadth is the layer after this backlog.** The runtime fork already
+  carries the previous compiler's `rt_*` surface for `json`/`re`/`os`/`time`/
+  `random`/`hashlib`/file I/O, so closing it is mostly `stdlib-defs`
+  descriptors (Principle 8) — but only with corpus probes added per module.
+  Never declare a module supported on the strength of inherited runtime code
+  alone.

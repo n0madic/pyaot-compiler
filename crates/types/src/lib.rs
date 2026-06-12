@@ -31,10 +31,12 @@
 #![forbid(unsafe_code)]
 
 pub mod builtin_classes;
+pub mod dunders;
 pub mod lattice;
 pub mod repr;
 pub mod sem;
 
+pub use dunders::{canonical_dunder_name, dunder_kind, is_dunder, reflected_name, DunderKind};
 pub use lattice::{ClassHierarchy, NoClasses, TypeLattice};
 pub use repr::{repr_of, sig_repr, HeapShape, RawKind, Repr, SigRepr, RAW_I64_NARROW_BOUND};
 pub use sem::{SemTy, Sig};
