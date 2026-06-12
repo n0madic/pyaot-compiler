@@ -1434,6 +1434,10 @@ impl<'a> FnLowerer<'a> {
             varargs: false,
             kwargs: false,
             ret_ty: self.ret_ty,
+            // `ret_raw_int` defaults to the always-correct tagged baseline;
+            // typeck's interprocedural interval pass sets it where a range proof
+            // holds (mirrors `HirLocal::raw_int_ok`).
+            ret_raw_int: false,
             locals: self.locals,
             blocks: self.blocks,
             entry: self.entry,

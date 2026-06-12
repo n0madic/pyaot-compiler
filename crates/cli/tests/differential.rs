@@ -38,6 +38,14 @@ const PHASE_CORPUS: &[&str] = &[
     // proof correctly REFUSING (a doubling-to-bignum accumulator and a
     // collatz-shaped while stay tagged → bignum-safe and byte-exact).
     "p3c_raw_int_loops.py",
+    // Phase 3c interprocedural (PLAN backlog #7, Part A) — raw-int proof across
+    // direct call edges: bounded args make a callee's params + return Raw(I64)
+    // (the bench_exc_hotpath shape, incl. inside a `try` → Tail trampoline seam),
+    // while an address-taken callback, a per-position unbounded arg (a bignum),
+    // and a recursive bounded function correctly stay tagged. Mis-specializing
+    // any of those would untag a heap BigInt as garbage — a clean run is the
+    // soundness proof.
+    "p3c_interproc_raw.py",
     // Phase 4A — container literals, indexed read/write, len/in, operators.
     "p4_literals.py",
     "p4_subscript.py",

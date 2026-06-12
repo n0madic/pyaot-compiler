@@ -333,6 +333,46 @@ None of these are gates; all of them are the places to be deliberate.
    adding a flag, side-table, or special case to win a benchmark, re-read
    PITFALLS Part A — fix the representation or the constraint instead.
 
+   **Status: DONE — every gap closed the disciplined way, with zero new flags /
+   side-tables / marker bits / `rt_*_tagged` variants.**
+   - `containers` — already closed by Phase 3c (`bench_containers` 1.75x).
+   - `exc_hotpath` — closed by **interprocedural raw-int specialization** (fix
+     the *constraint*): the Phase-3c terminal interval analysis in
+     `crates/typeck/src/intervals.rs` is now whole-program. Proven-bounded `int`
+     values flow across **direct** call edges, so a specializable free
+     function's params and return become `Raw(I64)` instead of `Tagged` (the ABI
+     follows the `Repr` deterministically — no codegen edit, no ABI flag). It
+     stays A3-safe: runs after the SemTy solver converges + materializes, writes
+     only `raw_int_ok` / `ret_raw_int` representation flags, never feeds back
+     into `SemTy`. A function is specializable only when its address is never
+     taken (no `MakeClosure`, generator, or `ClassTable` method/static/class/
+     property slot), so every call site is a direct `Call` and the unchecked
+     `Tagged → Raw(I64)` arg untag is sound (an eligible arg is `≤ 2^48 < 2^60`
+     → a fixnum, never a heap `BigInt`). `bench_exc_hotpath` 0.41x → 0.82x —
+     past the non-try raw-int loop's gap, the exception tax AND the tagged-call
+     tax both gone. `safe_div`'s MIR signature is `(Raw(I64), Raw(I64)) ->
+     Raw(I64)`. Corpus: `p3c_interproc_raw.py` (the minimized bench shape; an
+     address-taken callback + a per-position unbounded bignum arg + a recursive
+     bounded function all correctly staying tagged — a mis-specialization would
+     untag a heap `BigInt` as garbage, so a clean run is the soundness proof).
+   - `str` — case-conversion family (`upper`/`lower`/`title`/`capitalize`/
+     `swapcase`) given a byte-wise ASCII fast path gated on item #5's cached
+     `char_len == len ⟺ ASCII` invariant (no new field, no re-opening the
+     byte/char model): pure-ASCII strings skip the UTF-8 decode + char iteration
+     + intermediate `String`, falling through to the Unicode path otherwise
+     (`"straße".upper()` → `"STRASSE"` stays correct). `bench_str` 0.51x →
+     1.05x. The dominant residual — 20000 build-phase `str(i)`+concat
+     allocations — is **inherent to a non-SSO heap-string representation**;
+     closing it would require an SSO/arena substrate change, exactly the big
+     risky machinery #7 warns against. Accepted as the documented residual.
+   - `int_loop` — **irreducible under Part A; documented, not hacked** (see
+     PITFALLS A7). Collatz `n`/`steps` and fib `a`/`b` are accumulators with no
+     static magnitude bound, unbounded in any sound interval domain. The only
+     closers are a representation-ambiguous speculative deopt-to-bignum (the
+     forbidden "could be raw or pointer" type) or a raise-on-overflow that breaks
+     Python's arbitrary-precision `int` semantics — both forbidden by Part A.
+     `bench_int_loop` stays ~0.51x and is correct to leave open.
+
 ---
 
 ## Cross-cutting

@@ -476,12 +476,14 @@ pub fn infer(
     // Types are now materialized on every node; validate the unboxed-slot
     // boundaries before lowering can emit an unsound coercion.
     check_repr_boundaries(module, resolve, classes, interner)?;
-    // Terminal, A3-safe range proof (Phase 3c): a forward integer-interval
-    // analysis over the finalized types + CFG flags every `int` slot and derived
-    // `int` BinOp that provably stays within `±RAW_I64_NARROW_BOUND` (→ `Raw(I64)`
-    // at lowering). It only writes the two `raw_int_ok` eligibility flags; it
-    // never changes a `SemTy` or feeds back into inference.
-    intervals::narrow_raw_ints(module, resolve);
+    // Terminal, A3-safe range proof (Phase 3c, now whole-program): a forward
+    // integer-interval analysis over the finalized types + CFG flags every `int`
+    // slot, derived `int` BinOp, and — across direct call edges — the params and
+    // return of a specializable function, when each provably stays within
+    // `±RAW_I64_NARROW_BOUND` (→ `Raw(I64)` at lowering). It only writes the
+    // `raw_int_ok` / `ret_raw_int` eligibility flags off a `ClassTable`-derived
+    // address-taken gate; it never changes a `SemTy` or feeds back into inference.
+    intervals::narrow_raw_ints(module, resolve, classes);
     Ok(())
 }
 

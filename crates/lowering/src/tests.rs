@@ -113,10 +113,13 @@ fn float_division_stays_tagged() {
 
 #[test]
 fn unprovable_int_arithmetic_stays_tagged() {
-    // Int arithmetic with no provable bound (here on function parameters, whose
-    // values come from an unbounded caller) stays tagged so bignum is correct.
-    // The 3c interval pass narrows only provably-bounded ints to Raw(I64).
-    let p = lowered("def f(a: int, b: int) -> int:\n    return a * b + a\nprint(f(3, 4))\n");
+    // Int arithmetic with no provable bound stays tagged so bignum is correct.
+    // The interprocedural interval pass narrows a param only when EVERY call site
+    // passes a provably-bounded arg; here both call args are heap bignums (>2^48),
+    // so each param's entry interval is ⊤ and the arithmetic rides the tagged
+    // baseline (a bounded call like `f(3, 4)` WOULD now specialize the params).
+    let p =
+        lowered("def f(a: int, b: int) -> int:\n    return a * b + a\nprint(f(10**40, 10**41))\n");
     for f in &p.funcs {
         for (op, r) in binops_with_repr(f) {
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
@@ -128,6 +131,28 @@ fn unprovable_int_arithmetic_stays_tagged() {
             }
         }
     }
+}
+
+#[test]
+fn bounded_call_specializes_params_and_return_to_raw() {
+    // Interprocedural raw-int (PLAN backlog #7, Part A): a free function whose
+    // EVERY direct call site passes a provably-bounded int gets Raw(I64) params
+    // AND a Raw(I64) return, so its body divides raw — closing the exc_hotpath gap.
+    let i64r = Repr::Raw(RawKind::I64);
+    let p = lowered("def f(a: int, b: int) -> int:\n    return a // b\nprint(f(1000, 7))\n");
+    let f = p
+        .funcs
+        .iter()
+        .find(|f| f.params.len() == 2)
+        .expect("the two-param function f");
+    assert_eq!(f.params, vec![i64r.clone(), i64r.clone()], "params go raw");
+    assert_eq!(f.ret, i64r, "return goes raw");
+    assert!(
+        binops_with_repr(f)
+            .iter()
+            .any(|(op, r)| *op == BinOp::FloorDiv && *r == i64r),
+        "the body `a // b` runs raw"
+    );
 }
 
 #[test]
@@ -404,13 +429,15 @@ fn list_insert_index_is_raw_i64() {
 
 #[test]
 fn unprovable_range_bound_stays_tagged() {
-    // A range bound with no provable value (here a function parameter, unbounded
-    // by construction since param inference is out of scope) cannot be narrowed,
-    // so the cursor must stay tagged — soundness over completeness (PITFALLS A6).
-    // (A module-level `n = 6` WOULD now narrow: the interval pass is strictly more
-    // precise than the deleted literal-only heuristic.)
+    // A range bound with no provable value cannot be narrowed, so the cursor must
+    // stay tagged — soundness over completeness (PITFALLS A6). The param `n` here
+    // comes from a heap-bignum call site (`f(10**40)`), so its interprocedural
+    // entry interval is ⊤ and the cursor stays tagged. (A module-level `n = 6`,
+    // or a bounded call `f(6)`, WOULD now narrow — the interval pass is strictly
+    // more precise than the deleted literal-only heuristic.)
     let i64r = Repr::Raw(RawKind::I64);
-    let p = lowered("def f(n: int) -> None:\n    for i in range(1, n):\n        print(i)\nf(6)\n");
+    let p =
+        lowered("def f(n: int) -> None:\n    for i in range(1, n):\n        print(i)\nf(10**40)\n");
     for f in &p.funcs {
         assert_eq!(
             locals_with_repr(f, &i64r),

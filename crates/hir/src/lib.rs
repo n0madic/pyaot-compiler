@@ -202,6 +202,20 @@ pub struct HirFunction {
     /// The trailing `**kwargs` param (one `dict[str, Dyn]` slot) is present (6C).
     pub kwargs: bool,
     pub ret_ty: SemTy,
+    /// Proof-gated representation override for the RETURN value (Phase 3c,
+    /// interprocedural): when `true` **and** [`Self::ret_ty`] is `int`, lowering
+    /// makes this function's signature return — and every `Return` terminator —
+    /// an unboxed `Raw(I64)` instead of the tagged default. Set by typeck's
+    /// whole-program interval pass only for a **specializable** function (address
+    /// never taken — no `MakeClosure`, generator, or `ClassTable` slot holds its
+    /// `FuncId`, so every call site is a direct, resolvable `Call`) whose every
+    /// `return` expression provably stays within `±RAW_I64_NARROW_BOUND`. Like
+    /// [`HirLocal::raw_int_ok`] it is a representation proof, **not** an
+    /// ABI/convention flag: the ABI still derives deterministically from the
+    /// return `Repr` (Invariant 3/6), and the caller's `Call.dst` repr follows
+    /// the same proof so the verifier sees a consistent `Repr`. Default `false`
+    /// (the always-correct tagged baseline).
+    pub ret_raw_int: bool,
     pub locals: Vec<HirLocal>,
     pub blocks: Arena<HirBlock>,
     pub entry: Idx<HirBlock>,

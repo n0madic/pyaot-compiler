@@ -102,3 +102,15 @@
 | bench_containers | 0.099412s | 0.172583s | 1.74x |
 | bench_exc_hotpath | 0.288923s | 0.118514s | 0.41x |
 | microgpt | 0.040658s | 0.044952s | 1.11x |
+
+## 2026-06-12 10:14 — b87168d — PLAN#7: interproc raw-int + str ASCII case
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.668303s | 0.341237s | 0.51x |
+| bench_float_kernel | 0.151591s | 0.366693s | 2.42x |
+| bench_calls | 0.567630s | 0.924317s | 1.63x |
+| bench_str | 0.111420s | 0.116816s | 1.05x |
+| bench_containers | 0.098129s | 0.171591s | 1.75x |
+| bench_exc_hotpath | 0.143464s | 0.117930s | 0.82x |
+| microgpt | 0.040027s | 0.044985s | 1.12x |

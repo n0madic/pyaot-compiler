@@ -25,11 +25,40 @@
 //! instant any endpoint leaves `[-BOUND, BOUND]` — over-approximation is always
 //! toward `⊤` (PITFALLS A2), never a finite range narrower than reality.
 //!
+//! ## Interprocedural extension (whole-program, Part A of PLAN backlog #7)
+//!
+//! The same terminal interval analysis is made *whole-program* so a function's
+//! parameters and return can be `Raw(I64)` across **direct** call edges (closing
+//! the `bench_exc_hotpath` gap: `safe_div(a, b)` arrives raw, divides raw, and
+//! returns raw). It is still A3-safe: it runs after the SemTy solver has
+//! converged + materialized, writes only the representation flags
+//! ([`HirLocal::raw_int_ok`] / [`HirExpr::raw_int_ok`] /
+//! [`pyaot_hir::HirFunction::ret_raw_int`]), and never feeds back into `SemTy`.
+//!
+//! * **`entry_iv[fid][p]`** — the join, over **all** direct call sites, of the
+//!   caller-evaluated argument interval — is computed to a whole-program fixpoint
+//!   (chaotic iteration, `WIDEN_LIMIT` move-pinning per slot for termination;
+//!   recursion/mutual-recursion need no special-casing). It seeds `analyze_func`'s
+//!   param locals, so a param's interval is its real cross-call magnitude bound.
+//! * A function is **specializable** only if its address is never taken (no
+//!   `MakeClosure`, not a generator, not in any [`ClassTable`] method / static /
+//!   class / property slot), so every call site is a direct, resolvable `Call`
+//!   (`CallVirtual`-reachable functions are exactly the vtable methods, which are
+//!   address-taken → never specialized). A non-specializable function is seeded
+//!   all-`⊤` (its full caller set is invisible) and keeps tagged params/return.
+//! * Soundness of the unchecked `Tagged → Raw(I64)` arg untag at the call site:
+//!   an eligible entry interval is `≤ 2^48 < 2^60`, so the runtime value is a
+//!   fixnum, never a heap `BigInt` — the inline `sshr 3` is lossless (the
+//!   PITFALLS B16 obligation, discharged by the proof).
+//!
 //! ## Soundness obligations honoured
 //!
-//! * A local is flagged only if **every** writer's interval is eligible (the
-//!   `raw_uniform` "stay Tagged when in doubt" discipline) AND it is not a
-//!   parameter (a param int's entry value comes from an unbounded caller).
+//! * A non-parameter local is flagged only if **every** writer's interval is
+//!   eligible (the `raw_uniform` "stay Tagged when in doubt" discipline). A
+//!   **parameter** is flagged only if its function is specializable and its
+//!   `entry_iv` (the whole-program join above) is eligible — injected as the
+//!   slot's initial writer so the same all-writers-eligible rule governs it
+//!   uniformly (a reassigned param is gated by every writer too).
 //! * A `BinOp` is flagged only if its result is eligible AND each operand is
 //!   itself flagged-raw, a fixnum `IntLit` within `±BOUND`, or a `raw_int_ok`
 //!   local — the bottom-up closure invariant lowering relies on (PITFALLS B16).
@@ -43,8 +72,8 @@ use std::collections::HashMap;
 use la_arena::Idx;
 
 use pyaot_hir::{
-    BinOp, CmpOp, HirBlock, HirExpr, HirExprKind, HirFunction, HirModule, HirStmt, HirTerminator,
-    ResolveResult, Symbol, SymbolRef, UnaryOp,
+    BinOp, ClassTable, CmpOp, HirBlock, HirExpr, HirExprKind, HirFunction, HirModule, HirStmt,
+    HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
 use pyaot_types::SemTy;
 use pyaot_utils::LocalId;
@@ -245,15 +274,234 @@ type Env = Vec<Interval>;
 /// An interned-expr → interval scratch/record map.
 type ExprIv = HashMap<Idx<HirExpr>, Interval>;
 
-/// **Public entry.** Per function: run the interval analysis to a fixpoint, then
-/// set the eligibility flags under the `ty == Int` + eligible + operand-closure
-/// gates. Infallible (any imprecision rides the always-sound tagged baseline).
-pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult) {
-    for func in &mut module.functions {
-        if let Some((expr_iv, writers)) = analyze_func(func, resolve) {
-            apply_flags(func, resolve, &expr_iv, &writers);
+/// One direct call site in a caller: the callee's `FuncId` index and the arg
+/// expressions (in the caller's `exprs` arena), positionally aligned with the
+/// callee's params (the frontend adapts every direct call to exact arity).
+struct CallSite {
+    callee: usize,
+    args: Vec<Idx<HirExpr>>,
+}
+
+/// **Public entry.** A whole-program interval pass: a fixpoint over
+/// `entry_iv[fid][param]` (the join of every direct call site's arg interval)
+/// seeds each function's param locals, then per function the converged analysis
+/// sets the eligibility flags — including raw params and a raw return for a
+/// *specializable* function. Infallible (any imprecision rides the always-sound
+/// tagged baseline; a non-converging function is simply not specialized).
+pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, classes: &ClassTable) {
+    let n = module.functions.len();
+    let n_params: Vec<usize> = module.functions.iter().map(|f| f.params.len()).collect();
+
+    // A function whose address is taken can be reached by an INDIRECT call whose
+    // args we cannot see, so its params/return must stay tagged AND it must not
+    // pass a (possibly under-bounded) param value to a callee as if proven — it
+    // is seeded all-⊤ below. Default-to-not-specializable (PITFALLS A2).
+    let address_taken = collect_address_taken(module, classes);
+    let specializable: Vec<bool> = (0..n).map(|f| !address_taken.contains(&f)).collect();
+
+    // Direct call sites per caller (static; never change across rounds).
+    let call_sites: Vec<Vec<CallSite>> = module
+        .functions
+        .iter()
+        .map(|f| collect_call_sites(f, resolve))
+        .collect();
+
+    // ── Whole-program `entry_iv` fixpoint (Part A1). ──
+    // Each slot is a join that only climbs; after `WIDEN_LIMIT` strict moves it
+    // is pinned to ⊤ (ineligible) so the ascending chain terminates — the same
+    // widening discipline `infer` applies to its `ModuleVars`. Recursion needs no
+    // special-casing (a self-call's arg climbs and is pinned like any other).
+    let mut entry_iv: Vec<Vec<Interval>> =
+        n_params.iter().map(|&np| vec![Interval::Bottom; np]).collect();
+    let mut moves: Vec<Vec<usize>> = n_params.iter().map(|&np| vec![0usize; np]).collect();
+    let mut pinned: Vec<Vec<bool>> = n_params.iter().map(|&np| vec![false; np]).collect();
+    // `contrib[caller]` = its arg intervals to each callee, recomputed only when
+    // the caller's own seed (`entry_iv[caller]`) changed (dirty-marking — a
+    // non-specializable caller's seed is constant ⊤, so it is computed once).
+    let mut contrib: Vec<Vec<(usize, Vec<Interval>)>> = vec![Vec::new(); n];
+    let mut dirty = vec![true; n];
+
+    let total: usize = n_params.iter().sum();
+    let max_rounds = (total + n).saturating_mul(WIDEN_LIMIT + 1).clamp(8, 200_000);
+    for _ in 0..max_rounds {
+        // Recompute the dirty callers' contributions under the current seeds.
+        for caller in 0..n {
+            if !dirty[caller] {
+                continue;
+            }
+            let func = &module.functions[caller];
+            let seed = build_seed(func, &entry_iv[caller], !specializable[caller]);
+            let analyzed = analyze_func(func, resolve, &seed).map(|(expr_iv, _)| expr_iv);
+            contrib[caller] = call_sites[caller]
+                .iter()
+                .map(|cs| {
+                    let np = n_params[cs.callee];
+                    let ivs: Vec<Interval> = (0..np)
+                        .map(|p| match &analyzed {
+                            // A non-converging caller (or an arg past the
+                            // recorded set) contributes ⊤: we cannot bound it.
+                            Some(expr_iv) if p < cs.args.len() => {
+                                expr_iv.get(&cs.args[p]).copied().unwrap_or(Interval::Top)
+                            }
+                            _ => Interval::Top,
+                        })
+                        .collect();
+                    (cs.callee, ivs)
+                })
+                .collect();
+        }
+        // Rebuild every callee's entry join fresh from ALL cached contributions.
+        let mut fresh: Vec<Vec<Interval>> =
+            n_params.iter().map(|&np| vec![Interval::Bottom; np]).collect();
+        for sites in &contrib {
+            for (callee, ivs) in sites {
+                for (p, iv) in ivs.iter().enumerate() {
+                    fresh[*callee][p] = fresh[*callee][p].join(*iv);
+                }
+            }
+        }
+        // Apply with per-slot widening; mark next round's dirty set as the
+        // specializable functions whose seed moved (their `contrib` must be
+        // recomputed under the new seed).
+        let mut next_dirty = vec![false; n];
+        let mut changed = false;
+        for f in 0..n {
+            for p in 0..n_params[f] {
+                if pinned[f][p] {
+                    continue;
+                }
+                if fresh[f][p] != entry_iv[f][p] {
+                    moves[f][p] += 1;
+                    entry_iv[f][p] = if moves[f][p] >= WIDEN_LIMIT {
+                        pinned[f][p] = true;
+                        Interval::Top
+                    } else {
+                        fresh[f][p]
+                    };
+                    changed = true;
+                    if specializable[f] {
+                        next_dirty[f] = true;
+                    }
+                }
+            }
+        }
+        dirty = next_dirty;
+        if !changed {
+            break;
         }
     }
+
+    // ── Final per-function apply under the converged seeds (Part A2/A3). ──
+    for fid in 0..n {
+        let spec = specializable[fid];
+        let func = &module.functions[fid];
+        let seed = build_seed(func, &entry_iv[fid], !spec);
+        let Some((expr_iv, mut writers)) = analyze_func(func, resolve, &seed) else {
+            continue;
+        };
+        let ret_iv = return_interval(func, &expr_iv);
+        apply_flags(
+            &mut module.functions[fid],
+            resolve,
+            &expr_iv,
+            &mut writers,
+            &entry_iv[fid],
+            spec,
+            ret_iv,
+        );
+    }
+}
+
+/// The set of `FuncId` indices whose address is taken — reachable other than
+/// through a direct, resolvable `Call`. Exhaustive (A2.1): a missed holder would
+/// let an indirectly-called function be specialized and read a bignum through an
+/// unchecked untag. Default to membership when unsure.
+fn collect_address_taken(module: &HirModule, classes: &ClassTable) -> std::collections::HashSet<usize> {
+    let mut set = std::collections::HashSet::new();
+    // Generator resume functions (tail-called by the dispatcher).
+    for fid in &module.generators {
+        set.insert(fid.index());
+    }
+    // Every `ClassTable` accessor that holds a `FuncId`: instance methods (own +
+    // inherited, the vtable / `CallVirtual` targets), static/class methods,
+    // and property getters/setters. Dunders are a subset of `methods`.
+    for info in classes.iter() {
+        for m in &info.methods {
+            set.insert(m.func_id.index());
+        }
+        for m in &info.static_methods {
+            set.insert(m.func_id.index());
+        }
+        for m in &info.class_methods {
+            set.insert(m.func_id.index());
+        }
+        for p in &info.properties {
+            set.insert(p.getter.index());
+            if let Some(s) = p.setter {
+                set.insert(s.index());
+            }
+        }
+    }
+    // Any `MakeClosure { func }` anywhere captures a function's address.
+    for func in &module.functions {
+        for (_, expr) in func.exprs.iter() {
+            if let HirExprKind::MakeClosure { func: fid, .. } = &expr.kind {
+                set.insert(fid.index());
+            }
+        }
+    }
+    set
+}
+
+/// Collect a caller's direct call sites: a `Call` whose callee resolves to
+/// `Symbol::Function`. Indirect calls (`Local` callees), method calls, and
+/// runtime calls are not direct edges and contribute nothing.
+fn collect_call_sites(func: &HirFunction, resolve: &ResolveResult) -> Vec<CallSite> {
+    let mut sites = Vec::new();
+    for (_, expr) in func.exprs.iter() {
+        if let HirExprKind::Call { callee, args } = &expr.kind {
+            if let HirExprKind::Name(SymbolRef::Resolved(sid)) = &func.exprs[*callee].kind {
+                if let Symbol::Function(fid) = resolve.symbol(*sid) {
+                    sites.push(CallSite {
+                        callee: fid.index(),
+                        args: args.clone(),
+                    });
+                }
+            }
+        }
+    }
+    sites
+}
+
+/// The seed interval for each param local: the converged `entry_iv` (a `Bottom`
+/// slot — no call site has contributed, or an unreached function — becomes ⊤, a
+/// sound over-approximation; a `Bottom` seed would wrongly mark the param dead).
+/// A non-specializable function is seeded all-⊤ regardless (its full caller set,
+/// and hence its real param bounds, are invisible).
+fn build_seed(func: &HirFunction, entry_iv: &[Interval], force_top: bool) -> Vec<Interval> {
+    (0..func.params.len())
+        .map(|p| {
+            if force_top {
+                return Interval::Top;
+            }
+            match entry_iv.get(p).copied().unwrap_or(Interval::Top) {
+                Interval::Bottom => Interval::Top,
+                x => x,
+            }
+        })
+        .collect()
+}
+
+/// The join of every `Return(Some(v))` value interval (the function's return
+/// magnitude bound under the converged seed). `Bottom` if it never returns a value.
+fn return_interval(func: &HirFunction, expr_iv: &ExprIv) -> Interval {
+    let mut acc = Interval::Bottom;
+    for (_, block) in func.blocks.iter() {
+        if let HirTerminator::Return(Some(v)) = &block.term {
+            acc = acc.join(expr_iv.get(v).copied().unwrap_or(Interval::Top));
+        }
+    }
+    acc
 }
 
 /// Negate a comparison (the `else` edge of a branch).
@@ -668,9 +916,15 @@ fn loop_heads(succ_of: &[Vec<usize>], entry: usize) -> std::collections::HashSet
 /// Returns `(expr_iv, writers)` — the converged per-expr intervals and, per
 /// local, the intervals of every value written into it — or `None` if the
 /// widening loop fails to converge within its generous cap (bail → flag nothing).
+///
+/// `seed` is the interprocedural entry interval of each param local (`seed[p]`
+/// for `p < params.len()`); the entry block starts the params there and every
+/// other local at ⊤. A handler edge still erases to all-⊤ (a raise mid-block may
+/// have reassigned a param; handlers are cold and not the source of any flag).
 fn analyze_func(
     func: &HirFunction,
     resolve: &ResolveResult,
+    seed: &[Interval],
 ) -> Option<(ExprIv, HashMap<usize, Vec<Interval>>)> {
     let n_locals = func.locals.len();
     let order: Vec<Idx<HirBlock>> = func.blocks.iter().map(|(i, _)| i).collect();
@@ -693,15 +947,26 @@ fn analyze_func(
     let heads = loop_heads(&succ_of, entry);
 
     let top_env = || vec![Interval::Top; n_locals];
+    // The entry in-env: param locals start at their interprocedural `seed`, all
+    // other locals at ⊤.
+    let entry_env = || {
+        let mut env = vec![Interval::Top; n_locals];
+        for (p, &iv) in seed.iter().enumerate() {
+            if p < n_locals {
+                env[p] = iv;
+            }
+        }
+        env
+    };
     let mut in_env: Vec<Option<Env>> = vec![None; n];
-    in_env[entry] = Some(top_env());
+    in_env[entry] = Some(entry_env());
     let mut visit = vec![0usize; n];
 
     // Recompute every block's candidate in-env by pushing each reached block's
-    // refined out-env to its successors (entry is pinned to all-⊤).
+    // refined out-env to its successors (entry is pinned to its seeded in-env).
     let recompute = |in_env: &[Option<Env>]| -> Vec<Option<Env>> {
         let mut cand: Vec<Option<Env>> = vec![None; n];
-        cand[entry] = Some(top_env());
+        cand[entry] = Some(entry_env());
         for bi in 0..n {
             let Some(env_b) = &in_env[bi] else { continue };
             let mut out = env_b.clone();
@@ -714,7 +979,7 @@ fn analyze_func(
                 };
                 if let Some(r) = refined {
                     if succ == entry {
-                        continue; // entry stays all-⊤
+                        continue; // entry stays pinned to its seeded in-env
                     }
                     cand[succ] = Some(match cand[succ].take() {
                         None => r,
@@ -882,19 +1147,42 @@ fn record_term_exprs(
 }
 
 /// Set the eligibility flags from the converged analysis.
+///
+/// `entry_iv` is this function's converged param entry intervals; `specializable`
+/// is whether its address is never taken (so a raw param/return ABI is safe).
+/// `ret_iv` is the join of its return-value intervals.
 fn apply_flags(
     func: &mut HirFunction,
     resolve: &ResolveResult,
     expr_iv: &ExprIv,
-    writers: &HashMap<usize, Vec<Interval>>,
+    writers: &mut HashMap<usize, Vec<Interval>>,
+    entry_iv: &[Interval],
+    specializable: bool,
+    ret_iv: Interval,
 ) {
     let n_params = func.params.len();
-    // A local is `Raw(I64)`-eligible iff it is a non-parameter `int` slot with at
-    // least one writer and every writer's interval is in-bound.
+    // Inject each `int` param's entry interval as an initial writer so the SAME
+    // "every writer eligible" rule governs params and locals uniformly. A
+    // specializable function contributes its real `entry_iv` (the whole-program
+    // join of all call-site args); a non-specializable one contributes ⊤ (its
+    // params can never be raw — its full caller set is invisible), which keeps a
+    // reassigned param tagged too.
+    for p in 0..n_params {
+        if func.locals[p].ty == SemTy::Int {
+            let entry = if specializable {
+                entry_iv.get(p).copied().unwrap_or(Interval::Top)
+            } else {
+                Interval::Top
+            };
+            writers.entry(p).or_default().push(entry);
+        }
+    }
+
+    // A local (param or not) is `Raw(I64)`-eligible iff it is an `int` slot with
+    // at least one writer and every writer's interval is in-bound.
     let local_eligible: Vec<bool> = (0..func.locals.len())
         .map(|lid| {
             func.locals[lid].ty == SemTy::Int
-                && lid >= n_params
                 && writers
                     .get(&lid)
                     .is_some_and(|ws| !ws.is_empty() && ws.iter().all(|iv| iv.eligible()))
@@ -926,6 +1214,12 @@ fn apply_flags(
     for idx in flagged {
         func.exprs[idx].raw_int_ok = true;
     }
+
+    // Return half: a specializable `int`-returning function whose every return
+    // value provably stays in-bound returns `Raw(I64)`. The signature/`Call.dst`
+    // repr follow this flag in lockstep (lowering). Dunders are address-taken
+    // (in the `ClassTable`) → not specializable, so this never fires for them.
+    func.ret_raw_int = specializable && func.ret_ty == SemTy::Int && ret_iv.eligible();
 }
 
 /// Whether `idx` may be supplied to lowering as a `Raw(I64)` operand, recording

@@ -1721,4 +1721,84 @@ mod tests {
             Err(VerifyError::ReprMismatch { .. })
         ));
     }
+
+    /// An interprocedural raw-int callee `(Raw(I64)) -> Raw(I64)` — the shape the
+    /// whole-program interval pass produces for a specializable bounded-int
+    /// function (PLAN backlog #7, Part A).
+    fn raw_i64_callee() -> MirFunction {
+        MirFunction {
+            name: interned("callee"),
+            file: interned_file(),
+            params: vec![Repr::Raw(RawKind::I64)],
+            ret: Repr::Raw(RawKind::I64),
+            locals: vec![LocalDecl {
+                repr: Repr::Raw(RawKind::I64),
+            }],
+            blocks: vec![MirBlock {
+                insts: vec![],
+                term: MirTerminator::Return(Some(Operand::Local(LocalId::new(0)))),
+                handler: None,
+            }],
+            entry: BlockId::new(0),
+        }
+    }
+
+    #[test]
+    fn accepts_raw_int_call_pair() {
+        // Caller (fn 1) passes a Raw(I64) local into the Raw(I64) param and reads
+        // the Raw(I64) result into a Raw(I64) dst — `Call.arg` ↔ `callee.params`
+        // and `Call.dst` ↔ `callee.ret` both agree.
+        let caller = single_block(
+            vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)],
+            vec![MirInst::Call {
+                dst: Some(LocalId::new(1)),
+                func: pyaot_utils::FuncId::new(0),
+                args: vec![Operand::Local(LocalId::new(0))],
+            }],
+            MirTerminator::Return(None),
+        );
+        let funcs = vec![raw_i64_callee(), caller];
+        assert_eq!(verify(&funcs[0], &funcs), Ok(()));
+        assert_eq!(verify(&funcs[1], &funcs), Ok(()));
+    }
+
+    #[test]
+    fn rejects_tagged_arg_into_raw_int_param() {
+        // A Tagged arg into a Raw(I64) param is a `Call.arg` ↔ `callee.params`
+        // mismatch — the verifier catches a desync of the three repr sources.
+        let caller = single_block(
+            vec![Repr::Tagged, Repr::Raw(RawKind::I64)],
+            vec![MirInst::Call {
+                dst: Some(LocalId::new(1)),
+                func: pyaot_utils::FuncId::new(0),
+                args: vec![Operand::Local(LocalId::new(0))],
+            }],
+            MirTerminator::Return(None),
+        );
+        let funcs = vec![raw_i64_callee(), caller];
+        assert!(matches!(
+            verify(&funcs[1], &funcs),
+            Err(VerifyError::ReprMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_tagged_dst_from_raw_int_return() {
+        // Reading a Raw(I64) return into a Tagged dst is a `Call.dst` ↔
+        // `callee.ret` mismatch.
+        let caller = single_block(
+            vec![Repr::Raw(RawKind::I64), Repr::Tagged],
+            vec![MirInst::Call {
+                dst: Some(LocalId::new(1)),
+                func: pyaot_utils::FuncId::new(0),
+                args: vec![Operand::Local(LocalId::new(0))],
+            }],
+            MirTerminator::Return(None),
+        );
+        let funcs = vec![raw_i64_callee(), caller];
+        assert!(matches!(
+            verify(&funcs[1], &funcs),
+            Err(VerifyError::ReprMismatch { .. })
+        ));
+    }
 }

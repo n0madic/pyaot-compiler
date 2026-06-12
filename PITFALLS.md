@@ -112,6 +112,30 @@ break. The breakage is silent (wrong number), the worst kind.
 `BigInt` (`Repr::Heap(HeapShape::BigInt)`) it promotes to on overflow. `Raw(I64)`
 is chosen only when a range proof guarantees no overflow.
 
+### A7. A benchmark gap that is correct to leave open (`bench_int_loop`)
+**Trap:** a hot integer loop (`bench_int_loop` — collatz `n = 3n+1` / a step
+counter, fib `a, b = b, a+b`) runs on the tagged baseline and reads ~2x slower
+than CPython. The pressure (PLAN backlog #7) is to *make it raw anyway*: either
+speculate `Raw(I64)` and deopt-to-bignum on overflow, or raise on overflow.
+**Why it bites:** both "fixes" reintroduce the deepest Part-A traps. A
+speculative raw-or-bignum value is precisely the representation-ambiguous
+"could be raw or pointer" type A1 exists to forbid — every downstream pass must
+re-derive which it is, and they disagree. A raise-on-overflow silently abandons
+Python's arbitrary-precision `int` (A6) — wrong-answer breakage on `2**100`,
+large factorials, hashes. The accumulators are genuinely **unbounded in any
+sound static interval domain**: `n = 3n+1` escapes every bound, and a `range`-
+free `while` accumulator has no literal cap to narrow against. The interval pass
+(`crates/typeck/src/intervals.rs`) *correctly refuses* them — that refusal is
+the feature working, not a missing optimization.
+**Avoided by:** leaving the gap open. This is the canonical example of a
+benchmark a disciplined compiler does **not** chase: the value is irreducible
+under Invariants 1/2/6, so the only closers are forbidden. The interprocedural
+raw-int proof (whole-program `intervals.rs`) closes everything that *is* sound to
+close — a function's params/return go `Raw(I64)` when a range proof holds across
+direct call edges (closing `bench_exc_hotpath`) — and stops exactly where the
+proof stops. When you feel the `int_loop` pressure, re-read this entry: the
+correct action is none.
+
 ---
 
 ## B. Concrete semantics / runtime gotchas

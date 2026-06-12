@@ -70,10 +70,21 @@ pub fn lower(
         .iter()
         .enumerate()
         .map(|(i, f)| FnSig {
-            params: f.params.iter().map(|p| repr_of(&p.ty)).collect(),
+            // Param repr derives from the param-LOCAL's `local_repr`, not
+            // `repr_of(p.ty)`: a param proven raw-int by typeck's interprocedural
+            // interval pass (`HirLocal::raw_int_ok`) takes `Raw(I64)`. This MUST
+            // match the param-local table (`FnLower::new`) and the `MirFunction
+            // .params` the callee declares — deriving all three from the same
+            // `local_repr` keeps them in lockstep so the verifier never sees a
+            // `Call.arg` ↔ `callee.params` mismatch (the ABI = f(Repr) seam).
+            params: (0..f.params.len()).map(|p| local_repr(&f.locals[p])).collect(),
             defaults: f.params.iter().map(|p| p.default.clone()).collect(),
             ret: if dunder_funcs.contains(&FuncId::new(i as u32)) {
                 Repr::Tagged
+            } else if f.ret_raw_int && f.ret_ty == SemTy::Int {
+                // Proven raw-int return (interprocedural interval pass): the
+                // signature returns an unboxed i64 and `Call.dst` follows suit.
+                Repr::Raw(RawKind::I64)
             } else {
                 repr_of(&f.ret_ty)
             },
@@ -288,7 +299,15 @@ impl<'a> FnLower<'a> {
             self.seal(term);
         }
 
-        let params = self.func.params.iter().map(|p| repr_of(&p.ty)).collect();
+        // The declared param reprs are exactly the param-local reprs (MIR locals
+        // 0..n_params mirror the params, computed once in `FnLower::new` via
+        // `local_repr`). Reading them back here — instead of recomputing from
+        // `repr_of(p.ty)` — guarantees the function signature, the entry-param
+        // binding in codegen, and the caller-side `sigs` table all agree on a
+        // raw-int param's `Raw(I64)` repr.
+        let params = (0..self.func.params.len())
+            .map(|i| self.locals[i].repr.clone())
+            .collect();
         Ok(MirFunction {
             name: self.func.name,
             file: self.func.file,

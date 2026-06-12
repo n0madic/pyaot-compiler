@@ -20,6 +20,22 @@ unsafe fn str_obj_to_string(str_obj: *mut Obj) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// True iff the string is pure ASCII, read from the cached `char_len` (item #5's
+/// `char_len == len ⟺ ASCII` invariant — no separate is-ASCII bit, no re-walk).
+/// ASCII case mapping is byte-local and identical to the Unicode mapping, so a
+/// byte-wise pass over `data` is semantically equivalent to the `chars()` path
+/// while avoiding the UTF-8 decode + char iteration + intermediate `String`.
+unsafe fn is_ascii_str(str_obj: *mut Obj) -> bool {
+    let src = str_obj as *mut StrObj;
+    (*src).char_len == (*src).len
+}
+
+/// Borrow a StrObj's raw bytes (the same slice `str_obj_to_string` decodes).
+unsafe fn str_bytes<'a>(str_obj: *mut Obj) -> &'a [u8] {
+    let src = str_obj as *mut StrObj;
+    std::slice::from_raw_parts((*src).data.as_ptr(), (*src).len)
+}
+
 /// True iff `c` is a cased character (approximates CPython's Lu/Ll/Lt check).
 fn is_cased(c: char) -> bool {
     c.is_lowercase() || c.is_uppercase()
@@ -33,6 +49,10 @@ pub fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_upper");
+        if is_ascii_str(str_obj) {
+            let bytes = str_bytes(str_obj).to_ascii_uppercase();
+            return rt_make_str(bytes.as_ptr(), bytes.len());
+        }
         let result: String = str_obj_to_string(str_obj)
             .chars()
             .flat_map(|c| c.to_uppercase())
@@ -54,6 +74,10 @@ pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_lower");
+        if is_ascii_str(str_obj) {
+            let bytes = str_bytes(str_obj).to_ascii_lowercase();
+            return rt_make_str(bytes.as_ptr(), bytes.len());
+        }
         let result: String = str_obj_to_string(str_obj)
             .chars()
             .flat_map(|c| c.to_lowercase())
@@ -77,6 +101,22 @@ pub fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_title");
+        if is_ascii_str(str_obj) {
+            // Byte-wise title-casing: a letter starting a word goes upper, the
+            // rest of the word lower. `is_ascii_alphabetic` is the ASCII analogue
+            // of `is_cased` (case-converting a letter keeps it a letter).
+            let mut out = str_bytes(str_obj).to_vec();
+            let mut prev_cased = false;
+            for b in out.iter_mut() {
+                if prev_cased {
+                    b.make_ascii_lowercase();
+                } else {
+                    b.make_ascii_uppercase();
+                }
+                prev_cased = b.is_ascii_alphabetic();
+            }
+            return rt_make_str(out.as_ptr(), out.len());
+        }
         let mut result = String::new();
         let mut prev_cased = false;
         for c in str_obj_to_string(str_obj).chars() {
@@ -104,6 +144,16 @@ pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_capitalize");
+        if is_ascii_str(str_obj) {
+            let mut out = str_bytes(str_obj).to_vec();
+            if let Some(first) = out.first_mut() {
+                first.make_ascii_uppercase();
+            }
+            for b in out.iter_mut().skip(1) {
+                b.make_ascii_lowercase();
+            }
+            return rt_make_str(out.as_ptr(), out.len());
+        }
         let mut result = String::new();
         for (i, c) in str_obj_to_string(str_obj).chars().enumerate() {
             if i == 0 {
@@ -129,6 +179,17 @@ pub fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
     }
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_swapcase");
+        if is_ascii_str(str_obj) {
+            let mut out = str_bytes(str_obj).to_vec();
+            for b in out.iter_mut() {
+                if b.is_ascii_uppercase() {
+                    b.make_ascii_lowercase();
+                } else if b.is_ascii_lowercase() {
+                    b.make_ascii_uppercase();
+                }
+            }
+            return rt_make_str(out.as_ptr(), out.len());
+        }
         let mut result = String::new();
         for c in str_obj_to_string(str_obj).chars() {
             if c.is_uppercase() {
