@@ -2,8 +2,8 @@
 
 use super::dunder_dispatch::{
     either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_FLOORDIV,
-    FNV_INVERT, FNV_MOD, FNV_MUL, FNV_NEG, FNV_POS, FNV_POW, FNV_RADD, FNV_RFLOORDIV, FNV_RMOD,
-    FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB, FNV_TRUEDIV,
+    FNV_INVERT, FNV_MATMUL, FNV_MOD, FNV_MUL, FNV_NEG, FNV_POS, FNV_POW, FNV_RADD, FNV_RFLOORDIV,
+    FNV_RMATMUL, FNV_RMOD, FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB, FNV_TRUEDIV,
 };
 use crate::exceptions::ExceptionType;
 use crate::object::{Obj, TypeTagKind};
@@ -290,6 +290,30 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[export_name = "rt_obj_mul"]
 pub extern "C" fn rt_obj_mul_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_mul(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// Matrix multiply `a @ b` (PEP 465). There is no built-in numeric `@`, so this
+/// only dispatches the user `__matmul__` / `__rmatmul__` dunder; any other operand
+/// pair is a `TypeError`, matching CPython.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_matmul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_MATMUL, FNV_RMATMUL) {
+                return result;
+            }
+        }
+        raise_exc!(
+            ExceptionType::TypeError,
+            "unsupported operand type(s) for @: '{}' and '{}'",
+            super::comparison::type_name(tag_of(Value(a as u64), a)),
+            super::comparison::type_name(tag_of(Value(b as u64), b))
+        );
+    }
+}
+#[export_name = "rt_obj_matmul"]
+pub extern "C" fn rt_obj_matmul_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_matmul(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

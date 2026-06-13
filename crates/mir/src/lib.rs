@@ -572,7 +572,11 @@ impl MirInst {
                     | BinOp::BitAnd
                     | BinOp::BitOr
                     | BinOp::BitXor => false,
-                    BinOp::Div
+                    // `@` dispatches a user dunder (can raise / run arbitrary code);
+                    // it is always Tagged, so the `non_raw` check above already
+                    // returns true, but spell it out for exhaustiveness.
+                    BinOp::MatMul
+                    | BinOp::Div
                     | BinOp::FloorDiv
                     | BinOp::Mod
                     | BinOp::Pow
@@ -973,6 +977,7 @@ pub enum BinOp {
     Add,
     Sub,
     Mul,
+    MatMul,
     Div,
     FloorDiv,
     Mod,

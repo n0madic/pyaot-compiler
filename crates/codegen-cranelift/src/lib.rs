@@ -74,6 +74,7 @@ struct RuntimeFns {
     obj_add: FuncId,
     obj_sub: FuncId,
     obj_mul: FuncId,
+    obj_matmul: FuncId,
     obj_div: FuncId,
     obj_floordiv: FuncId,
     obj_mod: FuncId,
@@ -286,6 +287,7 @@ impl RuntimeFns {
             obj_add: d("rt_obj_add", &[ti, ti], &[ti])?,
             obj_sub: d("rt_obj_sub", &[ti, ti], &[ti])?,
             obj_mul: d("rt_obj_mul", &[ti, ti], &[ti])?,
+            obj_matmul: d("rt_obj_matmul", &[ti, ti], &[ti])?,
             obj_div: d("rt_obj_div", &[ti, ti], &[ti])?,
             obj_floordiv: d("rt_obj_floordiv", &[ti, ti], &[ti])?,
             obj_mod: d("rt_obj_mod", &[ti, ti], &[ti])?,
@@ -2399,6 +2401,9 @@ impl FnGen<'_, '_> {
             (_, BinOp::Add) => self.call(self.rt.obj_add, &[a, b]).unwrap(),
             (_, BinOp::Sub) => self.call(self.rt.obj_sub, &[a, b]).unwrap(),
             (_, BinOp::Mul) => self.call(self.rt.obj_mul, &[a, b]).unwrap(),
+            // `@` (PEP 465) is always Tagged → the runtime dispatches the
+            // `__matmul__`/`__rmatmul__` dunder (no built-in numeric `@`).
+            (_, BinOp::MatMul) => self.call(self.rt.obj_matmul, &[a, b]).unwrap(),
             (_, BinOp::Div) => self.call(self.rt.obj_div, &[a, b]).unwrap(),
             (_, BinOp::FloorDiv) => self.call(self.rt.obj_floordiv, &[a, b]).unwrap(),
             (_, BinOp::Mod) => self.call(self.rt.obj_mod, &[a, b]).unwrap(),

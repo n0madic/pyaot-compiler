@@ -2331,7 +2331,7 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_augassign(&mut self, a: &rustpython_parser::ast::StmtAugAssign) -> Result<()> {
         let span = to_span(a.range());
-        let op = binop_from_ast(&a.op, span)?;
+        let op = binop_from_ast(&a.op);
         match a.target.as_ref() {
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());
@@ -5668,7 +5668,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_binop(&mut self, b: &ExprBinOp, span: Span) -> Result<Idx<HirExpr>> {
-        let op = binop_from_ast(&b.op, span)?;
+        let op = binop_from_ast(&b.op);
         let l = self.lower_expr(b.left.as_ref())?;
         let r = self.lower_expr(b.right.as_ref())?;
         Ok(self.alloc(HirExprKind::BinOp { op, l, r }, SemTy::Dyn, span))
@@ -8378,8 +8378,8 @@ fn literal_int(e: &Expr) -> Option<i64> {
     }
 }
 
-fn binop_from_ast(op: &PyOperator, span: Span) -> Result<BinOp> {
-    Ok(match op {
+fn binop_from_ast(op: &PyOperator) -> BinOp {
+    match op {
         PyOperator::Add => BinOp::Add,
         PyOperator::Sub => BinOp::Sub,
         PyOperator::Mult => BinOp::Mul,
@@ -8392,10 +8392,10 @@ fn binop_from_ast(op: &PyOperator, span: Span) -> Result<BinOp> {
         PyOperator::BitOr => BinOp::BitOr,
         PyOperator::BitXor => BinOp::BitXor,
         PyOperator::BitAnd => BinOp::BitAnd,
-        PyOperator::MatMult => {
-            return Err(parse_error("matrix multiply (@) is out of scope", span))
-        }
-    })
+        // `a @ b` (PEP 465): no built-in numeric `@`, so it dispatches the
+        // `__matmul__`/`__rmatmul__` dunder at runtime (like `+`/`*`).
+        PyOperator::MatMult => BinOp::MatMul,
+    }
 }
 
 /// Map a type annotation to a `SemTy` (primitives and built-in containers drive

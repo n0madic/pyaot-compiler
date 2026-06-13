@@ -423,6 +423,15 @@ const PHASE_CORPUS: &[&str] = &[
     // in if/while(re-eval)/function/comprehension(leak)/ternary/nested/statement +
     // module-global promotion.
     "p26_walrus.py",
+    // Matrix-multiply `@` / `__matmul__` (PEP 465, §2). No built-in numeric `@`, so
+    // `a @ b` lowers to `BinOp::MatMul` → tagged `rt_obj_matmul`, which dispatches the
+    // user `__matmul__`/`__rmatmul__` dunder (or raises TypeError) — the same
+    // runtime-dunder path as `+`/`*`. typeck types the result as `__matmul__`'s
+    // declared return (so attr access on a matrix product resolves). Probes a scalar
+    // dot-product, an instance-returning matmul + chained/attr-access, `__rmatmul__`
+    // (int @ instance), `@=` (falls back to `__matmul__`), matmul over a loop, and the
+    // TypeError for int@int / no-dunder objects. (Runtime contract: new rt_obj_matmul.)
+    "p27_matmul.py",
     // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
     // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
     // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally

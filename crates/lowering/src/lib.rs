@@ -4836,6 +4836,7 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::Add => MBinOp::Add,
         HBinOp::Sub => MBinOp::Sub,
         HBinOp::Mul => MBinOp::Mul,
+        HBinOp::MatMul => MBinOp::MatMul,
         HBinOp::Div => MBinOp::Div,
         HBinOp::FloorDiv => MBinOp::FloorDiv,
         HBinOp::Mod => MBinOp::Mod,

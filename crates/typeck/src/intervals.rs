@@ -551,8 +551,10 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
         BinOp::Mul => lv.mul(rv),
         BinOp::Mod => lv.modulo(rv),
         BinOp::FloorDiv => lv.floordiv(rv),
-        // True `/` is float; `**` and bitwise/shift are bignum-possible.
+        // True `/` is float; `**` and bitwise/shift are bignum-possible; `@` is a
+        // class dunder (never a raw-int interval).
         BinOp::Div
+        | BinOp::MatMul
         | BinOp::Pow
         | BinOp::BitAnd
         | BinOp::BitOr

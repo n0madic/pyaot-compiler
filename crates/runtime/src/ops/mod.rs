@@ -9,8 +9,8 @@ mod printing;
 
 pub use arithmetic::{
     rt_add_float, rt_add_int, rt_div_float, rt_div_int, rt_mod_int, rt_mul_float, rt_mul_int,
-    rt_obj_add, rt_obj_div, rt_obj_floordiv, rt_obj_mod, rt_obj_mul, rt_obj_pow, rt_obj_sub,
-    rt_sub_float, rt_sub_int, rt_true_div_int,
+    rt_obj_add, rt_obj_div, rt_obj_floordiv, rt_obj_matmul, rt_obj_mod, rt_obj_mul, rt_obj_pow,
+    rt_obj_sub, rt_sub_float, rt_sub_int, rt_true_div_int,
 };
 
 pub use dunder_dispatch::{

@@ -221,7 +221,17 @@ These few gaps block the most files — close them before the long tail.
   bool unchanged; now promotes to int like `rt_obj_neg`) rode along. Gated by
   `corpus/p26_walrus.py`; **`test_control_flow.py` is now LIFTED** (walrus was its
   sole remaining blocker).
-- **Matrix-multiply `@` / `__matmul__`**.
+- ~~**Matrix-multiply `@` / `__matmul__`**~~ — DONE: no built-in numeric `@`, so
+  `a @ b` lowers to a new `BinOp::MatMul` → tagged `rt_obj_matmul`, which dispatches
+  the user `__matmul__`/`__rmatmul__` dunder (or raises `TypeError`) — the SAME
+  runtime-dunder path as `+`/`*` (`rt_obj_add`/`rt_obj_mul`), no per-op frontend
+  dispatch. typeck types the result as `__matmul__`'s declared return (via
+  `class_dunder_ret`), so attribute access on a matrix product resolves; non-class
+  operands type to `Dyn`. `@=` falls back to `__matmul__` (the convention `+=` uses
+  for `__add__`; in-place `__imatmul__` is the same pre-existing gap as `__iadd__`).
+  Threaded through both `BinOp` enums (hir/mir), `map_binop`, codegen dispatch +
+  `rt_obj_matmul` decl, the interval/may-raise/constfold matches, and `FNV_MATMUL`/
+  `FNV_RMATMUL`. Gated by `corpus/p27_matmul.py`. This was §2's last operator gap.
 
 ### 3. Statements
 - ~~**`del`**~~ — DONE: `del d[k]`/`del li[i]`/a class `__delitem__` are runtime

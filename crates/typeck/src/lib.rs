@@ -2422,6 +2422,7 @@ impl<'a> Sweeper<'a> {
             BinOp::Add => "__add__",
             BinOp::Sub => "__sub__",
             BinOp::Mul => "__mul__",
+            BinOp::MatMul => "__matmul__",
             BinOp::Div => "__truediv__",
             BinOp::FloorDiv => "__floordiv__",
             BinOp::Mod => "__mod__",
@@ -2456,6 +2457,16 @@ impl<'a> Sweeper<'a> {
             // correctly without a special case.
             BinOp::Add | BinOp::Sub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
                 l.join(&r, self.classes)
+            }
+            // `@` has no built-in numeric meaning — only the `__matmul__` dunder
+            // (handled above). On any non-class pair it is a runtime `TypeError`,
+            // so statically it is gradual `Dyn` (Never propagates for soundness).
+            BinOp::MatMul => {
+                if l == SemTy::Never || r == SemTy::Never {
+                    SemTy::Never
+                } else {
+                    SemTy::Dyn
+                }
             }
             // Python 3 true division always yields `float` for numeric operands
             // (`7 / 2 == 3.5`).
