@@ -14,7 +14,8 @@ use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
     ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
-    ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt,
+    ExprNamedExpr, ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged,
+    Stmt,
     StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
@@ -4262,11 +4263,34 @@ impl<'a> FnLowerer<'a> {
             // desugars to `str(expr)` and the parts concatenate left-to-right.
             // Format specs / conversions (`{x:.4f}`, `{x!r}`) are Phase 8E.
             Expr::JoinedStr(j) => self.lower_joined_str(j, span),
+            // Walrus / named expression `(target := value)` (PEP 572, §2).
+            Expr::NamedExpr(n) => self.lower_named_expr(n, span),
             other => Err(parse_error(
                 "unsupported expression for this milestone",
                 to_span(other.range()),
             )),
         }
+    }
+
+    /// Walrus / named expression `(target := value)` (PEP 572, §2): evaluate
+    /// `value` ONCE, bind it to `target` (a bare `Name` per the grammar) in the
+    /// containing scope, and evaluate to the assigned value. The binding routes
+    /// through the ordinary write/read place machinery (a local, a captured cell,
+    /// or a promoted module-global slot — `resolve_write_place`), so a name bound
+    /// in an `if`/`while` test is visible after the statement, exactly as CPython.
+    /// The write stmt is emitted before the enclosing expression reads the slot,
+    /// so the assignment and the expression's value coincide (single evaluation).
+    fn lower_named_expr(&mut self, n: &ExprNamedExpr, span: Span) -> Result<Idx<HirExpr>> {
+        let Expr::Name(target) = n.target.as_ref() else {
+            // PEP 572 restricts the target to an identifier; the parser enforces
+            // this, but guard defensively rather than mis-lower a non-name.
+            return Err(parse_error("walrus target must be a name", span));
+        };
+        let value = self.lower_expr(n.value.as_ref())?;
+        let name = self.intern(target.id.as_str());
+        let place = self.resolve_write_place(name, SemTy::Dyn);
+        self.write_place(place, value);
+        Ok(self.read_place(place, span))
     }
 
     /// Lower a list of expressions (literal elements).

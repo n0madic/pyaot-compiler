@@ -414,13 +414,25 @@ const PHASE_CORPUS: &[&str] = &[
     // of every sequence kind + numeric/str regression guards, and the
     // mismatched-type (`list + tuple`) TypeError. (Runtime contract change.)
     "p25_tuple_cmp_seq_concat.py",
+    // Walrus / named expression `:=` (PEP 572, §2). `lower_named_expr` evaluates the
+    // value once, binds the (bare-name) target in the containing scope via the
+    // ordinary write/read place machinery (local / cell / promoted global), and
+    // yields the assigned value — so a name bound in an `if`/`while`/comprehension
+    // test is visible afterward. Also regression-guards `rt_obj_pos`: unary `+` on a
+    // bool now yields an int (`+True == 1`), mirroring `-True == -1`. Probes walrus
+    // in if/while(re-eval)/function/comprehension(leak)/ternary/nested/statement +
+    // module-global promotion.
+    "p26_walrus.py",
     // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
     // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
     // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally
     // lexicographic `min`/`max` over tuple-yielding gen-exprs (p25). Now byte-matches
-    // CPython end-to-end. (`test_control_flow.py` stays OFF — still needs walrus `:=`,
-    // §2.)
+    // CPython end-to-end.
     "test_iteration.py",
+    // Consolidated control-flow suite (LIFTED): its sole remaining blocker was the
+    // walrus operator `:=` (§2, closed by p26); a `+True`-yields-int divergence in
+    // the same file rode along the `rt_obj_pos` fix. Byte-matches CPython end-to-end.
+    "test_control_flow.py",
     // Consolidated list/tuple suite (lifted): tuple.index/count was its first §9
     // blocker (closed by p21's ContainerMethod path) and `list.remove()` its last
     // (now wired → `rt_list_remove`, ValueError on miss). Byte-matches CPython

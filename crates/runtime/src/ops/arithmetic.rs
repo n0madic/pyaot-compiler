@@ -534,7 +534,13 @@ pub fn rt_obj_pos(a: *mut Obj) -> *mut Obj {
         }
         let tag = classify_unary(a);
         match tag {
-            TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::Float | TypeTagKind::BigInt => a,
+            // CPython: unary `+` on a bool yields an int (`+True == 1`,
+            // `+False == 0`) — mirror `rt_obj_neg`, which already promotes via the
+            // numeric tower. Int / Float / BigInt are returned unchanged (`+x == x`).
+            TypeTagKind::Bool => {
+                Value::from_int(Value(a as u64).unwrap_bool() as i64).0 as *mut Obj
+            }
+            TypeTagKind::Int | TypeTagKind::Float | TypeTagKind::BigInt => a,
             other => raise_exc!(
                 ExceptionType::TypeError,
                 "bad operand type for unary +: '{}'",

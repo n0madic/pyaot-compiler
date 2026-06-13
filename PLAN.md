@@ -210,7 +210,17 @@ These few gaps block the most files — close them before the long tail.
   would compare two distinct StrObjs by pointer — a documented out-of-scope
   divergence, NOT a missing feature) and chained `a is b is c` (rejected via
   `map_cmp`, as before).
-- **Walrus `:=`** — in `if`/`while`/nested expressions, everywhere.
+- ~~**Walrus `:=`**~~ — DONE: `(target := value)` (PEP 572) lowers in the frontend
+  (`lower_named_expr`) — evaluate `value` once, bind the bare-name `target` in the
+  CONTAINING scope through the ordinary write/read place machinery (local / captured
+  cell / promoted module-global via `resolve_write_place`), and yield the assigned
+  value. So a name bound in an `if`/`while`/comprehension test is visible after the
+  statement, exactly as CPython (the comprehension walrus leaks to the enclosing
+  scope; `freevars` already recognized `NamedExpr` targets for closure capture). No
+  new HIR/typeck surface. A `+True`-yields-int divergence (`rt_obj_pos` returned the
+  bool unchanged; now promotes to int like `rt_obj_neg`) rode along. Gated by
+  `corpus/p26_walrus.py`; **`test_control_flow.py` is now LIFTED** (walrus was its
+  sole remaining blocker).
 - **Matrix-multiply `@` / `__matmul__`**.
 
 ### 3. Statements
