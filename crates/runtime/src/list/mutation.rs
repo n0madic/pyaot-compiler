@@ -184,40 +184,41 @@ pub extern "C" fn rt_list_insert_abi(list: Value, index: i64, value: Value) {
 
 /// Remove first occurrence of value from list (mutates list)
 /// Uses value equality for heap objects, raw equality for primitives.
-/// Returns: 1 if found and removed, 0 otherwise
+/// Raises `ValueError` if the value is not present (matches CPython
+/// `list.remove(x)`); returns 1 on success (the result is unused by the
+/// compiler, which treats `list.remove` as a `None`-returning mutation).
 pub fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
-    if list.is_null() {
-        return 0;
-    }
-
     unsafe {
+        if list.is_null() {
+            raise_exc!(ExceptionType::ValueError, "list.remove(x): x not in list");
+        }
+
         debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_remove");
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
         let data = (*list_obj).data;
 
-        if data.is_null() {
-            return 0;
-        }
-
-        // After F.7c slots are tagged Values; pass bits directly to eq_hashable_obj.
-        // The search `value` is also a tagged Value (boxed by emit_value_slot).
-        for i in 0..len {
-            let stored = *data.add(i);
-            let elem = stored.0 as *mut Obj;
-            let found = crate::hash_table_utils::eq_hashable_obj(elem, value);
-            if found {
-                // Shift remaining elements left
-                for j in i..(len - 1) {
-                    *data.add(j) = *data.add(j + 1);
+        if !data.is_null() {
+            // After F.7c slots are tagged Values; pass bits directly to
+            // eq_hashable_obj. The search `value` is also a tagged Value.
+            for i in 0..len {
+                let stored = *data.add(i);
+                let elem = stored.0 as *mut Obj;
+                let found = crate::hash_table_utils::eq_hashable_obj(elem, value);
+                if found {
+                    // Shift remaining elements left
+                    for j in i..(len - 1) {
+                        *data.add(j) = *data.add(j + 1);
+                    }
+                    *data.add(len - 1) = Value(0);
+                    (*list_obj).len = len - 1;
+                    return 1;
                 }
-                *data.add(len - 1) = Value(0);
-                (*list_obj).len = len - 1;
-                return 1;
             }
         }
 
-        0
+        // Not found — CPython raises ValueError.
+        raise_exc!(ExceptionType::ValueError, "list.remove(x): x not in list");
     }
 }
 #[export_name = "rt_list_remove"]

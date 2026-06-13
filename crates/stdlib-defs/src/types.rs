@@ -509,8 +509,10 @@ impl TypeSpec {
 // Static type references for nested types
 pub static TYPE_STR: TypeSpec = TypeSpec::Str;
 pub static TYPE_INT: TypeSpec = TypeSpec::Int;
+pub static TYPE_BYTES: TypeSpec = TypeSpec::Bytes;
 pub static TYPE_ANY: TypeSpec = TypeSpec::Any;
 pub static TYPE_LIST_STR: TypeSpec = TypeSpec::List(&TYPE_STR);
+pub static TYPE_LIST_BYTES: TypeSpec = TypeSpec::List(&TYPE_BYTES);
 pub static TYPE_OPTIONAL_STR: TypeSpec = TypeSpec::Optional(&TYPE_STR);
 pub static TYPE_OPTIONAL_BYTES: TypeSpec = TypeSpec::Optional(&TypeSpec::Bytes);
 pub static TYPE_DICT_STR_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_STR);

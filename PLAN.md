@@ -243,15 +243,14 @@ These few gaps block the most files — close them before the long tail.
   types arbitrary index depth). Gated by `corpus/p14_nested_unpack.py`. Inherited
   limitation (same as flat unpack): an over-long runtime/inner sequence is NOT
   statically rejected (CPython's "too many values to unpack" not raised). The
-  aspirational `test_collections_list_tuple.py` / `test_iteration.py` stay off the
-  gate on UNRELATED gaps — `test_iteration.py` on the next bullet (bare
-  attr/subscript `for`-targets); `test_collections_list_tuple.py` now reaches §9
-  `tuple.index()`/`.count()` (its earlier blocker — a tuple SLICE result, typed
+  aspirational `test_iteration.py` stays off the gate on an UNRELATED gap (the
+  next bullet — bare attr/subscript `for`-targets). `test_collections_list_tuple.py`
+  is now **LIFTED** (§9: its earlier blocker — a tuple SLICE result, typed
   variable-length `tuple[T, ...]` by `slice_ty`, assigned into an annotated
-  fixed-arity `tuple[T, …]` slot — is FIXED: the repr-contract check
-  (`check_reinterpret`) now admits a `tuple`→`tuple` store when element `Repr`s
-  match per index, since fixed/variable arity is one physical `TupleObj`; gated by
-  `corpus/p15_tuple_slice_slot.py`).
+  fixed-arity `tuple[T, …]` slot — was FIXED via the repr-contract check
+  (`check_reinterpret`) admitting a `tuple`→`tuple` store when element `Repr`s
+  match per index, `corpus/p15_tuple_slice_slot.py`; then `tuple.index`/`.count`
+  and finally `list.remove` closed the remaining blockers — see §9).
 - **Attribute / subscript as a `for` target** — `for obj.attr in …`, `for lst[i] in …`
   (`bind_for_target` only accepts a `Name` or a sequence pattern; a bare
   `Attribute`/`Subscript` target raises "unsupported for-loop target". This is what
@@ -309,7 +308,11 @@ These few gaps block the most files — close them before the long tail.
     - **Passing int/bool to a `float` PARAMETER** (free-fn / method / ctor / dunder). The method/ctor/dunder arg seams pass `(loc, repr)` without a per-arg `SemTy`, so `needs_check` can't be evaluated without threading types through. Kept rejecting to avoid an accept-then-SEGV.
 
 ### 9. Methods on builtin types
-- **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__`.
+- **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__` — **still
+  pending** (deliberately OUT of the bytes/tuple/set/dict batch): the runtime
+  formatters are raw-`i64` (`rt_int_bit_length`/`bit_count`), so a bignum-aware
+  check is needed before wiring (a tagged `int` may be a heap `BigInt`, B16) —
+  the same hazard `bin`/`hex`/`oct` solved with TAGGED-`Value` runtime fns (§5).
 - **`str`**: ~~`split`, `rsplit`, `splitlines`, `replace`, `lstrip`/`rstrip`,
   `removeprefix`/`removesuffix`, `expandtabs`, `partition`/`rpartition`,
   `rindex`, `encode`, predicates `isdigit`/`isalpha`/`isalnum`/`isspace`/
@@ -325,10 +328,60 @@ These few gaps block the most files — close them before the long tail.
   (`is_ascii_*` — `"café".isalpha()` → `False` here vs CPython `True`). Still
   pending: `format` (= §13 mini-language). (`upper`/`lower`/`strip`/`find`/
   `title`/`center`/`zfill`/`join`/… already worked.)
-- **`bytes`**: `startswith`, `endswith`, `find`, `rfind`, `count`, `replace`, `split`/`rsplit`, `strip`/`lstrip`/`rstrip`, `upper`/`lower`, `join` — only `.decode()` is supported today.
-- **`tuple`**: `index`, `count`.
-- **`dict`**: `popitem`, `fromkeys`.
-- **`set`**: `issubset`, `issuperset`, `isdisjoint`, `intersection_update`, `difference_update`, `symmetric_difference_update`. (`union`/`intersection`/`|&-^` already work.)
+- **`bytes`**: ~~`startswith`, `endswith`, `find`, `rfind`, `count`, `replace`,
+  `split`/`rsplit`, `strip`/`lstrip`/`rstrip`, `upper`/`lower`, `join`~~ — DONE
+  (§9 runtime-ready batch: `corpus/p20_bytes_methods.py`). A bytes receiver
+  routes to `lower_bytes_method`, the **exact sibling of `lower_str_method`** — a
+  declarative `BytesPlan` table → the shared `emit_seq_method` (extracted from
+  `lower_str_method` in this batch; no codegen edit — the runtime fn resolves by
+  symbol). `maxsplit` rides a RAW i64 slot (B16, accepted by the `new`-default
+  Raw slot — no descriptor retype, unlike str). `find`/`rfind` use dedicated
+  2-arg runtime fns (no op_tag, unlike str's shared `rt_str_search`); the split
+  family returns `list[bytes]`. **Scope limits (unprobed):** positional-only;
+  `replace` has no `count`; the strip family takes **no `chars`** (whitespace
+  only — the runtime is `ptr_unary`); `find`/`rfind` take no `start`/`end`;
+  `decode` ignores its encoding (always UTF-8); `upper`/`lower` are ASCII-only
+  (non-ASCII bytes pass through, matching CPython). The `in` operator on
+  bytes-in-bytes (`b"a" in b"banana"`, subsequence membership) is **now wired**
+  too — a runtime fix adding a bytes-needle branch to `rt_bytes_contains_value`
+  (empty needle ⇒ True, like CPython); covered by `p20`.
+- **`tuple`**: ~~`index`, `count`~~ — DONE (`corpus/p21_container_methods.py`).
+  The `ContainerMethod::Index`/`Count` names now dispatch on a tuple receiver via
+  the new `MethodRecv::Tuple` → `ContainerOp::TupleIndexOf`/`TupleCount`
+  (value-comparing `rt_tuple_index`/`count`, B13; `index` miss → `ValueError`).
+- **`dict`**: ~~`popitem`~~ — DONE (`corpus/p21_container_methods.py`):
+  `ContainerOp::DictPopitem` → `rt_dict_popitem`, a fresh `(k, v)` 2-tuple (LIFO,
+  matches CPython 3.7+; empty → `KeyError`). The tuple is a `Value`/`Tagged`
+  GC-rootable result (B5), typed `Dyn`, so `k, v = d.popitem()` unpacks through
+  the gradual seam (like `str.partition`). **`fromkeys` still pending** —
+  deliberately OUT: a **classmethod** (`dict.fromkeys(keys, v)`), and even its
+  instance form `d.fromkeys(keys, v)` does NOT fit the recv-first `MethodRecv`
+  path — `rt_dict_fromkeys(keys, value)` **drops the receiver** entirely (the
+  dict's contents are irrelevant), so it needs a distinct dispatch, not the
+  uniform `(recv, args…)` ContainerOp signature.
+- **`set`**: ~~`issubset`, `issuperset`, `isdisjoint`, `intersection_update`,
+  `difference_update`, `symmetric_difference_update`~~ — DONE
+  (`corpus/p21_container_methods.py`): comparisons → `ContainerOp::SetIsSubset`/
+  `SetIsSuperset`/`SetIsDisjoint` (value-comparing `rt_set_*` → proven `Raw(I8)`
+  bool, B13); the three `*_update` → `ContainerOp::Set{Intersection,Difference,
+  SymmetricDifference}Update` (mutate in place via the void `rt_set_*_update`,
+  None result). The new-set `symmetric_difference` (non-`update`) is **also
+  wired** now → `ContainerOp::SetSymmetricDifference` → `rt_set_symmetric_
+  difference` (Heap result). (`union`/`intersection`/`difference`/`|&-^` already
+  worked.)
+- **`list.remove(x)`** (not a §9-listed bullet, but the last lift blocker) — wired
+  via `MethodRecv::List` → `ContainerOp::ListRemove` → `rt_list_remove`. Runtime
+  fix: `rt_list_remove` now **raises `ValueError` on a miss** (was a silent
+  no-op returning 0 — a CPython divergence); the i8 result is discarded (a
+  `None`-returning mutation). Covered by `p21` + the lift below.
+- **Lift status:** `test_collections_list_tuple.py` is **LIFTED** onto the gate —
+  tuple.index/count was its first §9 blocker and `list.remove()` its last, both
+  now closed; byte-matches CPython end-to-end.
+  `test_collections_dict_set_bytes.py` advanced past `set.symmetric_difference()`
+  (now wired) but is **NOT lifted** — it next hits `dict.fromkeys()` (the deferred
+  classmethod: `rt_dict_fromkeys(keys, value)` drops the receiver, so it does NOT
+  fit the recv-first `MethodRecv` path) and the `dict | / |=` merge operators
+  (operator-level, a distinct feature beyond "methods on builtin types").
 
 ### 10. `collections` module
 - **`Counter`** — `undefined symbol rt_make_counter` at link. The runtime fork *already has* `counter.rs` (`rt_make_counter_empty` / `rt_make_counter_from_iter` / `rt_counter_most_common`) — the frontend emits a symbol name that doesn't exist, so this is pure wiring, not runtime work. `.total()`, `.most_common()` likewise.

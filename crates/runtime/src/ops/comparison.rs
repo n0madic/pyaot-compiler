@@ -717,9 +717,17 @@ unsafe fn rt_tuple_contains_value(tuple: *mut Obj, value: *mut Obj) -> i8 {
     0
 }
 
-/// Check if bytes contains an integer value
+/// Check if bytes contains an integer value (`int in bytes`) OR a bytes
+/// subsequence (`bytes in bytes`, like CPython substring membership).
 pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -> i8 {
-    // value should be an integer — check the Value tag first.
+    // `sub in bytes` where `sub` is itself a bytes object → subsequence search.
+    if !value.is_null() {
+        let vv = Value(value as u64);
+        if vv.is_ptr() && (*value).type_tag() == TypeTagKind::Bytes {
+            return bytes_contains_subseq(bytes, value);
+        }
+    }
+    // Otherwise `value` should be an integer — check the Value tag first.
     let int_val: i64 = if value.is_null() {
         crate::raise_exc!(
             ExceptionType::TypeError,
@@ -769,6 +777,37 @@ pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -
         }
     }
 
+    0
+}
+
+/// Substring membership for `needle in haystack` (both bytes). Matches CPython:
+/// an empty needle is a subsequence of everything; a longer needle never is.
+unsafe fn bytes_contains_subseq(haystack: *mut Obj, needle: *mut Obj) -> i8 {
+    let h = haystack as *mut BytesObj;
+    let n = needle as *mut BytesObj;
+    let hlen = (*h).len;
+    let nlen = (*n).len;
+    if nlen == 0 {
+        return 1;
+    }
+    if nlen > hlen {
+        return 0;
+    }
+    let hdata = (*h).data.as_ptr();
+    let ndata = (*n).data.as_ptr();
+    // Naive O(hlen·nlen) scan — bytes membership is not a hot path.
+    for start in 0..=(hlen - nlen) {
+        let mut matched = true;
+        for j in 0..nlen {
+            if *hdata.add(start + j) != *ndata.add(j) {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return 1;
+        }
+    }
     0
 }
 

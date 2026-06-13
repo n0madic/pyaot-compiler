@@ -2107,9 +2107,20 @@ impl<'a> Sweeper<'a> {
                 _ => {}
             }
         }
-        // `bytes.decode([encoding])` → `str` (Phase 8D).
-        if matches!(recv, SemTy::Bytes) && self.interner.resolve(method_name) == "decode" {
-            return SemTy::Str;
+        // bytes-receiver methods routed through `rt_bytes_*` descriptors (§9, the
+        // exact sibling of the str arm above). Reprs agree with the lowering
+        // `BytesPlan` TypeSpec exactly.
+        if matches!(recv, SemTy::Bytes) {
+            match self.interner.resolve(method_name) {
+                "startswith" | "endswith" => return SemTy::Bool,
+                "find" | "rfind" | "count" => return SemTy::Int,
+                "replace" | "strip" | "lstrip" | "rstrip" | "upper" | "lower" | "join" => {
+                    return SemTy::Bytes
+                }
+                "split" | "rsplit" => return SemTy::list_of(SemTy::Bytes),
+                "decode" => return SemTy::Str,
+                _ => {}
+            }
         }
         // A stdlib runtime object's method (`m.group()`, Phase 8C): typed from
         // its `StdlibMethodDef` in the object-type registry.
@@ -2568,7 +2579,9 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
     // List receiver.
     if let Some(elem) = recv.list_elem() {
         return match method {
-            M::Append | M::Insert | M::Extend | M::Clear | M::Reverse | M::Sort => none,
+            M::Append | M::Insert | M::Extend | M::Remove | M::Clear | M::Reverse | M::Sort => {
+                none
+            }
             M::Pop => elem.clone(),
             M::Index | M::Count => SemTy::Int,
             M::Copy => recv.clone(),
@@ -2590,6 +2603,10 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
             M::Update | M::Clear => none,
             M::Copy => recv.clone(),
+            // `popitem` → a fresh `(key, value)` 2-tuple, typed `Dyn` (a gradual
+            // 2-tuple) so `k, v = d.popitem()` unpacks through the gradual seam
+            // — the same approach as `str.partition`.
+            M::Popitem => SemTy::Dyn,
             _ => SemTy::Dyn,
         };
     }
@@ -2597,7 +2614,19 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
     if recv.set_elem().is_some() {
         return match method {
             M::Add | M::Remove | M::Discard | M::Update | M::Clear => none,
-            M::Union | M::Intersection | M::Difference | M::Copy => recv.clone(),
+            M::Union | M::Intersection | M::Difference | M::SymmetricDifference | M::Copy => {
+                recv.clone()
+            }
+            M::IsSubset | M::IsSuperset | M::IsDisjoint => SemTy::Bool,
+            M::IntersectionUpdate | M::DifferenceUpdate | M::SymmetricDifferenceUpdate => none,
+            _ => SemTy::Dyn,
+        };
+    }
+    // Tuple receiver (fixed-arity `tuple[A, B]` or variable `tuple[T, ...]`):
+    // only the value-comparing queries `index`/`count` (§9) → `int`.
+    if recv.tuple_elems().is_some() || recv.tuple_var_elem().is_some() {
+        return match method {
+            M::Index | M::Count => SemTy::Int,
             _ => SemTy::Dyn,
         };
     }

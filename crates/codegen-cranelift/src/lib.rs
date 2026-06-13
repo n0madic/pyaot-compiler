@@ -179,6 +179,18 @@ struct RuntimeFns {
     set_difference: FuncId,
     set_copy: FuncId,
     set_clear: FuncId,
+    // ── builtin-type methods (§9) ──
+    tuple_index: FuncId,
+    tuple_count: FuncId,
+    set_issubset: FuncId,
+    set_issuperset: FuncId,
+    set_isdisjoint: FuncId,
+    set_intersection_update: FuncId,
+    set_difference_update: FuncId,
+    set_symmetric_difference_update: FuncId,
+    set_symmetric_difference: FuncId,
+    list_remove: FuncId,
+    dict_popitem: FuncId,
     // ── classes (Phase 5) ──
     make_instance: FuncId,
     instance_get_field: FuncId,
@@ -377,6 +389,27 @@ impl RuntimeFns {
             set_difference: d("rt_set_difference", &[ti, ti], &[ti])?,
             set_copy: d("rt_set_copy", &[ti], &[ti])?,
             set_clear: d("rt_set_clear", &[ti], &[])?,
+            // §9 builtin-type methods. tuple index/count → raw i64; set
+            // comparisons → i8; set *_update mutate in place (void); popitem
+            // returns a fresh 2-tuple Value.
+            tuple_index: d("rt_tuple_index", &[ti, ti], &[ti])?,
+            tuple_count: d("rt_tuple_count", &[ti, ti], &[ti])?,
+            set_issubset: d("rt_set_issubset", &[ti, ti], &[t8])?,
+            set_issuperset: d("rt_set_issuperset", &[ti, ti], &[t8])?,
+            set_isdisjoint: d("rt_set_isdisjoint", &[ti, ti], &[t8])?,
+            set_intersection_update: d("rt_set_intersection_update", &[ti, ti], &[])?,
+            set_difference_update: d("rt_set_difference_update", &[ti, ti], &[])?,
+            set_symmetric_difference_update: d(
+                "rt_set_symmetric_difference_update",
+                &[ti, ti],
+                &[],
+            )?,
+            // new-set symmetric difference (distinct from the *_update above);
+            // list.remove returns i8 (1 on success / ValueError on miss) — the
+            // result is discarded (a None-returning mutation).
+            set_symmetric_difference: d("rt_set_symmetric_difference", &[ti, ti], &[ti])?,
+            list_remove: d("rt_list_remove", &[ti, ti], &[t8])?,
+            dict_popitem: d("rt_dict_popitem", &[ti], &[ti])?,
             // Classes (Phase 5). `class_id` is a `u8` → `i8` at the ABI; instance
             // values + the qualname `StrObj` are tagged `Value` = i64.
             make_instance: d("rt_make_instance", &[t8, ti], &[ti])?,
@@ -2566,6 +2599,18 @@ impl FnGen<'_, '_> {
             ContainerOp::SetDifference => self.rt.set_difference,
             ContainerOp::SetCopy => self.rt.set_copy,
             ContainerOp::SetClear => self.rt.set_clear,
+            // §9 builtin-type methods.
+            ContainerOp::TupleIndexOf => self.rt.tuple_index,
+            ContainerOp::TupleCount => self.rt.tuple_count,
+            ContainerOp::SetIsSubset => self.rt.set_issubset,
+            ContainerOp::SetIsSuperset => self.rt.set_issuperset,
+            ContainerOp::SetIsDisjoint => self.rt.set_isdisjoint,
+            ContainerOp::SetIntersectionUpdate => self.rt.set_intersection_update,
+            ContainerOp::SetDifferenceUpdate => self.rt.set_difference_update,
+            ContainerOp::SetSymmetricDifferenceUpdate => self.rt.set_symmetric_difference_update,
+            ContainerOp::SetSymmetricDifference => self.rt.set_symmetric_difference,
+            ContainerOp::ListRemove => self.rt.list_remove,
+            ContainerOp::DictPopitem => self.rt.dict_popitem,
         };
         let res = self.call(fid, &vals);
         if let (Some(d), Some(v)) = (dst, res) {

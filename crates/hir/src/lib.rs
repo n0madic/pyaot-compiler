@@ -902,6 +902,12 @@ pub enum ContainerOp {
     ListCopy,
     ListReverse,
     ListSortMut,
+    /// `list.remove(x)` → `rt_list_remove`; removes the first value-equal element
+    /// (ValueError if absent), a `None`-returning mutation.
+    ListRemove,
+    // tuple (§9 — `tuple.index(x)` / `tuple.count(x)`, value-comparing, B13)
+    TupleIndexOf,
+    TupleCount,
     // dict
     DictGetDefault,
     DictKeys,
@@ -912,6 +918,9 @@ pub enum ContainerOp {
     DictUpdate,
     DictClear,
     DictCopy,
+    /// `dict.popitem()` → a fresh `(key, value)` 2-tuple (LIFO, KeyError if
+    /// empty); the tuple is a `Value`/`Tagged` GC-rootable result (B5).
+    DictPopitem,
     // set
     SetRemove,
     SetDiscard,
@@ -919,8 +928,19 @@ pub enum ContainerOp {
     SetUnion,
     SetIntersection,
     SetDifference,
+    /// `set.symmetric_difference(other)` → a fresh set of elements in exactly one
+    /// of the two (the new-set algebra, distinct from `*_update`).
+    SetSymmetricDifference,
     SetCopy,
     SetClear,
+    // set comparison (§9 — value-comparing `rt_set_*`, → bool, B13)
+    SetIsSubset,
+    SetIsSuperset,
+    SetIsDisjoint,
+    // set in-place update (§9 — mutate in place, no result)
+    SetIntersectionUpdate,
+    SetDifferenceUpdate,
+    SetSymmetricDifferenceUpdate,
 }
 
 /// A container method name as resolved by the frontend (which has the interner).
@@ -950,6 +970,14 @@ pub enum ContainerMethod {
     Union,
     Intersection,
     Difference,
+    SymmetricDifference,
+    Popitem,
+    IsSubset,
+    IsSuperset,
+    IsDisjoint,
+    IntersectionUpdate,
+    DifferenceUpdate,
+    SymmetricDifferenceUpdate,
 }
 
 impl ContainerMethod {
@@ -979,6 +1007,14 @@ impl ContainerMethod {
             "union" => ContainerMethod::Union,
             "intersection" => ContainerMethod::Intersection,
             "difference" => ContainerMethod::Difference,
+            "symmetric_difference" => ContainerMethod::SymmetricDifference,
+            "popitem" => ContainerMethod::Popitem,
+            "issubset" => ContainerMethod::IsSubset,
+            "issuperset" => ContainerMethod::IsSuperset,
+            "isdisjoint" => ContainerMethod::IsDisjoint,
+            "intersection_update" => ContainerMethod::IntersectionUpdate,
+            "difference_update" => ContainerMethod::DifferenceUpdate,
+            "symmetric_difference_update" => ContainerMethod::SymmetricDifferenceUpdate,
             _ => return None,
         })
     }
@@ -1036,6 +1072,9 @@ impl ContainerOp {
             ContainerOp::ListExtend
             | ContainerOp::ListIndexOf
             | ContainerOp::ListCount
+            | ContainerOp::ListRemove
+            | ContainerOp::TupleIndexOf
+            | ContainerOp::TupleCount
             | ContainerOp::DictPopM
             | ContainerOp::DictUpdate
             | ContainerOp::SetRemove
@@ -1043,7 +1082,14 @@ impl ContainerOp {
             | ContainerOp::SetUpdate
             | ContainerOp::SetUnion
             | ContainerOp::SetIntersection
-            | ContainerOp::SetDifference => &[Val, Val],
+            | ContainerOp::SetDifference
+            | ContainerOp::SetSymmetricDifference
+            | ContainerOp::SetIsSubset
+            | ContainerOp::SetIsSuperset
+            | ContainerOp::SetIsDisjoint
+            | ContainerOp::SetIntersectionUpdate
+            | ContainerOp::SetDifferenceUpdate
+            | ContainerOp::SetSymmetricDifferenceUpdate => &[Val, Val],
             // `list.insert(index, value)` — the index is an unboxed `Raw(I64)`.
             ContainerOp::ListInsert => &[Val, Idx, Val],
             // `dict.get(k[, default])` / `dict.setdefault(k[, default])` — all tagged.
@@ -1058,6 +1104,7 @@ impl ContainerOp {
             | ContainerOp::DictItems
             | ContainerOp::DictClear
             | ContainerOp::DictCopy
+            | ContainerOp::DictPopitem
             | ContainerOp::SetCopy
             | ContainerOp::SetClear => &[Val],
             ContainerOp::DictGet
@@ -1113,6 +1160,7 @@ impl ContainerOp {
             | ContainerOp::SetUnion
             | ContainerOp::SetIntersection
             | ContainerOp::SetDifference
+            | ContainerOp::SetSymmetricDifference
             | ContainerOp::SetCopy => ContainerResult::Heap,
             ContainerOp::ListPush
             | ContainerOp::ListSet
@@ -1127,10 +1175,14 @@ impl ContainerOp {
             | ContainerOp::ListSortByKeys
             | ContainerOp::DictUpdate
             | ContainerOp::DictClear
+            | ContainerOp::ListRemove
             | ContainerOp::SetRemove
             | ContainerOp::SetDiscard
             | ContainerOp::SetUpdate
-            | ContainerOp::SetClear => ContainerResult::None,
+            | ContainerOp::SetClear
+            | ContainerOp::SetIntersectionUpdate
+            | ContainerOp::SetDifferenceUpdate
+            | ContainerOp::SetSymmetricDifferenceUpdate => ContainerResult::None,
             ContainerOp::ListGet
             | ContainerOp::DictGet
             | ContainerOp::TupleGet
@@ -1140,15 +1192,21 @@ impl ContainerOp {
             | ContainerOp::ListPop
             | ContainerOp::DictGetDefault
             | ContainerOp::DictPopM
+            | ContainerOp::DictPopitem
             | ContainerOp::DictSetdefault => ContainerResult::Value,
             ContainerOp::BytesGet
             | ContainerOp::Len
             | ContainerOp::ListIndexOf
-            | ContainerOp::ListCount => ContainerResult::Int,
+            | ContainerOp::ListCount
+            | ContainerOp::TupleIndexOf
+            | ContainerOp::TupleCount => ContainerResult::Int,
             ContainerOp::Contains
             | ContainerOp::IterExhausted
             | ContainerOp::ListCmp(_)
-            | ContainerOp::TupleCmp(_) => ContainerResult::Bool,
+            | ContainerOp::TupleCmp(_)
+            | ContainerOp::SetIsSubset
+            | ContainerOp::SetIsSuperset
+            | ContainerOp::SetIsDisjoint => ContainerResult::Bool,
         }
     }
 

@@ -346,6 +346,37 @@ const PHASE_CORPUS: &[&str] = &[
     // no splitlines `keepends`, encode ignores encoding, no find/index
     // start/end, predicates are ASCII-only.
     "p19_str_methods.py",
+    // §9 bytes methods (runtime-ready batch): startswith/endswith, find/rfind,
+    // count, replace, split/rsplit, strip/lstrip/rstrip, upper/lower, join (+ the
+    // pre-existing decode). A bytes receiver routes to `lower_bytes_method`, the
+    // exact sibling of `lower_str_method` — a declarative `BytesPlan` table → the
+    // shared `emit_seq_method` (no codegen edit; runtime fn resolved by symbol).
+    // `maxsplit` rides a RAW i64 slot (B16); find/rfind use dedicated 2-arg fns
+    // (no op_tag); the split family returns `list[bytes]`. Non-ASCII content
+    // (b"\xc3\xa9", valid UTF-8) exercises the byte-accurate paths. Limits
+    // (unprobed): positional-only, no replace `count`, strip family no `chars`,
+    // no find start/end, decode ignores encoding, upper/lower ASCII-only.
+    "p20_bytes_methods.py",
+    // §9 tuple/set/dict container methods (ContainerMethod path): tuple
+    // index/count, set issubset/issuperset/isdisjoint + the three *_update +
+    // symmetric_difference (new-set), list.remove, dict popitem. Dispatch keys on
+    // the receiver `SemTy` via `MethodRecv` (never the method name alone —
+    // `index`/`count`/`update`/`remove` are shared, the §10 trap), routed to a
+    // new `ContainerOp` per method (hir op + codegen `d()` + lowering `MethodRecv`
+    // arm + typeck `method_ty`). Comparisons ride a proven `Raw(I8)` (B13);
+    // updates + list.remove mutate in place (None; remove raises ValueError on
+    // miss); the `popitem` 2-tuple stays Tagged (GC-rootable, B5) and typed `Dyn`
+    // so `k, v = d.popitem()` unpacks through the gradual seam. ValueError
+    // (tuple.index/list.remove miss) / KeyError (empty popitem) are the spec; set
+    // contents print via `sorted(list(s))` for determinism.
+    "p21_container_methods.py",
+    // Consolidated list/tuple suite (lifted): tuple.index/count was its first §9
+    // blocker (closed by p21's ContainerMethod path) and `list.remove()` its last
+    // (now wired → `rt_list_remove`, ValueError on miss). Byte-matches CPython
+    // end-to-end. (`test_collections_dict_set_bytes.py` stays OFF — still blocked
+    // by `dict.fromkeys()`, a classmethod whose `rt_dict_fromkeys(keys, value)`
+    // signature drops the receiver, and the `dict | / |=` merge operators.)
+    "test_collections_list_tuple.py",
     // Verified-clean lifts (compile + runtime-diff MATCH at ~0 code): PEP 563
     // `from __future__ import annotations` (string-form annotations ignored at
     // runtime), a GC smoke test, the generator surface, and print() formatting/

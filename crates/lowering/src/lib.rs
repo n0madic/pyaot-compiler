@@ -249,6 +249,15 @@ struct FnLower<'a> {
     cur_handler: Option<BlockId>,
 }
 
+/// Wanted repr for a sequence-method argument (`str`/`bytes`): a tagged heap
+/// value (sep / sub / prefix / chars), or a raw i64 (`maxsplit` / `tabsize` —
+/// a count that rides `Raw(I64)`, never a tagged int misread as a width, B16).
+#[derive(Clone, Copy)]
+enum ArgWant {
+    Tagged,
+    RawI64,
+}
+
 impl<'a> FnLower<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1821,13 +1830,6 @@ impl<'a> FnLower<'a> {
     ) -> Result<Option<(LocalId, Repr)>> {
         use pyaot_core_defs::runtime_func_def as rf;
         use pyaot_stdlib_defs::TypeSpec;
-        /// Wanted repr for a str-method argument: a tagged heap value, or a
-        /// raw i64 (widths like `zfill(6)` / `center(5, '-')`).
-        #[derive(Clone, Copy)]
-        enum ArgWant {
-            Tagged,
-            RawI64,
-        }
         use ArgWant::{RawI64, Tagged as TaggedArg};
         let name = self.interner.resolve(method_name);
         // (descriptor, arg reprs, min args, trailing op_tag if any, return
@@ -1965,10 +1967,131 @@ impl<'a> FnLower<'a> {
         let Some((def, wants, min_args, op_tag, ret_spec)) = plan else {
             return Ok(None);
         };
+        Ok(Some(self.emit_seq_method(
+            call_idx, recv, "str", name, def, wants, min_args, op_tag, &ret_spec, args, span,
+        )?))
+    }
+
+    /// Lower a bytes-receiver method to its `rt_bytes_*` descriptor (§9), the
+    /// exact sibling of [`Self::lower_str_method`]: a declarative `BytesPlan`
+    /// table → the shared [`Self::emit_seq_method`]. Returns `None` for an
+    /// unrecognized name so the caller falls through. All methods are
+    /// positional-only. Notable shape differences from str: `find`/`rfind` use
+    /// dedicated 2-arg runtime fns (NO op_tag, unlike str's `rt_str_search`);
+    /// `split`/`rsplit` ride a RAW i64 `maxsplit` (B16) with an absent/`None`
+    /// sep meaning whitespace split; the strip family is 1-arg (no `chars`); and
+    /// `join` materializes its iterable into a list, like `str.join`. The split
+    /// descriptors return `list[bytes]`.
+    fn lower_bytes_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<Option<(LocalId, Repr)>> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        use pyaot_stdlib_defs::TypeSpec;
+        use ArgWant::{RawI64, Tagged as TaggedArg};
+        let name = self.interner.resolve(method_name);
+        // Same shape as `StrPlan`: (descriptor, arg reprs, min args, op_tag,
+        // return spec). No bytes method needs an op_tag (find/rfind are dedicated
+        // 2-arg fns), so the slot is always `None` here.
+        type BytesPlan = (
+            &'static pyaot_core_defs::RuntimeFuncDef,
+            &'static [ArgWant],
+            usize,
+            Option<i64>,
+            TypeSpec,
+        );
+        let plan: Option<BytesPlan> = match name {
+            "startswith" => {
+                Some((&rf::RT_BYTES_STARTS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool))
+            }
+            "endswith" => Some((&rf::RT_BYTES_ENDS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
+            "find" => Some((&rf::RT_BYTES_FIND, &[TaggedArg], 1, None, TypeSpec::Int)),
+            "rfind" => Some((&rf::RT_BYTES_RFIND, &[TaggedArg], 1, None, TypeSpec::Int)),
+            "count" => Some((&rf::RT_BYTES_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
+            // `replace(old, new)` — the runtime is 2-arg (no `count`).
+            "replace" => Some((
+                &rf::RT_BYTES_REPLACE,
+                &[TaggedArg, TaggedArg],
+                2,
+                None,
+                TypeSpec::Bytes,
+            )),
+            // split family → `list[bytes]`; an absent/`None` sep is whitespace
+            // split, an absent `maxsplit` defaults to -1 (unlimited).
+            "split" => Some((
+                &rf::RT_BYTES_SPLIT,
+                &[TaggedArg, RawI64],
+                0,
+                None,
+                TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_BYTES),
+            )),
+            "rsplit" => Some((
+                &rf::RT_BYTES_RSPLIT,
+                &[TaggedArg, RawI64],
+                0,
+                None,
+                TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_BYTES),
+            )),
+            // strip family: 1-arg (`bytes` only — no `chars`, a documented limit).
+            "strip" => Some((&rf::RT_BYTES_STRIP, &[], 0, None, TypeSpec::Bytes)),
+            "lstrip" => Some((&rf::RT_BYTES_LSTRIP, &[], 0, None, TypeSpec::Bytes)),
+            "rstrip" => Some((&rf::RT_BYTES_RSTRIP, &[], 0, None, TypeSpec::Bytes)),
+            "upper" => Some((&rf::RT_BYTES_UPPER, &[], 0, None, TypeSpec::Bytes)),
+            "lower" => Some((&rf::RT_BYTES_LOWER, &[], 0, None, TypeSpec::Bytes)),
+            // `sep.join(iterable)` → `rt_bytes_join(sep, list)`; materialize the
+            // iterable into a list first (like `str.join`).
+            "join" => Some((&rf::RT_BYTES_JOIN, &[TaggedArg], 1, None, TypeSpec::Bytes)),
+            // `decode([encoding])` → str; an absent encoding is the null sentinel
+            // (always UTF-8, a documented limit). Folds the former inline case.
+            "decode" => Some((&rf::RT_BYTES_DECODE, &[TaggedArg], 0, None, TypeSpec::Str)),
+            _ => None,
+        };
+        let Some((def, wants, min_args, op_tag, ret_spec)) = plan else {
+            return Ok(None);
+        };
+        Ok(Some(self.emit_seq_method(
+            call_idx, recv, "bytes", name, def, wants, min_args, op_tag, &ret_spec, args, span,
+        )?))
+    }
+
+    /// Shared post-plan emitter for a sequence-method runtime call (`str`/
+    /// `bytes`). Given a descriptor already resolved from a `StrPlan`/`BytesPlan`
+    /// row, it runs the common arg loop and emits the `CallRuntime`:
+    /// - an explicit `None` for an optional Tagged arg (`split(None)`,
+    ///   `rstrip(None)`) lowers to the NullPtr "use the default" sentinel — NOT
+    ///   the `None` value (`NONE_TAG`), which the runtime would mis-deref;
+    /// - `join` materializes its iterable into a list (the runtime reads a
+    ///   `ListObj`), like CPython accepting any iterable;
+    /// - an absent optional Tagged arg → NullPtr (whitespace sep / strip / UTF-8
+    ///   encode); an absent `RawI64` arg → its Python default in the raw class
+    ///   (`tabsize = 8` for `expandtabs`, else `maxsplit = -1`);
+    /// - a trailing `op_tag` (str `find`/`index` family) is appended as `Raw(I8)`.
+    ///
+    /// `recv_label` is the receiver-type name for the arity diagnostic
+    /// (`str` / `bytes`); `name` is the already-resolved method name.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_seq_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        recv_label: &str,
+        name: &str,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        wants: &[ArgWant],
+        min_args: usize,
+        op_tag: Option<i64>,
+        ret_spec: &pyaot_stdlib_defs::TypeSpec,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
         if args.len() < min_args || args.len() > wants.len() {
             return Err(CompilerError::semantic_error(
                 format!(
-                    "`str.{name}()` takes {min_args}..={} argument(s), got {}",
+                    "`{recv_label}.{name}()` takes {min_args}..={} argument(s), got {}",
                     wants.len(),
                     args.len()
                 ),
@@ -1979,12 +2102,12 @@ impl<'a> FnLower<'a> {
         let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
         for (i, want) in wants.iter().enumerate() {
             let op = if let Some(a) = args.get(i) {
-                // An explicit `None` for an optional Tagged arg (`split(None)`,
-                // `rsplit(None, 1)`, `rstrip(None)`) means "use the default" —
-                // the SAME null sentinel the runtime tests via `sep.is_null()`.
-                // Lower it to NullPtr, NOT the None value (`NONE_TAG`), which the
-                // runtime would mis-deref: `unwrap_ptr` debug-asserts the ptr tag,
-                // and `0b101` is non-null garbage in release (SEGV).
+                // An explicit `None` for an optional Tagged arg means "use the
+                // default" — the SAME null sentinel the runtime tests via
+                // `sep.is_null()`. Lower it to NullPtr, NOT the None value
+                // (`NONE_TAG`), which the runtime would mis-deref: `unwrap_ptr`
+                // debug-asserts the ptr tag, and `0b101` is non-null garbage in
+                // release (SEGV).
                 if matches!(want, ArgWant::Tagged)
                     && matches!(self.func.exprs[*a].kind, HirExprKind::NoneLit)
                 {
@@ -1996,11 +2119,11 @@ impl<'a> FnLower<'a> {
                     d
                 } else {
                     // `sep.join(iterable)` accepts ANY iterable in CPython (str,
-                    // tuple, generator, …), but `rt_str_join` reads a `ListObj`.
-                    // Materialize the argument into a list first — passing a
-                    // non-list straight through has the runtime cast a mismatched
-                    // heap object and SEGV (the gradual heap-param exemption does
-                    // not guard the shape at the seam).
+                    // tuple, generator, …), but `rt_str_join`/`rt_bytes_join` read
+                    // a `ListObj`. Materialize the argument into a list first —
+                    // passing a non-list straight through has the runtime cast a
+                    // mismatched heap object and SEGV (the gradual heap-param
+                    // exemption does not guard the shape at the seam).
                     let (al, ar) = if name == "join" {
                         self.materialize_list(*a)?
                     } else {
@@ -2049,7 +2172,7 @@ impl<'a> FnLower<'a> {
             });
             ops.push(Operand::Local(t));
         }
-        Ok(Some(self.emit_runtime_call(call_idx, def, ops, &ret_spec)?))
+        self.emit_runtime_call(call_idx, def, ops, ret_spec)
     }
 
     /// Lower a File method (`f.read()`, `f.write(s)`, Phase 8C) to its
@@ -2686,34 +2809,14 @@ impl<'a> FnLower<'a> {
         if let SemTy::File { binary } = &recv_ty {
             return self.lower_file_method(call_idx, recv, method_name, args, *binary, span);
         }
-        // `bytes.decode([encoding])` → `rt_bytes_decode(bytes, encoding|null)`
-        // → str (Phase 8D). An absent encoding is the null sentinel (utf-8).
-        if matches!(recv_ty, SemTy::Bytes)
-            && self.interner.resolve(method_name) == "decode"
-            && args.len() <= 1
-        {
-            let (rl, rr) = self.lower_expr(recv)?;
-            let rv = self.coerce(rl, rr, Repr::Tagged)?;
-            let enc = match args.first() {
-                Some(a) => {
-                    let (al, ar) = self.lower_expr(*a)?;
-                    self.coerce(al, ar, Repr::Tagged)?
-                }
-                None => {
-                    let n = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const {
-                        dst: n,
-                        val: Const::NullPtr,
-                    });
-                    n
-                }
-            };
-            return self.emit_runtime_call(
-                call_idx,
-                &pyaot_core_defs::runtime_func_def::RT_BYTES_DECODE,
-                vec![Operand::Local(rv), Operand::Local(enc)],
-                &pyaot_stdlib_defs::TypeSpec::Str,
-            );
+        // A bytes-receiver method routed through its `rt_bytes_*` descriptor
+        // (§9; the exact sibling of `lower_str_method`). Covers `decode` (Phase
+        // 8D) plus the §9 batch (startswith/endswith/find/rfind/count/replace/
+        // split/rsplit/strip family/upper/lower/join).
+        if matches!(recv_ty, SemTy::Bytes) {
+            if let Some(res) = self.lower_bytes_method(call_idx, recv, method_name, args, span)? {
+                return Ok(res);
+            }
         }
         // Container receiver → the Phase-4D ContainerMethod path.
         let cm =
@@ -3631,6 +3734,8 @@ impl<'a> FnLower<'a> {
             MethodRecv::Dict
         } else if recv_ty.set_elem().is_some() {
             MethodRecv::Set
+        } else if recv_ty.tuple_elems().is_some() || recv_ty.tuple_var_elem().is_some() {
+            MethodRecv::Tuple
         } else {
             MethodRecv::Other
         };
@@ -3676,6 +3781,16 @@ impl<'a> FnLower<'a> {
                 M::Extend if argn == 1 => {
                     self.emit_container(
                         ContainerOp::ListExtend,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
+                    self.none_value()
+                }
+                // `list.remove(x)` — mutate in place (ValueError on miss, raised
+                // by the runtime), returns None. The op's i8 result is discarded.
+                M::Remove if argn == 1 => {
+                    self.emit_container(
+                        ContainerOp::ListRemove,
                         vec![recv_arg, a[0].clone()],
                         None,
                     )?;
@@ -3767,6 +3882,13 @@ impl<'a> FnLower<'a> {
                 M::Copy if argn == 0 => {
                     self.method_heap(ContainerOp::DictCopy, recv_arg, vec![], heap())
                 }
+                // `popitem()` → a fresh `(key, value)` 2-tuple. The `Value`-
+                // category result is `Tagged` (GC-rootable, B5); `normalize`
+                // passes it through → `Tagged` = `repr_of(Dyn)`, so `k, v =
+                // d.popitem()` unpacks through the gradual seam.
+                M::Popitem if argn == 0 => {
+                    self.method_scalar(ContainerOp::DictPopitem, recv_arg, vec![])
+                }
                 _ => Err(bad("unsupported dict method / arity")),
             },
             MethodRecv::Set => match method {
@@ -3813,6 +3935,14 @@ impl<'a> FnLower<'a> {
                     vec![a[0].clone()],
                     heap(),
                 ),
+                // `set.symmetric_difference(other)` → a fresh set (new-set
+                // algebra; the `*_update` sibling mutates in place instead).
+                M::SymmetricDifference if argn == 1 => self.method_heap(
+                    ContainerOp::SetSymmetricDifference,
+                    recv_arg,
+                    vec![a[0].clone()],
+                    heap(),
+                ),
                 M::Copy if argn == 0 => {
                     self.method_heap(ContainerOp::SetCopy, recv_arg, vec![], heap())
                 }
@@ -3820,7 +3950,57 @@ impl<'a> FnLower<'a> {
                     self.emit_container(ContainerOp::SetClear, vec![recv_arg], None)?;
                     self.none_value()
                 }
+                // Comparisons (§9). A `Bool`-category op: `method_scalar`'s
+                // `emit_container` allocates a `Raw(I8)` dst and `normalize`
+                // passes it through → `Raw(I8)` = `repr_of(Bool)` (B13:
+                // value-comparing `rt_set_*`, not pointer ordering).
+                M::IsSubset if argn == 1 => {
+                    self.method_scalar(ContainerOp::SetIsSubset, recv_arg, vec![a[0].clone()])
+                }
+                M::IsSuperset if argn == 1 => {
+                    self.method_scalar(ContainerOp::SetIsSuperset, recv_arg, vec![a[0].clone()])
+                }
+                M::IsDisjoint if argn == 1 => {
+                    self.method_scalar(ContainerOp::SetIsDisjoint, recv_arg, vec![a[0].clone()])
+                }
+                // In-place updates (§9): mutate the receiver, return `None`.
+                M::IntersectionUpdate if argn == 1 => {
+                    self.emit_container(
+                        ContainerOp::SetIntersectionUpdate,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
+                    self.none_value()
+                }
+                M::DifferenceUpdate if argn == 1 => {
+                    self.emit_container(
+                        ContainerOp::SetDifferenceUpdate,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
+                    self.none_value()
+                }
+                M::SymmetricDifferenceUpdate if argn == 1 => {
+                    self.emit_container(
+                        ContainerOp::SetSymmetricDifferenceUpdate,
+                        vec![recv_arg, a[0].clone()],
+                        None,
+                    )?;
+                    self.none_value()
+                }
                 _ => Err(bad("unsupported set method / arity")),
+            },
+            // Tuple receiver (§9): `index`/`count` — value-comparing queries
+            // (B13). `method_scalar` normalizes the `Raw(I64)` result to the
+            // tagged int baseline.
+            MethodRecv::Tuple => match method {
+                M::Index if argn == 1 => {
+                    self.method_scalar(ContainerOp::TupleIndexOf, recv_arg, vec![a[0].clone()])
+                }
+                M::Count if argn == 1 => {
+                    self.method_scalar(ContainerOp::TupleCount, recv_arg, vec![a[0].clone()])
+                }
+                _ => Err(bad("unsupported tuple method / arity")),
             },
             _ => Err(bad(
                 "method calls require a statically-known list, dict, or set receiver",
@@ -4688,6 +4868,7 @@ enum MethodRecv {
     List,
     Dict,
     Set,
+    Tuple,
     Other,
 }
 
