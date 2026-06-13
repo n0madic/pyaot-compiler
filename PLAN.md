@@ -10,8 +10,11 @@ completed phase log now lives in git history (commits + each crate's `lib.rs`
 doc) and the auto-memory; this plan no longer carries it.
 
 What remains is **breadth**: the differential gate is green on its allowlist, but
-~17 aspirational `corpus/test_*.py` files exercise valid Python 3 the compiler
-does not yet accept. The full, deduplicated inventory of those gaps is the
+~13 aspirational `corpus/test_*.py` files exercise valid Python 3 the compiler
+does not yet accept. (The §9 str-method batch lifted four already-clean files —
+`test_future_annotations.py`, `test_gc_simple.py`, `test_generators.py`,
+`test_print_output.py` — onto the gate at ~0 code, locking in working behavior.)
+The full, deduplicated inventory of those gaps is the
 **[Remaining backlog](#remaining-backlog--broaden-the-language-subset)** below.
 The principles and anti-patterns that governed the build still govern every item
 in it.
@@ -164,9 +167,11 @@ These few gaps block the most files — close them before the long tail.
 - ~~**kwargs on method calls**~~ — DONE (Phase 10): user-class methods
   (defaults / virtual / super / static / classmethod / `**kwargs` leftovers via
   `MethodCall.kwargs` + `pyaot_hir::match_keywords`), `list.sort(key=, reverse=)`.
-  The `str.format(name=)`/`str.split(sep=)`/`str.encode(encoding=)`/
-  `str.replace(count=)` entries wait on §9 (those methods don't exist yet) —
-  the kwargs mechanism is ready for them. Caveats: `.sort(key=K)` desugars by
+  `str.split`/`str.encode`/`str.replace` now exist (§9) but are **positional-
+  only** — the kwargs gate rejects `s.split(sep=",")` with a clean diagnostic
+  (no keyword params on non-class methods except `.sort`); `str.format(name=)`
+  still waits on the §13 mini-language. The kwargs mechanism is ready when those
+  surfaces grow keyword parameters. Caveats: `.sort(key=K)` desugars by
   method NAME (runtime TypeError guard); virtual calls require identical
   parameter names/defaults across overrides when keywords/defaults are used.
   Constructor kwargs `Cls(x=1)` are nearly free now (match_keywords) — small
@@ -305,7 +310,21 @@ These few gaps block the most files — close them before the long tail.
 
 ### 9. Methods on builtin types
 - **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__`.
-- **`str`**: `format`, `split`, `rsplit`, `replace`, `lstrip`/`rstrip`, `removeprefix`/`removesuffix`, `expandtabs`, `splitlines`, `partition`/`rpartition`, `rindex`, `encode`, predicates `isdigit`/`isalpha`/`isalnum`/`isspace`/`isupper`/`islower`/`isascii`. (`upper`/`lower`/`strip`/`find`/`title`/`center`/… already work.)
+- **`str`**: ~~`split`, `rsplit`, `splitlines`, `replace`, `lstrip`/`rstrip`,
+  `removeprefix`/`removesuffix`, `expandtabs`, `partition`/`rpartition`,
+  `rindex`, `encode`, predicates `isdigit`/`isalpha`/`isalnum`/`isspace`/
+  `isupper`/`islower`/`isascii`~~ — DONE (§9 runtime-ready batch:
+  `corpus/p19_str_methods.py`). Declarative `StrPlan` wiring of runtime fns
+  whose impls + core-defs descriptors already existed; `maxsplit`/`tabsize`
+  retyped to a RAW i64 MIR slot (B16); an explicit `None` sep/chars lowers to
+  the null "default" sentinel (not `NONE_TAG`, which the runtime would
+  mis-deref). **Scope limits (unprobed):** positional-only (the kwargs gate
+  rejects `s.split(sep=",")`); `replace` has no `count` (runtime is 2-arg);
+  `splitlines` no `keepends`; `encode` ignores encoding/errors (always UTF-8);
+  `find`/`index`/`rindex` take no `start`/`end`; predicates are **ASCII-only**
+  (`is_ascii_*` — `"café".isalpha()` → `False` here vs CPython `True`). Still
+  pending: `format` (= §13 mini-language). (`upper`/`lower`/`strip`/`find`/
+  `title`/`center`/`zfill`/`join`/… already worked.)
 - **`bytes`**: `startswith`, `endswith`, `find`, `rfind`, `count`, `replace`, `split`/`rsplit`, `strip`/`lstrip`/`rstrip`, `upper`/`lower`, `join` — only `.decode()` is supported today.
 - **`tuple`**: `index`, `count`.
 - **`dict`**: `popitem`, `fromkeys`.

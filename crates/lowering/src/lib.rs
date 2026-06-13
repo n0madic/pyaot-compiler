@@ -1883,6 +1883,80 @@ impl<'a> FnLower<'a> {
                 None,
                 TypeSpec::Str,
             )),
+            // §9 — split family. `maxsplit` rides a RAW i64 slot (descriptor
+            // retyped to `STR_SPLIT_TERNARY`); an absent sep is whitespace
+            // split, an absent maxsplit defaults to `-1` (unlimited, A2).
+            "split" => Some((
+                &rf::RT_STR_SPLIT,
+                &[TaggedArg, RawI64],
+                0,
+                None,
+                TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
+            )),
+            "rsplit" => Some((
+                &rf::RT_STR_RSPLIT,
+                &[TaggedArg, RawI64],
+                0,
+                None,
+                TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
+            )),
+            "splitlines" => Some((
+                &rf::RT_STR_SPLITLINES,
+                &[],
+                0,
+                None,
+                TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
+            )),
+            // `replace(old, new)` — the runtime is 2-arg (no `count`, §9 limit).
+            "replace" => Some((
+                &rf::RT_STR_REPLACE,
+                &[TaggedArg, TaggedArg],
+                2,
+                None,
+                TypeSpec::Str,
+            )),
+            // `lstrip`/`rstrip([chars])` — chars optional (null = whitespace).
+            "lstrip" => Some((&rf::RT_STR_LSTRIP, &[TaggedArg], 0, None, TypeSpec::Str)),
+            "rstrip" => Some((&rf::RT_STR_RSTRIP, &[TaggedArg], 0, None, TypeSpec::Str)),
+            "removeprefix" => {
+                Some((&rf::RT_STR_REMOVEPREFIX, &[TaggedArg], 1, None, TypeSpec::Str))
+            }
+            "removesuffix" => {
+                Some((&rf::RT_STR_REMOVESUFFIX, &[TaggedArg], 1, None, TypeSpec::Str))
+            }
+            // `expandtabs([tabsize])` — tabsize a RAW i64 (default 8, A2).
+            "expandtabs" => Some((&rf::RT_STR_EXPANDTABS, &[RawI64], 0, None, TypeSpec::Str)),
+            // `partition`/`rpartition(sep)` → a 3-tuple. Typed `Dyn` (a stdlib
+            // `Tuple` spec is gradual), so `a, sep, b = …` unpacks through the
+            // gradual seam.
+            "partition" => Some((
+                &rf::RT_STR_PARTITION,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Tuple(&pyaot_stdlib_defs::types::TYPE_STR),
+            )),
+            "rpartition" => Some((
+                &rf::RT_STR_RPARTITION,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Tuple(&pyaot_stdlib_defs::types::TYPE_STR),
+            )),
+            // `encode([encoding])` → bytes. Encoding is accepted but ignored
+            // (always UTF-8, §9 limit); an absent arg is the null sentinel.
+            "encode" => Some((&rf::RT_STR_ENCODE, &[TaggedArg], 0, None, TypeSpec::Bytes)),
+            // `rindex(sub)` via the shared `rt_str_search` with op_tag 3 (raises
+            // ValueError on a miss, like `index`).
+            "rindex" => Some((&rf::RT_STR_RINDEX, &[TaggedArg], 1, Some(3), TypeSpec::Int)),
+            // ASCII-only predicates (`is_ascii_*` in the runtime, §9 limit).
+            "isdigit" => Some((&rf::RT_STR_ISDIGIT, &[], 0, None, TypeSpec::Bool)),
+            "isalpha" => Some((&rf::RT_STR_ISALPHA, &[], 0, None, TypeSpec::Bool)),
+            "isalnum" => Some((&rf::RT_STR_ISALNUM, &[], 0, None, TypeSpec::Bool)),
+            "isspace" => Some((&rf::RT_STR_ISSPACE, &[], 0, None, TypeSpec::Bool)),
+            "isupper" => Some((&rf::RT_STR_ISUPPER, &[], 0, None, TypeSpec::Bool)),
+            "islower" => Some((&rf::RT_STR_ISLOWER, &[], 0, None, TypeSpec::Bool)),
+            "isascii" => Some((&rf::RT_STR_ISASCII, &[], 0, None, TypeSpec::Bool)),
             // `sep.join(iterable)` → `rt_str_join(sep, list)` (Phase 8E). The
             // argument is coerced to Tagged (a list/tuple of strings).
             "join" => Some((&rf::RT_STR_JOIN, &[TaggedArg], 1, None, TypeSpec::Str)),
@@ -1905,29 +1979,65 @@ impl<'a> FnLower<'a> {
         let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
         for (i, want) in wants.iter().enumerate() {
             let op = if let Some(a) = args.get(i) {
-                // `sep.join(iterable)` accepts ANY iterable in CPython (str, tuple,
-                // generator, …), but `rt_str_join` reads a `ListObj`. Materialize the
-                // argument into a list first — passing a non-list straight through has
-                // the runtime cast a mismatched heap object and SEGV (the gradual
-                // heap-param exemption does not guard the shape at the seam).
-                let (al, ar) = if name == "join" {
-                    self.materialize_list(*a)?
+                // An explicit `None` for an optional Tagged arg (`split(None)`,
+                // `rsplit(None, 1)`, `rstrip(None)`) means "use the default" —
+                // the SAME null sentinel the runtime tests via `sep.is_null()`.
+                // Lower it to NullPtr, NOT the None value (`NONE_TAG`), which the
+                // runtime would mis-deref: `unwrap_ptr` debug-asserts the ptr tag,
+                // and `0b101` is non-null garbage in release (SEGV).
+                if matches!(want, ArgWant::Tagged)
+                    && matches!(self.func.exprs[*a].kind, HirExprKind::NoneLit)
+                {
+                    let d = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::Const {
+                        dst: d,
+                        val: Const::NullPtr,
+                    });
+                    d
                 } else {
-                    self.lower_expr(*a)?
-                };
-                let want_repr = match want {
-                    ArgWant::Tagged => Repr::Tagged,
-                    ArgWant::RawI64 => Repr::Raw(RawKind::I64),
-                };
-                self.coerce(al, ar, want_repr)?
+                    // `sep.join(iterable)` accepts ANY iterable in CPython (str,
+                    // tuple, generator, …), but `rt_str_join` reads a `ListObj`.
+                    // Materialize the argument into a list first — passing a
+                    // non-list straight through has the runtime cast a mismatched
+                    // heap object and SEGV (the gradual heap-param exemption does
+                    // not guard the shape at the seam).
+                    let (al, ar) = if name == "join" {
+                        self.materialize_list(*a)?
+                    } else {
+                        self.lower_expr(*a)?
+                    };
+                    let want_repr = match want {
+                        ArgWant::Tagged => Repr::Tagged,
+                        ArgWant::RawI64 => Repr::Raw(RawKind::I64),
+                    };
+                    self.coerce(al, ar, want_repr)?
+                }
             } else {
-                // Absent optional arg — the null-pointer object sentinel.
-                let d = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const {
-                    dst: d,
-                    val: Const::NullPtr,
-                });
-                d
+                // Absent optional arg. A Tagged slot gets the null-pointer object
+                // sentinel (the runtime reads it as "default": whitespace sep,
+                // whitespace strip, UTF-8 encode). A RawI64 slot must NOT receive
+                // a Tagged null — that would fail the verifier — so it gets the
+                // Python default in its raw register class: `maxsplit = -1`
+                // (unlimited) for split/rsplit, `tabsize = 8` for expandtabs.
+                match want {
+                    ArgWant::Tagged => {
+                        let d = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::Const {
+                            dst: d,
+                            val: Const::NullPtr,
+                        });
+                        d
+                    }
+                    ArgWant::RawI64 => {
+                        let default = if name == "expandtabs" { 8 } else { -1 };
+                        let d = self.alloc_temp(Repr::Raw(RawKind::I64));
+                        self.emit(MirInst::Const {
+                            dst: d,
+                            val: Const::Int(default),
+                        });
+                        d
+                    }
+                }
             };
             ops.push(Operand::Local(op));
         }

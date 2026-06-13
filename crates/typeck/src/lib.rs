@@ -2094,9 +2094,16 @@ impl<'a> Sweeper<'a> {
         if matches!(recv, SemTy::Str) {
             match self.interner.resolve(method_name) {
                 "upper" | "lower" | "strip" | "title" | "capitalize" | "swapcase" | "zfill"
-                | "center" | "ljust" | "rjust" => return SemTy::Str,
-                "startswith" | "endswith" => return SemTy::Bool,
-                "find" | "rfind" | "index" | "count" => return SemTy::Int,
+                | "center" | "ljust" | "rjust" | "lstrip" | "rstrip" | "replace"
+                | "removeprefix" | "removesuffix" | "expandtabs" => return SemTy::Str,
+                "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum" | "isspace"
+                | "isupper" | "islower" | "isascii" => return SemTy::Bool,
+                "find" | "rfind" | "index" | "count" | "rindex" => return SemTy::Int,
+                "split" | "rsplit" | "splitlines" => return SemTy::list_of(SemTy::Str),
+                "encode" => return SemTy::Bytes,
+                // `partition`/`rpartition` → a 3-tuple, typed `Dyn` (matching the
+                // stdlib `Tuple` spec) so `a, sep, b = …` unpacks gradually.
+                "partition" | "rpartition" => return SemTy::Dyn,
                 _ => {}
             }
         }

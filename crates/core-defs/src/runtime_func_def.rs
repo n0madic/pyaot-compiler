@@ -1113,8 +1113,17 @@ pub static RT_STR_INDEX: RuntimeFuncDef =
 /// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (rindex variant)
 pub static RT_STR_RINDEX: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_str_rsplit(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
-pub static RT_STR_RSPLIT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_rsplit");
+/// rt_str_rsplit(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj.
+/// `maxsplit` is read as a RAW machine integer (`-1` = unlimited), so the
+/// generic `ptr_ternary` all-Tagged default is wrong — see `STR_SPLIT_TERNARY`.
+pub static RT_STR_RSPLIT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_rsplit",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    STR_SPLIT_TERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_isascii(s: *mut Obj) -> i8
 pub static RT_STR_ISASCII: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isascii");
 /// rt_str_encode(s: *mut Obj, encoding: *mut Obj) -> *mut Obj
@@ -1123,8 +1132,17 @@ pub static RT_STR_ENCODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_en
 pub static RT_STR_REPLACE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_replace");
 /// rt_str_count(s: *mut Obj, sub: *mut Obj) -> i64
 pub static RT_STR_COUNT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_str_count");
-/// rt_str_split(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
-pub static RT_STR_SPLIT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_split");
+/// rt_str_split(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj.
+/// `maxsplit` is read as a RAW machine integer (`-1` = unlimited), so the
+/// generic `ptr_ternary` all-Tagged default is wrong — see `STR_SPLIT_TERNARY`.
+pub static RT_STR_SPLIT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_split",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    STR_SPLIT_TERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_join(sep: *mut Obj, list: *mut Obj) -> *mut Obj
 pub static RT_STR_JOIN: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_join");
 /// rt_str_lstrip(s: *mut Obj, chars: *mut Obj) -> *mut Obj
@@ -1143,6 +1161,15 @@ pub static RT_STR_SWAPCASE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_s
 // `ptr_ternary`/`ptr_binary` all-Tagged default is wrong here (Phase 8H).
 const ALIGN_TERNARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged];
 const ALIGN_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
+
+// Split ABIs (`rt_str_split`/`rt_str_rsplit`): a tagged str receiver, a tagged
+// separator (null = whitespace split), and a RAW i64 `maxsplit` (`-1` =
+// unlimited). The count is a machine integer — passing it Tagged would misread
+// the tag bits as the count (B16), so it needs an explicit Raw slot (§9).
+const STR_SPLIT_TERNARY: &[MirSemantic] =
+    &[MirSemantic::Tagged, MirSemantic::Tagged, MirSemantic::Raw];
+// `rt_str_expandtabs`: a tagged str receiver and a RAW i64 `tabsize`.
+const STR_TABS_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
 
 /// rt_str_center(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
 pub static RT_STR_CENTER: RuntimeFuncDef = RuntimeFuncDef::new_typed(
@@ -1202,8 +1229,17 @@ pub static RT_STR_SPLITLINES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str
 pub static RT_STR_PARTITION: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_partition");
 /// rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj
 pub static RT_STR_RPARTITION: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_rpartition");
-/// rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj
-pub static RT_STR_EXPANDTABS: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_expandtabs");
+/// rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj.
+/// `tabsize` is read as a RAW machine integer (default 8), so the generic
+/// `ptr_binary` all-Tagged default is wrong — see `STR_TABS_BINARY`.
+pub static RT_STR_EXPANDTABS: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_expandtabs",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    STR_TABS_BINARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_make_string_builder(capacity: i64) -> *mut Obj
 pub static RT_MAKE_STRING_BUILDER: RuntimeFuncDef =
     RuntimeFuncDef::ptr_unary("rt_make_string_builder");

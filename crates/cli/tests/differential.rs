@@ -334,6 +334,27 @@ const PHASE_CORPUS: &[&str] = &[
     // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF (it
     // still needs `map`/`filter`/`format`).
     "test_core_types.py",
+    // §9 str methods (runtime-ready batch): split/rsplit/splitlines, replace,
+    // lstrip/rstrip, removeprefix/removesuffix, expandtabs, partition/
+    // rpartition, encode, rindex, and ASCII predicates is{digit,alpha,alnum,
+    // space,upper,lower,ascii} — declarative `StrPlan` wiring (no codegen edit)
+    // of runtime fns whose impls + descriptors already existed. `maxsplit`/
+    // `tabsize` ride a RAW i64 slot (descriptors retyped — B16); an explicit
+    // `None` sep/chars lowers to the null "default" sentinel (not NONE_TAG).
+    // Multi-byte (Cyrillic / café) inputs exercise the codepoint char_len
+    // recount paths. Limits (unprobed): positional-only, no replace `count`,
+    // no splitlines `keepends`, encode ignores encoding, no find/index
+    // start/end, predicates are ASCII-only.
+    "p19_str_methods.py",
+    // Verified-clean lifts (compile + runtime-diff MATCH at ~0 code): PEP 563
+    // `from __future__ import annotations` (string-form annotations ignored at
+    // runtime), a GC smoke test, the generator surface, and print() formatting/
+    // sep/end/flush. Locks in working behavior. (`test_stdlib_urllib.py` is
+    // network — stays in NET_TESTS, not lifted.)
+    "test_future_annotations.py",
+    "test_gc_simple.py",
+    "test_generators.py",
+    "test_print_output.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
