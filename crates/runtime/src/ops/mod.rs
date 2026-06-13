@@ -18,7 +18,7 @@ pub use dunder_dispatch::{
 };
 
 pub use comparison::{
-    rt_any_getitem, rt_is_none, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq,
+    rt_any_getitem, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq,
 };
 
 pub use printing::{
@@ -101,5 +101,41 @@ mod tests {
         assert_eq!(rt_is_truthy(one), 1);
         let neg = pyaot_core_defs::Value::from_int(-1).0 as *mut crate::object::Obj;
         assert_eq!(rt_is_truthy(neg), 1);
+    }
+
+    #[test]
+    fn test_rt_is_bit_identity() {
+        use pyaot_core_defs::Value;
+        let _guard = init_runtime();
+        let p = |v: Value| v.0 as *mut crate::object::Obj;
+
+        // Immediates compare by their tagged bits (no debug-assert tripping on
+        // a non-pointer tag — the whole point of `rt_is`'s `.0` re-tag ABI).
+        assert_eq!(rt_is(p(Value::TRUE), p(Value::TRUE)), 1);
+        assert_eq!(rt_is(p(Value::FALSE), p(Value::FALSE)), 1);
+        assert_eq!(rt_is(p(Value::TRUE), p(Value::FALSE)), 0);
+        // `True is 1` → distinct tags (Bool vs Int), so not identical.
+        assert_eq!(rt_is(p(Value::TRUE), p(Value::from_int(1))), 0);
+        // Equal fixnums ARE bit-identical (CPython's int cache is not modeled).
+        assert_eq!(rt_is(p(Value::from_int(5)), p(Value::from_int(5))), 1);
+        assert_eq!(rt_is(p(Value::from_int(5)), p(Value::from_int(7))), 0);
+
+        // `None` normalization: the immediate tag and the heap NoneObj singleton
+        // both denote the one `None` object.
+        let imm_none = p(Value::NONE);
+        let heap_none = crate::object::none_obj();
+        assert_eq!(rt_is(imm_none, imm_none), 1);
+        assert_eq!(rt_is(imm_none, heap_none), 1);
+        assert_eq!(rt_is(heap_none, imm_none), 1);
+
+        // Heap objects: identity is pointer identity. Two distinct allocations
+        // holding equal values are NOT identical; the same pointer is.
+        let f1 = crate::boxing::rt_box_float(1.0);
+        let f2 = crate::boxing::rt_box_float(1.0);
+        assert_eq!(rt_is(f1, f1), 1);
+        assert_eq!(rt_is(f1, f2), 0);
+        // A heap object is never identical to an immediate.
+        assert_eq!(rt_is(f1, imm_none), 0);
+        assert_eq!(rt_is(f1, p(Value::from_int(1))), 0);
     }
 }

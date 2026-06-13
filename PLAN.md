@@ -148,7 +148,7 @@ These few gaps block the most files — close them before the long tail.
 
 | Gap | Files blocked | First error |
 |---|---|---|
-| **`is`/`is not` against non-`None`** (`x is True`, `a is b`) | 6 | `is / is not is only supported against None` |
+| ~~**`is`/`is not` against non-`None`**~~ — DONE (backlog §2) | 6 | ~~`is / is not is only supported against None`~~ |
 | **`del`** statement (`del d[k]`, `del name`, `del obj.attr`) | 4 | `unsupported statement for this milestone` |
 | **`*seq` spread into a non-`*args` callee** | 3 | `f() takes no *args, cannot spread * into it` |
 | **Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension) | 2 | `tuple/list unpacking assignment is not yet supported` |
@@ -177,7 +177,13 @@ These few gaps block the most files — close them before the long tail.
 - **Non-literal default** — `def f(count=5+5)`.
 
 ### 2. Operators & expressions
-- **`is`/`is not` against non-`None`** — `x is True`, `a is b`, `type(x) is T`.
+- ~~**`is`/`is not` against non-`None`**~~ — DONE: `x is True`, `a is b` lower to
+  a dedicated `HirExprKind::Is` → `rt_is` (bit-identity; `None`'s ABI encodings
+  normalized via `rt_is_none`, so the `is None` `IsNone` path is untouched and
+  never dispatches through `__eq__`). Int/str caching is NOT modeled (the trap
+  below). Gated by `corpus/p11_is_identity.py`. Still open: `type(x) is T`
+  (blocked on the `type()` builtin, §6) and chained `a is b is c` (rejected via
+  `map_cmp`, as before).
 - **Walrus `:=`** — in `if`/`while`/nested expressions, everywhere.
 - **Matrix-multiply `@` / `__matmul__`**.
 

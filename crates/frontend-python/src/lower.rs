@@ -5231,38 +5231,42 @@ impl<'a> FnLowerer<'a> {
                 }
                 return Ok(contains);
             }
-            // `x is None` / `x is not None` (Phase 8D): only the `None` identity
-            // form is supported, lowered through equality (`==`/`!=`). General
-            // object identity (`a is b`) is out of scope — and for `None`, a
-            // custom `__eq__` returning True for None would diverge (not in the
-            // corpus). `in`/`not in` were handled above.
+            // `x is …` / `x is not …` (Phase 8D + backlog §2). The `None` form is
+            // the dedicated null-aware `IsNone` test (it recognizes both the
+            // immediate `None` tag and a heap `None` object, which `==` does
+            // not). Any other operand pair is general object identity, lowered
+            // to `Is` → `rt_is` (bit-identity; never `__eq__`, which is the
+            // `Compare` path). `is not` negates either form. `in`/`not in` were
+            // handled above; chained `a is b is c` falls through to `map_cmp`
+            // below, which still rejects it (out of scope).
             if matches!(c.ops[0], PyCmpOp::Is | PyCmpOp::IsNot) {
                 let l_none = is_none_lit(c.left.as_ref());
                 let r_none = is_none_lit(&c.comparators[0]);
-                if !l_none && !r_none {
-                    return Err(parse_error(
-                        "`is` / `is not` is only supported against `None`",
-                        span,
-                    ));
-                }
-                let operand = if r_none {
-                    c.left.as_ref()
+                let negate = matches!(c.ops[0], PyCmpOp::IsNot);
+                let ident = if l_none || r_none {
+                    let operand = if r_none {
+                        c.left.as_ref()
+                    } else {
+                        &c.comparators[0]
+                    };
+                    let v = self.lower_expr(operand)?;
+                    self.alloc(HirExprKind::IsNone { value: v }, SemTy::Bool, span)
                 } else {
-                    &c.comparators[0]
+                    let l = self.lower_expr(c.left.as_ref())?;
+                    let r = self.lower_expr(&c.comparators[0])?;
+                    self.alloc(HirExprKind::Is { l, r }, SemTy::Bool, span)
                 };
-                let v = self.lower_expr(operand)?;
-                let is_none = self.alloc(HirExprKind::IsNone { value: v }, SemTy::Bool, span);
-                if matches!(c.ops[0], PyCmpOp::IsNot) {
+                if negate {
                     return Ok(self.alloc(
                         HirExprKind::Unary {
                             op: UnaryOp::Not,
-                            operand: is_none,
+                            operand: ident,
                         },
                         SemTy::Bool,
                         span,
                     ));
                 }
-                return Ok(is_none);
+                return Ok(ident);
             }
             let op = self.map_cmp(&c.ops[0], span)?;
             let l = self.lower_expr(c.left.as_ref())?;

@@ -654,7 +654,7 @@ fn record_all(
             binop_interval(*op, lv, rv)
         }
         // ── compound non-integer nodes: recurse all children, value is ⊤ ──
-        HirExprKind::Compare { l, r, .. } => {
+        HirExprKind::Compare { l, r, .. } | HirExprKind::Is { l, r } => {
             child(*l, rec);
             child(*r, rec);
             Interval::Top

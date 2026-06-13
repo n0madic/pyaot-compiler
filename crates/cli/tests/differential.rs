@@ -255,6 +255,11 @@ const PHASE_CORPUS: &[&str] = &[
     // Unblocked by Phase 10 kwargs (sorted(key=)/list.sort(key=) were its
     // first blocker): builtins as first-class values incl. keyed sorting.
     "test_builtin_first_class.py",
+    // Backlog §2 — `is` / `is not` against non-None operands (bit-identity via
+    // rt_is): bool/None singletons, same-object / distinct-object / alias for
+    // class instances and containers, `is not`, and identity inside if/while
+    // guards combined with and/or/not. Int/str caching is NOT modeled (§2 trap).
+    "p11_is_identity.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

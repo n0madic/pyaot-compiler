@@ -419,6 +419,16 @@ pub enum HirExprKind {
     IsNone {
         value: Idx<HirExpr>,
     },
+    /// `l is r` for non-`None` operands (general identity) → `Bool`, via
+    /// `rt_is` — bit-identity: immediates (`int`/`bool`/`None`) compare by their
+    /// tagged `Value` bits, heap objects by pointer (`None`'s several ABI
+    /// encodings are normalized). `l is not r` is `Unary{Not, Is}`. The
+    /// `is None` form stays the dedicated [`Self::IsNone`] (single-operand,
+    /// null-aware); `is` never dispatches through `__eq__` (that is `Compare`).
+    Is {
+        l: Idx<HirExpr>,
+        r: Idx<HirExpr>,
+    },
     /// A call to a frozen-runtime stdlib function/attr/field through its
     /// declarative descriptor (Phase 8B). `args` is positionally aligned with
     /// the descriptor's params: the frontend's call adaptation fills optional

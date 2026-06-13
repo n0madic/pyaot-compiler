@@ -768,6 +768,32 @@ pub extern "C" fn rt_is_none_abi(obj: Value) -> i8 {
     rt_is_none(obj.unwrap_ptr())
 }
 
+/// Python `a is b` — object identity, which in this value model IS
+/// bit-identity: immediates (`int`/`bool`/`None`) compare by their tagged
+/// `Value` bits, heap objects by pointer. The one wrinkle is `None`, which has
+/// several ABI encodings (immediate `None` tag, null pointer, heap `NoneObj`
+/// singleton) that all denote the single `None` object — normalize them (via
+/// `rt_is_none`) before declaring non-identity. Per-implementation int/str
+/// caching is deliberately NOT modeled: equal fixnums are bit-identical, equal
+/// heap strings are not (identity of value types is impl-defined in CPython).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_is(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a as u64 == b as u64 {
+        return 1;
+    }
+    if rt_is_none(a) == 1 && rt_is_none(b) == 1 {
+        return 1;
+    }
+    0
+}
+#[export_name = "rt_is"]
+pub extern "C" fn rt_is_abi(a: Value, b: Value) -> i8 {
+    // Pass the FULL tagged bits as a pointer — NOT `unwrap_ptr`, whose
+    // `debug_assert!(is_ptr())` would fire on immediates (True/False/int) in
+    // the runtime test profile — so `rt_is_none` can re-tag and inspect them.
+    rt_is(a.0 as *mut Obj, b.0 as *mut Obj)
+}
+
 /// Check truthiness of any value with runtime type dispatch
 /// Returns 1 if truthy, 0 if falsy
 /// Falsy values: None, False, 0, 0.0, empty str/list/tuple/dict/set/bytes

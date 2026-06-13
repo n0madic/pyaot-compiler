@@ -1112,6 +1112,31 @@ print(v is not None)
 }
 
 #[test]
+fn is_identity_uses_rt_is() {
+    // `a is b` against non-None operands lowers through `rt_is` (bit-identity),
+    // NOT through `==`/`rt_obj_eq`; `is not` negates the same call. The None
+    // form still routes to `rt_is_none`, so neither bleeds into the other.
+    let src = "\
+a = 1
+b = 2
+print(a is b)
+print(a is not b)
+";
+    let p = lowered(src);
+    let calls = runtime_calls(&p);
+    let n_is = calls.iter().filter(|(s, _, _)| *s == "rt_is").count();
+    assert_eq!(n_is, 2, "two general identity checks via rt_is");
+    assert!(
+        !calls.iter().any(|(s, _, _)| *s == "rt_is_none"),
+        "non-None identity must not route through rt_is_none"
+    );
+    assert!(
+        !calls.iter().any(|(s, _, _)| *s == "rt_obj_eq"),
+        "`is` must not dispatch through equality (__eq__)"
+    );
+}
+
+#[test]
 fn stdlib_os_path_join_collects_variadic_list() {
     // `os.path.join(a, b, c)` (a `variadic_to_list` descriptor reached through
     // the `import os` submodule chain) passes ONE list to `rt_os_path_join`.

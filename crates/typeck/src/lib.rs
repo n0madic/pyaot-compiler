@@ -1813,6 +1813,7 @@ impl<'a> Sweeper<'a> {
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
             HirExprKind::IsNone { .. } => SemTy::Bool,
+            HirExprKind::Is { .. } => SemTy::Bool,
             // A stdlib runtime call types as its descriptor's declared return
             // `TypeSpec` (Phase 8B); arg/param compatibility is enforced in
             // `check_repr_boundaries` (the contract seam, like calls).

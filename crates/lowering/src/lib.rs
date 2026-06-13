@@ -997,6 +997,22 @@ impl<'a> FnLower<'a> {
                 });
                 Ok((dst, Repr::Raw(RawKind::I8)))
             }
+            HirExprKind::Is { l, r } => {
+                // `l is r` → `rt_is(l, r)` (bit-identity; None's ABI encodings
+                // are normalized). Both operands ride the Tagged baseline, like
+                // `rt_is_none`. Result is Raw(I8).
+                let (ll, lr) = self.lower_expr(*l)?;
+                let lt = self.coerce(ll, lr, Repr::Tagged)?;
+                let (rl, rr) = self.lower_expr(*r)?;
+                let rt = self.coerce(rl, rr, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(dst),
+                    def: &pyaot_core_defs::runtime_func_def::RT_IS,
+                    args: vec![Operand::Local(lt), Operand::Local(rt)],
+                });
+                Ok((dst, Repr::Raw(RawKind::I8)))
+            }
             HirExprKind::CallRuntime {
                 target,
                 args,
