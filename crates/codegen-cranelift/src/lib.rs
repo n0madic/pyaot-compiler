@@ -160,6 +160,7 @@ struct RuntimeFns {
     list_copy: FuncId,
     list_reverse: FuncId,
     list_sort: FuncId,
+    list_sort_by_keys: FuncId,
     dict_get_default: FuncId,
     dict_keys: FuncId,
     dict_values: FuncId,
@@ -344,7 +345,7 @@ impl RuntimeFns {
             tuple_from_iter: d("rt_tuple_from_iter", &[ti], &[ti])?,
             dict_from_pairs: d("rt_dict_from_pairs", &[ti], &[ti])?,
             make_bytes_from_list: d("rt_make_bytes_from_list", &[ti], &[ti])?,
-            sorted: d("rt_sorted", &[ti, ti, t8], &[ti])?,
+            sorted: d("rt_sorted", &[ti, t8, t8], &[ti])?,
             iter_reversed_list: d("rt_iter_reversed_list", &[ti], &[ti])?,
             iter_range: d("rt_iter_range", &[ti, ti, ti], &[ti])?,
             list_pop: d("rt_list_pop", &[ti, ti], &[ti])?,
@@ -356,6 +357,7 @@ impl RuntimeFns {
             list_copy: d("rt_list_copy", &[ti], &[ti])?,
             list_reverse: d("rt_list_reverse", &[ti], &[])?,
             list_sort: d("rt_list_sort", &[ti, t8], &[])?,
+            list_sort_by_keys: d("rt_list_sort_by_keys", &[ti, ti, t8], &[])?,
             dict_get_default: d("rt_dict_get_default", &[ti, ti, ti], &[ti])?,
             dict_keys: d("rt_dict_keys", &[ti], &[ti])?,
             dict_values: d("rt_dict_values", &[ti], &[ti])?,
@@ -2521,11 +2523,10 @@ impl FnGen<'_, '_> {
             ContainerOp::Reversed => self.rt.iter_reversed_list,
             ContainerOp::RangeIter => self.rt.iter_range,
             ContainerOp::Sorted => {
-                // rt_sorted(list, reverse=0, container_tag=0=List). The input is
-                // pre-materialized to a list, so the tag is always List.
-                let reverse = self.builder.ins().iconst(types::I64, 0);
+                // rt_sorted(list, reverse, container_tag=0=List). The input is
+                // pre-materialized to a list, so the tag is always List; the
+                // reverse flag arrives as the op's Raw(I8) argument.
                 let tag = self.builder.ins().iconst(types::I8, 0);
-                vals.push(reverse);
                 vals.push(tag);
                 self.rt.sorted
             }
@@ -2538,12 +2539,10 @@ impl FnGen<'_, '_> {
             ContainerOp::ListClear => self.rt.list_clear,
             ContainerOp::ListCopy => self.rt.list_copy,
             ContainerOp::ListReverse => self.rt.list_reverse,
-            ContainerOp::ListSortMut => {
-                // rt_list_sort(list, reverse=0) — `.sort()` with no key/reverse.
-                let reverse = self.builder.ins().iconst(types::I8, 0);
-                vals.push(reverse);
-                self.rt.list_sort
-            }
+            // rt_list_sort(list, reverse) — the reverse flag is the op's
+            // Raw(I8) argument.
+            ContainerOp::ListSortMut => self.rt.list_sort,
+            ContainerOp::ListSortByKeys => self.rt.list_sort_by_keys,
             ContainerOp::DictGetDefault => self.rt.dict_get_default,
             ContainerOp::DictKeys => self.rt.dict_keys,
             ContainerOp::DictValues => self.rt.dict_values,

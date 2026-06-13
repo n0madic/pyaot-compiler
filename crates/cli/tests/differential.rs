@@ -237,6 +237,24 @@ const PHASE_CORPUS: &[&str] = &[
     // SetFieldNamed, which can hit any class), a subclass write feeds the
     // base class's variable, and annotated fields stay authoritative.
     "b10_field_inference.py",
+    // Phase 10 — kwargs evaluation order (PLAN §1 trap): keyword-call argument
+    // side effects run left-to-right AS WRITTEN (pass-1 staging), never in
+    // parameter-slot order, across defaults / kw-only / *args / **kwargs.
+    "p10_kwargs_evalorder.py",
+    // Phase 10 — kwargs on builtins: sorted(key=, reverse=) via the compiled
+    // key loop + rt_list_sort_by_keys tandem sort (stability incl. reverse),
+    // enumerate(start=), dict(a=1) / dict(pos, kw=) incl. dict-copy routing,
+    // and the kwargs × closure interaction probe.
+    "p10_kwargs_builtins.py",
+    // Phase 10 — kwargs on methods: user classes (defaults / written-order
+    // side effects / **kwargs leftovers), virtual dispatch + super() with
+    // keywords (identical-override-defaults precondition), classmethod /
+    // staticmethod, and the full list.sort(key=, reverse=) matrix incl.
+    // stability.
+    "p10_kwargs_methods.py",
+    // Unblocked by Phase 10 kwargs (sorted(key=)/list.sort(key=) were its
+    // first blocker): builtins as first-class values incl. keyed sorting.
+    "test_builtin_first_class.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
@@ -342,15 +360,18 @@ fn phase_corpus_matches_cpython() {
     }
 }
 
-/// Locate (and build if missing) the runtime staticlib next to the `pyaot`
-/// binary, matching the test's build profile. The runtime is **not** a Cargo
+/// Locate (and rebuild) the runtime staticlib next to the `pyaot` binary,
+/// matching the test's build profile. The runtime is **not** a Cargo
 /// dependency of the CLI (it's linked from a `.a`), so `cargo test` alone does
 /// not produce it — build it here so the gate is self-contained (PITFALLS B9).
+///
+/// `cargo build` runs UNCONDITIONALLY (it is incremental — a no-op when the
+/// runtime sources are unchanged, a fraction of a second). Returning a stale
+/// `.a` just because it exists silently links yesterday's runtime: a runtime
+/// fix would not take effect and could SIGSEGV at link-clean compile time
+/// (this bit the Phase-10 `rt_sorted` ABI change).
 fn ensure_runtime_lib(target_dir: &Path) -> PathBuf {
     let lib = target_dir.join("libpyaot_runtime.a");
-    if lib.exists() {
-        return lib;
-    }
 
     // The profile is the parent dir's name (e.g. `debug` / `release`).
     let profile = target_dir

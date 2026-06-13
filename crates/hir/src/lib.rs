@@ -383,6 +383,11 @@ pub enum HirExprKind {
         recv: Idx<HirExpr>,
         method_name: InternedString,
         args: Vec<Idx<HirExpr>>,
+        /// Keyword arguments in WRITTEN order (Phase 10). The frontend has
+        /// already STAGED the receiver / argument values into locals when this
+        /// is non-empty, so consumers may map names to parameter slots freely
+        /// (via [`match_keywords`]) without reordering side effects.
+        kwargs: Vec<(InternedString, Idx<HirExpr>)>,
     },
     /// Attribute read `value.name` (Phase 5). The slot is resolved at lowering
     /// from the receiver's class via the [`ClassTable`]; a `@property` getter
@@ -841,9 +846,13 @@ pub enum ContainerOp {
     DictFromPairs,
     /// `bytes(list_of_ints)` → a fresh bytes object from a list of ints.
     BytesFromList,
-    /// `sorted(list)` → a new sorted list (codegen supplies `reverse=0`, the
-    /// list container tag); the input is pre-materialized to a list.
+    /// `sorted(list, reverse)` → a new sorted list; the input is
+    /// pre-materialized to a list, `reverse` is a `Raw(I8)` truthiness flag.
     Sorted,
+    /// `rt_list_sort_by_keys(list, keys, reverse)` — stable tandem sort of
+    /// `list` by the parallel `keys` list (the compiled `key=` callback runs
+    /// in a frontend-desugared loop BEFORE this op; no runtime callbacks).
+    ListSortByKeys,
     /// `reversed(list)` → a reverse iterator over a pre-materialized list.
     Reversed,
     /// `range(start, stop, step)` used as a *value* (not the for-loop fast path) →
@@ -949,6 +958,9 @@ impl ContainerMethod {
 pub enum ContainerArg {
     Val,
     Idx,
+    /// An unboxed `Raw(I8)` boolean flag (`reverse=` — CPython truthiness,
+    /// computed by lowering's `truthy_i8`).
+    Bool,
 }
 
 /// The result category of a [`ContainerOp`] — drives the `dst` representation the
@@ -970,7 +982,7 @@ pub enum ContainerResult {
 impl ContainerOp {
     /// The fixed argument-representation signature (positional).
     pub fn arg_kinds(self) -> &'static [ContainerArg] {
-        use ContainerArg::{Idx, Val};
+        use ContainerArg::{Bool, Idx, Val};
         match self {
             ContainerOp::ListNew
             | ContainerOp::DictNew
@@ -1003,10 +1015,11 @@ impl ContainerOp {
             ContainerOp::ListInsert => &[Val, Idx, Val],
             // `dict.get(k[, default])` / `dict.setdefault(k[, default])` — all tagged.
             ContainerOp::DictSetdefault | ContainerOp::DictGetDefault => &[Val, Val, Val],
+            ContainerOp::ListSortMut => &[Val, Bool],
+            ContainerOp::ListSortByKeys => &[Val, Val, Bool],
             ContainerOp::ListClear
             | ContainerOp::ListCopy
             | ContainerOp::ListReverse
-            | ContainerOp::ListSortMut
             | ContainerOp::DictKeys
             | ContainerOp::DictValues
             | ContainerOp::DictItems
@@ -1032,8 +1045,8 @@ impl ContainerOp {
             | ContainerOp::TupleFromIter
             | ContainerOp::DictFromPairs
             | ContainerOp::BytesFromList
-            | ContainerOp::Sorted
             | ContainerOp::Reversed => &[Val],
+            ContainerOp::Sorted => &[Val, Bool],
         }
     }
 
@@ -1078,6 +1091,7 @@ impl ContainerOp {
             | ContainerOp::ListClear
             | ContainerOp::ListReverse
             | ContainerOp::ListSortMut
+            | ContainerOp::ListSortByKeys
             | ContainerOp::DictUpdate
             | ContainerOp::DictClear
             | ContainerOp::SetRemove
@@ -1353,7 +1367,7 @@ pub struct HirClassAttr {
 
 /// A constant class-attribute initializer (`count = 0`, `scale = "c"`). Non-literal
 /// initializers are out of scope for Phase 5D.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClassAttrInit {
     Int(i64),
     BigInt(InternedString),
@@ -1574,4 +1588,88 @@ impl pyaot_types::ClassHierarchy for ClassTable {
     fn class_name(&self, c: ClassId) -> Option<InternedString> {
         self.get(c).map(|info| info.name)
     }
+}
+
+// ── keyword → parameter-slot matching (Phase 10) ──────────────────────────────
+
+/// Where one callee parameter slot's value comes from after keyword matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotSource {
+    /// The i-th call-site positional argument.
+    Pos(usize),
+    /// The i-th call-site keyword argument.
+    Kw(usize),
+    /// The parameter's declared default.
+    Default,
+}
+
+/// Why a keyword call cannot be matched to the callee's parameters. Carries
+/// interned names so the reporter can render CPython-flavored messages
+/// (`Duplicate` ⇒ "got multiple values for argument …").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KwMatchError {
+    Unexpected(InternedString),
+    Duplicate(InternedString),
+    Missing(InternedString),
+    TooManyPositional { expected: usize, got: usize },
+}
+
+/// The result of [`match_keywords`]: one [`SlotSource`] per callee parameter,
+/// plus the keyword indices left for a `**kwargs` callee's dict slot
+/// (in written order; empty unless `allow_extra`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KwMatch {
+    pub slots: Vec<SlotSource>,
+    pub leftover: Vec<usize>,
+}
+
+/// Map a call site's positional count + keyword names onto a callee's fixed
+/// parameter list (`param_names` EXCLUDES `self` and the `*args`/`**kwargs`
+/// slots; `has_default` is parallel to it). Every named parameter is treated
+/// as positional-or-keyword — the HIR subset does not model kw-only markers.
+/// `allow_extra` (a `**kwargs` callee) routes unknown names to `leftover`
+/// instead of erroring. Pure slot algebra — no side tables, shared by typeck
+/// and lowering.
+pub fn match_keywords(
+    param_names: &[InternedString],
+    has_default: &[bool],
+    n_pos: usize,
+    kw_names: &[InternedString],
+    allow_extra: bool,
+) -> Result<KwMatch, KwMatchError> {
+    debug_assert_eq!(param_names.len(), has_default.len());
+    if n_pos > param_names.len() {
+        return Err(KwMatchError::TooManyPositional {
+            expected: param_names.len(),
+            got: n_pos,
+        });
+    }
+    let mut used = vec![false; kw_names.len()];
+    let mut slots = Vec::with_capacity(param_names.len());
+    for (i, &p) in param_names.iter().enumerate() {
+        let kw_idx = kw_names.iter().position(|&k| k == p);
+        if i < n_pos {
+            if kw_idx.is_some() {
+                return Err(KwMatchError::Duplicate(p));
+            }
+            slots.push(SlotSource::Pos(i));
+        } else if let Some(k) = kw_idx {
+            used[k] = true;
+            slots.push(SlotSource::Kw(k));
+        } else if has_default[i] {
+            slots.push(SlotSource::Default);
+        } else {
+            return Err(KwMatchError::Missing(p));
+        }
+    }
+    let leftover: Vec<usize> = (0..kw_names.len()).filter(|&k| !used[k]).collect();
+    if !allow_extra {
+        if let Some(&k) = leftover.first() {
+            return Err(KwMatchError::Unexpected(kw_names[k]));
+        }
+    }
+    Ok(KwMatch {
+        slots,
+        leftover: if allow_extra { leftover } else { Vec::new() },
+    })
 }

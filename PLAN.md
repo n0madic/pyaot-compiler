@@ -148,8 +148,6 @@ These few gaps block the most files — close them before the long tail.
 
 | Gap | Files blocked | First error |
 |---|---|---|
-| **kwargs on indirect/builtin calls** (`sorted(reverse=)`, `dict(a=1)`, `enumerate(start=)`) | ≥6 | `keyword arguments are not supported on indirect calls` |
-| **kwargs on method calls** (`list.sort(key=)`, `str.format(name=)`, `str.split(sep=)`) | ≥4 | `keyword arguments are not supported for method calls` |
 | **`is`/`is not` against non-`None`** (`x is True`, `a is b`) | 6 | `is / is not is only supported against None` |
 | **`del`** statement (`del d[k]`, `del name`, `del obj.attr`) | 4 | `unsupported statement for this milestone` |
 | **`*seq` spread into a non-`*args` callee** | 3 | `f() takes no *args, cannot spread * into it` |
@@ -158,8 +156,21 @@ These few gaps block the most files — close them before the long tail.
 | **int→float numeric tower through a `float` slot** | 2 | `int cannot be returned/assigned to a float slot` |
 
 ### 1. Calls & arguments
-- **kwargs on indirect/builtin calls** — `sorted(xs, key=, reverse=)`, `dict(a=1,b=2)`, `enumerate(xs, start=1)`. (`min`/`max(key=)` already work — the exception.)
-- **kwargs on method calls** — `list.sort(key=)`, `str.format(name=)`, `str.split(sep=, maxsplit=)`, `str.encode(encoding=)`, `str.replace(count=)`.
+- ~~**kwargs on indirect/builtin calls**~~ — DONE (Phase 10): `sorted(xs, key=, reverse=)`
+  (compiled key loop + `rt_list_sort_by_keys` tandem sort), `dict(a=1,b=2)` /
+  `dict(pos, kw=)`, `enumerate(xs, start=1)`; written-order argument staging
+  fixed for ALL keyword calls (incl. the pre-existing direct-call/stdlib bug).
+  Truly indirect callees (a callee-typed variable) still reject keywords.
+- ~~**kwargs on method calls**~~ — DONE (Phase 10): user-class methods
+  (defaults / virtual / super / static / classmethod / `**kwargs` leftovers via
+  `MethodCall.kwargs` + `pyaot_hir::match_keywords`), `list.sort(key=, reverse=)`.
+  The `str.format(name=)`/`str.split(sep=)`/`str.encode(encoding=)`/
+  `str.replace(count=)` entries wait on §9 (those methods don't exist yet) —
+  the kwargs mechanism is ready for them. Caveats: `.sort(key=K)` desugars by
+  method NAME (runtime TypeError guard); virtual calls require identical
+  parameter names/defaults across overrides when keywords/defaults are used.
+  Constructor kwargs `Cls(x=1)` are nearly free now (match_keywords) — small
+  follow-up.
 - **`*seq` spread** — four sub-cases: into a fixed-arity callee `f(*[1,2,3])`; mixed with positionals `f(1, *seq, 4)`; covering the leading fixed params of a varargs callee `def f(a, *rest)`; into a **decorated** function (distinct error).
 - **`**d` spread into a call** — `f(**{"a":1})` (was Phase 6C out-of-scope).
 - **Mutable default parameter** — `def f(x, lst=[])`, `d={}`.

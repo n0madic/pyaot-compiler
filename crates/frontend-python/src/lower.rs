@@ -1141,6 +1141,32 @@ enum KeyMode<'e> {
     ByName(&'e Expr),
 }
 
+/// A pending call-argument value during keyword adaptation: the raw AST
+/// expression (no-keyword calls — slot order coincides with written order, so
+/// lowering at slot-fill time is correct), or a local STAGED in written order
+/// (keyword calls — slot filling reorders arguments, and CPython evaluates
+/// them left-to-right as written, so side effects must run before matching).
+#[derive(Clone, Copy)]
+enum ArgSrc<'e> {
+    Plain(&'e Expr),
+    Staged(LocalId),
+}
+
+/// Side-effect-free literal (possibly sign-prefixed)? Such arguments skip
+/// staging and stay [`ArgSrc::Plain`], so downstream slot-fill folds (`None`
+/// → absent stdlib slot, int literal → float for raw-ABI params) still see
+/// the AST shape.
+fn is_const_like(e: &Expr) -> bool {
+    match e {
+        Expr::Constant(_) => true,
+        Expr::UnaryOp(u) => {
+            matches!(u.op, PyUnaryOp::USub | PyUnaryOp::UAdd)
+                && matches!(u.operand.as_ref(), Expr::Constant(_))
+        }
+        _ => false,
+    }
+}
+
 /// How a source name in scope maps to storage (Phase 6A): directly to a local
 /// slot, or through a cell held in a local slot (a captured / capturable
 /// variable — the P6-2 rule).
@@ -1691,6 +1717,7 @@ impl<'a> FnLowerer<'a> {
                 recv,
                 method_name,
                 args,
+                kwargs: vec![],
             },
             SemTy::Dyn,
             span,
@@ -3323,6 +3350,7 @@ impl<'a> FnLowerer<'a> {
                 recv,
                 method_name: enter_name,
                 args: vec![],
+                kwargs: vec![],
             },
             SemTy::Dyn,
             span,
@@ -3372,6 +3400,7 @@ impl<'a> FnLowerer<'a> {
                 recv: recv2,
                 method_name: exit_name,
                 args: vec![e1, e2, none],
+                kwargs: vec![],
             },
             SemTy::Dyn,
             span,
@@ -4831,6 +4860,35 @@ impl<'a> FnLowerer<'a> {
         id
     }
 
+    /// Evaluate a call-argument expression NOW into a fresh staged local.
+    /// Keyword adaptation fills parameter slots out of written order; staging
+    /// pins each argument's side effects to its written position.
+    fn stage_arg(&mut self, e: &Expr) -> Result<LocalId> {
+        let value = self.lower_expr(e)?;
+        let l = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign { target: l, value });
+        Ok(l)
+    }
+
+    /// Stage `e` unless it is a side-effect-free literal (kept as
+    /// [`ArgSrc::Plain`] for slot-fill AST folds — see [`is_const_like`]).
+    fn stage_arg_src<'e>(&mut self, e: &'e Expr) -> Result<ArgSrc<'e>> {
+        if is_const_like(e) {
+            Ok(ArgSrc::Plain(e))
+        } else {
+            Ok(ArgSrc::Staged(self.stage_arg(e)?))
+        }
+    }
+
+    /// Materialize an [`ArgSrc`] at slot-fill time: lower the AST expression,
+    /// or reference the already-staged local.
+    fn arg_src_value(&mut self, src: ArgSrc<'_>, span: Span) -> Result<Idx<HirExpr>> {
+        match src {
+            ArgSrc::Plain(e) => self.lower_expr(e),
+            ArgSrc::Staged(l) => Ok(self.local_ref(l, span)),
+        }
+    }
+
     /// A fresh synthetic local pinned to the `Tagged` representation — for the slot
     /// that receives an `iter_next` result (null on exhaustion, so it must never be
     /// inferred to an unboxed `Raw(F64)`/`Raw(I8)` that would deref the null).
@@ -5536,22 +5594,73 @@ impl<'a> FnLowerer<'a> {
         // (Phase 5). `super().method(args)` carries a `Super` receiver resolved at
         // lowering against the enclosing class's MRO. Unknown names are not rejected.
         if let Expr::Attribute(attr) = c.func.as_ref() {
-            reject_call_extras(c, span, "method calls")?;
+            if has_starred_arg(c) {
+                return Err(parse_error(
+                    "`*args` spreading is not supported for method calls",
+                    span,
+                ));
+            }
+            if has_doublestar_kwarg(c) {
+                return Err(parse_error(
+                    "`**kwargs` spreading is not supported for method calls",
+                    span,
+                ));
+            }
+            // `.sort(key=K)` with a non-None key desugars HERE, by method NAME
+            // (the receiver's type is not known until typeck). Documented
+            // caveat: a user class with a `sort(key=)` method would mis-route;
+            // mitigated by the type-tag TypeError guard in
+            // `rt_list_sort_by_keys` (precedent: `g.send()`/`g.close()` above
+            // are name-dispatched the same way).
+            if attr.attr.as_str() == "sort"
+                && !c.keywords.is_empty()
+                && !is_super_call(attr.value.as_ref())
+            {
+                if let Some(out) = self.lower_sort_kwargs(attr, c, span)? {
+                    return Ok(out);
+                }
+            }
+            let staging = !c.keywords.is_empty();
             let recv = if is_super_call(attr.value.as_ref()) {
                 let cid = self
                     .enclosing_class
                     .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
                 self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span)
+            } else if staging && !matches!(attr.value.as_ref(), Expr::Name(_)) {
+                // Keyword calls stage a compound receiver too — its side
+                // effects come before every argument's (written order). A bare
+                // name is a pure read AND may be a class reference
+                // (`Cls.method(kw=…)`), which cannot live in a value slot.
+                let l = self.stage_arg(attr.value.as_ref())?;
+                self.local_ref(l, span)
             } else {
                 self.lower_expr(attr.value.as_ref())?
             };
             let method_name = self.intern(attr.attr.as_str());
-            let args = self.lower_expr_list(&c.args)?;
+            let (args, kwargs) = if staging {
+                // Stage positionals then keyword values in WRITTEN order.
+                let mut args = Vec::with_capacity(c.args.len());
+                for a in &c.args {
+                    let src = self.stage_arg_src(a)?;
+                    args.push(self.arg_src_value(src, span)?);
+                }
+                let mut kwargs = Vec::with_capacity(c.keywords.len());
+                for kw in &c.keywords {
+                    let kname = kw.arg.as_ref().expect("** rejected above");
+                    let id = self.intern(kname.as_str());
+                    let src = self.stage_arg_src(&kw.value)?;
+                    kwargs.push((id, self.arg_src_value(src, span)?));
+                }
+                (args, kwargs)
+            } else {
+                (self.lower_expr_list(&c.args)?, vec![])
+            };
             return Ok(self.alloc(
                 HirExprKind::MethodCall {
                     recv,
                     method_name,
                     args,
+                    kwargs,
                 },
                 SemTy::Dyn,
                 span,
@@ -5662,7 +5771,378 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
+        // Keyword arguments on container/iteration builtins (Phase 10):
+        // `sorted(key=, reverse=)`, `enumerate(start=)`, `dict(a=1)`. Only for
+        // a bare unshadowed name — user bindings keep winning above, and the
+        // no-keyword forms keep their existing paths untouched.
+        if let Expr::Name(n) = c.func.as_ref() {
+            if !c.keywords.is_empty() {
+                let iname = self.intern(n.id.as_str());
+                if !self.scope.contains_key(&iname)
+                    && self.global_read_slot(iname).is_none()
+                    && !self.ctx.top_defs.contains_key(n.id.as_str())
+                {
+                    if let Some(out) = self.lower_builtin_kwargs_call(n.id.as_str(), c, span)? {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
         self.lower_indirect_or_unknown_call(c, span)
+    }
+
+    /// Lower a keyword-carrying call to a recognized builtin (Phase 10), or
+    /// `None` to fall through to the generic (rejecting) path. Builtins that
+    /// take no keywords get a precise diagnostic here instead of the generic
+    /// indirect-call rejection.
+    fn lower_builtin_kwargs_call(
+        &mut self,
+        name: &str,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        match name {
+            "sorted" => Ok(Some(self.lower_sorted_kwargs(c, span)?)),
+            "enumerate" => Ok(Some(self.lower_enumerate_kwargs(c, span)?)),
+            "dict" => Ok(Some(self.lower_dict_kwargs(c, span)?)),
+            "list" | "tuple" | "zip" | "reversed" | "len" | "bytes" | "set" | "sum" | "next"
+            | "range" => Err(parse_error(
+                format!("`{name}()` takes no keyword arguments"),
+                span,
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    /// `sorted(xs, *, key=None, reverse=False)` with keywords (Phase 10).
+    /// Without a key (or `key=None`): the standard container path with the
+    /// reverse flag. With a key: copy → compiled key loop building a parallel
+    /// keys list → `ListSortByKeys` tandem sort (no runtime callbacks); the
+    /// result is the sorted copy. All argument values evaluate in written order.
+    fn lower_sorted_kwargs(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        if c.args.len() != 1 || has_starred_arg(c) {
+            return Err(parse_error(
+                "sorted() takes exactly one positional argument",
+                span,
+            ));
+        }
+        let xs = self.stage_arg(&c.args[0])?;
+        let mut key_mode: Option<KeyMode> = None;
+        let mut rev: Option<LocalId> = None;
+        for kw in &c.keywords {
+            match kw.arg.as_ref().map(|i| i.as_str()) {
+                Some("key") => {
+                    if is_none_lit(&kw.value) {
+                        continue;
+                    }
+                    // Same discipline as min/max: a bare out-of-scope name is
+                    // called directly per element (builtins have no
+                    // value-position thunk); anything else is staged once.
+                    key_mode = Some(match &kw.value {
+                        k @ Expr::Name(nm)
+                            if {
+                                let kn = self.intern(nm.id.as_str());
+                                self.scope.contains_key(&kn)
+                            } =>
+                        {
+                            KeyMode::Staged(self.stage_arg(k)?)
+                        }
+                        k @ Expr::Name(_) => KeyMode::ByName(k),
+                        k => KeyMode::Staged(self.stage_arg(k)?),
+                    });
+                }
+                Some("reverse") => rev = Some(self.stage_arg(&kw.value)?),
+                Some(other) => {
+                    return Err(parse_error(
+                        format!("sorted() got an unexpected keyword argument `{other}`"),
+                        span,
+                    ))
+                }
+                None => return Err(parse_error("sorted() does not support **kwargs", span)),
+            }
+        }
+        let rev_ref = match rev {
+            Some(l) => self.local_ref(l, span),
+            None => self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span),
+        };
+        let Some(km) = key_mode else {
+            // No key: `sorted(xs, rev)` through the container builtin.
+            let cname = self.intern("sorted");
+            let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+            let xs_ref = self.local_ref(xs, span);
+            return Ok(self.alloc(
+                HirExprKind::Call {
+                    callee,
+                    args: vec![xs_ref, rev_ref],
+                },
+                SemTy::Dyn,
+                span,
+            ));
+        };
+        // copy = list(iter(xs)) — sorted never mutates its input.
+        let xs_ref = self.local_ref(xs, span);
+        let it = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![xs_ref],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        let copy_e = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::ListFromIter,
+                args: vec![it],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        let copy = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: copy,
+            value: copy_e,
+        });
+        // keys = [key(e) for e in copy] — the key call stays compiled code.
+        let keys = self.fresh_local(SemTy::Dyn);
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: keys,
+            value: empty,
+        });
+        let copy_iter_ref = self.local_ref(copy, span);
+        let lp = self.begin_iter_loop(copy_iter_ref, span)?;
+        let kv = self.emit_key_call(&km, lp.elem, span)?;
+        self.push_stmt(HirStmt::ContainerPush {
+            container: keys,
+            value: kv,
+        });
+        self.end_iter_loop(lp);
+        // Tandem sort of copy by keys, then the copy IS the result.
+        let copy_ref = self.local_ref(copy, span);
+        let keys_ref = self.local_ref(keys, span);
+        let sort_e = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::ListSortByKeys,
+                args: vec![copy_ref, keys_ref, rev_ref],
+            },
+            SemTy::NoneTy,
+            span,
+        );
+        let sink = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: sink,
+            value: sort_e,
+        });
+        Ok(self.local_ref(copy, span))
+    }
+
+    /// `xs.sort(key=K[, reverse=R])` with a non-None key (Phase 10): stage the
+    /// receiver and keyword values in written order, build the parallel keys
+    /// list with a compiled loop, and tandem-sort in place via
+    /// `ListSortByKeys`. Returns `None` (falls through to the generic
+    /// `MethodCall` path) when the key is absent / the `None` literal — that
+    /// form needs no name-dispatch caveat. The expression's value is `None`
+    /// (in-place sort).
+    fn lower_sort_kwargs(
+        &mut self,
+        attr: &rustpython_parser::ast::ExprAttribute,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        if !c
+            .keywords
+            .iter()
+            .any(|kw| kw.arg.as_ref().is_some_and(|a| a.as_str() == "key") && !is_none_lit(&kw.value))
+        {
+            return Ok(None);
+        }
+        if !c.args.is_empty() {
+            return Err(parse_error("sort() takes no positional arguments", span));
+        }
+        let recv = self.stage_arg(attr.value.as_ref())?;
+        let mut key_mode: Option<KeyMode> = None;
+        let mut rev: Option<LocalId> = None;
+        for kw in &c.keywords {
+            match kw.arg.as_ref().map(|i| i.as_str()) {
+                Some("key") => {
+                    key_mode = Some(match &kw.value {
+                        k @ Expr::Name(nm)
+                            if {
+                                let kn = self.intern(nm.id.as_str());
+                                self.scope.contains_key(&kn)
+                            } =>
+                        {
+                            KeyMode::Staged(self.stage_arg(k)?)
+                        }
+                        k @ Expr::Name(_) => KeyMode::ByName(k),
+                        k => KeyMode::Staged(self.stage_arg(k)?),
+                    });
+                }
+                Some("reverse") => rev = Some(self.stage_arg(&kw.value)?),
+                Some(other) => {
+                    return Err(parse_error(
+                        format!("sort() got an unexpected keyword argument `{other}`"),
+                        span,
+                    ))
+                }
+                None => return Err(parse_error("sort() does not support **kwargs", span)),
+            }
+        }
+        let km = key_mode.expect("checked above: a non-None key is present");
+        // keys = [key(e) for e in recv] — compiled key calls, no runtime callback.
+        let keys = self.fresh_local(SemTy::Dyn);
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: keys,
+            value: empty,
+        });
+        let recv_iter_ref = self.local_ref(recv, span);
+        let lp = self.begin_iter_loop(recv_iter_ref, span)?;
+        let kv = self.emit_key_call(&km, lp.elem, span)?;
+        self.push_stmt(HirStmt::ContainerPush {
+            container: keys,
+            value: kv,
+        });
+        self.end_iter_loop(lp);
+        let recv_ref = self.local_ref(recv, span);
+        let keys_ref = self.local_ref(keys, span);
+        let rev_ref = match rev {
+            Some(l) => self.local_ref(l, span),
+            None => self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span),
+        };
+        let sort_e = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::ListSortByKeys,
+                args: vec![recv_ref, keys_ref, rev_ref],
+            },
+            SemTy::NoneTy,
+            span,
+        );
+        let sink = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: sink,
+            value: sort_e,
+        });
+        Ok(Some(self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span)))
+    }
+
+    /// `enumerate(xs, start=k)` (Phase 10) — fold the keyword into the
+    /// positional form the container path already accepts.
+    fn lower_enumerate_kwargs(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        if c.args.is_empty() || c.args.len() > 2 || has_starred_arg(c) {
+            return Err(parse_error(
+                "enumerate() takes 1 positional argument plus optional `start`",
+                span,
+            ));
+        }
+        let it_src = self.stage_arg_src(&c.args[0])?;
+        let mut start: Option<ArgSrc> = match c.args.get(1) {
+            Some(a) => Some(self.stage_arg_src(a)?),
+            None => None,
+        };
+        for kw in &c.keywords {
+            match kw.arg.as_ref().map(|i| i.as_str()) {
+                Some("start") => {
+                    if start.is_some() {
+                        return Err(parse_error(
+                            "enumerate() got multiple values for argument `start`",
+                            span,
+                        ));
+                    }
+                    start = Some(self.stage_arg_src(&kw.value)?);
+                }
+                Some(other) => {
+                    return Err(parse_error(
+                        format!("enumerate() got an unexpected keyword argument `{other}`"),
+                        span,
+                    ))
+                }
+                None => return Err(parse_error("enumerate() does not support **kwargs", span)),
+            }
+        }
+        let cname = self.intern("enumerate");
+        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+        let it_ref = self.arg_src_value(it_src, span)?;
+        let start_ref = match start {
+            Some(s) => self.arg_src_value(s, span)?,
+            None => self.alloc(HirExprKind::IntLit(0), SemTy::Int, span),
+        };
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![it_ref, start_ref],
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// `dict(a=1, b=2)` / `dict(pos, a=1)` (Phase 10): pure-keyword form is a
+    /// `DictLit` with string keys in written order; the mixed form builds the
+    /// positional dict first, then inserts the keywords (CPython update order).
+    fn lower_dict_kwargs(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        if has_starred_arg(c) {
+            return Err(parse_error(
+                "`*` spreading into dict() is out of scope",
+                span,
+            ));
+        }
+        if c.args.is_empty() {
+            let mut pairs = Vec::with_capacity(c.keywords.len());
+            for kw in &c.keywords {
+                let Some(kname) = &kw.arg else {
+                    return Err(parse_error("dict() does not support **kwargs", span));
+                };
+                let key_id = self.intern(kname.as_str());
+                let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
+                let val = self.lower_expr(&kw.value)?;
+                pairs.push((key, val));
+            }
+            return Ok(self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span));
+        }
+        if c.args.len() > 1 {
+            return Err(parse_error(
+                "dict() takes at most 1 positional argument",
+                span,
+            ));
+        }
+        // Stage everything in written order, then build + insert.
+        let pos = self.stage_arg(&c.args[0])?;
+        let mut kwargs: Vec<(InternedString, ArgSrc)> = Vec::with_capacity(c.keywords.len());
+        for kw in &c.keywords {
+            let Some(kname) = &kw.arg else {
+                return Err(parse_error("dict() does not support **kwargs", span));
+            };
+            let id = self.intern(kname.as_str());
+            let src = self.stage_arg_src(&kw.value)?;
+            kwargs.push((id, src));
+        }
+        let cname = self.intern("dict");
+        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+        let pos_ref = self.local_ref(pos, span);
+        let call = self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![pos_ref],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        let d = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: d,
+            value: call,
+        });
+        for (key_id, src) in kwargs {
+            let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
+            let val = self.arg_src_value(src, span)?;
+            self.push_stmt(HirStmt::ContainerInsert {
+                container: d,
+                key,
+                value: val,
+            });
+        }
+        Ok(self.local_ref(d, span))
     }
 
     /// Pack a call to a decorated function into the wrapper's `(*args, **kwargs)`
@@ -6231,7 +6711,18 @@ impl<'a> FnLowerer<'a> {
                 span,
             ));
         }
-        let mut keywords: Vec<(String, &Expr, bool)> = Vec::new();
+        // With keywords present, slot matching reorders arguments — stage every
+        // (non-literal) value in WRITTEN order first (CPython evaluation order).
+        let staging = !c.keywords.is_empty();
+        let mut positionals: Vec<ArgSrc> = Vec::with_capacity(c.args.len());
+        for a in &c.args {
+            positionals.push(if staging {
+                self.stage_arg_src(a)?
+            } else {
+                ArgSrc::Plain(a)
+            });
+        }
+        let mut keywords: Vec<(String, ArgSrc, bool)> = Vec::new();
         for kw in &c.keywords {
             let Some(name) = &kw.arg else {
                 return Err(parse_error(
@@ -6239,15 +6730,16 @@ impl<'a> FnLowerer<'a> {
                     span,
                 ));
             };
-            keywords.push((name.as_str().to_string(), &kw.value, false));
+            let src = self.stage_arg_src(&kw.value)?;
+            keywords.push((name.as_str().to_string(), src, false));
         }
 
         let mut slots: Vec<Option<Idx<HirExpr>>> = Vec::with_capacity(def.params.len());
         for (i, p) in def.params.iter().enumerate() {
-            let v = if i < c.args.len() {
-                self.stdlib_arg_slot(&c.args[i], &p.ty, p.optional)?
+            let v = if i < positionals.len() {
+                self.stdlib_arg_slot(positionals[i], &p.ty, p.optional, span)?
             } else if let Some(kv) = take_keyword(&mut keywords, p.name) {
-                self.stdlib_arg_slot(kv, &p.ty, p.optional)?
+                self.stdlib_arg_slot(kv, &p.ty, p.optional, span)?
             } else if let Some(cv) = &p.default {
                 Some(self.lower_stdlib_const(cv, span))
             } else if p.optional {
@@ -6284,11 +6776,18 @@ impl<'a> FnLowerer<'a> {
     /// primitive params (`Float`/`Int`/`Bool`) keep the literal. Phase 8D.
     fn stdlib_arg_slot(
         &mut self,
-        arg: &Expr,
+        arg: ArgSrc<'_>,
         spec: &pyaot_stdlib_defs::TypeSpec,
         optional: bool,
+        span: Span,
     ) -> Result<Option<Idx<HirExpr>>> {
         use pyaot_stdlib_defs::TypeSpec;
+        let arg = match arg {
+            ArgSrc::Plain(e) => e,
+            // Already staged — never a literal (see `stage_arg_src`), so the
+            // None-sentinel / int→float folds below cannot apply.
+            ArgSrc::Staged(l) => return Ok(Some(self.local_ref(l, span))),
+        };
         let is_object = !matches!(spec, TypeSpec::Float | TypeSpec::Int | TypeSpec::Bool);
         if optional && is_object && is_none_lit(arg) {
             return Ok(None);
@@ -6361,17 +6860,33 @@ impl<'a> FnLowerer<'a> {
                 span,
             ));
         }
-        let positionals: Vec<&Expr> = c
-            .args
-            .iter()
-            .filter(|a| !matches!(a, Expr::Starred(_)))
-            .collect();
-        let star: Option<&Expr> = c.args.iter().find_map(|a| match a {
-            Expr::Starred(s) => Some(s.value.as_ref()),
-            _ => None,
-        });
+        // With keywords present, slot matching below reorders arguments — so
+        // pass 1 stages every (non-literal) argument value in WRITTEN order
+        // (CPython's evaluation order), and pass 2 only assembles slot refs.
+        let staging = !c.keywords.is_empty();
+        let mut positionals: Vec<ArgSrc> = Vec::new();
+        let mut star: Option<ArgSrc> = None;
+        for a in &c.args {
+            match a {
+                Expr::Starred(s) => {
+                    let inner = s.value.as_ref();
+                    star = Some(if staging {
+                        self.stage_arg_src(inner)?
+                    } else {
+                        ArgSrc::Plain(inner)
+                    });
+                }
+                _ => {
+                    positionals.push(if staging {
+                        self.stage_arg_src(a)?
+                    } else {
+                        ArgSrc::Plain(a)
+                    });
+                }
+            }
+        }
         // (keyword name, value, consumed?)
-        let mut keywords: Vec<(String, &Expr, bool)> = Vec::new();
+        let mut keywords: Vec<(String, ArgSrc, bool)> = Vec::new();
         for kw in &c.keywords {
             let Some(name) = &kw.arg else {
                 return Err(parse_error(
@@ -6379,14 +6894,15 @@ impl<'a> FnLowerer<'a> {
                     span,
                 ));
             };
-            keywords.push((name.as_str().to_string(), &kw.value, false));
+            let src = self.stage_arg_src(&kw.value)?;
+            keywords.push((name.as_str().to_string(), src, false));
         }
 
         let n_fixed = info.fixed.len();
         let mut out: Vec<Idx<HirExpr>> = Vec::with_capacity(n_fixed + 2);
 
         // ── star spread `f(*t)`: the spread IS the whole *args tuple ──
-        let star_tuple: Option<Idx<HirExpr>> = if let Some(star_expr) = star {
+        let star_tuple: Option<Idx<HirExpr>> = if let Some(star_src) = star {
             if info.varargs.is_none() {
                 return Err(parse_error(
                     format!("`{fname}()` takes no *args, cannot spread `*` into it"),
@@ -6400,11 +6916,11 @@ impl<'a> FnLowerer<'a> {
                     span,
                 ));
             }
-            for p in &positionals {
-                let v = self.lower_expr(p)?;
+            for p in positionals.clone() {
+                let v = self.arg_src_value(p, span)?;
                 out.push(v);
             }
-            Some(self.lower_expr(star_expr)?)
+            Some(self.arg_src_value(star_src, span)?)
         } else {
             let n_pos = positionals.len();
             if n_pos > n_fixed && info.varargs.is_none() {
@@ -6418,10 +6934,10 @@ impl<'a> FnLowerer<'a> {
             let pos_for_fixed = n_pos.min(n_fixed);
             for (i, p) in info.fixed.iter().enumerate() {
                 let v = if i < pos_for_fixed {
-                    self.lower_expr(positionals[i])?
+                    self.arg_src_value(positionals[i], span)?
                 } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name))
                 {
-                    self.lower_expr(kv)?
+                    self.arg_src_value(kv, span)?
                 } else if let Some(def) = &p.default {
                     self.lower_const_default(def, span)
                 } else {
@@ -6437,8 +6953,8 @@ impl<'a> FnLowerer<'a> {
             }
             if info.varargs.is_some() {
                 let mut excess = Vec::new();
-                for p in positionals.iter().skip(n_fixed) {
-                    excess.push(self.lower_expr(p)?);
+                for p in positionals.iter().skip(n_fixed).copied().collect::<Vec<_>>() {
+                    excess.push(self.arg_src_value(p, span)?);
                 }
                 Some(self.alloc(HirExprKind::TupleLit { elems: excess }, SemTy::Dyn, span))
             } else {
@@ -6449,7 +6965,7 @@ impl<'a> FnLowerer<'a> {
         // ── keyword-only params ──
         for p in &info.kwonly {
             let v = if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name)) {
-                self.lower_expr(kv)?
+                self.arg_src_value(kv, span)?
             } else if let Some(def) = &p.default {
                 self.lower_const_default(def, span)
             } else {
@@ -6478,14 +6994,14 @@ impl<'a> FnLowerer<'a> {
         if info.kwargs.is_some() {
             let mut pairs = Vec::new();
             // Re-borrow names first to avoid a borrow conflict with lower_expr.
-            let leftover: Vec<(InternedString, &Expr)> = keywords
+            let leftover: Vec<(InternedString, ArgSrc)> = keywords
                 .iter()
                 .filter(|(_, _, used)| !*used)
                 .map(|(name, v, _)| (self.interner.intern(name), *v))
                 .collect();
             for (key_id, v) in leftover {
                 let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
-                let val = self.lower_expr(v)?;
+                let val = self.arg_src_value(v, span)?;
                 pairs.push((key, val));
             }
             out.push(self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span));
@@ -6773,8 +7289,8 @@ fn top_def_param_tys(info: &TopDefInfo) -> Vec<SemTy> {
 }
 
 /// Take (mark consumed) the first unconsumed keyword named `name`, returning its
-/// value expr (Phase 6C).
-fn take_keyword<'a>(keywords: &mut [(String, &'a Expr, bool)], name: &str) -> Option<&'a Expr> {
+/// value source (Phase 6C).
+fn take_keyword<'a>(keywords: &mut [(String, ArgSrc<'a>, bool)], name: &str) -> Option<ArgSrc<'a>> {
     for (k, v, used) in keywords.iter_mut() {
         if !*used && k == name {
             *used = true;

@@ -78,6 +78,7 @@ pub fn lower(
             // `local_repr` keeps them in lockstep so the verifier never sees a
             // `Call.arg` ↔ `callee.params` mismatch (the ABI = f(Repr) seam).
             params: (0..f.params.len()).map(|p| local_repr(&f.locals[p])).collect(),
+            param_names: f.params.iter().map(|p| p.name).collect(),
             defaults: f.params.iter().map(|p| p.default.clone()).collect(),
             ret: if dunder_funcs.contains(&FuncId::new(i as u32)) {
                 Repr::Tagged
@@ -204,6 +205,9 @@ fn build_mir_classes(
 /// method-call sites can pack excess args (Phase 7D: `__exit__(self, *a)`).
 struct FnSig {
     params: Vec<Repr>,
+    /// Source parameter names (parallel to `params`, including `self` and the
+    /// `*args`/`**kwargs` slots) — keyword → slot matching (Phase 10).
+    param_names: Vec<InternedString>,
     /// Per-param constant default (parallel to `params`; `None` for `self` and
     /// for params without a default). Lets constructor calls fill missing
     /// trailing args (Phase 8E) the way direct function calls already do in the
@@ -973,7 +977,8 @@ impl<'a> FnLower<'a> {
                 recv,
                 method_name,
                 args,
-            } => self.lower_method_call(idx, *recv, *method_name, &args.clone()),
+                kwargs,
+            } => self.lower_method_call(idx, *recv, *method_name, &args.clone(), &kwargs.clone()),
             HirExprKind::Attribute { value, name } => self.lower_attribute(idx, *value, *name),
             HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
             HirExprKind::IsInstanceBuiltin { value, target } => {
@@ -2248,16 +2253,19 @@ impl<'a> FnLower<'a> {
         recv: Idx<HirExpr>,
         method_name: InternedString,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
     ) -> Result<(LocalId, Repr)> {
         let span = self.func.exprs[recv].span;
         // `super().m()` → resolve the parent method from the enclosing MRO and
         // direct-call with the current `self` (super is statically resolvable).
         if let HirExprKind::Super(cid) = self.func.exprs[recv].kind {
-            return self.lower_super_call(cid, method_name, args, span);
+            return self.lower_super_call(cid, method_name, args, kwargs, span);
         }
         // `ClassName.m(args)` → a `@staticmethod`/`@classmethod` on the class (5D).
         if let Some(cid) = self.class_name_ref(recv) {
-            if let Some(res) = self.try_static_or_class_call(cid, None, method_name, args, span)? {
+            if let Some(res) =
+                self.try_static_or_class_call(cid, None, method_name, args, kwargs, span)?
+            {
                 return Ok(res);
             }
             return Err(CompilerError::semantic_error(
@@ -2273,14 +2281,31 @@ impl<'a> FnLower<'a> {
         // else an instance method (devirtualized unless overridden below — D7).
         if let Some(cid) = class_of(&recv_ty, self.classes) {
             if let Some(res) =
-                self.try_static_or_class_call(cid, Some(recv), method_name, args, span)?
+                self.try_static_or_class_call(cid, Some(recv), method_name, args, kwargs, span)?
             {
                 return Ok(res);
             }
             if self.classes.method_overridden_below(cid, method_name) {
-                return self.lower_virtual_call(cid, recv, method_name, args, span);
+                return self.lower_virtual_call(cid, recv, method_name, args, kwargs, span);
             }
-            return self.lower_class_method_call(cid, recv, method_name, args, span);
+            return self.lower_class_method_call(cid, recv, method_name, args, kwargs, span);
+        }
+        // Keywords on non-class receivers (Phase 10): only `list.sort` consumes
+        // them (`reverse=` / a literal `key=None`; a real `key=` was desugared
+        // by the frontend). Every other container / str / file / stdlib-object
+        // method is a precise diagnostic — the mechanism is ready when those
+        // surfaces grow keyword parameters.
+        if !kwargs.is_empty()
+            && ContainerMethod::from_name(self.interner.resolve(method_name))
+                != Some(ContainerMethod::Sort)
+        {
+            return Err(CompilerError::semantic_error(
+                format!(
+                    "`.{}()` takes no keyword arguments",
+                    self.interner.resolve(method_name)
+                ),
+                span,
+            ));
         }
         // A str-receiver method routed through its runtime descriptor (Phase
         // 8B/8C; the full str-method surface lands with 8E). Covers the
@@ -2349,7 +2374,7 @@ impl<'a> FnLower<'a> {
                     span,
                 )
             })?;
-        self.lower_container_method_call(call_idx, recv, cm, args)
+        self.lower_container_method_call(call_idx, recv, cm, args, kwargs)
     }
 
     /// Devirtualized class-method call: `Call(method_FuncId, [recv, args…])`.
@@ -2359,6 +2384,7 @@ impl<'a> FnLower<'a> {
         recv: Idx<HirExpr>,
         method_name: InternedString,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
         let fid = self
@@ -2379,7 +2405,8 @@ impl<'a> FnLower<'a> {
         let self_param = self.sigs[fid.index()].params[0].clone();
         let (rl, rr) = self.lower_expr(recv)?;
         let self_arg = self.coerce(rl, rr, self_param)?;
-        let argvals = self.adapt_method_args(fid, Operand::Local(self_arg), args, span)?;
+        let mut argvals = vec![Operand::Local(self_arg)];
+        argvals.extend(self.build_call_operands(fid, true, args, kwargs, span)?);
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::Call {
             dst: Some(dst),
@@ -2389,42 +2416,79 @@ impl<'a> FnLower<'a> {
         Ok((dst, ret))
     }
 
-    /// Build a direct method call's full operand vector, adapting the call-site
-    /// args to the callee's MIR signature: fixed params are coerced
-    /// individually; a `*args` callee packs the excess into a fresh tuple; a
-    /// `**kwargs` callee gets an empty dict (Phase 7D — `__exit__(self, *a)`
-    /// rides this; methods see no frontend keyword adaptation).
-    fn adapt_method_args(
+    /// Build a direct call's non-`self` operand vector, adapting the call-site
+    /// positional + keyword args to the callee's MIR signature: each fixed
+    /// param slot is filled from a positional, a keyword, or its constant
+    /// default ([`pyaot_hir::match_keywords`]) and coerced to the param's
+    /// `Repr`; a `*args` callee packs excess positionals into a fresh tuple;
+    /// a `**kwargs` callee collects leftover keywords into a dict (Phase 7D /
+    /// Phase 10). When keywords are present the frontend has already staged
+    /// every value, so per-slot evaluation order here cannot reorder effects.
+    fn build_call_operands(
         &mut self,
         fid: FuncId,
-        self_arg: Operand,
+        skip_self: bool,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<Vec<Operand>> {
         let params = self.sigs[fid.index()].params.clone();
+        let param_names = self.sigs[fid.index()].param_names.clone();
+        let defaults = self.sigs[fid.index()].defaults.clone();
         let varargs = self.sigs[fid.index()].varargs;
-        let kwargs = self.sigs[fid.index()].kwargs;
-        let fixed = params.len() - 1 - usize::from(varargs) - usize::from(kwargs);
-        let arity_ok = if varargs {
-            args.len() >= fixed
-        } else {
-            args.len() == fixed
-        };
-        if !arity_ok {
+        let has_kwargs = self.sigs[fid.index()].kwargs;
+        let first = usize::from(skip_self);
+        let fixed = params.len() - first - usize::from(varargs) - usize::from(has_kwargs);
+        if args.len() > fixed && !varargs {
             return Err(CompilerError::semantic_error(
                 "wrong number of arguments in method call".to_string(),
                 span,
             ));
         }
-        let mut argvals = vec![self_arg];
-        for (a, prepr) in args.iter().take(fixed).zip(&params[1..1 + fixed]) {
-            let (al, ar) = self.lower_expr(*a)?;
-            let at = self.coerce(al, ar, prepr.clone())?;
-            argvals.push(Operand::Local(at));
+        let n_pos = args.len().min(fixed);
+        let has_default: Vec<bool> = defaults[first..first + fixed]
+            .iter()
+            .map(|d| d.is_some())
+            .collect();
+        let kw_names: Vec<InternedString> = kwargs.iter().map(|(n, _)| *n).collect();
+        let m = pyaot_hir::match_keywords(
+            &param_names[first..first + fixed],
+            &has_default,
+            n_pos,
+            &kw_names,
+            has_kwargs,
+        )
+        .map_err(|e| self.kw_match_error(e, span))?;
+        // Evaluate positionals then keyword values in CALL-SITE order before
+        // assembling slots (kwarg values are frontend-staged local refs, but
+        // keeping the lowering order written-shaped costs nothing).
+        let mut pos_vals = Vec::with_capacity(args.len());
+        for a in args {
+            pos_vals.push(self.lower_expr(*a)?);
+        }
+        let mut kw_vals = Vec::with_capacity(kwargs.len());
+        for (_, e) in kwargs {
+            kw_vals.push(self.lower_expr(*e)?);
+        }
+        let mut argvals = Vec::with_capacity(params.len() - first);
+        for (i, src) in m.slots.iter().enumerate() {
+            let prepr = params[first + i].clone();
+            let (vl, vr) = match src {
+                pyaot_hir::SlotSource::Pos(p) => pos_vals[*p].clone(),
+                pyaot_hir::SlotSource::Kw(k) => kw_vals[*k].clone(),
+                pyaot_hir::SlotSource::Default => {
+                    let def = defaults[first + i]
+                        .as_ref()
+                        .expect("match_keywords picked Default only for defaulted params")
+                        .clone();
+                    self.materialize_default(&def)?
+                }
+            };
+            argvals.push(Operand::Local(self.coerce(vl, vr, prepr)?));
         }
         if varargs {
-            let tup_repr = params[1 + fixed].clone();
-            let excess = &args[fixed..];
+            let tup_repr = params[first + fixed].clone();
+            let excess = &pos_vals[n_pos..];
             let size = self.raw_i64_const(excess.len() as i64);
             let (tup, _) = self.emit_container(
                 ContainerOp::TupleNew,
@@ -2432,8 +2496,7 @@ impl<'a> FnLower<'a> {
                 Some(tup_repr.clone()),
             )?;
             let tup = tup.expect("TupleNew produces a tuple");
-            for (i, e) in excess.iter().enumerate() {
-                let (el, er) = self.lower_expr(*e)?;
+            for (i, (el, er)) in excess.iter().cloned().enumerate() {
                 let pos = self.raw_i64_const(i as i64);
                 self.emit_container(
                     ContainerOp::TupleSet,
@@ -2447,12 +2510,95 @@ impl<'a> FnLower<'a> {
             }
             argvals.push(Operand::Local(tup));
         }
-        if kwargs {
+        if has_kwargs {
             let dict_repr = params.last().expect("kwargs param exists").clone();
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr)?;
+            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+            // Leftover keywords (written order) land in the `**kwargs` dict.
+            for &k in &m.leftover {
+                let name = kw_names[k];
+                self.str_pool
+                    .insert(name, self.interner.resolve(name).as_bytes().to_vec());
+                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                self.emit(MirInst::Const {
+                    dst: key,
+                    val: Const::Str(name),
+                });
+                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+                let (vl, vr) = kw_vals[k].clone();
+                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+                self.emit_container(
+                    ContainerOp::DictSet,
+                    vec![
+                        (d, dict_repr.clone()),
+                        (key_t, Repr::Tagged),
+                        (val_t, Repr::Tagged),
+                    ],
+                    None,
+                )?;
+            }
             argvals.push(Operand::Local(d));
         }
         Ok(argvals)
+    }
+
+    /// Verify every override of `method_name` below `cid` declares the same
+    /// parameter names and constant defaults as the statically resolved method
+    /// — the precondition for call-site keyword/default adaptation on a
+    /// virtual call (the actual callee is chosen at runtime).
+    fn check_override_kw_compat(
+        &self,
+        cid: ClassId,
+        method_name: InternedString,
+        fid: FuncId,
+        span: pyaot_utils::Span,
+    ) -> Result<()> {
+        let base = &self.sigs[fid.index()];
+        for info in self.classes.iter() {
+            if info.class_id == cid || !info.mro.contains(&cid) {
+                continue;
+            }
+            if let Some((_, ofid)) = info.own_methods.iter().find(|(n, _)| *n == method_name) {
+                let over = &self.sigs[ofid.index()];
+                if over.param_names[1..] != base.param_names[1..]
+                    || over.defaults[1..] != base.defaults[1..]
+                {
+                    return Err(CompilerError::semantic_error(
+                        format!(
+                            "keyword/default adaptation of virtual `.{}()` requires \
+                             identical parameter names and defaults across overrides \
+                             (class `{}` differs) — pass the arguments positionally",
+                            self.interner.resolve(method_name),
+                            self.interner.resolve(info.name),
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Render a [`pyaot_hir::KwMatchError`] as a CPython-flavored diagnostic.
+    fn kw_match_error(&self, e: pyaot_hir::KwMatchError, span: pyaot_utils::Span) -> CompilerError {
+        use pyaot_hir::KwMatchError as E;
+        let msg = match e {
+            E::Unexpected(n) => format!(
+                "got an unexpected keyword argument `{}`",
+                self.interner.resolve(n)
+            ),
+            E::Duplicate(n) => format!(
+                "got multiple values for argument `{}`",
+                self.interner.resolve(n)
+            ),
+            E::Missing(n) => format!(
+                "missing required argument `{}`",
+                self.interner.resolve(n)
+            ),
+            E::TooManyPositional { expected, got } => {
+                format!("takes {expected} positional argument(s) but {got} were given")
+            }
+        };
+        CompilerError::semantic_error(msg, span)
     }
 
     /// If `name` is a `@staticmethod` / `@classmethod` on `cid`, lower it as a
@@ -2465,6 +2611,7 @@ impl<'a> FnLower<'a> {
         recv: Option<Idx<HirExpr>>,
         name: InternedString,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<Option<(LocalId, Repr)>> {
         let fid = match self.classes.get(cid).and_then(|i| {
@@ -2479,19 +2626,9 @@ impl<'a> FnLower<'a> {
         if let Some(r) = recv {
             let _ = self.lower_expr(r)?;
         }
-        let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
-        if args.len() != params.len() {
-            return Err(CompilerError::semantic_error(
-                "wrong number of arguments in static/class method call".to_string(),
-                span,
-            ));
-        }
-        let mut argvals = Vec::with_capacity(args.len());
-        for (a, prepr) in args.iter().zip(&params) {
-            let (al, ar) = self.lower_expr(*a)?;
-            argvals.push(Operand::Local(self.coerce(al, ar, prepr.clone())?));
-        }
+        // No `self` param (the classmethod `cls` was dropped at the frontend).
+        let argvals = self.build_call_operands(fid, false, args, kwargs, span)?;
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::Call {
             dst: Some(dst),
@@ -2509,6 +2646,7 @@ impl<'a> FnLower<'a> {
         cid: ClassId,
         method_name: InternedString,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
         let fid = self
@@ -2525,22 +2663,12 @@ impl<'a> FnLower<'a> {
             })?;
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
-        if args.len() + 1 != params.len() {
-            return Err(CompilerError::semantic_error(
-                "wrong number of arguments in super() call".to_string(),
-                span,
-            ));
-        }
         // `self` is parameter 0 of the current method.
         let self_local = LocalId::new(0);
         let self_from = self.local_repr(self_local);
         let self_arg = self.coerce(self_local, self_from, params[0].clone())?;
         let mut argvals = vec![Operand::Local(self_arg)];
-        for (a, prepr) in args.iter().zip(&params[1..]) {
-            let (al, ar) = self.lower_expr(*a)?;
-            let at = self.coerce(al, ar, prepr.clone())?;
-            argvals.push(Operand::Local(at));
-        }
+        argvals.extend(self.build_call_operands(fid, true, args, kwargs, span)?);
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::Call {
             dst: Some(dst),
@@ -2559,6 +2687,7 @@ impl<'a> FnLower<'a> {
         recv: Idx<HirExpr>,
         method_name: InternedString,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
         let fid = self
@@ -2577,20 +2706,21 @@ impl<'a> FnLower<'a> {
             })?;
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
-        if args.len() + 1 != params.len() {
-            return Err(CompilerError::semantic_error(
-                "wrong number of arguments in method call".to_string(),
-                span,
-            ));
+        // Keyword/default adaptation happens at the CALL SITE against the
+        // statically resolved method — CPython resolves both in the ACTUAL
+        // callee's frame. Sound only when every override agrees on parameter
+        // names and defaults; otherwise a Derived receiver would observe
+        // Base's defaults. Reject loudly when the call relies on either.
+        let fixed = params.len()
+            - 1
+            - usize::from(self.sigs[fid.index()].varargs)
+            - usize::from(self.sigs[fid.index()].kwargs);
+        if !kwargs.is_empty() || args.len() < fixed {
+            self.check_override_kw_compat(cid, method_name, fid, span)?;
         }
         let (rl, rr) = self.lower_expr(recv)?;
         let self_arg = self.coerce(rl, rr, params[0].clone())?;
-        let mut argvals = Vec::with_capacity(args.len());
-        for (a, prepr) in args.iter().zip(&params[1..]) {
-            let (al, ar) = self.lower_expr(*a)?;
-            let at = self.coerce(al, ar, prepr.clone())?;
-            argvals.push(Operand::Local(at));
-        }
+        let argvals = self.build_call_operands(fid, true, args, kwargs, span)?;
         let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::CallVirtual {
@@ -2712,6 +2842,17 @@ impl<'a> FnLower<'a> {
             .expect("Tagged -> Raw(I64) is always legal")
     }
 
+    /// Materialize a `Raw(I8)` boolean constant (a default `reverse=False`).
+    fn raw_i8_const(&mut self, b: bool) -> LocalId {
+        let t = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst: t,
+            val: Const::Bool(b),
+        });
+        self.coerce(t, Repr::Tagged, Repr::Raw(RawKind::I8))
+            .expect("Tagged -> Raw(I8) is always legal")
+    }
+
     /// Bring an already-lowered operand to an unboxed `Raw(I64)` index/count. A
     /// `Raw(I64)` (range cursor) is used directly; anything else is routed through
     /// `Tagged` then untagged. Sound for the in-range fixnum indices this phase
@@ -2743,6 +2884,9 @@ impl<'a> FnLower<'a> {
             let coerced = match kind {
                 ContainerArg::Val => self.coerce(loc, repr, Repr::Tagged)?,
                 ContainerArg::Idx => self.coerce_to_i64(loc, repr)?,
+                // CPython truthiness — `reverse=1` / `reverse=[]` work for free.
+                ContainerArg::Bool if repr == Repr::Raw(RawKind::I8) => loc,
+                ContainerArg::Bool => self.truthy_i8(loc, repr)?,
             };
             ops.push(Operand::Local(coerced));
         }
@@ -3090,7 +3234,12 @@ impl<'a> FnLower<'a> {
         let heap =
             (op.result() == ContainerResult::Heap).then(|| repr_of(&self.func.exprs[idx].ty));
         let (dst, ret) = self.emit_container(op, lowered, heap)?;
-        self.normalize_container_result(dst.expect("container expr produces a value"), ret)
+        // A mutating op in expression position (the frontend `sort(key=)`
+        // desugar emits `ListSortByKeys` as a `ContainerExpr`) yields `None`.
+        let Some(dst) = dst else {
+            return self.none_value();
+        };
+        self.normalize_container_result(dst, ret)
     }
 
     /// Lower a container method call `recv.method(args)` (Phase 4D), dispatching
@@ -3102,9 +3251,26 @@ impl<'a> FnLower<'a> {
         recv: Idx<HirExpr>,
         method: ContainerMethod,
         args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
     ) -> Result<(LocalId, Repr)> {
         use ContainerMethod as M;
         let span = self.func.exprs[recv].span;
+        // Keywords reach the container path only for `list.sort` (`reverse=`,
+        // a literal `key=None`; a real key was frontend-desugared) — checked
+        // in `lower_method_call`. Extract the reverse expression here.
+        let mut sort_reverse: Option<Idx<HirExpr>> = None;
+        for (kname, kexpr) in kwargs {
+            match self.interner.resolve(*kname) {
+                "reverse" => sort_reverse = Some(*kexpr),
+                "key" if matches!(self.func.exprs[*kexpr].kind, HirExprKind::NoneLit) => {}
+                other => {
+                    return Err(CompilerError::semantic_error(
+                        format!("sort() got an unexpected keyword argument `{other}`"),
+                        span,
+                    ))
+                }
+            }
+        }
         let recv_ty = self.func.exprs[recv].ty.clone();
         let kind = if recv_ty.list_elem().is_some() {
             MethodRecv::List
@@ -3180,7 +3346,11 @@ impl<'a> FnLower<'a> {
                     self.none_value()
                 }
                 M::Sort if argn == 0 => {
-                    self.emit_container(ContainerOp::ListSortMut, vec![recv_arg], None)?;
+                    let rev = match sort_reverse {
+                        Some(e) => self.lower_expr(e)?,
+                        None => (self.raw_i8_const(false), Repr::Raw(RawKind::I8)),
+                    };
+                    self.emit_container(ContainerOp::ListSortMut, vec![recv_arg, rev], None)?;
                     self.none_value()
                 }
                 _ => Err(bad("unsupported list method / arity")),
@@ -3845,7 +4015,20 @@ impl<'a> FnLower<'a> {
             C::Enumerate => {
                 let it = self.lower_iter_arg(args[0])?;
                 let start = match args.get(1) {
-                    Some(a) => self.lower_expr(*a)?,
+                    Some(a) => {
+                        // `start` (positional or `start=`) must be int-like —
+                        // it seeds a `Raw(I64)` counter; a float/str would untag
+                        // into garbage. CPython raises TypeError; reject at
+                        // compile time (gradual `Dyn` / in-progress `Never` pass).
+                        let st = &self.func.exprs[*a].ty;
+                        if !matches!(st, SemTy::Int | SemTy::Bool | SemTy::Dyn | SemTy::Never) {
+                            return Err(CompilerError::semantic_error(
+                                format!("enumerate() start must be an integer, not {st:?}"),
+                                span,
+                            ));
+                        }
+                        self.lower_expr(*a)?
+                    }
                     None => (self.raw_i64_const(0), Repr::Raw(RawKind::I64)),
                 };
                 let (dst, ret) =
@@ -3865,8 +4048,16 @@ impl<'a> FnLower<'a> {
                 Ok((dst.unwrap(), ret))
             }
             C::Sorted => {
-                let list = self.materialize_list(args[0])?;
-                let (dst, ret) = self.emit_container(C::Sorted, vec![list], Some(result_heap))?;
+                // Evaluate the iterable, then the (optional) reverse flag —
+                // written order — BEFORE materializing the copy.
+                let (il, ir) = self.lower_expr(args[0])?;
+                let rev = match args.get(1) {
+                    Some(a) => self.lower_expr(*a)?,
+                    None => (self.raw_i8_const(false), Repr::Raw(RawKind::I8)),
+                };
+                let list = self.materialize_list_from(il, ir)?;
+                let (dst, ret) =
+                    self.emit_container(C::Sorted, vec![list, rev], Some(result_heap))?;
                 Ok((dst.unwrap(), ret))
             }
             C::Reversed => {
@@ -3883,8 +4074,14 @@ impl<'a> FnLower<'a> {
                     return self.empty_container(C::DictNew, result_heap);
                 }
                 let (pl, pr) = self.lower_expr(args[0])?;
-                let (dst, ret) =
-                    self.emit_container(C::DictFromPairs, vec![(pl, pr)], Some(result_heap))?;
+                // `dict(d)` on a known dict is a copy, not an iteration of
+                // key/value PAIRS (`rt_dict_from_pairs` expects a pair list).
+                let op = if self.func.exprs[args[0]].ty.dict_kv().is_some() {
+                    C::DictCopy
+                } else {
+                    C::DictFromPairs
+                };
+                let (dst, ret) = self.emit_container(op, vec![(pl, pr)], Some(result_heap))?;
                 Ok((dst.unwrap(), ret))
             }
             C::BytesFromList => {
@@ -4005,6 +4202,12 @@ impl<'a> FnLower<'a> {
     /// its iterator via `rt_list_from_iter`.
     fn materialize_list(&mut self, arg: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
         let (l, r) = self.lower_expr(arg)?;
+        self.materialize_list_from(l, r)
+    }
+
+    /// The materialize half of [`Self::materialize_list`], for callers that must
+    /// evaluate other arguments between lowering the iterable and copying it.
+    fn materialize_list_from(&mut self, l: LocalId, r: Repr) -> Result<(LocalId, Repr)> {
         if matches!(r, Repr::Heap(HeapShape::List(_))) {
             return Ok((l, r));
         }

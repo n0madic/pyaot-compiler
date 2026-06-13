@@ -675,9 +675,11 @@ pub static RT_LIST_REVERSE: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_rever
 pub static RT_LIST_EXTEND: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_extend", &[PI64, PI64]);
 /// rt_list_sort(list: *mut Obj, reverse: i8) -> void
 pub static RT_LIST_SORT: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_sort", &[PI64, PI8]);
-/// rt_list_sort_with_key(list, reverse, key_fn, captures, capture_count, key_return_tag) -> void
-pub static RT_LIST_SORT_WITH_KEY: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_list_sort_with_key", &[PI64, PI8, PI64, PI64, PI64, PI8]);
+/// rt_list_sort_by_keys(list: *mut Obj, keys: *mut Obj, reverse: i8) -> void
+/// Stable tandem sort of `list` by the parallel `keys` list (Phase 10 — the
+/// compiled `key=` callback fills `keys` before the call; no runtime callbacks).
+pub static RT_LIST_SORT_BY_KEYS: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_list_sort_by_keys", &[PI64, PI64, PI8]);
 /// rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_tuple");
 /// rt_list_from_str(str: *mut Obj) -> *mut Obj
@@ -1265,16 +1267,12 @@ pub static RT_ITER_ENUMERATE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_it
 pub static RT_SORTED_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_sorted_range");
 
 // --- Sorted: generic dispatchers ---
-/// rt_sorted(obj, reverse, container_tag) -> *mut Obj
+/// rt_sorted(obj, reverse: i8, container_tag) -> *mut Obj
+/// Contract change (Phase 10): `reverse` is `i8`; the callback-ABI
+/// `rt_sorted_with_key` is deleted (`key=` compiles to a frontend desugar
+/// feeding `rt_list_sort_by_keys`).
 pub static RT_SORTED: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_sorted", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_sorted_with_key(obj, reverse, key_fn, captures, capture_count, container_tag, key_return_tag) -> *mut Obj
-pub static RT_SORTED_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8, PI8],
-    Some(RI64),
-    true,
-);
+    RuntimeFuncDef::new("rt_sorted", &[PI64, PI8, PI8], Some(RI64), true);
 
 // --- Zip operations ---
 /// rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj

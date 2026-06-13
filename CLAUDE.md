@@ -61,11 +61,3 @@ cargo check --workspace --exclude pyaot-runtime   # fast front-half check
 cargo build -p pyaot-runtime                       # runtime staticlib
 cargo build --workspace                            # full
 ```
-
-## Crate map
-
-| Crate | Role | State |
-|---|---|---|
-| core-defs, format-shared, utils, diagnostics, linker, stdlib-defs, runtime | substrate + runtime contract | stable; changed deliberately when the plan requires |
-| types | `SemTy` + `Repr` + `repr_of` + lattice | **implemented** |
-| hir, semantics, typeck, mir, lowering, optimizer, codegen-cranelift, frontend-python, cli | front-half | scaffolds |

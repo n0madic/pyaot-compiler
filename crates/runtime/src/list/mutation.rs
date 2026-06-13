@@ -498,82 +498,57 @@ pub extern "C" fn rt_list_sort_abi(list: Value, reverse: i8) {
     rt_list_sort(list.unwrap_ptr(), reverse)
 }
 
-/// Compare two key objects for sorting
-/// Returns -1 if a < b, 0 if a == b, 1 if a > b
-/// Key values can be any type (heap objects or raw integers), so we detect
-/// the storage type using a heuristic since key function return types vary.
-unsafe fn compare_key_objects(a: *mut Obj, b: *mut Obj) -> i32 {
-    use crate::sorted::compare_key_values;
-    use std::cmp::Ordering;
-
-    match compare_key_values(a, b) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
-}
-
-/// Sort list in place with a key function
-/// key_fn: function pointer for key extraction
-/// reverse: 0 = ascending, non-zero = descending
-/// captures: tuple of captured variables (null if no captures)
-/// capture_count: number of captured variables
-/// key_return_tag: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1)
-pub fn rt_list_sort_with_key(
-    list: *mut Obj,
-    reverse: i8,
-    key_fn: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-    key_return_tag: u8,
-) {
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-    use crate::sorted::{unwrap_slot_for_key_fn, wrap_key_result};
-
-    if list.is_null() {
+/// Stable tandem sort (contract change, Phase 10): sort `list` in place by
+/// the parallel `keys` list. The `key=` callback runs as COMPILED code in a
+/// frontend-desugared loop that builds `keys` BEFORE this call — the runtime
+/// performs no callbacks (the PITFALLS-A4 `key_return_tag` ABI is gone).
+/// The comparator is `compare_objects`, the same one `rt_list_sort` uses;
+/// `reverse` flips only Less/Greater — Equal stays Equal, so equal keys keep
+/// their original order (CPython stability). No allocation happens between
+/// reading the `Value` slots and writing them back, and the GC is non-moving,
+/// so holding the raw bits in a Rust Vec across comparisons is safe exactly
+/// as in `rt_list_sort`.
+pub fn rt_list_sort_by_keys(list: *mut Obj, keys: *mut Obj, reverse: i8) {
+    if list.is_null() || keys.is_null() {
         return;
     }
 
     unsafe {
-        debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_sort_with_key");
+        // Loud type guard: the frontend dispatches `.sort(key=…)` by METHOD
+        // NAME (the receiver's static type may be unknown), so a non-list
+        // receiver must surface as a Python TypeError, not a wild deref.
+        if (*list).header.type_tag != TypeTagKind::List
+            || (*keys).header.type_tag != TypeTagKind::List
+        {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "sort(key=) requires a list receiver"
+            );
+        }
         let list_obj = list as *mut ListObj;
+        let keys_obj = keys as *mut ListObj;
         let len = (*list_obj).len;
-
+        if (*keys_obj).len != len {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "sort(key=) keys/values length mismatch"
+            );
+        }
         if len <= 1 {
             return;
         }
-
         let data = (*list_obj).data;
-        if data.is_null() {
+        let kdata = (*keys_obj).data;
+        if data.is_null() || kdata.is_null() {
             return;
         }
 
-        let mut roots: [*mut Obj; 1] = [list];
-        let mut frame = ShadowFrame {
-            prev: std::ptr::null_mut(),
-            nroots: 1,
-            roots: roots.as_mut_ptr(),
-        };
-        gc_push(&mut frame);
-
-        let cc = capture_count as u8;
-        let mut key_value_pairs: Vec<(*mut Obj, Value)> = Vec::with_capacity(len);
-        for i in 0..len {
-            let current_data = (*(list as *mut ListObj)).data;
-            let stored = *current_data.add(i);
-            let raw_elem = unwrap_slot_for_key_fn(stored, key_return_tag);
-            let raw_key = crate::iterator::call_map_with_captures(key_fn, captures, cc, raw_elem);
-            let key_value = wrap_key_result(raw_key, key_return_tag).0 as *mut Obj;
-            key_value_pairs.push((key_value, stored));
-        }
-
-        gc_pop();
-
-        // Sort by key values using Timsort (stable sort)
-        timsort::timsort_with_cmp(&mut key_value_pairs, |(key_a, _), (key_b, _)| {
-            let cmp = compare_key_objects(*key_a, *key_b);
+        let mut pairs: Vec<(Value, Value)> = (0..len)
+            .map(|i| (*kdata.add(i), *data.add(i)))
+            .collect();
+        timsort::timsort_with_cmp(&mut pairs, |(key_a, _), (key_b, _)| {
+            let cmp = compare_objects(key_a.0 as *mut Obj, key_b.0 as *mut Obj);
             if reverse != 0 {
-                // Reverse comparison for descending order
                 match cmp {
                     c if c < 0 => std::cmp::Ordering::Greater,
                     c if c > 0 => std::cmp::Ordering::Less,
@@ -588,35 +563,19 @@ pub fn rt_list_sort_with_key(
             }
         });
 
-        // Write sorted values back to the list.
-        // Re-read data from the list in case it was reallocated during key_fn
-        // calls above (though rt_list_sort_with_key does not resize the list
-        // itself, the GC is non-moving so the pointer is stable; re-deriving
-        // makes the liveness explicit and is cheap).
-        let final_data = (*(list as *mut ListObj)).data;
-        for (i, (_, value)) in key_value_pairs.iter().enumerate() {
-            *final_data.add(i) = *value;
+        for (i, (_, value)) in pairs.iter().enumerate() {
+            *data.add(i) = *value;
         }
     }
 }
-#[export_name = "rt_list_sort_with_key"]
+#[export_name = "rt_list_sort_by_keys"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_list_sort_with_key_abi(
-    list: Value,
-    reverse: i8,
-    key_fn: i64,
-    captures: Value,
-    capture_count: i64,
-    key_return_tag: u8,
-) {
-    rt_list_sort_with_key(
-        list.unwrap_ptr(),
-        reverse,
-        key_fn,
-        captures.unwrap_ptr(),
-        capture_count,
-        key_return_tag,
-    )
+pub extern "C" fn rt_list_sort_by_keys_abi(list: Value, keys: Value, reverse: i8) {
+    unsafe {
+        let l: *mut Obj = crate::utils::expect_ptr_or_type_error(list, "sort(key=)");
+        let k: *mut Obj = crate::utils::expect_ptr_or_type_error(keys, "sort(key=)");
+        rt_list_sort_by_keys(l, k, reverse)
+    }
 }
 
 /// Replace list[start:stop] with values from another list

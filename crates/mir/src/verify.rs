@@ -987,6 +987,7 @@ fn verify_call_container(
         let want_repr = match kind {
             ContainerArg::Val => TAGGED,
             ContainerArg::Idx => RAW_I64,
+            ContainerArg::Bool => RAW_I8,
         };
         want(f, arg, &want_repr, "CallContainer.arg")?;
     }

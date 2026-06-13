@@ -884,6 +884,7 @@ fn check_repr_boundaries(
                     recv,
                     method_name,
                     args,
+                    kwargs,
                 } => match method_call_target(func, resolve, classes, *recv, *method_name) {
                     Some((fid, skip_self)) => {
                         let callee = &module.functions[fid.index()];
@@ -891,7 +892,24 @@ fn check_repr_boundaries(
                         let p = if skip_self { &p[1.min(p.len())..] } else { p };
                         let cut =
                             p.len() - usize::from(callee.varargs) - usize::from(callee.kwargs);
-                        (&p[..cut.min(p.len())], args)
+                        let p = &p[..cut.min(p.len())];
+                        // Keyword args pair with their NAMED parameter (Phase
+                        // 10); names without a fixed param feed the `**kwargs`
+                        // dict (uniform tagged — no repr boundary to check).
+                        for (kname, kexpr) in kwargs {
+                            if let Some(param) = p.iter().find(|pp| pp.name == *kname) {
+                                if let Some(kind) = reinterpret_kind(&param.ty) {
+                                    check_reinterpret(
+                                        &func.exprs[*kexpr],
+                                        &param.ty,
+                                        kind,
+                                        "passed to",
+                                        classes,
+                                    )?;
+                                }
+                            }
+                        }
+                        (p, args)
                     }
                     None => continue,
                 },
@@ -1400,6 +1418,7 @@ impl FuncState {
                             recv,
                             method_name,
                             args,
+                            kwargs: _,
                         } = &func.exprs[*e].kind
                         {
                             if let Some(i) = direct_local(*recv) {
@@ -2186,13 +2205,24 @@ impl<'a> Sweeper<'a> {
             }
             C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
             C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0(), self.classes)),
-            C::DictFromPairs => match iter_elem_ty(&arg0(), self.classes).tuple_elems() {
-                // `dict([(k, v), …])` — the element is a 2-tuple of (key, value).
-                Some(kv) if kv.len() == 2 => SemTy::dict_of(kv[0].clone(), kv[1].clone()),
-                _ => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
-            },
+            C::DictFromPairs => {
+                let a = arg0();
+                // `dict(d)` on a known dict copies it (lowering routes to
+                // DictCopy); the result keeps the source's key/value types.
+                if a.dict_kv().is_some() {
+                    return a;
+                }
+                match iter_elem_ty(&a, self.classes).tuple_elems() {
+                    // `dict([(k, v), …])` — the element is a 2-tuple of (key, value).
+                    Some(kv) if kv.len() == 2 => SemTy::dict_of(kv[0].clone(), kv[1].clone()),
+                    _ => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+                }
+            }
             C::BytesFromList => SemTy::Bytes,
             C::Sorted => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
+            // Mutating tandem sort in expression position (the `sort(key=)`
+            // frontend desugar) — yields None.
+            C::ListSortByKeys => SemTy::NoneTy,
             C::Reversed => SemTy::Iterator(Box::new(iter_elem_ty(&arg0(), self.classes))),
             // ── ops the Phase-7E match desugar emits directly ──
             C::DictGet | C::DictPopM => {

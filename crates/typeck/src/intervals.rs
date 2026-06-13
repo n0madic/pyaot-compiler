@@ -666,10 +666,15 @@ fn record_all(
             }
             Interval::Top
         }
-        HirExprKind::MethodCall { recv, args, .. } => {
+        HirExprKind::MethodCall {
+            recv, args, kwargs, ..
+        } => {
             child(*recv, rec);
             for a in args {
                 child(*a, rec);
+            }
+            for (_, v) in kwargs {
+                child(*v, rec);
             }
             Interval::Top
         }
