@@ -4,6 +4,7 @@
 
 pub mod abc;
 pub mod base64_mod;
+pub mod builtins;
 pub mod collections;
 pub mod copy;
 pub mod functools;

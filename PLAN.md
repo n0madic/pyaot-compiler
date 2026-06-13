@@ -254,9 +254,29 @@ These few gaps block the most files — close them before the long tail.
 - **`range()` for-loop with a non-literal step** — `range(10,0,-(-1))`, a variable step, `range(0,10,len(xs))` (the `list(range(...))` value form already works; the restriction is only in the for-loop desugar).
 
 ### 5. Builtins — `undefined name`
-`map`, `filter`, `round`, `pow`, `all`, `any`, `id`, `divmod`, `bin`, `hex`,
-`oct`, `format`, `ascii`, `getattr` (literal-name), `setattr`, `hasattr`,
-`issubclass`, `object` (`object.__new__`), `NotImplemented`.
+- ~~**`pow`, `divmod`, `all`, `any`, `id`, `round`, `bin`, `hex`, `oct`**~~ —
+  DONE. Recognized by name in the frontend (like `sum`/`min`/`max`), gated on the
+  name being UNSHADOWED. Two shapes: **pure desugar** (`pow` → `**`/`BinOp::Pow`,
+  bignum- & numeric-tower-correct incl. negative-exponent→float; `divmod` → a
+  staged `(a // b, a % b)` 2-tuple, CPython floor/sign via `rt_obj_floordiv`/
+  `mod`, B1; `all`/`any` → an iterator loop with a truthiness short-circuit,
+  empty→seed, result `Bool`) and **declarative `CallRuntime`** (`id` wraps the
+  existing `rt_id_obj` → `Raw(I64)` address, never a GC root; `round` →
+  `rt_builtin_round` banker's, round-half-to-even via decimal formatting so
+  `round(2.675,2)==2.67`, presence-of-`ndigits` switches int↔float result;
+  `bin`/`hex`/`oct` → BIGNUM-AWARE `rt_builtin_bin`/`hex`/`oct` taking a TAGGED
+  `Value` — never the raw-`i64` `rt_int_to_*` formatters — so `bin(2**100)` is
+  exact, **PITFALLS B16**). Descriptors in `stdlib-defs/src/modules/builtins.rs`
+  (bare builtins, no module registry). Gated by `corpus/p18_scalar_builtins.py`;
+  the lift `corpus/test_core_types.py` (its sole §5 blocker was `round`) is now
+  on the gate too. **Out of scope** (unprobed): 1-arg `pow(x)` and the 3-arg
+  modular `pow(a,b,m)` (both `parse_error`); negative-`ndigits` correctness for
+  `round` (naive scaling) and the |float|>i64 → bignum corner (implemented via
+  `BigInt::from_f64`, unprobed).
+- **Still pending**: `map`, `filter` (HOF — A4), `format`, `ascii` (PEP-3101
+  mini-language, shared with §13 f-strings), `getattr` (literal-name), `setattr`,
+  `hasattr`, `issubclass`, `object` (`object.__new__`), `NotImplemented`.
+  `test_builtins.py` stays OFF the gate (still needs `map`/`filter`/`format`).
 
 ### 6. Builtins — `Phase 2 codegen not supported`
 - ~~**`type()`**~~ — DONE: incl. `type(x).__name__`, `str(type(x))`,
@@ -267,7 +287,8 @@ These few gaps block the most files — close them before the long tail.
   type(y)` (pointer-identity on distinct StrObjs; `p11_is_identity.py` already
   defers it) and `repr(type(x))` (would add quotes). `test_builtins.py` /
   `test_classes.py` (the type-blocked files) stay OFF the gate — now blocked by
-  unrelated gaps (`pow` §5; the `@` matmul operator §11 respectively).
+  unrelated gaps (`map`/`filter`/`format` §5; the `@` matmul operator §11
+  respectively).
 - **`hash()`** — still pending (`builtin Hash not supported in Phase 2`; needs its
   own probe and a `rt_builtin_hash` codegen arm).
 

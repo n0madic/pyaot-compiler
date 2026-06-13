@@ -4873,6 +4873,151 @@ impl<'a> FnLowerer<'a> {
         Ok(self.local_ref(acc, span))
     }
 
+    /// `pow(a, b)` (PLAN §5) → the `**` operator (`BinOp::Pow`), which is
+    /// already end-to-end and bignum- / numeric-tower-correct via `rt_obj_pow`
+    /// (a negative exponent yields a float, exactly like `a ** b`). 2-arg only:
+    /// the 1-arg form and the 3-arg modular form `pow(a, b, m)` are out of scope.
+    fn lower_pow(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 2 {
+            return Err(parse_error(
+                "pow() takes exactly two arguments (1-arg and 3-arg modular pow \
+                 are out of scope)",
+                span,
+            ));
+        }
+        let l = self.lower_expr(&args[0])?;
+        let r = self.lower_expr(&args[1])?;
+        Ok(self.alloc(HirExprKind::BinOp { op: BinOp::Pow, l, r }, SemTy::Dyn, span))
+    }
+
+    /// `divmod(a, b)` (PLAN §5) → the 2-tuple `(a // b, a % b)`. `a` and `b` are
+    /// each staged into a fresh local ONCE, left-to-right (CPython
+    /// evaluate-once / eval-order, §1); both binops apply CPython floor/sign
+    /// semantics via `rt_obj_floordiv`/`rt_obj_mod` (PITFALLS B1), so the tuple
+    /// is exact for negative operands too.
+    fn lower_divmod(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 2 {
+            return Err(parse_error("divmod() takes exactly two arguments", span));
+        }
+        let a_val = self.lower_expr(&args[0])?;
+        let a = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: a,
+            value: a_val,
+        });
+        let b_val = self.lower_expr(&args[1])?;
+        let b = self.fresh_local(SemTy::Dyn);
+        self.push_stmt(HirStmt::Assign {
+            target: b,
+            value: b_val,
+        });
+
+        let aq = self.local_ref(a, span);
+        let bq = self.local_ref(b, span);
+        let q = self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::FloorDiv,
+                l: aq,
+                r: bq,
+            },
+            SemTy::Dyn,
+            span,
+        );
+        let ar = self.local_ref(a, span);
+        let br = self.local_ref(b, span);
+        let rem = self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::Mod,
+                l: ar,
+                r: br,
+            },
+            SemTy::Dyn,
+            span,
+        );
+        Ok(self.alloc(HirExprKind::TupleLit { elems: vec![q, rem] }, SemTy::Dyn, span))
+    }
+
+    /// `all(iterable)` / `any(iterable)` (PLAN §5) — an iterator loop mirroring
+    /// [`Self::lower_minmax`]. The accumulator seeds to the empty-input answer
+    /// (`all([]) == True`, `any([]) == False`); each element is tested for
+    /// truthiness (the same `Branch`-cond mechanism `if elem:` uses) and the
+    /// loop short-circuits on the first falsy (`all`) / truthy (`any`) element,
+    /// flipping the accumulator. The result is the `Bool` accumulator — zero new
+    /// runtime (reuses `Iter`/`IterNext`/`IterExhausted` + existing truthiness).
+    fn lower_all_any(&mut self, args: &[Expr], span: Span, is_all: bool) -> Result<Idx<HirExpr>> {
+        if args.len() != 1 {
+            return Err(parse_error(
+                "all()/any() take exactly one argument",
+                span,
+            ));
+        }
+        let iterable = self.lower_expr(&args[0])?;
+
+        // acc = empty-input answer (True for all, False for any).
+        let acc = self.fresh_local(SemTy::Bool);
+        let seed = self.alloc(HirExprKind::BoolLit(is_all), SemTy::Bool, span);
+        self.push_stmt(HirStmt::Assign {
+            target: acc,
+            value: seed,
+        });
+
+        // it = iter(iterable).
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
+
+        // loop: elem = next(it); done → exit; else test truthiness.
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let elem = self.emit_iter_next(it, span);
+        let done = self.emit_iter_exhausted(it, span);
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: exit,
+            else_: body_b,
+        });
+
+        // body: branch on element truthiness. `all`: falsy short-circuits;
+        // `any`: truthy short-circuits. The short-circuit edge flips the acc.
+        self.switch(body_b);
+        let hit = self.new_block();
+        let elem_ref = self.local_ref(elem, span);
+        let (then_b, else_b) = if is_all {
+            (header, hit)
+        } else {
+            (hit, header)
+        };
+        self.seal(HirTerminator::Branch {
+            cond: elem_ref,
+            then: then_b,
+            else_: else_b,
+        });
+
+        self.switch(hit);
+        let flipped = self.alloc(HirExprKind::BoolLit(!is_all), SemTy::Bool, span);
+        self.push_stmt(HirStmt::Assign {
+            target: acc,
+            value: flipped,
+        });
+        self.seal(HirTerminator::Jump(exit));
+
+        self.switch(exit);
+        Ok(self.local_ref(acc, span))
+    }
+
     /// `elem = next(it)` into a fresh pin-tagged local (null on exhaustion).
     fn emit_iter_next(&mut self, it: LocalId, span: Span) -> LocalId {
         let elem = self.fresh_local_tagged();
@@ -5875,6 +6020,55 @@ impl<'a> FnLowerer<'a> {
                             SemTy::Dyn,
                             span,
                         ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Scalar / value builtins (PLAN §5): `pow`, `divmod`, `all`, `any`,
+        // `id`, `round`, `bin`, `hex`, `oct`. Gated on an UNSHADOWED bare name
+        // (a local / global / top-def binding keeps winning — `id = 5; id(x)`
+        // reads the local), slightly stricter than the unconditional min/max
+        // intercept. None take keywords or `*`/`**` spreads.
+        if let Expr::Name(n) = c.func.as_ref() {
+            let iname = self.intern(n.id.as_str());
+            let unshadowed = !self.scope.contains_key(&iname)
+                && self.global_read_slot(iname).is_none()
+                && !self.ctx.top_defs.contains_key(n.id.as_str());
+            if unshadowed {
+                use pyaot_stdlib_defs::modules::builtins as bd;
+                match n.id.as_str() {
+                    "pow" => {
+                        reject_call_extras(c, span, "pow()")?;
+                        return self.lower_pow(&c.args, span);
+                    }
+                    "divmod" => {
+                        reject_call_extras(c, span, "divmod()")?;
+                        return self.lower_divmod(&c.args, span);
+                    }
+                    "all" | "any" => {
+                        reject_call_extras(c, span, "all()/any()")?;
+                        return self.lower_all_any(&c.args, span, n.id.as_str() == "all");
+                    }
+                    "id" => {
+                        reject_call_extras(c, span, "id()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_ID, c, span);
+                    }
+                    "round" => {
+                        reject_call_extras(c, span, "round()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_ROUND, c, span);
+                    }
+                    "bin" => {
+                        reject_call_extras(c, span, "bin()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_BIN, c, span);
+                    }
+                    "hex" => {
+                        reject_call_extras(c, span, "hex()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_HEX, c, span);
+                    }
+                    "oct" => {
+                        reject_call_extras(c, span, "oct()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_OCT, c, span);
                     }
                     _ => {}
                 }

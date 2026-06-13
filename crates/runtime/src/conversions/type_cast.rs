@@ -1,7 +1,11 @@
 //! Type cast and numeric formatting conversions for Python runtime
 
+use crate::bigint::{classify_num, make_int_value, Num};
+use crate::boxing::rt_box_float;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::rt_make_str;
+use num_bigint::BigInt;
+use num_traits::FromPrimitive;
 use pyaot_core_defs::Value;
 
 // ==================== Number formatting ====================
@@ -52,6 +56,190 @@ pub fn rt_int_to_oct(n: i64) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_int_to_oct_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_to_oct(n))
+}
+
+// ============ Bignum-aware scalar builtins: bin / hex / oct / round ==========
+//
+// PITFALLS B16: `bin`/`hex`/`oct` MUST take a TAGGED `Value`, not a raw `i64` —
+// the receiver may be a heap `BigInt` (`bin(2 ** 100)`), and unboxing a bignum
+// pointer to a raw word would format garbage. The fixnum / bool fast path reuses
+// the raw `rt_int_to_*` formatters; the bignum path uses `BigInt::to_str_radix`.
+
+/// Format a heap `BigInt` with a leading sign and base prefix (`0b`/`0o`/`0x`).
+/// `to_str_radix` already emits the sign for negatives, so re-attach the prefix
+/// after the `-` to match CPython (`bin(-5) == "-0b101"`).
+fn bignum_radix_str(b: &BigInt, radix: u32, prefix: &str) -> String {
+    let s = b.to_str_radix(radix);
+    match s.strip_prefix('-') {
+        Some(rest) => format!("-{prefix}{rest}"),
+        None => format!("{prefix}{s}"),
+    }
+}
+
+/// Allocate a `StrObj` from a Rust string.
+fn str_from_string(s: &str) -> *mut Obj {
+    let bytes = s.as_bytes();
+    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
+}
+
+/// Raise the CPython `TypeError` for a non-integer argument to bin/hex/oct.
+fn raise_not_an_integer(what: &str) -> ! {
+    unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "'{}' object cannot be interpreted as an integer",
+            what
+        )
+    }
+}
+
+/// `bin(n)` — binary string with a `0b` prefix. Bignum-aware (B16); `bool`
+/// formats as its int value (`bin(True) == "0b1"`).
+pub fn rt_builtin_bin(n: Value) -> *mut Obj {
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => rt_int_to_bin(i),
+        Some(Num::Big(b)) => str_from_string(&bignum_radix_str(&b, 2, "0b")),
+        Some(Num::Float(_)) => raise_not_an_integer("float"),
+        None => raise_not_an_integer("object"),
+    }
+}
+#[export_name = "rt_builtin_bin"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_bin_abi(n: Value) -> Value {
+    Value::from_ptr(rt_builtin_bin(n))
+}
+
+/// `hex(n)` — hexadecimal string with a `0x` prefix. Bignum-aware (B16).
+pub fn rt_builtin_hex(n: Value) -> *mut Obj {
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => rt_int_to_hex(i),
+        Some(Num::Big(b)) => str_from_string(&bignum_radix_str(&b, 16, "0x")),
+        Some(Num::Float(_)) => raise_not_an_integer("float"),
+        None => raise_not_an_integer("object"),
+    }
+}
+#[export_name = "rt_builtin_hex"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_hex_abi(n: Value) -> Value {
+    Value::from_ptr(rt_builtin_hex(n))
+}
+
+/// `oct(n)` — octal string with a `0o` prefix. Bignum-aware (B16).
+pub fn rt_builtin_oct(n: Value) -> *mut Obj {
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => rt_int_to_oct(i),
+        Some(Num::Big(b)) => str_from_string(&bignum_radix_str(&b, 8, "0o")),
+        Some(Num::Float(_)) => raise_not_an_integer("float"),
+        None => raise_not_an_integer("object"),
+    }
+}
+#[export_name = "rt_builtin_oct"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_oct_abi(n: Value) -> Value {
+    Value::from_ptr(rt_builtin_oct(n))
+}
+
+/// Build an `int` Value from a float that `round_ties_even` has already made a
+/// whole number. Demotes to a tagged fixnum when it fits, else a heap `BigInt`
+/// (CPython returns an exact int for huge floats). NaN/Inf cannot occur here —
+/// the caller only invokes this for a finite result.
+fn int_value_from_whole_f64(r: f64) -> *mut Obj {
+    if (i64::MIN as f64..=i64::MAX as f64).contains(&r) {
+        // Exact: `r` is integral and within i64, so the cast is lossless.
+        make_int_value(BigInt::from(r as i64))
+    } else {
+        // Huge whole float → exact heap BigInt (truncation is exact: `r` is
+        // already integral).
+        match BigInt::from_f64(r) {
+            Some(b) => make_int_value(b),
+            None => unsafe {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "cannot convert float to integer"
+                )
+            },
+        }
+    }
+}
+
+/// `round(x, ndigits)` for a float `x` and a non-`None` `ndigits` ≥ 0:
+/// correctly-rounded to `ndigits` decimal places via decimal formatting, which
+/// is round-half-to-even on the TRUE stored value — matching CPython exactly
+/// (`round(2.675, 2) == 2.67`, since `2.675` is `2.67499…` as a double). A
+/// naive `(x * 10ⁿ).round() / 10ⁿ` diverges here because the scaled product
+/// rounds up to `267.5` (PITFALLS B1). Negative `ndigits` (round to tens/…)
+/// has no formatter form, so it uses scaling — an accepted divergence in rare
+/// half-way cases (unprobed).
+fn round_to_digits_decimal(x: f64, n: i64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    if n >= 0 {
+        // Beyond ~17 fractional significant digits a double can't change, so
+        // clamp the formatted precision to bound the string (parse-back is
+        // still the identity for larger `n`).
+        let prec = (n as usize).min(323);
+        format!("{:.*}", prec, x).parse::<f64>().unwrap_or(x)
+    } else {
+        let scale = 10f64.powi((-n).min(308) as i32);
+        (x / scale).round_ties_even() * scale
+    }
+}
+
+/// `round(x[, ndigits])` — banker's rounding (round-half-to-even, CPython B1).
+///
+/// The **presence** of `ndigits` selects the result type, not its value:
+/// `round(2.5)` → `2` (int), `round(2.5, 0)` → `2.0` (float). The frontend
+/// passes the absent / explicit-`None` second argument as the null sentinel
+/// (`Value(0)`) or `None`, both of which mean "no ndigits" (matching CPython,
+/// where `round(x, None)` returns an int). An int `x` stays int; a float `x`
+/// with no ndigits rounds to an int (heap `BigInt` when huge), and with ndigits
+/// rounds to a float.
+pub fn rt_builtin_round(x: Value, ndigits: Value) -> *mut Obj {
+    let has_ndigits = ndigits.0 != 0 && !ndigits.is_none();
+    match unsafe { classify_num(x) } {
+        // Float receiver: ndigits decides int-vs-float result.
+        Some(Num::Float(f)) => {
+            if has_ndigits {
+                let n = match unsafe { classify_num(ndigits) } {
+                    Some(Num::Int(i)) => i,
+                    // `ndigits` beyond i64 (a bignum) is far past any meaningful
+                    // decimal place; saturate.
+                    Some(Num::Big(_)) => i64::MAX,
+                    _ => unsafe {
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::TypeError,
+                            "'...' object cannot be interpreted as an integer"
+                        )
+                    },
+                };
+                rt_box_float(round_to_digits_decimal(f, n))
+            } else {
+                int_value_from_whole_f64(f.round_ties_even())
+            }
+        }
+        // `bool` rounds to its int value (`round(True) == 1`, an int).
+        Some(Num::Int(_)) if x.is_bool() => {
+            make_int_value(BigInt::from(x.unwrap_bool() as i64))
+        }
+        // Int / bignum receiver: returned unchanged for absent / non-negative
+        // ndigits (integer rounding to >= 0 places is the identity). Negative
+        // ndigits on an int is an accepted divergence (unprobed) — returned as-is.
+        // Preserve the exact tagged bits (a fixnum is not a pointer): the ABI
+        // wrapper re-wraps `Value(self.0)`, round-tripping the original value.
+        Some(Num::Int(_)) | Some(Num::Big(_)) => x.0 as *mut Obj,
+        None => unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "type cannot be interpreted as a number"
+            )
+        },
+    }
+}
+#[export_name = "rt_builtin_round"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_round_abi(x: Value, ndigits: Value) -> Value {
+    Value::from_ptr(rt_builtin_round(x, ndigits))
 }
 
 // ==================== Type name functions ====================

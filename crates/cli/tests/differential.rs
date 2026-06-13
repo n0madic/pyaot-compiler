@@ -318,6 +318,22 @@ const PHASE_CORPUS: &[&str] = &[
     // source), and interaction with f-strings / `==` / a bound var. Divergences
     // `type(x) is T` and `repr(type(x))` are out of scope and unprobed.
     "p17_type_builtin.py",
+    // Scalar / value builtins (PLAN §5): `pow`, `divmod`, `all`, `any`, `id`,
+    // `round`, `bin`, `hex`, `oct`. Recognized by name in the frontend (like
+    // sum/min/max), unshadowed-gated. Two shapes: pure desugar (`pow` → `**`,
+    // `divmod` → staged `(a//b, a%b)`, `all`/`any` → a truthiness-short-circuit
+    // iterator loop) and declarative `CallRuntime` (`id` wraps `rt_id_obj`;
+    // `round` → `rt_builtin_round` banker's via decimal formatting; `bin`/`hex`/
+    // `oct` → BIGNUM-AWARE `rt_builtin_*` taking a TAGGED Value — B16). Probes
+    // negative-operand `divmod` sign (B1), banker's half-even incl. `2.675`,
+    // `id`↔`is` consistency, `bin(2**100)`/`hex(2**100)` (the B16 gate), and
+    // f-string / unpack / arithmetic interactions. Out of scope: 1-/3-arg pow.
+    "p18_scalar_builtins.py",
+    // Consolidated core-types/operators suite (514 lines, no imports). Its sole
+    // §5 blocker was `round` — closed by p18, so it now byte-matches CPython
+    // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF (it
+    // still needs `map`/`filter`/`format`).
+    "test_core_types.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
