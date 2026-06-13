@@ -153,7 +153,7 @@ These few gaps block the most files — close them before the long tail.
 | ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
 | ~~**Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension)~~ — DONE (backlog §4) | 2 | ~~`tuple/list unpacking assignment is not yet supported`~~ |
 | **`type()` builtin** (incl. `type(x).__name__`) | 3 | `builtin Type not supported in Phase 2` |
-| **int→float numeric tower through a `float` slot** | 2 | `int cannot be returned/assigned to a float slot` |
+| ~~**int→float numeric tower through a `float` slot**~~ — DONE for return + annotated-local seams (§8); global/field/param deferred | 2 | ~~`int cannot be returned/assigned to a float slot`~~ |
 
 ### 1. Calls & arguments
 - ~~**kwargs on indirect/builtin calls**~~ — DONE (Phase 10): `sorted(xs, key=, reverse=)`
@@ -266,7 +266,10 @@ These few gaps block the most files — close them before the long tail.
 - **Gradual/`Any` receiver** — "runtime type query on a gradual value is out of scope" (decide: support via a runtime tag query, or keep out-of-scope and document).
 
 ### 8. Numeric tower (int↔float)
-- An `int`/widened local returned through `-> float`; a literal `return 0` in a `-> float` function; an unannotated mixed `return 1.5 / return 0` inferred as `Any` and rejected at a `float` slot. (bool↔int promotion already works — the gap is specifically int↔float.)
+- ~~An `int`/widened local returned through `-> float`; a literal `return 0` in a `-> float` function; an unannotated mixed `return 1.5 / return 0` inferred as `Any` and rejected at a `float` slot.~~ — DONE for the two `Raw(F64)`-slot seams: **return through `-> float`** and **assignment to an annotated `float` LOCAL** (incl. a `__main__` top-level local). int / bool / gradual `Dyn` are accepted at these seams via a new `allow_numeric_coerce` gate in `check_reinterpret`; the coercion lands at the store as a CHECKED `Tagged → Raw(F64)` unbox (`coerce_value` helper → `rt_unbox_float`, now with a `BigInt` arm for `float(huge_int)` → round-to-nearest, ±inf on overflow). The annotation is a *contract* (CPython keeps the raw int), so the divergence is observable only via repr-print — gated by `corpus/p16_numeric_tower_float.py` (asserts via `==`, prints only float-forced results; covers int/bool returns, a `: float` local from int, a `Dyn` mixed return into a float local, the `2 ** 62` BigInt arm, and a `sum`-over-floats interaction). Untouched: `is_subtype_of` (covariant for generics — a global `int<:float` would unsoundly admit `list[int] <: list[float]`), `numeric_promote`, `raw_uniform`. (bool↔int promotion already worked — this closes int↔float.)
+  - **Deferred sub-items** (kept rejected, no liftable corpus needs them):
+    - **`float` GLOBAL / FIELD slots** (a genuine cross-function `x: float` global; `self.v: float`). Physically *tagged* slots that unbox on READ via an *unchecked* `UnboxFloat` (stores coerce to plain `Tagged`), so accepting an int there would later misread (PITFALLS A2). Needs a store-side coerce-to-float-then-box so the slot holds a genuine `FloatObj` — a separate, larger change.
+    - **Passing int/bool to a `float` PARAMETER** (free-fn / method / ctor / dunder). The method/ctor/dunder arg seams pass `(loc, repr)` without a per-arg `SemTy`, so `needs_check` can't be evaluated without threading types through. Kept rejecting to avoid an accept-then-SEGV.
 
 ### 9. Methods on builtin types
 - **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__`.

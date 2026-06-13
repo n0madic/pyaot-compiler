@@ -187,13 +187,42 @@ fn accepts_float_into_float_parameter() {
 }
 
 #[test]
-fn rejects_int_into_float_local() {
-    assert!(try_infer("x: float = 5\nprint(x)\n").is_err());
+fn accepts_int_into_float_local() {
+    // §8 numeric tower: an `int` into an annotated `: float` LOCAL is a real
+    // (checked) coercion at the store, not a contract violation — the slot is a
+    // genuine `Raw(F64)` register, so the int boxes to `Tagged` then takes the
+    // checked `rt_unbox_float` unbox to a real f64. (CPython keeps the raw int;
+    // pyaot coerces to `5.0` — the annotation-as-contract divergence, observable
+    // only via repr-print.) Holds for both a `__main__` top-level local and a
+    // function-body local.
+    assert!(try_infer("x: float = 5\nprint(x + 0.0)\n").is_ok());
+    assert!(try_infer(
+        "def g() -> float:\n    y: float = 7\n    return y + 0.0\n\n\nprint(g())\n"
+    )
+    .is_ok());
 }
 
 #[test]
-fn rejects_int_returned_as_float() {
-    assert!(try_infer("def f() -> float:\n    return 5\n\n\nprint(f())\n").is_err());
+fn accepts_int_returned_as_float() {
+    // §8 numeric tower: an `int`/`bool` through a `-> float` return is a real
+    // (checked) coercion at the return terminator, not a contract violation.
+    assert!(try_infer("def f() -> float:\n    return 5\n\n\nprint(f())\n").is_ok());
+    assert!(try_infer("def b() -> float:\n    return True\n\n\nprint(b())\n").is_ok());
+}
+
+#[test]
+fn rejects_int_into_deferred_float_slots() {
+    // §8 leaves the int→float numeric tower REJECTED at the param / global /
+    // field seams (the deferred sub-items): those are tagged slots read via an
+    // unchecked unbox (a global/field), or lack a per-arg `SemTy` coerce site (a
+    // param), so accepting an int would later misread (PITFALLS A2). A genuine
+    // cross-function `float` GLOBAL — `x` is read inside `f`, so it lowers to a
+    // tagged `GlobalSet` slot, not a `Raw(F64)` `__main__` local:
+    assert!(try_infer(
+        "x: float = 5\ndef f() -> float:\n    return x + 1.0\n\n\nprint(f())\n"
+    )
+    .is_err());
+    // (A `float` PARAMETER stays rejected too — see `rejects_int_into_float_parameter`.)
 }
 
 // ── typed-heap boundary checks (Phase 4: `TaggedToHeap` is reinterpret-by-type

@@ -74,7 +74,21 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
             );
         }
     }
-    rt_unbox_float(obj.unwrap_ptr())
+    // A heap `BigInt` is the int→float numeric tower above fixnum range (PLAN
+    // §8): `float(huge_int)` rounds to the nearest f64, returning ±inf on
+    // overflow — exactly `num_bigint::BigInt::to_f64`'s semantics (matches
+    // CPython). Mirrors `rt_unbox_int_abi`'s `BigIntObj` access; without this
+    // arm `rt_unbox_float` below would TypeError on a legitimate big int.
+    let ptr: *mut Obj = obj.unwrap_ptr();
+    unsafe {
+        if !ptr.is_null() && (*ptr).header.type_tag == TypeTagKind::BigInt {
+            use crate::object::BigIntObj;
+            use num_traits::ToPrimitive;
+            let big = &(*(ptr as *mut BigIntObj)).value;
+            return big.to_f64().unwrap_or(f64::INFINITY);
+        }
+    }
+    rt_unbox_float(ptr)
 }
 
 /// Unbox an int from a Tagged Value at a CHECKED stdlib raw-ABI boundary

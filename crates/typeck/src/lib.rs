@@ -760,6 +760,10 @@ fn check_repr_boundaries(
                                 kind,
                                 "assigned to",
                                 classes,
+                                // The annotated-local-assign seam: int/bool/Dyn
+                                // into a `: float` local coerces at the store
+                                // (PLAN §8).
+                                true,
                             )?;
                         }
                     }
@@ -778,6 +782,9 @@ fn check_repr_boundaries(
                                 kind,
                                 "assigned to",
                                 classes,
+                                // Cell writes read back by the captured
+                                // annotation; numeric coercion deferred (§8).
+                                false,
                             )?;
                         }
                     }
@@ -795,6 +802,9 @@ fn check_repr_boundaries(
                                     kind,
                                     "assigned to global",
                                     classes,
+                                    // Globals are tagged slots that unbox on
+                                    // READ; numeric coercion deferred (§8).
+                                    false,
                                 )?;
                             }
                         }
@@ -813,6 +823,10 @@ fn check_repr_boundaries(
                                             kind,
                                             "assigned to field",
                                             classes,
+                                            // Float fields are tagged slots that
+                                            // unbox on READ; numeric coercion
+                                            // deferred (§8).
+                                            false,
                                         )?;
                                     }
                                 }
@@ -831,6 +845,9 @@ fn check_repr_boundaries(
                         kind,
                         "returned from",
                         classes,
+                        // The return seam: int/bool/Dyn through `-> float`
+                        // coerces at the return store (PLAN §8).
+                        true,
                     )?;
                 }
             }
@@ -905,6 +922,9 @@ fn check_repr_boundaries(
                                         kind,
                                         "passed to",
                                         classes,
+                                        // Param-pass has no per-arg coerce site
+                                        // for every call kind; deferred (§8).
+                                        false,
                                     )?;
                                 }
                             }
@@ -933,7 +953,15 @@ fn check_repr_boundaries(
             };
             for (arg, param) in args.iter().zip(params) {
                 if let Some(kind) = reinterpret_kind(&param.ty) {
-                    check_reinterpret(&func.exprs[*arg], &param.ty, kind, "passed to", classes)?;
+                    check_reinterpret(
+                        &func.exprs[*arg],
+                        &param.ty,
+                        kind,
+                        "passed to",
+                        classes,
+                        // Param-pass: deferred (§8).
+                        false,
+                    )?;
                 }
             }
         }
@@ -1082,7 +1110,15 @@ fn check_indirect_call(
     }
     for (arg, pty) in args.iter().zip(sig.params.iter().take(fixed)) {
         if let Some(kind) = reinterpret_kind(pty) {
-            check_reinterpret(&func.exprs[*arg], pty, kind, "passed to", classes)?;
+            check_reinterpret(
+                &func.exprs[*arg],
+                pty,
+                kind,
+                "passed to",
+                classes,
+                // Indirect-call param-pass: deferred (§8).
+                false,
+            )?;
         }
     }
     Ok(())
@@ -1215,7 +1251,28 @@ fn check_reinterpret(
     kind: ReinterpretKind,
     verb: &str,
     classes: &ClassTable,
+    allow_numeric_coerce: bool,
 ) -> Result<()> {
+    // Numeric tower (PLAN §8): an `int`/`bool`/gradual value flowing into a
+    // `float` slot is a *real* coercion (int→f64, with a bignum arm), never a
+    // noop — but the slot ends up holding a genuine f64, so it is sound. CPython
+    // ignores the `-> float` / `: float` annotation and keeps the raw int; this
+    // compiler treats the annotation as a contract and coerces (the divergence
+    // is observable only via repr-print). The acceptance lives ONLY here, in the
+    // repr-contract check — never in `is_subtype_of`, which is covariant for
+    // generics (`int <: float` there would unsoundly admit `list[int] <:
+    // list[float]`, whose float reads would misread tagged ints). It is gated to
+    // the return / annotated-local-assign seams via `allow_numeric_coerce`;
+    // param / global / field slots stay strict (see Deferred in PLAN §8). The
+    // coercion lands at the store as a CHECKED `Tagged → Raw(F64)` unbox
+    // (`rt_unbox_float`), which covers int→f64, bool→f64 and gradual Dyn→f64
+    // uniformly and raises `TypeError` on a non-numeric tag.
+    if allow_numeric_coerce
+        && *target == SemTy::Float
+        && matches!(value.ty, SemTy::Int | SemTy::Bool | SemTy::Dyn)
+    {
+        return Ok(());
+    }
     let ok = match kind {
         // A Callable slot requires representation-level signature equality —
         // ordinary subtyping could change a param/ret `Repr` and forge a

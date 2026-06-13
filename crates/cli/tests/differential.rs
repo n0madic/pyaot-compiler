@@ -298,6 +298,15 @@ const PHASE_CORPUS: &[&str] = &[
     // length, not the annotated arity. Probes Tagged-int / Raw-f64 / Heap-str
     // element families + iterate/unpack interaction probes.
     "p15_tuple_slice_slot.py",
+    // int→float numeric tower through a float slot (PLAN §8). An int/bool/gradual
+    // value into a `-> float` return or an annotated `: float` local is a real
+    // (checked) coercion — `rt_unbox_float` (with a bignum arm), not a noop. The
+    // annotation is a contract (CPython keeps the raw int), so the probe asserts
+    // via `==` and prints only float-forced results to keep the divergence
+    // unobservable. Covers int/bool returns, a `: float` local from int, a Dyn
+    // mixed return into a float local, the BigInt arm (`2 ** 62`), and a
+    // `sum`-over-floats interaction.
+    "p16_numeric_tower_float.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

@@ -414,6 +414,50 @@ impl<'a> FnLower<'a> {
         Ok(())
     }
 
+    /// Coerce `src` (`from`, static type `ty`) into a fresh local of `want`,
+    /// returning it.
+    ///
+    /// When `want` is a `Raw(F64)`/`Raw(I64)` register slot and the value is not
+    /// statically that type, the conversion is a *real* one (an int/bool/gradual
+    /// value into a `float` slot — the numeric tower, PLAN §8; or a gradual value
+    /// into a stdlib raw-ABI param — Phase 8H, D3), so it takes the CHECKED unbox:
+    /// box to `Tagged` then `CoerceInst::new_checked`, whose codegen calls
+    /// `rt_unbox_float` / `rt_unbox_int` (TypeError on a non-numeric tag,
+    /// bignum→f64 round-to-nearest) instead of reinterpreting bits. A statically
+    /// proven value keeps the plain unchecked `coerce`. This is the single seam
+    /// for `Tagged → Raw` checked coercion (used by runtime-arg passing, the
+    /// return terminator, and `float`-local assignment).
+    fn coerce_value(
+        &mut self,
+        src: LocalId,
+        from: Repr,
+        ty: &SemTy,
+        want: Repr,
+    ) -> Result<LocalId> {
+        let needs_check = match &want {
+            Repr::Raw(RawKind::F64) => *ty != SemTy::Float,
+            Repr::Raw(RawKind::I64) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
+            _ => false,
+        };
+        if !needs_check {
+            return self.coerce(src, from, want);
+        }
+        let tagged = self.coerce(src, from, Repr::Tagged)?;
+        let dst = self.alloc_temp(want.clone());
+        // `needs_check` only fires for Raw(F64)/Raw(I64) targets, exactly
+        // `new_checked`'s domain — the `None` arm is unreachable by
+        // construction, but a loud internal error beats an `unwrap`.
+        let inst = CoerceInst::new_checked(dst, Operand::Local(tagged), Repr::Tagged, want.clone())
+            .ok_or_else(|| {
+                CompilerError::codegen_error(
+                    format!("internal: checked coerce to non-unbox repr {want:?}"),
+                    None,
+                )
+            })?;
+        self.emit(MirInst::Coerce(inst));
+        Ok(dst)
+    }
+
     /// Supply an already-lowered operand as a sound `Raw(I64)`, or `None`.
     ///
     /// It qualifies if it already lowered to `Raw(I64)` (a range-proven cursor),
@@ -458,7 +502,17 @@ impl<'a> FnLower<'a> {
             HirStmt::Assign { target, value } => {
                 let (vloc, vrepr) = self.lower_expr(*value)?;
                 let target_repr = self.local_repr(*target);
-                self.coerce_into(*target, vloc, vrepr, target_repr)?;
+                if target_repr == Repr::Raw(RawKind::F64) {
+                    // Numeric tower (PLAN §8): an int/bool/gradual value into an
+                    // annotated `: float` local is a real (checked) coercion —
+                    // compute the f64 via the shared helper, then store it into
+                    // the existing slot (a `Raw(F64)→Raw(F64)` Noop copy).
+                    let ty = self.func.exprs[*value].ty.clone();
+                    let f = self.coerce_value(vloc, vrepr, &ty, target_repr.clone())?;
+                    self.coerce_into(*target, f, target_repr.clone(), target_repr)?;
+                } else {
+                    self.coerce_into(*target, vloc, vrepr, target_repr)?;
+                }
                 Ok(())
             }
             HirStmt::Assert { cond } => {
@@ -966,7 +1020,10 @@ impl<'a> FnLower<'a> {
             HirTerminator::Return(Some(idx)) => {
                 let (loc, repr) = self.lower_expr(*idx)?;
                 let want = self.ret_repr.clone();
-                let coerced = self.coerce(loc, repr, want)?;
+                // Numeric tower (PLAN §8): an int/bool/gradual value through a
+                // `-> float` slot is a real (checked) coercion, not a noop.
+                let ty = self.func.exprs[*idx].ty.clone();
+                let coerced = self.coerce_value(loc, repr, &ty, want)?;
                 Ok(MirTerminator::Return(Some(Operand::Local(coerced))))
             }
             HirTerminator::Jump(target) => Ok(MirTerminator::Jump(self.block_map[target])),
@@ -1547,39 +1604,10 @@ impl<'a> FnLower<'a> {
                     // the CHECKED unbox (Phase 8H, D3): `rt_unbox_float` /
                     // `rt_unbox_int` validate the tag at runtime (TypeError on
                     // mismatch) instead of reinterpreting bits. Statically
-                    // proven types keep the unchecked fast path.
-                    let arg_ty = &self.func.exprs[*arg].ty;
-                    let needs_check = match &want {
-                        Repr::Raw(RawKind::F64) => *arg_ty != SemTy::Float,
-                        Repr::Raw(RawKind::I64) => {
-                            matches!(arg_ty, SemTy::Dyn | SemTy::Union(_))
-                        }
-                        _ => false,
-                    };
-                    let coerced = if needs_check {
-                        let tagged = self.coerce(al, ar, Repr::Tagged)?;
-                        let dst = self.alloc_temp(want.clone());
-                        // `needs_check` only fires for Raw(F64)/Raw(I64)
-                        // targets, exactly `new_checked`'s domain — the
-                        // `None` arm is unreachable by construction, but a
-                        // loud internal error beats an `unwrap`.
-                        let inst = CoerceInst::new_checked(
-                            dst,
-                            Operand::Local(tagged),
-                            Repr::Tagged,
-                            want.clone(),
-                        )
-                        .ok_or_else(|| {
-                            CompilerError::codegen_error(
-                                format!("internal: checked coerce to non-unbox repr {want:?}"),
-                                None,
-                            )
-                        })?;
-                        self.emit(MirInst::Coerce(inst));
-                        dst
-                    } else {
-                        self.coerce(al, ar, want)?
-                    };
+                    // proven types keep the unchecked fast path. Shared with the
+                    // return / `float`-local seams via `coerce_value`.
+                    let arg_ty = self.func.exprs[*arg].ty.clone();
+                    let coerced = self.coerce_value(al, ar, &arg_ty, want.clone())?;
                     ops.push(Operand::Local(coerced));
                 }
                 None => {
