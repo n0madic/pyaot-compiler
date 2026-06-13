@@ -307,6 +307,17 @@ const PHASE_CORPUS: &[&str] = &[
     // mixed return into a float local, the BigInt arm (`2 ** 62`), and a
     // `sum`-over-floats interaction.
     "p16_numeric_tower_float.py",
+    // `type()` builtin incl. `type(x).__name__` (PLAN §6). A pyaot "type object"
+    // IS its repr string: `type(x)` → `rt_builtin_type` → `<class '...'>` (builtins
+    // via the value tag, user instances via the registered module-qualified
+    // qualname), so `str(type(x))` / `print(type(x))` / `==`-on-name all fall out.
+    // `type(<1 arg>).__name__` is a lowering peephole through `rt_type_name_extract`
+    // — the SAME runtime string, last dotted segment — never a parallel
+    // compile-time name table (the §6 one-source trap). Probes every builtin tag,
+    // a user class (qualified `<class '__main__.Widget'>` vs bare `Widget` from one
+    // source), and interaction with f-strings / `==` / a bound var. Divergences
+    // `type(x) is T` and `repr(type(x))` are out of scope and unprobed.
+    "p17_type_builtin.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

@@ -2007,6 +2007,23 @@ impl<'a> FnLower<'a> {
         self.emit_runtime_call(call_idx, def, ops, &ret_spec)
     }
 
+    /// Is `value` a `type(<exactly one arg>)` builtin call? Mirrors the callee
+    /// dispatch `lower_call` uses (a `Name` resolving to `Symbol::Builtin(Type)`),
+    /// gating the `type(x).__name__` peephole.
+    fn is_type_builtin_call(&self, value: Idx<HirExpr>) -> bool {
+        if let HirExprKind::Call { callee, args } = &self.func.exprs[value].kind {
+            if args.len() == 1 {
+                if let HirExprKind::Name(SymbolRef::Resolved(id)) = &self.func.exprs[*callee].kind {
+                    return matches!(
+                        self.resolve.symbol(*id),
+                        Symbol::Builtin(pyaot_mir::BuiltinFunctionKind::Type)
+                    );
+                }
+            }
+        }
+        false
+    }
+
     fn lower_attribute(
         &mut self,
         attr_idx: Idx<HirExpr>,
@@ -2015,6 +2032,26 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let span = self.func.exprs[value].span;
         let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
+
+        // `type(x).__name__` → the bare class name. `type(x)` already produces
+        // the `<class 'mod.Name'>` repr string at runtime (builtins via the type
+        // tag, user instances via the registered qualname); `rt_type_name_extract`
+        // takes THAT one string and returns its last dotted segment. Routing
+        // `.__name__` through the same runtime source — never a compile-time
+        // class-name table — keeps every `type()` form (`str(type(x))`,
+        // `print(type(x))`, `type(x).__name__`) on one formatting path (PLAN §6).
+        if self.interner.resolve(name) == "__name__" && self.is_type_builtin_call(value) {
+            let (vl, vr) = self.lower_expr(value)?;
+            let str_local = self.coerce(vl, vr, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &pyaot_core_defs::runtime_func_def::RT_TYPE_NAME_EXTRACT,
+                args: vec![Operand::Local(str_local)],
+            });
+            let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+            return Ok((coerced, result_repr));
+        }
 
         // `e.args` on a caught builtin exception — or a tuple clause of only
         // builtins — (Phase 7B): the args tuple at instance field slot 0 (the

@@ -152,7 +152,7 @@ These few gaps block the most files — close them before the long tail.
 | ~~**`del`** statement (`del d[k]`, `del name`, `del obj.attr`)~~ — DONE (backlog §3) | 4 | ~~`unsupported statement for this milestone`~~ |
 | ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
 | ~~**Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension)~~ — DONE (backlog §4) | 2 | ~~`tuple/list unpacking assignment is not yet supported`~~ |
-| **`type()` builtin** (incl. `type(x).__name__`) | 3 | `builtin Type not supported in Phase 2` |
+| ~~**`type()` builtin** (incl. `type(x).__name__`)~~ — DONE (§6); `hash()` still pending | 3 | ~~`builtin Type not supported in Phase 2`~~ |
 | ~~**int→float numeric tower through a `float` slot**~~ — DONE for return + annotated-local seams (§8); global/field/param deferred | 2 | ~~`int cannot be returned/assigned to a float slot`~~ |
 
 ### 1. Calls & arguments
@@ -199,8 +199,10 @@ These few gaps block the most files — close them before the long tail.
   a dedicated `HirExprKind::Is` → `rt_is` (bit-identity; `None`'s ABI encodings
   normalized via `rt_is_none`, so the `is None` `IsNone` path is untouched and
   never dispatches through `__eq__`). Int/str caching is NOT modeled (the trap
-  below). Gated by `corpus/p11_is_identity.py`. Still open: `type(x) is T`
-  (blocked on the `type()` builtin, §6) and chained `a is b is c` (rejected via
+  below). Gated by `corpus/p11_is_identity.py`. Still open: `type(x) is T` (the
+  `type()` builtin landed in §6, but a "type object" is its repr StrObj, so `is`
+  would compare two distinct StrObjs by pointer — a documented out-of-scope
+  divergence, NOT a missing feature) and chained `a is b is c` (rejected via
   `map_cmp`, as before).
 - **Walrus `:=`** — in `if`/`while`/nested expressions, everywhere.
 - **Matrix-multiply `@` / `__matmul__`**.
@@ -257,8 +259,17 @@ These few gaps block the most files — close them before the long tail.
 `issubclass`, `object` (`object.__new__`), `NotImplemented`.
 
 ### 6. Builtins — `Phase 2 codegen not supported`
-- **`type()`** — incl. `type(x).__name__`, `str(type(x))`.
-- **`hash()`**.
+- ~~**`type()`**~~ — DONE: incl. `type(x).__name__`, `str(type(x))`,
+  `print(type(x))`. Gated by `corpus/p17_type_builtin.py`. A "type object" IS its
+  repr StrObj (`type(x)` → `rt_builtin_type` → `<class '...'>`); `.__name__` is a
+  lowering peephole through `rt_type_name_extract` (same runtime string, bare last
+  segment). Out of scope (unprobed divergences): `type(x) is T` / `type(x) is
+  type(y)` (pointer-identity on distinct StrObjs; `p11_is_identity.py` already
+  defers it) and `repr(type(x))` (would add quotes). `test_builtins.py` /
+  `test_classes.py` (the type-blocked files) stay OFF the gate — now blocked by
+  unrelated gaps (`pow` §5; the `@` matmul operator §11 respectively).
+- **`hash()`** — still pending (`builtin Hash not supported in Phase 2`; needs its
+  own probe and a `rt_builtin_hash` codegen arm).
 
 ### 7. `isinstance`
 - **Tuple of types** — `isinstance(x, (int, str))` (single-type form works).
@@ -341,11 +352,12 @@ Read the matching note before starting an item.
   stays syntactic. For `hasattr` on a gradual receiver the previous compiler's
   design is reusable: a name-hash method/field registry probe (existence-only,
   no vtable lookup).
-- **§6 `type()`.** The previous compiler was still fixing diffs here in its
-  final weeks: `print(type(x))` needs the module-qualified
-  `<class '__main__.Foo'>`, `type(x).__name__` needs the bare name, and the
-  default instance repr is module-qualified again. Emit all three from one
-  metadata source, never parallel formatting paths.
+- **§6 `type()`.** DONE. `print(type(x))` / `str(type(x))` give the
+  module-qualified `<class '__main__.Foo'>`, `type(x).__name__` the bare name, and
+  the default instance repr is module-qualified again — all three from ONE metadata
+  source as required: `rt_builtin_type` formats the `<class '...'>` string (builtin
+  tag or registered qualname), and `.__name__` runs `rt_type_name_extract` over
+  THAT string (a lowering peephole), never a parallel compile-time name table.
 - **§8 numeric tower.** `int` is Tagged (fixnum-or-bignum) and `float` is
   `Raw(F64)`, so int→float at a slot is a real `legalize` coercion with a
   bignum arm (precision loss above 2⁵³ matches CPython's `float(int)`) — never
