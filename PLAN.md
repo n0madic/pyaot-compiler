@@ -151,7 +151,7 @@ These few gaps block the most files — close them before the long tail.
 | ~~**`is`/`is not` against non-`None`**~~ — DONE (backlog §2) | 6 | ~~`is / is not is only supported against None`~~ |
 | ~~**`del`** statement (`del d[k]`, `del name`, `del obj.attr`)~~ — DONE (backlog §3) | 4 | ~~`unsupported statement for this milestone`~~ |
 | ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
-| **Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension) | 2 | `tuple/list unpacking assignment is not yet supported` |
+| ~~**Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension)~~ — DONE (backlog §4) | 2 | ~~`tuple/list unpacking assignment is not yet supported`~~ |
 | **`type()` builtin** (incl. `type(x).__name__`) | 3 | `builtin Type not supported in Phase 2` |
 | **int→float numeric tower through a `float` slot** | 2 | `int cannot be returned/assigned to a float slot` |
 
@@ -224,8 +224,31 @@ These few gaps block the most files — close them before the long tail.
 - **`...` (Ellipsis) as a statement / stub body** — `def f() -> int: ...` (Protocol stubs).
 
 ### 4. Unpacking & loop targets
-- **Nested destructuring** — `a, (b, c) = …`, `(m1,m2),(m3,m4) = …`, `g, [h, i] = …` in assignment, `for`, and comprehension/genexpr targets. Flat and starred forms already work.
-- **Attribute / subscript as a `for` target** — `for obj.attr in …`, `for lst[i] in …`.
+- ~~**Nested destructuring**~~ — DONE: `a, (b, c) = …`, `(m1,m2),(m3,m4) = …`,
+  `g, [h, i] = …`, deep nesting, and nested + starred — in assignment, `for`, and
+  comprehension/genexpr targets. The whole unpacking pipeline funnels through one
+  method `assign_to_target`, which now recurses into a Tuple/List target via
+  `lower_unpack_subscript` (each nested element is staged and re-subscripted
+  positionally), so all three contexts get nesting from one change; nested
+  attribute/subscript leaves reuse the existing `SetAttr`/`SetItem` arms.
+  Entirely front-half (`frontend-python`) — no HIR/typeck/lowering surface (nested
+  unpacking desugars to plain `Assign` + `Subscript` chains; `subscript_ty` already
+  types arbitrary index depth). Gated by `corpus/p14_nested_unpack.py`. Inherited
+  limitation (same as flat unpack): an over-long runtime/inner sequence is NOT
+  statically rejected (CPython's "too many values to unpack" not raised). The
+  aspirational `test_collections_list_tuple.py` / `test_iteration.py` stay off the
+  gate on UNRELATED gaps — `test_iteration.py` on the next bullet (bare
+  attr/subscript `for`-targets); `test_collections_list_tuple.py` now reaches §9
+  `tuple.index()`/`.count()` (its earlier blocker — a tuple SLICE result, typed
+  variable-length `tuple[T, ...]` by `slice_ty`, assigned into an annotated
+  fixed-arity `tuple[T, …]` slot — is FIXED: the repr-contract check
+  (`check_reinterpret`) now admits a `tuple`→`tuple` store when element `Repr`s
+  match per index, since fixed/variable arity is one physical `TupleObj`; gated by
+  `corpus/p15_tuple_slice_slot.py`).
+- **Attribute / subscript as a `for` target** — `for obj.attr in …`, `for lst[i] in …`
+  (`bind_for_target` only accepts a `Name` or a sequence pattern; a bare
+  `Attribute`/`Subscript` target raises "unsupported for-loop target". This is what
+  keeps `test_iteration.py` off the gate after nested destructuring landed.)
 - **`range()` for-loop with a non-literal step** — `range(10,0,-(-1))`, a variable step, `range(0,10,len(xs))` (the `list(range(...))` value form already works; the restriction is only in the for-loop desugar).
 
 ### 5. Builtins — `undefined name`

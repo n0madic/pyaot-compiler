@@ -2078,10 +2078,18 @@ impl<'a> FnLowerer<'a> {
                 self.push_stmt(HirStmt::SetAttr { base, name, value });
                 Ok(())
             }
-            Expr::Tuple(_) | Expr::List(_) => Err(parse_error(
-                "tuple/list unpacking assignment is not yet supported",
-                to_span(target.range()),
-            )),
+            // Nested sequence target (`a, (b, c) = …`): stage this element and
+            // re-subscript it positionally, recursing for deeper nesting. Routes
+            // through the same unpacker as the top level, so for-loop and
+            // comprehension targets get nested support for free (backlog §4).
+            Expr::Tuple(t) => {
+                let span = to_span(target.range());
+                self.lower_unpack_subscript(&t.elts, value, span)
+            }
+            Expr::List(l) => {
+                let span = to_span(target.range());
+                self.lower_unpack_subscript(&l.elts, value, span)
+            }
             other => Err(parse_error(
                 "unsupported assignment target",
                 to_span(other.range()),
@@ -2212,8 +2220,11 @@ impl<'a> FnLowerer<'a> {
     /// Unpack an arbitrary iterable RHS (`a, b = expr`, `for k, v in pairs`): stage
     /// the value once, then bind `target_i = tmp[i]` via positional subscripts.
     /// One starred target (`a, *rest = …`) captures a fresh list of the middle
-    /// slice. Arity beyond the pattern is a runtime `IndexError` (no static
-    /// shape here).
+    /// slice. A nested sequence target recurses here via [`Self::assign_to_target`]
+    /// (`a, (b, c) = …`, backlog §4). Arity beyond the pattern is a runtime
+    /// `IndexError` (no static shape here); an over-long sequence is *not*
+    /// statically rejected (CPython's "too many values to unpack" is not raised) —
+    /// this matches the flat-unpack contract and is an inherited limitation.
     fn lower_unpack_subscript(
         &mut self,
         targets: &[Expr],

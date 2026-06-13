@@ -1165,9 +1165,50 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
     }
 }
 
+/// A tuple VALUE is representation-safe to store into a tuple SLOT when every
+/// element index the slot reads back unboxes exactly as the value boxed it —
+/// i.e. per-index element `Repr` equality. A fixed-arity `tuple[T, …]` and a
+/// variable-length `tuple[T, ...]` are one physical `TupleObj` (a runtime `len`
+/// plus tagged element slots), so arity itself is compile-time-only metadata —
+/// the MIR coercion layer already treats the two as one family
+/// (`same_container_family`). The only genuine reinterpret hazard is an
+/// element-`Repr` mismatch (e.g. an `int` element read back through a `float`
+/// slot, which would unbox the tagged fixnum as an f64). This admits a tuple
+/// slice result (`tuple[T, ...]`, the `slice_ty` of any tuple) into an annotated
+/// fixed-arity `tuple[T, …]` slot — an arity CPython never enforces either.
+fn tuple_store_repr_safe(value: &SemTy, target: &SemTy) -> bool {
+    // (per-index fixed-prefix reprs, optional variadic-tail repr) of a tuple type.
+    fn shape(ty: &SemTy) -> Option<(Vec<Repr>, Option<Repr>)> {
+        if let Some(elems) = ty.tuple_elems() {
+            Some((elems.iter().map(repr_of).collect(), None))
+        } else {
+            ty.tuple_var_elem().map(|e| (Vec::new(), Some(repr_of(e))))
+        }
+    }
+    let (Some((t_fixed, t_var)), Some((v_fixed, v_var))) = (shape(target), shape(value)) else {
+        return false;
+    };
+    // The element `Repr` the value's type supplies at index `i` (its variadic
+    // tail past the fixed prefix); `None` if the value's type cannot supply it.
+    let value_repr_at = |i: usize| v_fixed.get(i).or(v_var.as_ref());
+    match t_var {
+        // Variadic slot: it reads every index the value supplies through one repr,
+        // so all of the value's element reprs must equal it.
+        Some(tr) => v_fixed.iter().chain(v_var.iter()).all(|vr| *vr == tr),
+        // Fixed slot: per-index repr equality across its whole arity. An index the
+        // value's type cannot supply is rejected (the slot would unbox an element
+        // the value does not carry).
+        None => t_fixed
+            .iter()
+            .enumerate()
+            .all(|(i, tr)| value_repr_at(i) == Some(tr)),
+    }
+}
+
 /// Error unless `value`'s type may be soundly stored in a `target`-typed
 /// reinterpret slot. `Never` (unreachable) is always accepted; a [`ReinterpretKind::Gradual`]
-/// slot additionally accepts `Dyn` (gradual typing, deferred to a runtime guard).
+/// slot additionally accepts `Dyn` (gradual typing, deferred to a runtime guard)
+/// and a representation-compatible tuple ([`tuple_store_repr_safe`]).
 fn check_reinterpret(
     value: &HirExpr,
     target: &SemTy,
@@ -1190,7 +1231,8 @@ fn check_reinterpret(
         _ => {
             value.ty == SemTy::Never
                 || value.ty.is_subtype_of(target, classes)
-                || (kind == ReinterpretKind::Gradual && value.ty == SemTy::Dyn)
+                || (kind == ReinterpretKind::Gradual
+                    && (value.ty == SemTy::Dyn || tuple_store_repr_safe(&value.ty, target)))
         }
     };
     if ok {

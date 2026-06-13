@@ -277,6 +277,27 @@ const PHASE_CORPUS: &[&str] = &[
     // callee's (*args, **kwargs) wrapper, and interaction probes: comprehension
     // source, spread in a loop, and left-to-right call-arg evaluation order.
     "p13_spread.py",
+    // Backlog §4 — nested destructuring (`a, (b, c) = …`, `(m1,m2),(m3,m4) = …`,
+    // `g, [h, i] = …`) across assignment / for-loop / comprehension / gen-expr.
+    // `assign_to_target` recurses into a Tuple/List target through
+    // `lower_unpack_subscript`: each nested element is staged and re-subscripted
+    // positionally, so deeper nesting and the for/comp paths fall out of the same
+    // machinery. Covers literal + runtime (variable/call) RHS, mixed tuple/list,
+    // nested attribute/subscript leaves, nested + starred (assignment), and
+    // interaction probes crossing nesting with comprehension element-type
+    // inference + sum() and with `*seq` spread (§13). The aspirational
+    // `test_collections_list_tuple.py` / `test_iteration.py` stay OFF the gate on
+    // UNRELATED gaps (tuple-slice → fixed-arity tuple annotation; bare
+    // attribute/subscript `for`-targets) — the nested-unpacking shapes themselves
+    // compile clean here.
+    "p14_nested_unpack.py",
+    // Tuple slice (`t[a:b]` → variable-length `tuple[T, ...]`) assigned into an
+    // annotated fixed-arity `tuple[T, …]` slot. The repr-contract check now admits
+    // a `tuple` → `tuple` store when element `Repr`s match per index (a fixed and a
+    // variable tuple are one physical `TupleObj`); `len()` reads the real runtime
+    // length, not the annotated arity. Probes Tagged-int / Raw-f64 / Heap-str
+    // element families + iterate/unpack interaction probes.
+    "p15_tuple_slice_slot.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
