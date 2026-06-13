@@ -95,6 +95,11 @@ pub(crate) unsafe fn compare_list_elements(a: *mut Obj, b: *mut Obj) -> std::cmp
             crate::ops::try_instance_lt_ordering(a, b)
                 .unwrap_or_else(|| (a as usize).cmp(&(b as usize)))
         }
+        TypeTagKind::Tuple => {
+            // Nested tuples (and sorting a `list[tuple]`) order lexicographically,
+            // not by pointer address — recurses back here element-wise.
+            crate::tuple::tuple_cmp_ordering(a, b)
+        }
         _ => {
             // For other types, compare by pointer address
             (a as usize).cmp(&(b as usize))

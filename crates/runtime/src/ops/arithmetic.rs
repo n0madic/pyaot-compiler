@@ -161,6 +161,21 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Str {
             return crate::string::rt_str_concat(a, b);
         }
+        // Sequence concatenation through the gradual `+` path (CPython `+` on
+        // two same-type sequences). The statically-typed paths emit dedicated
+        // concat ops directly; this covers the dynamic path (e.g. `+` on two
+        // `Dyn`/gradual operands, or inside a lambda with untyped params).
+        // Mismatched sequence types (`list + tuple`) fall through to the
+        // TypeError below, matching CPython.
+        if tag_a == TypeTagKind::List && tag_b == TypeTagKind::List {
+            return crate::list::rt_list_concat(a, b);
+        }
+        if tag_a == TypeTagKind::Tuple && tag_b == TypeTagKind::Tuple {
+            return crate::tuple::rt_tuple_concat(a, b);
+        }
+        if tag_a == TypeTagKind::Bytes && tag_b == TypeTagKind::Bytes {
+            return crate::bytes::rt_bytes_concat(a, b);
+        }
         match (
             crate::bigint::classify_num(va),
             crate::bigint::classify_num(vb),

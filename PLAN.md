@@ -155,6 +155,7 @@ These few gaps block the most files — close them before the long tail.
 | ~~**`del`** statement (`del d[k]`, `del name`, `del obj.attr`)~~ — DONE (backlog §3) | 4 | ~~`unsupported statement for this milestone`~~ |
 | ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
 | ~~**Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension)~~ — DONE (backlog §4) | 2 | ~~`tuple/list unpacking assignment is not yet supported`~~ |
+| ~~**Attr/subscript `for`-targets + non-literal `range()` step**~~ — DONE (backlog §4) | 1 | ~~`unsupported for-loop target` / `range() step must be an integer literal`~~ |
 | ~~**`type()` builtin** (incl. `type(x).__name__`)~~ — DONE (§6); `hash()` still pending | 3 | ~~`builtin Type not supported in Phase 2`~~ |
 | ~~**int→float numeric tower through a `float` slot**~~ — DONE for return + annotated-local seams (§8); global/field/param deferred | 2 | ~~`int cannot be returned/assigned to a float slot`~~ |
 
@@ -243,19 +244,37 @@ These few gaps block the most files — close them before the long tail.
   types arbitrary index depth). Gated by `corpus/p14_nested_unpack.py`. Inherited
   limitation (same as flat unpack): an over-long runtime/inner sequence is NOT
   statically rejected (CPython's "too many values to unpack" not raised). The
-  aspirational `test_iteration.py` stays off the gate on an UNRELATED gap (the
-  next bullet — bare attr/subscript `for`-targets). `test_collections_list_tuple.py`
+  `test_iteration.py` is now **LIFTED** — its blockers fell in sequence:
+  attribute/subscript `for`-targets (`corpus/p22`), the standalone `iter()` builtin
+  + container `isinstance` (`p23`), `functools.reduce` (`p24`), and finally
+  lexicographic `min`/`max`/`sorted` over tuples + dynamic `list`/`tuple`/`bytes`
+  concatenation (`p25`, a runtime fidelity fix — `rt_obj_cmp`/`compare_list_elements`
+  now route a `Tuple` operand to the lexicographic `tuple_cmp_ordering`, and
+  `rt_obj_add` handles same-type sequence concat through the gradual `+` path).
+  `test_collections_list_tuple.py`
   is now **LIFTED** (§9: its earlier blocker — a tuple SLICE result, typed
   variable-length `tuple[T, ...]` by `slice_ty`, assigned into an annotated
   fixed-arity `tuple[T, …]` slot — was FIXED via the repr-contract check
   (`check_reinterpret`) admitting a `tuple`→`tuple` store when element `Repr`s
   match per index, `corpus/p15_tuple_slice_slot.py`; then `tuple.index`/`.count`
   and finally `list.remove` closed the remaining blockers — see §9).
-- **Attribute / subscript as a `for` target** — `for obj.attr in …`, `for lst[i] in …`
-  (`bind_for_target` only accepts a `Name` or a sequence pattern; a bare
-  `Attribute`/`Subscript` target raises "unsupported for-loop target". This is what
-  keeps `test_iteration.py` off the gate after nested destructuring landed.)
-- **`range()` for-loop with a non-literal step** — `range(10,0,-(-1))`, a variable step, `range(0,10,len(xs))` (the `list(range(...))` value form already works; the restriction is only in the for-loop desugar).
+- ~~**Attribute / subscript as a `for` target**~~ — DONE: `for obj.attr in …`
+  (→ `SetAttr`), `for lst[i] in …` (→ `SetItem`), and mixed tuple targets
+  (`for p.x, p.y in …`). `bind_for_target` now delegates the supported shapes to
+  `assign_to_target` — byte-identical on `Name`/`Tuple`/`List`, and the
+  attribute/subscript leaves reuse the existing `SetAttr`/`SetItem` arms (the same
+  path nested destructuring uses). Entirely front-half, no new HIR/typeck surface.
+  Gated by `corpus/p22_loop_targets.py`.
+- ~~**`range()` for-loop with a non-literal step**~~ — DONE: `range(10,0,-(-1))`, a
+  variable step, computed `range(0,10,1+1)`. `lower_for` takes the Phase-3c raw-i64
+  fast path ONLY for a simple-`Name` target with a compile-time-literal step
+  (`range_step_is_literal`); everything else routes to the general iterator path,
+  which drives the runtime `RangeIter` (correct direction at runtime). The runtime
+  `rt_iter_range` now raises `ValueError: range() arg 3 must not be zero` on
+  `step == 0` (CPython fidelity — fixes both the for-loop general path and the value
+  form `list(range(0,5,0))`). The §4 trap (a negative VARIABLE step must NOT collapse
+  to `sum == 0`) is handled by reusing the proven `RangeIter` direction logic, not a
+  hand-emitted compile-time branch. Gated by `corpus/p22_loop_targets.py`.
 
 ### 5. Builtins — `undefined name`
 - ~~**`pow`, `divmod`, `all`, `any`, `id`, `round`, `bin`, `hex`, `oct`**~~ —
@@ -277,10 +296,30 @@ These few gaps block the most files — close them before the long tail.
   modular `pow(a,b,m)` (both `parse_error`); negative-`ndigits` correctness for
   `round` (naive scaling) and the |float|>i64 → bignum corner (implemented via
   `BigInt::from_f64`, unprobed).
-- **Still pending**: `map`, `filter` (HOF — A4), `format`, `ascii` (PEP-3101
-  mini-language, shared with §13 f-strings), `getattr` (literal-name), `setattr`,
-  `hasattr`, `issubclass`, `object` (`object.__new__`), `NotImplemented`.
-  `test_builtins.py` stays OFF the gate (still needs `map`/`filter`/`format`).
+- ~~**`functools.reduce`**~~ — DONE: a higher-order builtin, but desugared in the
+  frontend to a compiled accumulator loop calling `func(acc, elem)` each iteration
+  (mirroring sum/min/max/all/any), NOT the raw-ABI `rt_reduce` callback path (the
+  PITFALLS A4 anti-pattern — and the substrate's `rt_reduce` 6-arg ABI never matched
+  the 3-arg generic stdlib dispatch, so the descriptor fallthrough SIGSEGV'd). The
+  reduction callable rides the ordinary indirect-call machinery (lambda / capturing
+  lambda / named def). Seeds from `initial` if given, else the first element (empty
+  without initial → `TypeError`, CPython wording). Intercepted in both the bare
+  (`from functools import reduce`) and qualified (`functools.reduce`) dispatch via
+  `is_reduce_def`. Gated by `corpus/p24_reduce.py`. This shows `map`/`filter` should
+  follow the SAME lazy-iterator/compiled-loop shape, never the `rt_*_tagged` HOF
+  variants of the previous compiler.
+- ~~**`iter()`**~~ — DONE: the standalone 1-arg `iter(iterable)` builds a runtime
+  iterator object via the same `ContainerOp::Iter` → `rt_iter_value` the for-loop
+  drives (so a File iterable routes through `rt_file_readlines` in lowering too);
+  `next(it)` (already wired) consumes it via the raising `rt_iter_next`
+  (StopIteration on exhaustion). Wired next to `next`/`sum`/`set` (recognized by
+  name; shadowing unsupported). The 2-arg sentinel form `iter(callable, sentinel)`
+  is out of scope. Gated by `corpus/p23_iter_isinstance.py`.
+- **Still pending**: `map`, `filter` (HOF — A4; follow the `reduce` shape above),
+  `format`, `ascii` (PEP-3101 mini-language, shared with §13 f-strings), `getattr`
+  (literal-name), `setattr`, `hasattr`, `issubclass`, `object` (`object.__new__`),
+  `NotImplemented`. `test_builtins.py` stays OFF the gate (still needs
+  `map`/`filter`/`format`).
 
 ### 6. Builtins — `Phase 2 codegen not supported`
 - ~~**`type()`**~~ — DONE: incl. `type(x).__name__`, `str(type(x))`,
@@ -298,7 +337,14 @@ These few gaps block the most files — close them before the long tail.
 
 ### 7. `isinstance`
 - **Tuple of types** — `isinstance(x, (int, str))` (single-type form works).
-- **Container targets** — `isinstance(x, list/dict/tuple/set)`.
+- ~~**Container targets** — `isinstance(x, list/dict/tuple/set)`~~ — DONE: the
+  builtin-isinstance static fold now matches container targets by KIND (element
+  types are irrelevant to isinstance — a `list[int]` value satisfies
+  `isinstance(x, list)`; a fixed `tuple[A,B]` and a variable `tuple[T,...]` are both
+  `tuple`), alongside the existing `str|int|float|bool|bytes`. Frontend maps
+  `list`/`dict`/`set`/`tuple` to a canonical Dyn-element target; `lower_isinstance_builtin`
+  compares via the `list_elem`/`dict_kv`/`set_elem`/`tuple_elems`/`tuple_var_elem`
+  accessors. Gated by `corpus/p23_iter_isinstance.py`.
 - **Gradual/`Any` receiver** — "runtime type query on a gradual value is out of scope" (decide: support via a runtime tag query, or keep out-of-scope and document).
 
 ### 8. Numeric tower (int↔float)
@@ -430,11 +476,13 @@ Read the matching note before starting an item.
   (heap pointer / fixnum / bool / None), keep corpus probes to the defined
   cases (`is True`, same-object, `type(x) is T`), and do not chase CPython's
   int cache.
-- **§4 non-literal `range` step.** The previous compiler shipped
+- **§4 non-literal `range` step.** — DONE. The previous compiler shipped
   `sum(range(a, b, step)) == 0` for a negative variable step — the loop desugar
-  assumed an ascending direction. Unknown step ⇒ emit the runtime-direction
-  comparison (`step > 0 ? i < stop : i > stop`) and `ValueError` on
-  `step == 0`.
+  assumed an ascending direction. Fix: route a non-literal/computed step to the
+  general iterator path over the runtime `RangeIter`, whose next/exhausted logic
+  already decides direction at runtime (verified for negative steps), instead of a
+  hand-emitted compile-time direction branch; `rt_iter_range` raises `ValueError`
+  on `step == 0`. Gated by `corpus/p22_loop_targets.py`.
 - **§5 `map`/`filter`.** The single item that birthed PITFALLS A4 in the
   previous compiler (parallel `rt_*_tagged` HOF variants, marker bits; `filter`
   additionally broke on an i8-truthiness callback ABI). Implement as lazy

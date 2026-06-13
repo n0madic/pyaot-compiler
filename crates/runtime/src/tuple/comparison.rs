@@ -57,7 +57,12 @@ pub extern "C" fn rt_tuple_eq_abi(a: Value, b: Value) -> i8 {
 
 /// Lexicographic ordering comparison for two tuples.
 /// After F.7c all slots are uniform tagged Values.
-unsafe fn tuple_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
+///
+/// `pub(crate)` so the generic ordering dispatchers (`ops::comparison::obj_cmp_ordering`,
+/// `sorted::compare_list_elements`) can route a `Tuple` operand here — without it,
+/// `min`/`max`/`sorted` over tuples (e.g. `max((v, i) for …)`) raised `TypeError` or
+/// fell back to pointer-address order.
+pub(crate) unsafe fn tuple_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     if a.is_null() && b.is_null() {

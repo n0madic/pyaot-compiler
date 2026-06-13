@@ -43,5 +43,5 @@ pub use mutation::{
     rt_list_append, rt_list_clear, rt_list_delete, rt_list_extend, rt_list_insert, rt_list_pop,
     rt_list_remove, rt_list_reverse, rt_list_sort,
 };
-pub use query::{rt_list_copy, rt_list_count, rt_list_index, rt_list_repeat};
+pub use query::{rt_list_concat, rt_list_copy, rt_list_count, rt_list_index, rt_list_repeat};
 pub use slice::{rt_list_slice, rt_list_slice_step};

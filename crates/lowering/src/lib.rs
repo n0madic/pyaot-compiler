@@ -1536,6 +1536,16 @@ impl<'a> FnLower<'a> {
                     span,
                 ));
             }
+            // Container builtins (`list`/`dict`/`set`/`tuple`) match by KIND —
+            // isinstance ignores element types, so a `list[int]` value satisfies
+            // `isinstance(x, list)` regardless of the canonical Dyn-element target.
+            // (A fixed `tuple[A, B]` and a variable `tuple[T, ...]` are both `tuple`.)
+            _ if target.list_elem().is_some() => got.list_elem().is_some(),
+            _ if target.dict_kv().is_some() => got.dict_kv().is_some(),
+            _ if target.set_elem().is_some() => got.set_elem().is_some(),
+            _ if target.tuple_elems().is_some() || target.tuple_var_elem().is_some() => {
+                got.tuple_elems().is_some() || got.tuple_var_elem().is_some()
+            }
             // bool ⊂ int in Python: `isinstance(True, int)` is True.
             SemTy::Bool if *target == SemTy::Int => true,
             t => t == target,

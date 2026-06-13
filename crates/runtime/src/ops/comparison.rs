@@ -328,6 +328,11 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
                 let data_b = std::slice::from_raw_parts((*bytes_b).data.as_ptr(), len_b);
                 data_a.cmp(data_b)
             }
+            // Lexicographic tuple ordering (CPython `(1, 2) < (1, 3)`), so
+            // `min`/`max`/`sorted` over tuples — e.g. `max((v, i) for …)` —
+            // compares by value, not raises. Recurses element-wise through
+            // `compare_list_elements` (handles nested tuples).
+            TypeTagKind::Tuple => crate::tuple::tuple_cmp_ordering(a, b),
             _ => {
                 crate::raise_exc!(
                     ExceptionType::TypeError,

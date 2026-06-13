@@ -6,6 +6,8 @@ mod query;
 
 // Re-export all public functions
 pub use comparison::{rt_tuple_cmp, rt_tuple_eq};
+// Internal: the generic ordering dispatchers route `Tuple` operands here.
+pub(crate) use comparison::tuple_cmp_ordering;
 
 pub use core::{
     rt_call_with_tuple_args, rt_make_tuple, rt_tuple_concat, rt_tuple_from_dict,

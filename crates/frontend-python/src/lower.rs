@@ -2603,9 +2603,20 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_for(&mut self, s: &rustpython_parser::ast::StmtFor) -> Result<bool> {
-        // The `range(...)` fast path (Phase 3c raw-i64 cursors) is preserved
-        // verbatim; any other iterable takes the general iterator-protocol path.
-        if is_range_call(s.iter.as_ref()) {
+        // The Phase-3c `range(...)` fast path (raw-i64 cursors) bakes in two
+        // assumptions: a compile-time-literal step (so the loop direction is
+        // fixed statically) and a simple-`Name` target. Use it ONLY when both
+        // hold; everything else — a non-literal/computed step, or an attribute/
+        // subscript/tuple target — takes the general iterator path, which drives
+        // the runtime `RangeIter` (correct direction + step=0 `ValueError`) and
+        // binds an arbitrary target via `bind_for_target`. This is a strict
+        // superset of the old behavior: the only loops newly diverted are exactly
+        // the ones `lower_for_range` rejected, so gated raw-int loops keep the
+        // fast path with no perf regression.
+        if is_range_call(s.iter.as_ref())
+            && matches!(s.target.as_ref(), Expr::Name(_))
+            && range_step_is_literal(s.iter.as_ref())
+        {
             self.lower_for_range(s)
         } else {
             self.lower_for_iter(s)
@@ -2710,19 +2721,20 @@ impl<'a> FnLowerer<'a> {
         Ok(false)
     }
 
-    /// Bind a `for`-loop target: a simple name, or a tuple/list pattern unpacked
-    /// element-wise (`for k, v in pairs`).
+    /// Bind a `for`-loop target. Delegates the supported assignment shapes to
+    /// [`Self::assign_to_target`] — byte-identical on `Name`/`Tuple`/`List`
+    /// (same `write_named` / `lower_unpack_subscript`), and additionally lowers
+    /// an attribute (`for obj.attr in …` → `SetAttr`) or subscript
+    /// (`for lst[i] in …` → `SetItem`) leaf each iteration (backlog §4). Keeps a
+    /// precise for-loop diagnostic for everything else.
     fn bind_for_target(&mut self, target: &Expr, value: Idx<HirExpr>, span: Span) -> Result<()> {
         match target {
-            Expr::Name(n) => {
-                let name = self.intern(n.id.as_str());
-                self.write_named(name, SemTy::Dyn, value);
-                Ok(())
-            }
-            _ => match seq_target_elts(target) {
-                Some(elts) => self.lower_unpack_subscript(elts, value, span),
-                None => Err(parse_error("unsupported for-loop target", span)),
-            },
+            Expr::Name(_)
+            | Expr::Tuple(_)
+            | Expr::List(_)
+            | Expr::Attribute(_)
+            | Expr::Subscript(_) => self.assign_to_target(target, value),
+            _ => Err(parse_error("unsupported for-loop target", span)),
         }
     }
 
@@ -5018,6 +5030,159 @@ impl<'a> FnLowerer<'a> {
         Ok(self.local_ref(acc, span))
     }
 
+    /// `functools.reduce(function, iterable[, initial])` — a higher-order
+    /// builtin (like `map`/`filter`) desugared to a compiled accumulator loop
+    /// calling `function(acc, elem)` each iteration, mirroring
+    /// [`Self::lower_minmax`]'s seed-from-first-element shape. This deliberately
+    /// AVOIDS the raw-ABI `rt_reduce` callback path (the PITFALLS A4
+    /// anti-pattern — a parallel HOF calling convention with hand-encoded
+    /// captures): the reduction callable rides the ordinary indirect-call
+    /// machinery (lambda / closure / named def alike), so its arguments and
+    /// result stay on the uniform tagged ABI. Without an `initial` the
+    /// accumulator seeds from the first element and an empty iterable raises
+    /// `TypeError` (CPython); with one, the accumulator seeds from `initial` and
+    /// an empty iterable returns it unchanged.
+    fn lower_reduce(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() < 2 || args.len() > 3 {
+            return Err(parse_error("reduce() takes 2 or 3 arguments", span));
+        }
+        // The reduction callable, staged with the same discipline as the
+        // `min`/`max` `key=` and evaluated FIRST (CPython left-to-right order).
+        let func_mode = self.stage_callable(&args[0])?;
+
+        let iterable = self.lower_expr(&args[1])?;
+        let initial = match args.get(2) {
+            Some(e) => Some(self.lower_expr(e)?),
+            None => None,
+        };
+
+        // it = iter(iterable).
+        let it = self.fresh_local(SemTy::Dyn);
+        let iter_expr = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![iterable],
+            },
+            SemTy::Dyn,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: it,
+            value: iter_expr,
+        });
+
+        // Seed the accumulator: from `initial` if given, else from the first
+        // element (empty-without-initial raises TypeError, like CPython).
+        let acc = self.fresh_local(SemTy::Dyn);
+        match initial {
+            Some(init) => {
+                self.push_stmt(HirStmt::Assign {
+                    target: acc,
+                    value: init,
+                });
+            }
+            None => {
+                let elem0 = self.emit_iter_next(it, span);
+                let done0 = self.emit_iter_exhausted(it, span);
+                let empty_b = self.new_block();
+                let seed_b = self.new_block();
+                self.seal(HirTerminator::Branch {
+                    cond: done0,
+                    then: empty_b,
+                    else_: seed_b,
+                });
+
+                self.switch(empty_b);
+                let msg_id = self.intern("reduce() of empty iterable with no initial value");
+                let msg = self.alloc(HirExprKind::StrLit(msg_id), SemTy::Str, span);
+                self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+                    tag: pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                    msg: Some(msg),
+                }));
+                self.seal(HirTerminator::Unreachable);
+
+                self.switch(seed_b);
+                let e0 = self.local_ref(elem0, span);
+                self.push_stmt(HirStmt::Assign {
+                    target: acc,
+                    value: e0,
+                });
+            }
+        }
+
+        // loop: elem = next(it); done → exit; else acc = func(acc, elem).
+        let header = self.new_block();
+        self.seal(HirTerminator::Jump(header));
+        self.switch(header);
+        let elem = self.emit_iter_next(it, span);
+        let done = self.emit_iter_exhausted(it, span);
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond: done,
+            then: exit,
+            else_: body_b,
+        });
+
+        self.switch(body_b);
+        let call = self.emit_reduce_call(&func_mode, acc, elem, span)?;
+        self.push_stmt(HirStmt::Assign {
+            target: acc,
+            value: call,
+        });
+        self.seal(HirTerminator::Jump(header));
+
+        self.switch(exit);
+        Ok(self.local_ref(acc, span))
+    }
+
+    /// Stage a callable argument (reduce's `function`) with the `min`/`max`
+    /// `key=` discipline: a bare unshadowed name is called by name (a builtin
+    /// has no value-position thunk, and a bare-name re-read is pure); a local
+    /// name / lambda / other expression is staged once and called indirectly.
+    fn stage_callable<'e>(&mut self, e: &'e Expr) -> Result<KeyMode<'e>> {
+        match e {
+            Expr::Name(n) => {
+                let iname = self.intern(n.id.as_str());
+                if self.scope.contains_key(&iname) {
+                    let l = self.stage_arg(e)?;
+                    Ok(KeyMode::Staged(l))
+                } else {
+                    Ok(KeyMode::ByName(e))
+                }
+            }
+            other => {
+                let l = self.stage_arg(other)?;
+                Ok(KeyMode::Staged(l))
+            }
+        }
+    }
+
+    /// `func(acc, elem)` — the 2-argument reduction call through the staged
+    /// callable, or a direct by-name call (builtins / top-level functions).
+    fn emit_reduce_call(
+        &mut self,
+        mode: &KeyMode<'_>,
+        acc: LocalId,
+        elem: LocalId,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        let callee = match mode {
+            KeyMode::Staged(l) => self.local_ref(*l, span),
+            KeyMode::ByName(expr) => self.lower_callee(expr)?,
+        };
+        let acc_ref = self.local_ref(acc, span);
+        let elem_ref = self.local_ref(elem, span);
+        Ok(self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![acc_ref, elem_ref],
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
     /// `elem = next(it)` into a fresh pin-tagged local (null on exhaustion).
     fn emit_iter_next(&mut self, it: LocalId, span: Span) -> LocalId {
         let elem = self.fresh_local_tagged();
@@ -5751,12 +5916,19 @@ impl<'a> FnLowerer<'a> {
                             span,
                         ));
                     }
+                    // Container builtins carry a canonical (Dyn-element) target;
+                    // `lower_isinstance_builtin` matches by KIND (isinstance ignores
+                    // element types), so the concrete element types don't matter here.
                     let target = match cls.id.as_str() {
                         "str" => Some(SemTy::Str),
                         "int" => Some(SemTy::Int),
                         "float" => Some(SemTy::Float),
                         "bool" => Some(SemTy::Bool),
                         "bytes" => Some(SemTy::Bytes),
+                        "list" => Some(SemTy::list_of(SemTy::Dyn)),
+                        "dict" => Some(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn)),
+                        "set" => Some(SemTy::set_of(SemTy::Dyn)),
+                        "tuple" => Some(SemTy::tuple_var_of(SemTy::Dyn)),
                         _ => None,
                     };
                     if let Some(target) = target {
@@ -5788,6 +5960,10 @@ impl<'a> FnLowerer<'a> {
             let iname = self.intern(n.id.as_str());
             if !self.scope.contains_key(&iname) {
                 if let Some(def) = self.ctx.stdlib.funcs.get(n.id.as_str()).copied() {
+                    if is_reduce_def(def) {
+                        reject_call_extras(c, span, "reduce()")?;
+                        return self.lower_reduce(&c.args, span);
+                    }
                     return self.lower_stdlib_call(def, c, span);
                 }
             }
@@ -5801,6 +5977,12 @@ impl<'a> FnLowerer<'a> {
             let lname = self.intern(leftmost);
             if self.ctx.stdlib.aliases.contains(leftmost) && !self.scope.contains_key(&lname) {
                 if let Some(def) = self.ctx.stdlib.funcs.get(&dotted).copied() {
+                    // `functools.reduce(...)` (qualified) — same HOF desugar as
+                    // the from-imported bare form above.
+                    if is_reduce_def(def) {
+                        reject_call_extras(c, span, "reduce()")?;
+                        return self.lower_reduce(&c.args, span);
+                    }
                     return self.lower_stdlib_call(def, c, span);
                 }
                 // Not a stdlib function. A LONGER chain whose 2-link prefix is a
@@ -5999,7 +6181,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 return self.lower_minmax(&c.args, key, span, n.id.as_str() == "min");
             }
-            if matches!(n.id.as_str(), "sum" | "set" | "next") {
+            if matches!(n.id.as_str(), "sum" | "set" | "next" | "iter") {
                 reject_call_extras(c, span, "this builtin")?;
                 match n.id.as_str() {
                     "sum" => return self.lower_sum(&c.args, span),
@@ -6016,6 +6198,28 @@ impl<'a> FnLowerer<'a> {
                                 gen,
                                 imm: 0,
                                 value: None,
+                            },
+                            SemTy::Dyn,
+                            span,
+                        ));
+                    }
+                    // `iter(iterable)`: build a runtime iterator object (the same
+                    // `ContainerOp::Iter` → `rt_iter_value` the for-loop drives, so
+                    // a File iterable routes through `rt_file_readlines` in lowering
+                    // too). `next(it)` then consumes it via the raising `rt_iter_next`.
+                    // The 2-arg sentinel form `iter(callable, sentinel)` is out of scope.
+                    "iter" => {
+                        if c.args.len() != 1 {
+                            return Err(parse_error(
+                                "only the 1-argument form iter(iterable) is supported",
+                                span,
+                            ));
+                        }
+                        let iterable = self.lower_expr(&c.args[0])?;
+                        return Ok(self.alloc(
+                            HirExprKind::ContainerExpr {
+                                op: ContainerOp::Iter,
+                                args: vec![iterable],
                             },
                             SemTy::Dyn,
                             span,
@@ -7823,6 +8027,24 @@ fn is_range_call(iter: &Expr) -> bool {
         if matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "range"))
 }
 
+/// True when a `range(...)` call's step is a compile-time integer literal — the
+/// precondition for the Phase-3c raw-i64 fast path (which decides the loop
+/// direction statically). `range(stop)` / `range(start, stop)` have an implicit
+/// step of `1` (literal); `range(start, stop, step)` qualifies only when
+/// `step` is an int literal (incl. unary sign). A non-literal/computed step
+/// routes to the general iterator path (runtime `RangeIter`). Callers gate this
+/// behind [`is_range_call`], so a non-`range` expr conservatively returns false.
+fn range_step_is_literal(iter: &Expr) -> bool {
+    let Expr::Call(call) = iter else {
+        return false;
+    };
+    match call.args.len() {
+        0..=2 => true,
+        3 => literal_int(&call.args[2]).is_some(),
+        _ => false,
+    }
+}
+
 /// Flatten an attribute chain `a.b.c` rooted at a `Name` into its leftmost name
 /// (`"a"`) and full dotted path (`"a.b.c"`), or `None` if the base is not a bare
 /// name. Used to fold stdlib qualified calls of any depth (Phase 8D).
@@ -8022,6 +8244,14 @@ fn has_doublestar_kwarg(c: &ExprCall) -> bool {
 
 /// Reject keyword args and `*`/`**` spreads for a call form that does not
 /// support them (generic construction, method calls, the desugared builtins).
+/// True for the `functools.reduce` stdlib descriptor — identified by its unique
+/// runtime symbol, so the call is rerouted to the HOF desugar
+/// ([`Lowerer::lower_reduce`]) instead of the raw-ABI `rt_reduce` callback path.
+/// The descriptor exists only for `from functools import reduce` recognition.
+fn is_reduce_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
+    def.runtime_name == "rt_reduce"
+}
+
 fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result<()> {
     if !c.keywords.is_empty() {
         return Err(parse_error(

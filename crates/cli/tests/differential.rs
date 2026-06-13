@@ -285,11 +285,9 @@ const PHASE_CORPUS: &[&str] = &[
     // machinery. Covers literal + runtime (variable/call) RHS, mixed tuple/list,
     // nested attribute/subscript leaves, nested + starred (assignment), and
     // interaction probes crossing nesting with comprehension element-type
-    // inference + sum() and with `*seq` spread (§13). The aspirational
-    // `test_collections_list_tuple.py` / `test_iteration.py` stay OFF the gate on
-    // UNRELATED gaps (tuple-slice → fixed-arity tuple annotation; bare
-    // attribute/subscript `for`-targets) — the nested-unpacking shapes themselves
-    // compile clean here.
+    // inference + sum() and with `*seq` spread (§13). (Both
+    // `test_collections_list_tuple.py` and `test_iteration.py` — once blocked on
+    // unrelated gaps — are now LIFTED below.)
     "p14_nested_unpack.py",
     // Tuple slice (`t[a:b]` → variable-length `tuple[T, ...]`) assigned into an
     // annotated fixed-arity `tuple[T, …]` slot. The repr-contract check now admits
@@ -370,6 +368,59 @@ const PHASE_CORPUS: &[&str] = &[
     // (tuple.index/list.remove miss) / KeyError (empty popitem) are the spec; set
     // contents print via `sorted(list(s))` for determinism.
     "p21_container_methods.py",
+    // Backlog §4 (finish "Unpacking & loop targets"): attribute/subscript `for`-loop
+    // targets + a non-literal/computed `range()` step. `bind_for_target` now
+    // delegates to `assign_to_target`, so an attr (`for o.a in …` → SetAttr) or
+    // subscript (`for l[i] in …` → SetItem) leaf binds each iteration via the same
+    // path nested destructuring uses (DRY, no new HIR/typeck surface). `lower_for`
+    // takes the Phase-3c raw-i64 fast path ONLY for a simple-`Name` target with a
+    // compile-time-literal step (`range_step_is_literal`); everything else — a
+    // computed/variable step, an attr/subscript target — takes the general iterator
+    // path driving the runtime `RangeIter` (correct direction + a `step == 0`
+    // `ValueError` guard added to `rt_iter_range`). Probes the §4 trap (a negative
+    // VARIABLE step descends, NOT `sum == 0`), step=0 in both the for-loop and value
+    // forms, and a tuple-unpack regression-guard.
+    "p22_loop_targets.py",
+    // Standalone `iter()` builtin + `isinstance()` against container builtins.
+    // `iter(iterable)` builds a runtime iterator via the same `ContainerOp::Iter` →
+    // `rt_iter_value` the for-loop drives (wired next to `next`, recognized by name);
+    // `next(it)` consumes it via the raising `rt_iter_next` (StopIteration on
+    // exhaustion). `isinstance(x, list|dict|set|tuple)` extends the builtin-isinstance
+    // static fold to match container targets by KIND (element types are irrelevant),
+    // alongside the existing `str|int|float|bool|bytes`. Probes iter/next over every
+    // iterable kind + StopIteration, positive/cross-kind/primitive isinstance, the
+    // element-type-agnostic property, and the `*rest`-is-a-list unpack usage.
+    "p23_iter_isinstance.py",
+    // `functools.reduce(func, iterable[, initial])` — a higher-order builtin
+    // desugared in the frontend to a compiled accumulator loop calling
+    // `func(acc, elem)` (mirroring sum/min/max/all/any), NOT the raw-ABI
+    // `rt_reduce` callback path (the PITFALLS A4 anti-pattern — the descriptor's
+    // `rt_reduce` ABI never matched the 3-arg stdlib dispatch, so the previous
+    // generic-dispatch fallthrough SIGSEGV'd). The callable rides the ordinary
+    // indirect-call machinery (lambda / capturing lambda / named def). Probes
+    // sum/product/subtraction (left-fold order), with/without initial, single
+    // element, empty+initial vs empty→TypeError, a capturing lambda, range/tuple/
+    // str/list-heap accumulators (GC-rooted), and reduce() inside a function.
+    "p24_reduce.py",
+    // Lexicographic tuple ordering in min/max/sorted + dynamic sequence concat.
+    // `rt_obj_cmp` (the min/max fold) and `sorted`/`compare_list_elements` now
+    // route a `Tuple` operand to the lexicographic `tuple_cmp_ordering` (recursing
+    // element-wise for nested tuples), instead of raising TypeError (min/max) or
+    // comparing by pointer address (sorted). `rt_obj_add` (the gradual `+` path —
+    // two `Dyn` operands, e.g. inside an untyped-param function) now handles
+    // `list + list` / `tuple + tuple` / `bytes + bytes` via the existing
+    // `rt_*_concat` (statically-typed concat already worked). Probes min/max/sorted
+    // over (nested) tuples, tie-breaking, direct `<`/`<=` operators, dynamic concat
+    // of every sequence kind + numeric/str regression guards, and the
+    // mismatched-type (`list + tuple`) TypeError. (Runtime contract change.)
+    "p25_tuple_cmp_seq_concat.py",
+    // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
+    // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
+    // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally
+    // lexicographic `min`/`max` over tuple-yielding gen-exprs (p25). Now byte-matches
+    // CPython end-to-end. (`test_control_flow.py` stays OFF — still needs walrus `:=`,
+    // §2.)
+    "test_iteration.py",
     // Consolidated list/tuple suite (lifted): tuple.index/count was its first §9
     // blocker (closed by p21's ContainerMethod path) and `list.remove()` its last
     // (now wired → `rt_list_remove`, ValueError on miss). Byte-matches CPython

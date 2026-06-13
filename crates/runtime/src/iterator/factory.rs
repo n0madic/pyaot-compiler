@@ -145,6 +145,16 @@ pub extern "C" fn rt_iter_str_abi(str_obj: Value) -> Value {
 pub fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
+    // CPython fidelity: `range(_, _, 0)` raises eagerly at construction. This
+    // guards both the general for-loop path and the value form
+    // (`list(range(0, 5, 0))`), which share this entry point.
+    if step == 0 {
+        unsafe {
+            use crate::exceptions::ExceptionType;
+            raise_exc!(ExceptionType::ValueError, "range() arg 3 must not be zero");
+        }
+    }
+
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
 
