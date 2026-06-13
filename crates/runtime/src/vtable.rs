@@ -268,6 +268,15 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
                 field_count: 0,
             };
         }
+
+        // UnboundLocalError is a subclass of NameError in CPython (the loop
+        // above defaulted it to Exception); fix its parent so
+        // `except NameError:` also catches it.
+        registry[pyaot_core_defs::BuiltinExceptionKind::UnboundLocalError.tag() as usize] =
+            ClassInfo {
+                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::NameError.tag(),
+                field_count: 0,
+            };
     });
 }
 

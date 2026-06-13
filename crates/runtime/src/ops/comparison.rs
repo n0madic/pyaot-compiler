@@ -504,6 +504,39 @@ pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
     Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
 }
 
+/// Runtime-dispatched `del container[index]` for a statically-unknown base.
+/// Mirrors `rt_any_getitem`'s dispatch: List → `rt_list_delete`, Deque →
+/// `rt_deque_delete` (both consume the RAW i64 index directly), Dict family →
+/// `rt_dict_delete` (the int index is re-boxed into a key). Each callee raises
+/// IndexError/KeyError as appropriate; an unsupported base raises TypeError.
+pub fn rt_any_delitem(obj: *mut Obj, index: i64) {
+    use crate::object::*;
+    if obj.is_null() {
+        return;
+    }
+    unsafe {
+        match (*obj).type_tag() {
+            TypeTagKind::List => crate::list::rt_list_delete(obj, index),
+            TypeTagKind::Deque => crate::deque::rt_deque_delete(obj, index),
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                let boxed_key = pyaot_core_defs::Value::from_int(index).0 as *mut Obj;
+                crate::dict::rt_dict_delete(obj, boxed_key);
+            }
+            _ => {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::TypeError,
+                    "object doesn't support item deletion"
+                );
+            }
+        }
+    }
+}
+#[export_name = "rt_any_delitem"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_any_delitem_abi(obj: Value, index: i64) {
+    rt_any_delitem(obj.unwrap_ptr(), index)
+}
+
 /// Runtime-dispatched slicing: obj[start:end] where obj has unknown type at
 /// compile time. Mirrors `rt_any_getitem`'s dispatch table for Index, but
 /// for Slice (delegates to the type-specific slice-runtime). Required when
@@ -792,6 +825,41 @@ pub extern "C" fn rt_is_abi(a: Value, b: Value) -> i8 {
     // `debug_assert!(is_ptr())` would fire on immediates (True/False/int) in
     // the runtime test profile — so `rt_is_none` can re-tag and inspect them.
     rt_is(a.0 as *mut Obj, b.0 as *mut Obj)
+}
+
+/// The `del`-slot read guard. Returns `value` unchanged unless it is the
+/// `Value::UNBOUND` sentinel a `del name`/`del obj.attr` stored, in which case
+/// it raises (selected by `kind`, with `name` in the message):
+///   0 → UnboundLocalError (a `del`'d local read back),
+///   1 → NameError         (a `del`'d module global read back),
+///   2 → AttributeError    (a `del`'d instance attribute read back).
+/// `name` is the slot/attribute name as a tagged `StrObj` (may be null).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_check_bound(value: Value, kind: i64, name: *mut Obj) -> Value {
+    if value.is_unbound() {
+        unsafe {
+            let nm = crate::utils::str_obj_to_rust_string(name);
+            match kind {
+                0 => raise_exc!(
+                    ExceptionType::UnboundLocalError,
+                    "cannot access local variable '{}' where it is not associated with a value",
+                    nm
+                ),
+                1 => raise_exc!(ExceptionType::NameError, "name '{}' is not defined", nm),
+                _ => raise_exc!(
+                    ExceptionType::AttributeError,
+                    "object has no attribute '{}'",
+                    nm
+                ),
+            }
+        }
+    }
+    value
+}
+#[export_name = "rt_check_bound"]
+pub extern "C" fn rt_check_bound_abi(value: Value, kind: i64, name: Value) -> Value {
+    // `name` is a heap StrObj; pass its raw bits. `value` rides through as-is.
+    rt_check_bound(value, kind, name.0 as *mut Obj)
 }
 
 /// Check truthiness of any value with runtime type dispatch

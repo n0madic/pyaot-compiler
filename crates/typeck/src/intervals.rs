@@ -1109,6 +1109,10 @@ fn record_stmt_exprs(
             e(*index, rec);
             e(*value, rec);
         }
+        HirStmt::DelItem { base, index } => {
+            e(*base, rec);
+            e(*index, rec);
+        }
         HirStmt::SetAttr { base, value, .. } => {
             e(*base, rec);
             e(*value, rec);

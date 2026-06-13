@@ -1167,18 +1167,22 @@ except HTTPError:
 print(1)
 ";
     let p = lowered(src);
+    // HTTPError's reserved class id is `BUILTIN_EXCEPTION_COUNT + 1` (the second
+    // stdlib-exception slot) — derive it from the constant so adding a builtin
+    // exception (which shifts the stdlib range) does not break this test.
+    let http_error_id = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT + 1;
     let found = p.funcs.iter().any(|f| {
         f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
             matches!(
                 i,
                 MirInst::Raise(pyaot_mir::MirRaise::Stdlib { class_id, exc_type_tag, .. })
-                    if *class_id == 30 && *exc_type_tag == 24
+                    if *class_id == http_error_id && *exc_type_tag == 24
             )
         })
     });
     assert!(
         found,
-        "HTTPError → MirRaise::Stdlib{{class_id:30, parent:OSError(24)}}"
+        "HTTPError → MirRaise::Stdlib{{class_id: BUILTIN_EXCEPTION_COUNT+1, parent: OSError(24)}}"
     );
 }
 
@@ -1454,4 +1458,130 @@ n.d = 3.0
         p.classes.iter().any(|c| !c.field_names.is_empty()),
         "MirClass.field_names populated for by-name registration"
     );
+}
+
+// ── Backlog §3: the `del` statement ─────────────────────────────────────────
+
+#[test]
+fn del_dict_item_lowers_to_rt_dict_delete() {
+    // `del d[k]` on a statically-known dict → `rt_dict_delete(dict, key)` with
+    // both args Tagged (the key is a tagged Value).
+    let p = lowered("d = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(len(d))\n");
+    let del = runtime_calls(&p)
+        .into_iter()
+        .find(|(s, _, _)| *s == "rt_dict_delete")
+        .expect("del d[k] → rt_dict_delete");
+    assert_eq!(del.1, vec![Repr::Tagged, Repr::Tagged]);
+    assert_eq!(del.2, None, "rt_dict_delete is void");
+}
+
+#[test]
+fn del_list_item_lowers_to_rt_list_delete() {
+    // `del li[i]` on a statically-known list → `rt_list_delete(list, index)`
+    // with a Tagged list and a RAW i64 index (like list get/set).
+    let p = lowered("xs = [1, 2, 3]\ndel xs[0]\nprint(xs)\n");
+    let del = runtime_calls(&p)
+        .into_iter()
+        .find(|(s, _, _)| *s == "rt_list_delete")
+        .expect("del li[i] → rt_list_delete");
+    assert_eq!(del.1, vec![Repr::Tagged, Repr::Raw(RawKind::I64)]);
+    assert_eq!(del.2, None, "rt_list_delete is void");
+}
+
+#[test]
+fn del_item_with_dunder_routes_to_method_not_runtime() {
+    // A class `__delitem__` → a direct devirtualized `Call`, never a runtime
+    // container deleter on the receiver. The deleter shows up only inside the
+    // method body (`del self.data[i]`).
+    let src = "\
+class C:
+    def __init__(self) -> None:
+        self.data = [1, 2, 3]
+
+    def __delitem__(self, i: int) -> None:
+        del self.data[i]
+
+
+c = C()
+del c[1]
+print(c.data)
+";
+    let p = lowered(src);
+    let main = main_fn(&p);
+    let main_syms: Vec<&str> = main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter_map(|i| match i {
+            MirInst::CallRuntime { def, .. } => Some(def.symbol),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !main_syms.contains(&"rt_list_delete")
+            && !main_syms.contains(&"rt_dict_delete")
+            && !main_syms.contains(&"rt_any_delitem"),
+        "del c[1] must dispatch to __delitem__, not a runtime deleter in main"
+    );
+    // The `__delitem__` body does the real list delete.
+    assert!(
+        runtime_calls(&p)
+            .iter()
+            .any(|(s, _, _)| *s == "rt_list_delete"),
+        "__delitem__'s `del self.data[i]` lowers to rt_list_delete"
+    );
+}
+
+#[test]
+fn del_local_read_is_guarded_by_rt_check_bound() {
+    // A read of a `del`'d local is wrapped in `rt_check_bound` (kind=Local).
+    let src = "\
+def f() -> int:
+    x = 5
+    del x
+    x = 10
+    return x
+
+
+print(f())
+";
+    let p = lowered(src);
+    let guard = runtime_calls(&p)
+        .into_iter()
+        .find(|(s, _, _)| *s == "rt_check_bound")
+        .expect("a read of a del'd local → rt_check_bound");
+    // [value Tagged, kind Raw i64, name Tagged] → Tagged.
+    assert_eq!(
+        del_guard_arg_reprs(&guard.1),
+        (Repr::Tagged, Repr::Raw(RawKind::I64), Repr::Tagged)
+    );
+    assert_eq!(guard.2, Some(Repr::Tagged));
+}
+
+#[test]
+fn del_attr_read_is_guarded_by_rt_check_bound() {
+    // A read of a field whose name a `del obj.attr` unbinds is guarded.
+    let src = "\
+class Holder:
+    def __init__(self) -> None:
+        self.payload = 1
+
+
+h = Holder()
+del h.payload
+print(h.payload)
+";
+    let p = lowered(src);
+    assert!(
+        runtime_calls(&p)
+            .iter()
+            .any(|(s, _, _)| *s == "rt_check_bound"),
+        "a read of a del'd attribute → rt_check_bound"
+    );
+}
+
+/// Destructure a `rt_check_bound` arg-repr triple for assertion clarity.
+fn del_guard_arg_reprs(args: &[Repr]) -> (Repr, Repr, Repr) {
+    assert_eq!(args.len(), 3, "rt_check_bound takes (value, kind, name)");
+    (args[0].clone(), args[1].clone(), args[2].clone())
 }

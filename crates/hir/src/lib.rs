@@ -36,7 +36,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use la_arena::{Arena, Idx};
 
@@ -78,6 +78,17 @@ pub struct HirModule {
     /// (which would otherwise demote it to `Dyn`). Globals are physically tagged
     /// storage; this only refines how a `GlobalGet` result is typed downstream.
     pub global_annotations: HashMap<u32, SemTy>,
+    /// Module globals a `del name` unbinds (`var_id → name`). The name is kept
+    /// for the `NameError` message. Lowering guards every `GlobalGet` of these
+    /// slots with `rt_check_bound` (kind=Global). Globals are physically tagged,
+    /// so no representation change is needed — only the read-guard.
+    pub deletable_globals: HashMap<u32, InternedString>,
+    /// Instance-field names a `del obj.attr` unbinds (keyed by name only — the
+    /// frontend cannot resolve the receiver's class pre-typeck). Lowering guards
+    /// every `obj.<name>` read whose name is in this set with `rt_check_bound`
+    /// (kind=Attr). Fields are stored as uniform tagged slots, so the guard runs
+    /// on the tagged value before any unbox — no representation change needed.
+    pub deletable_fields: HashSet<InternedString>,
 }
 
 impl HirModule {
@@ -182,6 +193,12 @@ pub struct HirLocal {
     /// to per-function inference (a precise join would be an unsound unbox
     /// hint, PITFALLS A2).
     pub cell_shared: bool,
+    /// A `del name` somewhere unbinds this slot. The frontend sets it (together
+    /// with [`Self::pin_tagged`], so the slot can hold the `Value::UNBOUND`
+    /// immediate regardless of the inferred type), and lowering guards every
+    /// read of the slot with `rt_check_bound` → `UnboundLocalError` if it
+    /// observes the sentinel. Default `false`.
+    pub deletable: bool,
 }
 
 /// A function: a flat `exprs` arena, a `locals` table, and a CFG of `blocks`.
@@ -281,6 +298,12 @@ pub enum HirExprKind {
     FloatLit(f64),
     BoolLit(bool),
     NoneLit,
+    /// The `Value::UNBOUND` sentinel — the value a `del name`/`del obj.attr`
+    /// stores into the unbound slot. Lowers to `Const::Unbound`. Typed as
+    /// `SemTy::Never` (it is not a real value), so it contributes nothing to any
+    /// value-type join. Never read directly; only stored, then caught by the
+    /// `rt_check_bound` read-guard on the deletable slot.
+    Unbound,
     /// A name reference, resolved by `pyaot-semantics`.
     Name(SymbolRef),
     /// A direct reference to a local slot. The frontend emits this for reads it
@@ -1196,6 +1219,15 @@ pub enum HirStmt {
         base: Idx<HirExpr>,
         index: Idx<HirExpr>,
         value: Idx<HirExpr>,
+    },
+    /// Subscript delete `del base[index]` (the container `del` form). Mirrors
+    /// [`Self::SetItem`] minus the value: lowering dispatches the runtime
+    /// deleter (`rt_list_delete` / `rt_dict_delete` / `rt_any_delitem`, or a
+    /// class `__delitem__`) from the `base` representation, raising
+    /// IndexError/KeyError like CPython.
+    DelItem {
+        base: Idx<HirExpr>,
+        index: Idx<HirExpr>,
     },
     /// Attribute write `base.name = value` (Phase 5). The slot is resolved at
     /// lowering from `base`'s class; the value coerces to the uniform tagged field

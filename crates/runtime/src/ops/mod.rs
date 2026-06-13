@@ -18,7 +18,8 @@ pub use dunder_dispatch::{
 };
 
 pub use comparison::{
-    rt_any_getitem, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq,
+    rt_any_delitem, rt_any_getitem, rt_check_bound, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp,
+    rt_obj_contains, rt_obj_eq,
 };
 
 pub use printing::{

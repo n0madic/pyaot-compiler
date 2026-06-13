@@ -1006,6 +1006,8 @@ fn materialize_const(
         // Never produced for class-attr initializers; materialize the raw null
         // Value for exhaustiveness.
         Const::NullPtr => builder.ins().iconst(types::I64, 0),
+        // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
+        Const::Unbound => builder.ins().iconst(types::I64, tag::RESERVED_TAG as i64),
         Const::Float(f) => {
             let fv = builder.ins().f64const(*f);
             call1(module, builder, rt.box_float, &[fv])
@@ -2251,6 +2253,8 @@ impl FnGen<'_, '_> {
                 self.builder.ins().iconst(types::I64, tagged)
             }
             Const::None => self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
+            // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
+            Const::Unbound => self.builder.ins().iconst(types::I64, tag::RESERVED_TAG as i64),
             Const::Float(f) => self.builder.ins().f64const(*f),
             Const::Str(id) => {
                 let (ptr, len) = self.str_data(*id)?;

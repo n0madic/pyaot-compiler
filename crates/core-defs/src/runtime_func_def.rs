@@ -707,6 +707,47 @@ pub static RT_DEQUE_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_deque_set", &
 /// rt_deque_delete(deque: *mut Obj, index: i64) -> void
 /// `del dq[i]`; negative indices and bounds checks inside.
 pub static RT_DEQUE_DELETE: RuntimeFuncDef = RuntimeFuncDef::void("rt_deque_delete", &[PI64, PI64]);
+/// rt_list_delete(list: *mut Obj, index: i64) -> void
+/// `del li[i]`; negative indices and bounds checks inside; raises IndexError on
+/// OOB. The index is a RAW i64 (like list get/set), the list is a tagged Value.
+pub static RT_LIST_DELETE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_list_delete",
+    &[PI64, PI64],
+    None,
+    false,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    None,
+);
+/// rt_dict_delete(dict: *mut Obj, key: *mut Obj) -> void
+/// `del d[k]`; raises KeyError (with the key's repr) when the key is absent.
+/// Both the dict and the key are tagged Values.
+pub static RT_DICT_DELETE: RuntimeFuncDef = RuntimeFuncDef::void("rt_dict_delete", &[PI64, PI64]);
+/// rt_any_delitem(container: *mut Obj, index: i64) -> void
+/// Runtime-dispatched `del container[index]` for a statically-unknown base
+/// (deque, gradual `Dyn`). Mirrors `rt_any_getitem`: the index is a RAW i64
+/// (re-boxed internally for the Dict arm); List→list_delete, Dict→dict_delete,
+/// Deque→deque_delete.
+pub static RT_ANY_DELITEM: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_any_delitem",
+    &[PI64, PI64],
+    None,
+    false,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    None,
+);
+/// rt_check_bound(value: Value, kind: i64, name: *mut Obj) -> Value
+/// The `del`-slot read guard: returns `value` unchanged unless it is the
+/// `Value::UNBOUND` sentinel, in which case it raises (by `kind`):
+/// 0 → UnboundLocalError, 1 → NameError, 2 → AttributeError. `name` is the
+/// slot/attribute name (a tagged `StrObj`) used to format the message.
+pub static RT_CHECK_BOUND: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_check_bound",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged],
+    Some(MirSemantic::Tagged),
+);
 /// rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj
 pub static RT_LIST_TAIL_TO_TUPLE: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_list_tail_to_tuple");

@@ -260,6 +260,23 @@ const PHASE_CORPUS: &[&str] = &[
     // class instances and containers, `is not`, and identity inside if/while
     // guards combined with and/or/not. Int/str caching is NOT modeled (§2 trap).
     "p11_is_identity.py",
+    // Backlog §3 — the `del` statement: `del d[k]` (+ missing → KeyError),
+    // `del li[i]` (+ negative / OOB → IndexError), a class `__delitem__` (with
+    // `del self.data[i]` on an attribute base), `del name` local (rebind-ok and
+    // read → UnboundLocalError), module-global `del g` (read → NameError),
+    // `del obj.attr` (read → AttributeError, then reassign), and `del` inside
+    // if/loop bodies + multi-target `del a, b`.
+    "p12_del.py",
+    // Backlog §1 — `*seq` spread into a non-`*args` callee. A list/tuple LITERAL
+    // spread flattens at compile time; a runtime sequence (variable / call
+    // result / comprehension) materializes an argv list, length-checks it, and
+    // binds each parameter by position. Covers fixed-arity / mixed plain+spread /
+    // multiple spreads / empty spread, str (gradual-heap) and float/bool (Raw,
+    // laundered through a pin_tagged typed slot) params, defaults filled from a
+    // short spread, `*args` callees (spread covering fixed + rest), a decorated
+    // callee's (*args, **kwargs) wrapper, and interaction probes: comprehension
+    // source, spread in a loop, and left-to-right call-arg evaluation order.
+    "p13_spread.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

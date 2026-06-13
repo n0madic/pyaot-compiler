@@ -149,8 +149,8 @@ These few gaps block the most files — close them before the long tail.
 | Gap | Files blocked | First error |
 |---|---|---|
 | ~~**`is`/`is not` against non-`None`**~~ — DONE (backlog §2) | 6 | ~~`is / is not is only supported against None`~~ |
-| **`del`** statement (`del d[k]`, `del name`, `del obj.attr`) | 4 | `unsupported statement for this milestone` |
-| **`*seq` spread into a non-`*args` callee** | 3 | `f() takes no *args, cannot spread * into it` |
+| ~~**`del`** statement (`del d[k]`, `del name`, `del obj.attr`)~~ — DONE (backlog §3) | 4 | ~~`unsupported statement for this milestone`~~ |
+| ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
 | **Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension) | 2 | `tuple/list unpacking assignment is not yet supported` |
 | **`type()` builtin** (incl. `type(x).__name__`) | 3 | `builtin Type not supported in Phase 2` |
 | **int→float numeric tower through a `float` slot** | 2 | `int cannot be returned/assigned to a float slot` |
@@ -171,7 +171,25 @@ These few gaps block the most files — close them before the long tail.
   parameter names/defaults across overrides when keywords/defaults are used.
   Constructor kwargs `Cls(x=1)` are nearly free now (match_keywords) — small
   follow-up.
-- **`*seq` spread** — four sub-cases: into a fixed-arity callee `f(*[1,2,3])`; mixed with positionals `f(1, *seq, 4)`; covering the leading fixed params of a varargs callee `def f(a, *rest)`; into a **decorated** function (distinct error).
+- ~~**`*seq` spread**~~ — DONE (backlog §1): all four sub-cases. A list/tuple
+  LITERAL spread flattens at compile time into plain positionals (reusing the
+  existing slot-matching path); a runtime sequence (variable / call result /
+  comprehension) materializes a fresh `argv` list in WRITTEN order (the iterator
+  protocol, so any iterable works), runs an arg-count guard (`TypeError` on
+  mismatch), then binds each parameter by position — required slots `argv[i]`,
+  defaulted slots `(i < len) ? argv[i] : default`, a `*args` callee's rest =
+  `tuple(argv[n_fixed:])`. Covers fixed-arity, mixed `f(1, *seq, 4)`, multiple
+  `f(*a, *b, c)`, empty, defaults filled from a short spread, and spread covering
+  a varargs callee's leading fixed params. A `float`/`bool` parameter (Raw
+  reinterpret, which rejects gradual `Dyn`) is laundered through a `pin_tagged`
+  authoritative-typed local. Spread into a **decorated** function fills its
+  `(*args, **kwargs)` wrapper's args tuple. Gated by `corpus/p13_spread.py`.
+  Entirely front-half (`frontend-python`) — no new runtime/HIR/typeck surface.
+  Out of scope here (separate gaps): `**d` spread (next item); spread into a
+  method call / class constructor (still a loud error); the `test_decorator_
+  factory.py` `plain_deco` shape (its wrapper lacks a `Callable[...]` return
+  annotation, so the decorated slot is `Dyn` — a decorator-return-type-inference
+  gap, NOT spread). Keyword args are not combined with a runtime `*` spread.
 - **`**d` spread into a call** — `f(**{"a":1})` (was Phase 6C out-of-scope).
 - **Mutable default parameter** — `def f(x, lst=[])`, `d={}`.
 - **Non-literal default** — `def f(count=5+5)`.
@@ -188,7 +206,19 @@ These few gaps block the most files — close them before the long tail.
 - **Matrix-multiply `@` / `__matmul__`**.
 
 ### 3. Statements
-- **`del`** — entirely unimplemented: `del d[k]`, `del li[i]`, `del name`, `del obj.attr`.
+- ~~**`del`**~~ — DONE: `del d[k]`/`del li[i]`/a class `__delitem__` are runtime
+  deletes (`HirStmt::DelItem` → `rt_dict_delete`/`rt_list_delete`/`rt_any_delitem`,
+  raising KeyError/IndexError like CPython); `del name`/`del obj.attr` sidestep
+  the missing definite-assignment analysis with an **unbound sentinel +
+  runtime read-guard** (the CPython NULL-in-fast-locals model): the delete stores
+  `Value::UNBOUND` (the `RESERVED_TAG` immediate) into the slot, and a read of a
+  *deletable* slot is wrapped in `rt_check_bound` → `UnboundLocalError` (local) /
+  `NameError` (global) / `AttributeError` (attr). Correct on all control-flow
+  paths with zero CFG analysis, costing a guard only on reads of `del`'d slots.
+  Gated by `corpus/p12_del.py`. Out of scope: `del` of a captured/cell variable
+  (clear error), `del ClassName.attr`, and `del dq[i]` is wired
+  (`rt_any_delitem` → `rt_deque_delete`) but unexercisable until deque
+  construction/mutation lands (§10) — covered by a runtime unit test instead.
 - **PEP 695 `type X = T`** — `type IntPair = tuple[int, int]`.
 - **`X: TypeAlias = T`** (PEP 613) — RHS type rejected as a value.
 - **`...` (Ellipsis) as a statement / stub body** — `def f() -> int: ...` (Protocol stubs).
@@ -326,7 +356,9 @@ Read the matching note before starting an item.
   out-of-scope hole.
 - **§3 `del name`.** `del d[k]` / `del lst[i]` are runtime calls; `del name`
   changes definite-assignment (a later read is `UnboundLocalError`). That is
-  typeck/CFG work, not lowering work — scope it that way.
+  typeck/CFG work, not lowering work — scope it that way. (DONE: rather than add
+  a definite-assignment CFG pass, the implementation took the unbound-sentinel +
+  runtime read-guard route — correct on every path with no flow analysis. See §3.)
 - **§14 non-UTF-8 bytes.** Keep `bytes` permanently out of the string
   interner/`StrObj`; one shared pool entry holding a byte ≥ `\x80` breaks the
   codepoint invariant behind `char_len`.

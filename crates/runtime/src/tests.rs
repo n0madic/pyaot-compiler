@@ -275,3 +275,93 @@ fn test_guard_correct_shapes_no_panic() {
         let _upper = string::rt_str_upper(s);
     }
 }
+
+// ── Backlog §3: the `del` runtime helpers (happy paths) ─────────────────────
+//
+// The raise paths (IndexError/KeyError on miss, UnboundLocalError/… on the
+// sentinel) unwind via the table-based unwinder rather than `panic!`, so they
+// cannot be `#[should_panic]`-tested here — the compiled corpus probe exercises
+// them end-to-end. These cover the success paths.
+
+#[test]
+fn rt_list_delete_removes_and_shifts() {
+    let _guard = crate::RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gc::init();
+    use pyaot_core_defs::Value;
+    let li = list::rt_make_list(4);
+    for v in [10i64, 20, 30] {
+        list::rt_list_push(li, Value::from_int(v).0 as *mut object::Obj);
+    }
+    // del li[1] → [10, 30]
+    list::rt_list_delete(li, 1);
+    assert_eq!(list::rt_list_len(li), 2);
+    assert_eq!(Value(list::rt_list_get(li, 0) as u64).unwrap_int(), 10);
+    assert_eq!(Value(list::rt_list_get(li, 1) as u64).unwrap_int(), 30);
+    // del li[-1] → [10] (negative index)
+    list::rt_list_delete(li, -1);
+    assert_eq!(list::rt_list_len(li), 1);
+    assert_eq!(Value(list::rt_list_get(li, 0) as u64).unwrap_int(), 10);
+}
+
+#[test]
+fn rt_dict_delete_removes_entry() {
+    let _guard = crate::RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gc::init();
+    use pyaot_core_defs::Value;
+    let d = dict::rt_make_dict(8);
+    let k1 = Value::from_int(1).0 as *mut object::Obj;
+    let k2 = Value::from_int(2).0 as *mut object::Obj;
+    dict::rt_dict_set(d, k1, Value::from_int(100).0 as *mut object::Obj);
+    dict::rt_dict_set(d, k2, Value::from_int(200).0 as *mut object::Obj);
+    assert_eq!(dict::rt_dict_len(d), 2);
+    dict::rt_dict_delete(d, k1);
+    assert_eq!(dict::rt_dict_len(d), 1);
+    assert_eq!(dict::rt_dict_contains(d, k1), 0);
+    assert_eq!(dict::rt_dict_contains(d, k2), 1);
+}
+
+#[test]
+fn rt_any_delitem_dispatches_to_list() {
+    let _guard = crate::RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gc::init();
+    use pyaot_core_defs::Value;
+    let li = list::rt_make_list(4);
+    for v in [1i64, 2, 3] {
+        list::rt_list_push(li, Value::from_int(v).0 as *mut object::Obj);
+    }
+    // Runtime-dispatched del container[0] → list delete.
+    crate::ops::rt_any_delitem(li, 0);
+    assert_eq!(list::rt_list_len(li), 2);
+    assert_eq!(Value(list::rt_list_get(li, 0) as u64).unwrap_int(), 2);
+}
+
+#[test]
+fn rt_check_bound_passes_through_a_bound_value() {
+    let _guard = crate::RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gc::init();
+    use pyaot_core_defs::Value;
+    // A real value flows through unchanged for every kind (no raise).
+    for kind in [0i64, 1, 2] {
+        let v = Value::from_int(42);
+        assert_eq!(
+            crate::ops::rt_check_bound(v, kind, std::ptr::null_mut()),
+            v
+        );
+    }
+    // `None` is a bound value too — only the UNBOUND sentinel raises.
+    assert_eq!(
+        crate::ops::rt_check_bound(Value::NONE, 0, std::ptr::null_mut()),
+        Value::NONE
+    );
+    // The sentinel itself is detected (the raise path unwinds, so it is only
+    // exercised end-to-end by the corpus probe, not here).
+    assert!(Value::UNBOUND.is_unbound());
+}

@@ -103,6 +103,8 @@ pub fn lower(
             &mut str_pool,
             &sigs,
             classes,
+            &module.deletable_globals,
+            &module.deletable_fields,
             ret_repr,
         );
         funcs.push(fl.lower()?);
@@ -226,6 +228,12 @@ struct FnLower<'a> {
     str_pool: &'a mut StrPool,
     sigs: &'a [FnSig],
     classes: &'a ClassTable,
+    /// Module globals a `del` unbinds (`var_id → name`). A `GlobalGet` of one of
+    /// these is wrapped in `rt_check_bound` (kind=Global → NameError).
+    deletable_globals: &'a HashMap<u32, InternedString>,
+    /// Instance-field names a `del obj.attr` unbinds (by name). A field read of
+    /// one of these is wrapped in `rt_check_bound` (kind=Attr → AttributeError).
+    deletable_fields: &'a std::collections::HashSet<InternedString>,
     /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
     ret_repr: Repr,
     locals: Vec<LocalDecl>,
@@ -242,6 +250,7 @@ struct FnLower<'a> {
 }
 
 impl<'a> FnLower<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         func: &'a HirFunction,
         resolve: &'a ResolveResult,
@@ -249,6 +258,8 @@ impl<'a> FnLower<'a> {
         str_pool: &'a mut StrPool,
         sigs: &'a [FnSig],
         classes: &'a ClassTable,
+        deletable_globals: &'a HashMap<u32, InternedString>,
+        deletable_fields: &'a std::collections::HashSet<InternedString>,
         ret_repr: Repr,
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
@@ -267,6 +278,8 @@ impl<'a> FnLower<'a> {
             str_pool,
             sigs,
             classes,
+            deletable_globals,
+            deletable_fields,
             ret_repr,
             locals,
             blocks: Vec::new(),
@@ -466,6 +479,7 @@ impl<'a> FnLower<'a> {
                 Ok(())
             }
             HirStmt::SetItem { base, index, value } => self.lower_setitem(*base, *index, *value),
+            HirStmt::DelItem { base, index } => self.lower_delitem(*base, *index),
             HirStmt::SetAttr { base, name, value } => self.lower_setattr(*base, *name, *value),
             HirStmt::ContainerPush { container, value } => {
                 let cont_repr = self.local_repr(*container);
@@ -731,6 +745,112 @@ impl<'a> FnLower<'a> {
         Ok(())
     }
 
+    /// Lower `del base[index]`, dispatching the runtime deleter from the static
+    /// container type (mirrors [`Self::lower_setitem`]). A class `__delitem__`
+    /// takes a direct devirtualized call; tuple/str/bytes are a compile error.
+    /// Emits `MirInst::CallRuntime` directly (the [Tagged, Raw] index ABI of the
+    /// list/any deleters matches `RT_FILE_READ_N`, so no `ContainerOp` is
+    /// needed).
+    fn lower_delitem(&mut self, base: Idx<HirExpr>, index: Idx<HirExpr>) -> Result<()> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let span = self.func.exprs[base].span;
+        // Class `__delitem__` (a user container) — a direct devirtualized call.
+        let bt = self.func.exprs[base].ty.clone();
+        if let Some(fid) = self.concrete_dunder(&bt, "__delitem__") {
+            let (bl, br) = self.lower_expr(base)?;
+            let (il, ir) = self.lower_expr(index)?;
+            self.emit_dunder_call(fid, vec![(bl, br), (il, ir)])?;
+            return Ok(());
+        }
+        let kind = sub_kind(
+            &self.func.exprs[base].ty,
+            &repr_of(&self.func.exprs[base].ty),
+        );
+        // Lower both operands left-to-right, then coerce per the dispatched ABI.
+        let (bl, br) = self.lower_expr(base)?;
+        let (il, ir) = self.lower_expr(index)?;
+        let base_op = self.coerce(bl, br, Repr::Tagged)?;
+        match kind {
+            SubKind::List => {
+                let idx = self.coerce_to_i64(il, ir)?;
+                self.emit(MirInst::CallRuntime {
+                    dst: None,
+                    def: &rf::RT_LIST_DELETE,
+                    args: vec![Operand::Local(base_op), Operand::Local(idx)],
+                });
+            }
+            SubKind::Dict => {
+                let key = self.coerce(il, ir, Repr::Tagged)?;
+                self.emit(MirInst::CallRuntime {
+                    dst: None,
+                    def: &rf::RT_DICT_DELETE,
+                    args: vec![Operand::Local(base_op), Operand::Local(key)],
+                });
+            }
+            // Unknown base (deque / gradual `Dyn`). A statically-`str` key is a
+            // MAPPING delete → the Tagged-key dict deleter; otherwise the
+            // tag-dispatched sequence deleter takes a RAW i64 index (the same
+            // split `lower_subscript` makes for `rt_any_getitem`).
+            SubKind::Generic if matches!(self.func.exprs[index].ty, SemTy::Str) => {
+                let key = self.coerce(il, ir, Repr::Tagged)?;
+                self.emit(MirInst::CallRuntime {
+                    dst: None,
+                    def: &rf::RT_DICT_DELETE,
+                    args: vec![Operand::Local(base_op), Operand::Local(key)],
+                });
+            }
+            SubKind::Generic => {
+                let idx = self.coerce_to_i64(il, ir)?;
+                self.emit(MirInst::CallRuntime {
+                    dst: None,
+                    def: &rf::RT_ANY_DELITEM,
+                    args: vec![Operand::Local(base_op), Operand::Local(idx)],
+                });
+            }
+            SubKind::Tuple | SubKind::Str | SubKind::Bytes => {
+                return Err(CompilerError::semantic_error(
+                    "object doesn't support item deletion",
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Wrap a tagged `value` read out of a `del`-able slot in the
+    /// `rt_check_bound` guard: it returns the value unchanged unless the value
+    /// is `Value::UNBOUND`, in which case it raises by `kind` (0 → local /
+    /// UnboundLocalError, 1 → global / NameError, 2 → attr / AttributeError).
+    /// `name` names the slot/attribute (for the message). Returns the guarded
+    /// (still Tagged) value local.
+    fn emit_check_bound(
+        &mut self,
+        value: LocalId,
+        kind: i64,
+        name: InternedString,
+    ) -> Result<LocalId> {
+        let kind_const = self.raw_i64_const(kind);
+        self.str_pool
+            .insert(name, self.interner.resolve(name).as_bytes().to_vec());
+        let name_str = self.alloc_temp(Repr::Heap(HeapShape::Str));
+        self.emit(MirInst::Const {
+            dst: name_str,
+            val: Const::Str(name),
+        });
+        let name_op = self.coerce(name_str, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallRuntime {
+            dst: Some(dst),
+            def: &pyaot_core_defs::runtime_func_def::RT_CHECK_BOUND,
+            args: vec![
+                Operand::Local(value),
+                Operand::Local(kind_const),
+                Operand::Local(name_op),
+            ],
+        });
+        Ok(dst)
+    }
+
     fn lower_print(
         &mut self,
         args: &[Idx<HirExpr>],
@@ -939,8 +1059,28 @@ impl<'a> FnLower<'a> {
                 });
                 Ok((dst, Repr::Tagged))
             }
+            HirExprKind::Unbound => {
+                // The `Value::UNBOUND` sentinel a `del` stores into the slot.
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const {
+                    dst,
+                    val: Const::Unbound,
+                });
+                Ok((dst, Repr::Tagged))
+            }
             HirExprKind::Name(symref) => self.lower_name(*symref, expr.span),
-            HirExprKind::Local(lid) => Ok((*lid, self.local_repr(*lid))),
+            HirExprKind::Local(lid) => {
+                // A `del`'d local stays bound but may hold the UNBOUND sentinel —
+                // guard the read (the slot is pinned Tagged, so the value is a
+                // tagged `Value`). Kind 0 → UnboundLocalError.
+                if self.func.locals[lid.index()].deletable {
+                    let name = self.func.locals[lid.index()].name;
+                    let guarded = self.emit_check_bound(*lid, 0, name)?;
+                    Ok((guarded, Repr::Tagged))
+                } else {
+                    Ok((*lid, self.local_repr(*lid)))
+                }
+            }
             HirExprKind::BinOp { op, l, r } => self.lower_binop(idx, *op, *l, *r),
             HirExprKind::Unary { op, operand } => self.lower_unary(*op, *operand),
             HirExprKind::Compare { op, l, r } => self.lower_compare(*op, *l, *r),
@@ -1068,6 +1208,12 @@ impl<'a> FnLower<'a> {
                     dst,
                     var_id: *var_id,
                 });
+                // A `del`'d global may hold the UNBOUND sentinel — guard the read
+                // (kind 1 → NameError). Globals are physically tagged.
+                if let Some(name) = self.deletable_globals.get(var_id).copied() {
+                    let guarded = self.emit_check_bound(dst, 1, name)?;
+                    return Ok((guarded, Repr::Tagged));
+                }
                 Ok((dst, Repr::Tagged))
             }
             // ── generators (Phase 6E) ──
@@ -1975,7 +2121,14 @@ impl<'a> FnLower<'a> {
                 base: Operand::Local(base),
                 name_hash,
             });
-            let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;
+            // A `del obj.attr` stores UNBOUND into the named slot — guard the
+            // tagged read before any unbox (kind 2 → AttributeError).
+            let guarded = if self.deletable_fields.contains(&name) {
+                self.emit_check_bound(dst, 2, name)?
+            } else {
+                dst
+            };
+            let coerced = self.coerce(guarded, Repr::Tagged, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
         let slot = self.field_slot(value, name)?;
@@ -1986,6 +2139,15 @@ impl<'a> FnLower<'a> {
             base: Operand::Local(bl),
             slot,
         });
+        // A `del obj.attr` stores UNBOUND into this field's (tagged) slot —
+        // guard the tagged read BEFORE the Tagged→repr unbox below, so a
+        // `del`'d float/bool field raises rather than unboxing the sentinel
+        // (kind 2 → AttributeError).
+        let dst = if self.deletable_fields.contains(&name) {
+            self.emit_check_bound(dst, 2, name)?
+        } else {
+            dst
+        };
         // The field's static type drives the read's representation; the
         // Tagged→repr coercion is guarded by `typeck::check_repr_boundaries`.
         let coerced = self.coerce(dst, Repr::Tagged, result_repr.clone())?;

@@ -260,6 +260,56 @@ pub extern "C" fn rt_dict_pop_abi(dict: Value, key: Value) -> Value {
     Value::from_ptr(rt_dict_pop(dict.unwrap_ptr(), key.0 as *mut Obj))
 }
 
+/// `del d[key]` — remove the entry, raising `KeyError(repr(key))` when absent
+/// (matching CPython's `del`). Reuses the `rt_dict_pop` probe; discards the
+/// returned value.
+pub fn rt_dict_delete(dict: *mut Obj, key: *mut Obj) {
+    use crate::exceptions::ExceptionType;
+    if dict.is_null() || key.is_null() {
+        return;
+    }
+    unsafe {
+        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_delete");
+        let dict_obj = dict as *mut DictObj;
+        let hash = hash_hashable_obj(key);
+        let cap = (*dict_obj).indices_capacity;
+        if cap != 0 {
+            let mask = cap - 1;
+            let base = hash as usize;
+            for probe in 0..cap {
+                let offset = (probe * (probe + 1)) >> 1;
+                let slot = (base + offset) & mask;
+                let entry_idx = *(*dict_obj).indices.add(slot);
+                if entry_idx == EMPTY_INDEX {
+                    break;
+                }
+                if entry_idx == DUMMY_INDEX {
+                    continue;
+                }
+                let entry = (*dict_obj).entries.add(entry_idx as usize);
+                if (*entry).hash == hash && eq_hashable_obj((*entry).key.0 as *mut Obj, key) {
+                    // Tombstone the entry + index slot (mirrors rt_dict_pop).
+                    (*entry).key = pyaot_core_defs::Value(0);
+                    (*entry).value = pyaot_core_defs::Value(0);
+                    *(*dict_obj).indices.add(slot) = DUMMY_INDEX;
+                    (*dict_obj).len -= 1;
+                    return;
+                }
+            }
+        }
+        // Missing key → KeyError with the key's repr (CPython prints `repr(key)`).
+        let repr = crate::builtins::rt_builtin_repr(key);
+        let msg = crate::utils::str_obj_to_rust_string(repr);
+        raise_exc!(ExceptionType::KeyError, "{}", msg);
+    }
+}
+#[export_name = "rt_dict_delete"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_delete_abi(dict: Value, key: Value) {
+    // `key` may be a tagged immediate; pass raw bits (see `rt_dict_pop_abi`).
+    rt_dict_delete(dict.unwrap_ptr(), key.0 as *mut Obj)
+}
+
 /// Clear all entries from dictionary
 pub fn rt_dict_clear(dict: *mut Obj) {
     if dict.is_null() {

@@ -445,7 +445,9 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                     ),
                     TAGGED,
                 ),
-                Const::Bool(_) | Const::None | Const::NullPtr => (*repr == TAGGED, TAGGED),
+                Const::Bool(_) | Const::None | Const::NullPtr | Const::Unbound => {
+                    (*repr == TAGGED, TAGGED)
+                }
                 Const::Float(_) => (*repr == RAW_F64, RAW_F64),
             };
             if !ok {

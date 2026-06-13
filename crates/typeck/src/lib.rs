@@ -1688,6 +1688,11 @@ impl<'a> Sweeper<'a> {
             HirExprKind::FloatLit(_) => SemTy::Float,
             HirExprKind::BoolLit(_) => SemTy::Bool,
             HirExprKind::NoneLit => SemTy::NoneTy,
+            // The `del` UNBOUND sentinel is bottom: it is not a real value, so
+            // `join(t, Never) = t` keeps a `del`'d slot's type the join of its
+            // real writes, and `check_reinterpret` admits a `Never` write into
+            // any slot (the read-guard, not the type, enforces unboundness).
+            HirExprKind::Unbound => SemTy::Never,
             HirExprKind::Compare { .. } => SemTy::Bool,
             HirExprKind::Local(lid) => self.st.local_ty[lid.index()].clone(),
             HirExprKind::Name(symref) => self.name_ty(*symref),

@@ -191,7 +191,9 @@ fn const_truthiness(c: &Const) -> Option<bool> {
         Const::Float(v) => Some(*v != 0.0),
         Const::Bool(b) => Some(*b),
         Const::None => Some(false),
-        Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_) | Const::NullPtr => None,
+        Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_) | Const::NullPtr | Const::Unbound => {
+            None
+        }
     }
 }
 

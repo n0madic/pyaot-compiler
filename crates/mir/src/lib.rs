@@ -1040,6 +1040,10 @@ pub enum Const {
     /// `ConstValue` default receive this, and the runtime checks `is_null()`.
     /// Distinct from [`Const::None`] (`Value::NONE` has a non-zero tag).
     NullPtr,
+    /// The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate). Stored into a
+    /// `del`'d local/global/field slot; a guarded read (`rt_check_bound`) raises
+    /// if it observes this. Distinct from [`Const::None`]/[`Const::NullPtr`].
+    Unbound,
 }
 
 #[derive(Debug, Clone)]

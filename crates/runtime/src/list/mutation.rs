@@ -73,6 +73,45 @@ pub extern "C" fn rt_list_pop_abi(list: Value, index: i64) -> Value {
     Value::from_ptr(rt_list_pop(list.unwrap_ptr(), index))
 }
 
+/// `del li[index]` — remove the element at `index`, shifting the tail left.
+/// Negative indices count from the right (like `rt_list_pop`). Unlike pop this
+/// returns nothing and raises `IndexError` on an out-of-range index, matching
+/// CPython's `del list[i]`.
+pub fn rt_list_delete(list: *mut Obj, index: i64) {
+    if list.is_null() {
+        return;
+    }
+    unsafe {
+        debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_delete");
+        let list_obj = list as *mut ListObj;
+        let len = (*list_obj).len as i64;
+
+        // Handle negative index, then bounds-check (raise like CPython).
+        let idx = if index < 0 { len + index } else { index };
+        if idx < 0 || idx >= len {
+            raise_exc!(
+                ExceptionType::IndexError,
+                "list assignment index out of range"
+            );
+        }
+
+        let idx = idx as usize;
+        let data = (*list_obj).data;
+        // Shift remaining elements left over the gap, clear the vacated slot.
+        let new_len = len as usize - 1;
+        for i in idx..new_len {
+            *data.add(i) = *data.add(i + 1);
+        }
+        *data.add(new_len) = Value(0);
+        (*list_obj).len = new_len;
+    }
+}
+#[export_name = "rt_list_delete"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_delete_abi(list: Value, index: i64) {
+    rt_list_delete(list.unwrap_ptr(), index)
+}
+
 /// Insert element at given index (mutates list)
 /// Negative indices are supported
 pub fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {

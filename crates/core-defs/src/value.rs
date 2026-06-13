@@ -22,7 +22,9 @@
 
 use core::fmt;
 
-use crate::tag::{int_fits, BOOL_SHIFT, BOOL_TAG, INT_SHIFT, INT_TAG, NONE_TAG, PTR_TAG, TAG_MASK};
+use crate::tag::{
+    int_fits, BOOL_SHIFT, BOOL_TAG, INT_SHIFT, INT_TAG, NONE_TAG, PTR_TAG, RESERVED_TAG, TAG_MASK,
+};
 use crate::tag_kinds::TypeTagKind;
 
 /// A 64-bit tagged value. Transparent over `u64` so Cranelift lowers it as a
@@ -46,6 +48,16 @@ impl Value {
 
     /// `True` — Bool tag with payload bit set.
     pub const TRUE: Value = Value((1u64 << BOOL_SHIFT) | BOOL_TAG);
+
+    /// The "unbound slot" sentinel — a distinguished immediate stored into a
+    /// local/global/field slot that a `del` statement has unbound. Any guarded
+    /// read of a deletable slot raises `UnboundLocalError`/`NameError`/
+    /// `AttributeError` if it observes this value (the exact model CPython uses
+    /// with `NULL` in fast-locals). It uses the otherwise-unused
+    /// [`RESERVED_TAG`] immediate, so bit0 is set (never a pointer — the GC
+    /// never traces it) and it is distinct from `None` (`0b101`), bools, ints,
+    /// and the null pointer (`0`). A contract extension under Principle 8.
+    pub const UNBOUND: Value = Value(RESERVED_TAG);
 
     /// Tag `i` as an immediate Int. Panics in debug if `i` exceeds the
     /// 61-bit representable range (`INT_MIN..=INT_MAX`); silently truncates
@@ -88,6 +100,14 @@ impl Value {
     #[inline]
     pub const fn is_none(self) -> bool {
         self.0 == NONE_TAG
+    }
+
+    /// True iff this is the [`Self::UNBOUND`] sentinel written by `del` into a
+    /// deletable slot. Read-guards (`rt_check_bound`) test this before using a
+    /// value out of a deletable local/global/field.
+    #[inline]
+    pub const fn is_unbound(self) -> bool {
+        self.0 == RESERVED_TAG
     }
 
     /// True if the low bit is clear. This includes the null pointer
@@ -239,6 +259,27 @@ mod tests {
         assert!(!Value::NONE.is_int());
         assert!(!Value::NONE.is_bool());
         assert!(!Value::NONE.is_ptr());
+    }
+
+    #[test]
+    fn unbound_is_distinct() {
+        let u = Value::UNBOUND;
+        assert!(u.is_unbound());
+        assert!(!u.is_none());
+        assert!(!u.is_int());
+        assert!(!u.is_bool());
+        // bit0 set ⇒ never classified as a pointer (the GC never traces it).
+        assert!(!u.is_ptr());
+        assert_ne!(u, Value::NONE);
+        assert_ne!(u, Value::TRUE);
+        assert_ne!(u, Value::FALSE);
+        assert_ne!(u, Value::from_int(0));
+        assert_ne!(u, Value::from_ptr::<u8>(core::ptr::null_mut()));
+        assert_eq!(u.primitive_type(), None);
+        // No real value reports as unbound.
+        assert!(!Value::NONE.is_unbound());
+        assert!(!Value::from_int(0).is_unbound());
+        assert!(!Value::TRUE.is_unbound());
     }
 
     #[test]

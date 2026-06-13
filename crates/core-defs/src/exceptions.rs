@@ -195,6 +195,10 @@ define_exceptions! {
     TimeoutError = 26 => "TimeoutError",
     SyntaxError = 27 => "SyntaxError",
     BaseException = 28 => "BaseException",
+    // Subclass of NameError in CPython; the parent relationship is wired into the
+    // runtime class registry (`rt_init_builtin_exception_classes`). Raised by the
+    // `del name` unbound read-guard (`rt_check_bound`).
+    UnboundLocalError = 29 => "UnboundLocalError",
 }
 
 #[cfg(test)]
@@ -272,7 +276,8 @@ mod tests {
         assert_eq!(exception_tag_to_name(26), Some("TimeoutError"));
         assert_eq!(exception_tag_to_name(27), Some("SyntaxError"));
         assert_eq!(exception_tag_to_name(28), Some("BaseException"));
-        assert_eq!(exception_tag_to_name(29), None);
+        assert_eq!(exception_tag_to_name(29), Some("UnboundLocalError"));
+        assert_eq!(exception_tag_to_name(30), None);
         assert_eq!(exception_tag_to_name(255), None);
     }
 

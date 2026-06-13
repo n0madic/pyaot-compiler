@@ -15,7 +15,7 @@ use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
     ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
     ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged, Stmt,
-    StmtClassDef, StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
+    StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
 
@@ -156,6 +156,13 @@ pub(crate) struct Shared {
     cur_file: Option<InternedString>,
     /// Byte-offset → line map of the module being lowered (same discipline).
     line_map: LineMap,
+    /// Module globals a `del name` unbinds (`var_id → name`), accumulated across
+    /// every function/module lowered. Flows into [`HirModule::deletable_globals`]
+    /// to drive the `GlobalGet` read-guards. Program-global like `generators`.
+    deletable_globals: HashMap<u32, InternedString>,
+    /// Instance-field names a `del obj.attr` unbinds, accumulated across the
+    /// whole program. Flows into [`HirModule::deletable_fields`].
+    deletable_fields: HashSet<InternedString>,
 }
 
 impl Shared {
@@ -168,6 +175,8 @@ impl Shared {
             generators: Vec::new(),
             cur_file: None,
             line_map: LineMap::new(""),
+            deletable_globals: HashMap::new(),
+            deletable_fields: HashSet::new(),
         }
     }
 
@@ -300,6 +309,8 @@ impl<'a> ProgramLowerer<'a> {
 
         let func_ns = self.shared.func_ns.clone();
         let generators = self.shared.generators.clone();
+        let deletable_globals = self.shared.deletable_globals.clone();
+        let deletable_fields = self.shared.deletable_fields.clone();
         let functions = self.shared.finish();
         let module = HirModule {
             functions,
@@ -307,6 +318,8 @@ impl<'a> ProgramLowerer<'a> {
             main: main_id,
             generators,
             global_annotations: self.global_annotations,
+            deletable_globals,
+            deletable_fields,
         };
         let namespaces = NamespaceTable {
             func_ns,
@@ -1152,6 +1165,15 @@ enum ArgSrc<'e> {
     Staged(LocalId),
 }
 
+/// One positional argument of a call, after `*` classification. A `*list` /
+/// `*tuple` LITERAL spread is flattened into its [`PosItem::Plain`] elements
+/// (compile-time-known arity); a runtime `*seq` spread (variable / call result
+/// / comprehension) of unknown length stays a [`PosItem::Spread`].
+enum PosItem<'e> {
+    Plain(&'e Expr),
+    Spread(&'e Expr),
+}
+
 /// Side-effect-free literal (possibly sign-prefixed)? Such arguments skip
 /// staging and stay [`ArgSrc::Plain`], so downstream slot-fill folds (`None`
 /// → absent stdlib slot, int literal → float for raw-ABI params) still see
@@ -1354,6 +1376,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: false,
             cell_shared: false,
+            deletable: false,
         });
         self.scope.insert(name, Binding::Direct(id));
     }
@@ -1369,6 +1392,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: false,
             cell_shared: false,
+            deletable: false,
         });
         self.scope.insert(name, Binding::Direct(id));
         id
@@ -1440,6 +1464,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: true,
             cell_shared,
+            deletable: false,
         });
         id
     }
@@ -1932,6 +1957,7 @@ impl<'a> FnLowerer<'a> {
             // Binding-analysis inputs only (Phase 6B): the declarations were
             // consumed by `freevars` / the module pre-scan; nothing to emit.
             Stmt::Global(_) | Stmt::Nonlocal(_) => Ok(false),
+            Stmt::Delete(d) => self.lower_delete(d),
             other => Err(parse_error(
                 "unsupported statement for this milestone",
                 to_span(other.range()),
@@ -2060,6 +2086,99 @@ impl<'a> FnLowerer<'a> {
                 "unsupported assignment target",
                 to_span(other.range()),
             )),
+        }
+    }
+
+    /// Lower a `del` statement (`del d[k]`, `del li[i]`, `del name`,
+    /// `del obj.attr`, and multi-target `del a, b`). Each target is unbound
+    /// independently, mirroring [`Self::assign_to_target`]:
+    /// - a subscript → [`HirStmt::DelItem`] (a runtime element delete);
+    /// - a name → stores the `Value::UNBOUND` sentinel into the slot (marking a
+    ///   local deletable + pinned-tagged, or recording a global), so any later
+    ///   read raises `UnboundLocalError`/`NameError` via the read-guard;
+    /// - an attribute → stores `UNBOUND` into the field slot (recording the
+    ///   field name deletable), so a later read raises `AttributeError`.
+    fn lower_delete(&mut self, d: &StmtDelete) -> Result<bool> {
+        for target in &d.targets {
+            self.delete_target(target)?;
+        }
+        Ok(false)
+    }
+
+    /// Unbind one `del` target. See [`Self::lower_delete`].
+    fn delete_target(&mut self, target: &Expr) -> Result<()> {
+        match target {
+            Expr::Subscript(s) => {
+                let span = to_span(s.range());
+                if matches!(s.slice.as_ref(), Expr::Slice(_)) {
+                    return Err(parse_error("slice deletion is not supported", span));
+                }
+                let base = self.lower_expr(s.value.as_ref())?;
+                let index = self.lower_expr(s.slice.as_ref())?;
+                self.push_stmt(HirStmt::DelItem { base, index });
+                Ok(())
+            }
+            Expr::Name(n) => {
+                let span = to_span(n.range());
+                let name = self.intern(n.id.as_str());
+                let unbound = self.alloc(HirExprKind::Unbound, SemTy::Never, span);
+                match self.resolve_write_place(name, SemTy::Dyn) {
+                    Place::Bind(Binding::Direct(lid)) => {
+                        // Keep the name bound (CPython keeps it in co_varnames);
+                        // store the sentinel and pin the slot Tagged so the
+                        // immediate fits regardless of the inferred type.
+                        let l = &mut self.locals[lid.index()];
+                        l.deletable = true;
+                        l.pin_tagged = true;
+                        self.push_stmt(HirStmt::Assign {
+                            target: lid,
+                            value: unbound,
+                        });
+                        Ok(())
+                    }
+                    Place::Bind(Binding::Cell(_)) => Err(parse_error(
+                        "del of a captured (nonlocal/closure) variable is not supported",
+                        span,
+                    )),
+                    Place::Global(var_id) => {
+                        self.shared.deletable_globals.insert(var_id, name);
+                        self.push_stmt(HirStmt::GlobalSet {
+                            var_id,
+                            value: unbound,
+                        });
+                        Ok(())
+                    }
+                }
+            }
+            Expr::Attribute(attr) => {
+                let span = to_span(attr.range());
+                let base = self.lower_expr(attr.value.as_ref())?;
+                let name = self.intern(attr.attr.as_str());
+                let unbound = self.alloc(HirExprKind::Unbound, SemTy::Never, span);
+                self.shared.deletable_fields.insert(name);
+                self.push_stmt(HirStmt::SetAttr {
+                    base,
+                    name,
+                    value: unbound,
+                });
+                Ok(())
+            }
+            // `del (a, b)` / `del [a, b]` — parenthesized/bracketed multi-target
+            // (the bare `del a, b` form is split into separate targets by the
+            // parser and handled in `lower_delete`).
+            Expr::Tuple(t) => {
+                for elt in &t.elts {
+                    self.delete_target(elt)?;
+                }
+                Ok(())
+            }
+            Expr::List(l) => {
+                for elt in &l.elts {
+                    self.delete_target(elt)?;
+                }
+                Ok(())
+            }
+            other => Err(parse_error("unsupported del target", to_span(other.range()))),
         }
     }
 
@@ -2324,6 +2443,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: false,
             cell_shared: false,
+            deletable: false,
         });
         self.scope.insert(name, Binding::Direct(id));
         Binding::Direct(id)
@@ -3077,6 +3197,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: false,
             cell_shared: false,
+            deletable: false,
         });
         self.scope.insert(iname, Binding::Direct(id));
         self.push_stmt(HirStmt::Assign { target: id, value });
@@ -4856,6 +4977,7 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: false,
             cell_shared: false,
+            deletable: false,
         });
         id
     }
@@ -4901,6 +5023,27 @@ impl<'a> FnLowerer<'a> {
             raw_int_ok: false,
             pin_tagged: true,
             cell_shared: false,
+            deletable: false,
+        });
+        id
+    }
+
+    /// A fresh synthetic local carrying an authoritative `ty` (typeck fixes it,
+    /// since `ty != Dyn`) but pinned to the `Tagged` representation. Used to
+    /// "launder" a gradual `Dyn` spread value into a `float`/`bool` parameter
+    /// slot: typeck skips the reinterpret check on a `pin_tagged` store (so the
+    /// `Dyn → float`/`bool` assignment is admitted), and lowering unboxes the
+    /// Tagged value to the param's `Raw` repr at the call site.
+    fn fresh_local_pinned(&mut self, ty: SemTy) -> LocalId {
+        let name = self.interner.intern("");
+        let id = LocalId::new(self.locals.len() as u32);
+        self.locals.push(HirLocal {
+            name,
+            ty,
+            raw_int_ok: false,
+            pin_tagged: true,
+            cell_shared: false,
+            deletable: false,
         });
         id
     }
@@ -6157,26 +6300,54 @@ impl<'a> FnLowerer<'a> {
         c: &ExprCall,
         span: Span,
     ) -> Result<Idx<HirExpr>> {
-        reject_call_extras(c, span, "calls to decorated functions")?;
-        let mut elems = Vec::with_capacity(c.args.len());
-        for a in &c.args {
-            elems.push(self.lower_expr(a)?);
+        if has_doublestar_kwarg(c) {
+            return Err(parse_error(
+                "`**` spreading into a decorated call is out of scope",
+                span,
+            ));
         }
-        let tuple = self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span);
-        let mut pairs = Vec::with_capacity(c.keywords.len());
-        for kw in &c.keywords {
-            let Some(name) = &kw.arg else {
-                return Err(parse_error(
-                    "`**` spreading into a decorated call is out of scope",
-                    span,
-                ));
-            };
-            let key_id = self.intern(name.as_str());
-            let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
-            let val = self.lower_expr(&kw.value)?;
-            pairs.push((key, val));
+        if !c.keywords.is_empty() {
+            return Err(parse_error(
+                "keyword arguments are not supported for calls to decorated functions",
+                span,
+            ));
         }
-        let dict = self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span);
+        // The decorated slot holds a `(*args, **kwargs)` wrapper, so the whole
+        // positional sequence — plain args and any `*seq` spread — becomes its
+        // `*args` tuple. A runtime spread builds the tuple from a materialized
+        // `argv` list; an all-plain (incl. flattened literal-spread) call builds
+        // a fixed tuple literal directly.
+        let (items, has_runtime_spread) = classify_pos_args(c);
+        let tuple = if has_runtime_spread {
+            let argv = self.build_spread_argv(&items, span)?;
+            let argv_ref = self.local_ref(argv, span);
+            let it = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Iter,
+                    args: vec![argv_ref],
+                },
+                SemTy::Dyn,
+                span,
+            );
+            self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::TupleFromIter,
+                    args: vec![it],
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            )
+        } else {
+            let mut elems = Vec::with_capacity(items.len());
+            for item in &items {
+                let PosItem::Plain(e) = *item else {
+                    unreachable!("runtime spreads handled above")
+                };
+                elems.push(self.lower_expr(e)?);
+            }
+            self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
+        };
+        let dict = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
         let callee = self.alloc(HirExprKind::GlobalGet { var_id: slot }, SemTy::Dyn, span);
         Ok(self.alloc(
             HirExprKind::Call {
@@ -6864,30 +7035,30 @@ impl<'a> FnLowerer<'a> {
                 span,
             ));
         }
+        // Classify positional args. A `*list` / `*tuple` LITERAL spread has a
+        // compile-time-known arity, so its elements flatten into plain
+        // positionals and reuse the slot-matching path below. A runtime `*seq`
+        // spread (a variable / call result / comprehension) has an unknown
+        // length, so it routes to the general runtime-spread path.
+        let (items, has_runtime_spread) = classify_pos_args(c);
+        if has_runtime_spread {
+            return self.lower_spread_call(info, fname, &items, c, span);
+        }
+
         // With keywords present, slot matching below reorders arguments — so
         // pass 1 stages every (non-literal) argument value in WRITTEN order
         // (CPython's evaluation order), and pass 2 only assembles slot refs.
         let staging = !c.keywords.is_empty();
-        let mut positionals: Vec<ArgSrc> = Vec::new();
-        let mut star: Option<ArgSrc> = None;
-        for a in &c.args {
-            match a {
-                Expr::Starred(s) => {
-                    let inner = s.value.as_ref();
-                    star = Some(if staging {
-                        self.stage_arg_src(inner)?
-                    } else {
-                        ArgSrc::Plain(inner)
-                    });
-                }
-                _ => {
-                    positionals.push(if staging {
-                        self.stage_arg_src(a)?
-                    } else {
-                        ArgSrc::Plain(a)
-                    });
-                }
-            }
+        let mut positionals: Vec<ArgSrc> = Vec::with_capacity(items.len());
+        for item in &items {
+            let PosItem::Plain(e) = *item else {
+                unreachable!("runtime spreads handled above")
+            };
+            positionals.push(if staging {
+                self.stage_arg_src(e)?
+            } else {
+                ArgSrc::Plain(e)
+            });
         }
         // (keyword name, value, consumed?)
         let mut keywords: Vec<(String, ArgSrc, bool)> = Vec::new();
@@ -6905,27 +7076,8 @@ impl<'a> FnLowerer<'a> {
         let n_fixed = info.fixed.len();
         let mut out: Vec<Idx<HirExpr>> = Vec::with_capacity(n_fixed + 2);
 
-        // ── star spread `f(*t)`: the spread IS the whole *args tuple ──
-        let star_tuple: Option<Idx<HirExpr>> = if let Some(star_src) = star {
-            if info.varargs.is_none() {
-                return Err(parse_error(
-                    format!("`{fname}()` takes no *args, cannot spread `*` into it"),
-                    span,
-                ));
-            }
-            if positionals.len() != n_fixed {
-                return Err(parse_error(
-                    "spreading `*t` is only supported when all fixed positional \
-                     parameters are passed plainly (no unpacking into fixed params)",
-                    span,
-                ));
-            }
-            for p in positionals.clone() {
-                let v = self.arg_src_value(p, span)?;
-                out.push(v);
-            }
-            Some(self.arg_src_value(star_src, span)?)
-        } else {
+        // ── fixed positional / keyword / default slot matching ──
+        let star_tuple: Option<Idx<HirExpr>> = {
             let n_pos = positionals.len();
             if n_pos > n_fixed && info.varargs.is_none() {
                 return Err(parse_error(
@@ -7023,6 +7175,321 @@ impl<'a> FnLowerer<'a> {
             span,
         );
         Ok(self.alloc(HirExprKind::Call { callee, args: out }, SemTy::Dyn, span))
+    }
+
+    /// Lower a known-callee call carrying a runtime `*seq` spread — a sequence
+    /// whose length is unknown until run time (`f(*xs)`, `f(a, *xs, b)`,
+    /// `f(*xs, *ys)`). The full positional sequence is materialized into a fresh
+    /// `argv` list in WRITTEN order ([`Self::build_spread_argv`]), an argument-
+    /// count guard runs against the callee's arity, then each parameter slot is
+    /// bound by position: required slots read `argv[i]`, defaulted slots read
+    /// `argv[i]` when present else the default, a `*args` callee takes
+    /// `tuple(argv[n_fixed:])` as its rest tuple. Keyword args are not combined
+    /// with a runtime spread (the corpus never does, and it keeps slot matching
+    /// simple).
+    fn lower_spread_call(
+        &mut self,
+        info: &TopDefInfo,
+        fname: &str,
+        items: &[PosItem],
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        if !c.keywords.is_empty() {
+            return Err(parse_error(
+                format!(
+                    "`{fname}()`: keyword arguments combined with a runtime `*` spread are out of scope"
+                ),
+                span,
+            ));
+        }
+        let argv = self.build_spread_argv(items, span)?;
+        let n_fixed = info.fixed.len();
+        // Required = leading fixed params without a default (Python keeps
+        // defaults trailing, so the first defaulted index IS the required count).
+        let req = info
+            .fixed
+            .iter()
+            .position(|p| p.default.is_some())
+            .unwrap_or(n_fixed);
+
+        // n = len(argv), reused by the count guard and the default-slot tests.
+        let n_local = self.fresh_local(SemTy::Int);
+        let argv_ref = self.local_ref(argv, span);
+        let n_expr = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Len,
+                args: vec![argv_ref],
+            },
+            SemTy::Int,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: n_local,
+            value: n_expr,
+        });
+        let max = if info.varargs.is_some() {
+            None
+        } else {
+            Some(n_fixed)
+        };
+        self.emit_argcount_check(n_local, req, max, fname, span);
+
+        // Build the param-aligned argument vector (fixed → kw-only → *args tuple
+        // → **kwargs dict), matching the callee's MIR parameter order.
+        let mut out: Vec<Idx<HirExpr>> = Vec::with_capacity(n_fixed + 2);
+        for (i, p) in info.fixed.iter().enumerate() {
+            let raw = if i < req {
+                // Required: `argv[i]`, in-bounds after the count guard.
+                let base = self.local_ref(argv, span);
+                let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+                self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
+            } else {
+                let def = p.default.as_ref().expect("trailing fixed param has a default");
+                let default = self.lower_const_default(def, span);
+                self.emit_spread_default(argv, n_local, i, default, span)
+            };
+            let v = self.launder_arg(raw, &p.ty, span);
+            out.push(v);
+        }
+        // Keyword-only params: a `*` spread fills no keywords, so each must carry
+        // a default (else the call cannot be satisfied).
+        for p in &info.kwonly {
+            let Some(def) = &p.default else {
+                return Err(parse_error(
+                    format!(
+                        "`{fname}()` keyword-only parameter `{}` cannot be filled from a `*` spread",
+                        self.interner.resolve(p.name)
+                    ),
+                    span,
+                ));
+            };
+            let d = self.lower_const_default(def, span);
+            let v = self.launder_arg(d, &p.ty, span);
+            out.push(v);
+        }
+        // `*args` rest tuple = `tuple(argv[n_fixed:])`.
+        if info.varargs.is_some() {
+            let base = self.local_ref(argv, span);
+            let start = self.alloc(HirExprKind::IntLit(n_fixed as i64), SemTy::Int, span);
+            let slice = self.alloc(
+                HirExprKind::Slice {
+                    base,
+                    start: Some(start),
+                    end: None,
+                    step: None,
+                },
+                SemTy::list_of(SemTy::Dyn),
+                span,
+            );
+            let it = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Iter,
+                    args: vec![slice],
+                },
+                SemTy::Dyn,
+                span,
+            );
+            let rest = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::TupleFromIter,
+                    args: vec![it],
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            );
+            out.push(rest);
+        }
+        // `**kwargs` dict slot: a `*` spread supplies no keywords → empty.
+        if info.kwargs.is_some() {
+            out.push(self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span));
+        }
+
+        let target = self.intern(fname);
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(target)),
+            SemTy::Dyn,
+            span,
+        );
+        Ok(self.alloc(HirExprKind::Call { callee, args: out }, SemTy::Dyn, span))
+    }
+
+    /// Materialize the full positional sequence of a `*`-spread call into a fresh
+    /// `list[Dyn]` local, evaluating each item in WRITTEN (left-to-right) order:
+    /// a plain arg is appended once; a `*seq` spread is iterated (the iterator
+    /// protocol, so any iterable — list / tuple / deque / generator / range —
+    /// works) and each element appended.
+    fn build_spread_argv(&mut self, items: &[PosItem], span: Span) -> Result<LocalId> {
+        let argv = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: argv,
+            value: empty,
+        });
+        for item in items {
+            match *item {
+                PosItem::Plain(e) => {
+                    let v = self.lower_expr(e)?;
+                    self.push_stmt(HirStmt::ContainerPush {
+                        container: argv,
+                        value: v,
+                    });
+                }
+                PosItem::Spread(e) => {
+                    let src = self.lower_expr(e)?;
+                    let lp = self.begin_iter_loop(src, span)?;
+                    let elem = self.local_ref(lp.elem, span);
+                    self.push_stmt(HirStmt::ContainerPush {
+                        container: argv,
+                        value: elem,
+                    });
+                    self.end_iter_loop(lp);
+                }
+            }
+        }
+        Ok(argv)
+    }
+
+    /// `(i < n) ? argv[i] : default` — the value for a defaulted fixed slot under
+    /// a runtime spread, as a short-circuit CFG ternary (`argv[i]` is only read
+    /// on the in-bounds arm). Returns a read of the result local.
+    fn emit_spread_default(
+        &mut self,
+        argv: LocalId,
+        n_local: LocalId,
+        i: usize,
+        default: Idx<HirExpr>,
+        span: Span,
+    ) -> Idx<HirExpr> {
+        let res = self.fresh_local(SemTy::Dyn);
+        let i_lit = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+        let n_ref = self.local_ref(n_local, span);
+        let cond = self.alloc(
+            HirExprKind::Compare {
+                op: CmpOp::Lt,
+                l: i_lit,
+                r: n_ref,
+            },
+            SemTy::Bool,
+            span,
+        );
+        let then_b = self.new_block();
+        let else_b = self.new_block();
+        let join = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: then_b,
+            else_: else_b,
+        });
+        self.switch(then_b);
+        let base = self.local_ref(argv, span);
+        let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+        let av = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: av,
+        });
+        self.seal(HirTerminator::Jump(join));
+        self.switch(else_b);
+        self.push_stmt(HirStmt::Assign {
+            target: res,
+            value: default,
+        });
+        self.seal(HirTerminator::Jump(join));
+        self.switch(join);
+        self.local_ref(res, span)
+    }
+
+    /// A spread value reaches a fixed / kw-only slot as a gradual `Dyn` (it came
+    /// from a runtime `argv` subscript). `int` (Tagged), `str` / containers
+    /// (gradual `Heap`), and `Dyn` params admit it directly. A `float` / `bool`
+    /// param reinterprets its bits by the annotated type (PITFALLS A2), so typeck
+    /// rejects a `Dyn` there — launder the value through a `pin_tagged`
+    /// authoritative-typed local: typeck sees the param type (the `pin_tagged`
+    /// store skips the reinterpret check), and lowering unboxes the Tagged value
+    /// to the param's `Raw` repr at the call.
+    fn launder_arg(&mut self, value: Idx<HirExpr>, param_ty: &SemTy, span: Span) -> Idx<HirExpr> {
+        if !matches!(param_ty, SemTy::Float | SemTy::Bool) {
+            return value;
+        }
+        let slot = self.fresh_local_pinned(param_ty.clone());
+        self.push_stmt(HirStmt::Assign {
+            target: slot,
+            value,
+        });
+        self.local_ref(slot, span)
+    }
+
+    /// Emit the argument-count guards for a runtime spread: too few values
+    /// (`len(argv) < min`) and, for a non-`*args` callee, too many
+    /// (`len(argv) > max`). Each raises `TypeError`, matching CPython's
+    /// wrong-arity behavior (the success path never trips them).
+    fn emit_argcount_check(
+        &mut self,
+        n_local: LocalId,
+        min: usize,
+        max: Option<usize>,
+        fname: &str,
+        span: Span,
+    ) {
+        if min > 0 {
+            self.emit_count_guard(
+                n_local,
+                CmpOp::Lt,
+                min,
+                format!("`{fname}()` missing required positional argument(s) (too few values to spread)"),
+                span,
+            );
+        }
+        if let Some(max) = max {
+            self.emit_count_guard(
+                n_local,
+                CmpOp::Gt,
+                max,
+                format!("`{fname}()` takes {max} positional argument(s) but more were spread"),
+                span,
+            );
+        }
+    }
+
+    /// `if (n <op> bound): raise TypeError(msg)` — one arity guard for a runtime
+    /// spread. Mirrors the `assert … , msg` desugar (branch → raise →
+    /// `Unreachable`), then continues in the pass block.
+    fn emit_count_guard(
+        &mut self,
+        n_local: LocalId,
+        op: CmpOp,
+        bound: usize,
+        msg: String,
+        span: Span,
+    ) {
+        let n_ref = self.local_ref(n_local, span);
+        let b = self.alloc(HirExprKind::IntLit(bound as i64), SemTy::Int, span);
+        let cond = self.alloc(
+            HirExprKind::Compare {
+                op,
+                l: n_ref,
+                r: b,
+            },
+            SemTy::Bool,
+            span,
+        );
+        let fail = self.new_block();
+        let ok = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: fail,
+            else_: ok,
+        });
+        self.switch(fail);
+        let msg_id = self.intern(&msg);
+        let m = self.alloc(HirExprKind::StrLit(msg_id), SemTy::Str, span);
+        self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+            tag: pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+            msg: Some(m),
+        }));
+        self.seal(HirTerminator::Unreachable);
+        self.switch(ok);
     }
 
     /// Lower an indirect / unknown-callee call (Phase 6C): plain positionals,
@@ -7307,6 +7774,40 @@ fn take_keyword<'a>(keywords: &mut [(String, ArgSrc<'a>, bool)], name: &str) -> 
 /// True iff any positional arg is a `*t` spread.
 fn has_starred_arg(c: &ExprCall) -> bool {
     c.args.iter().any(|a| matches!(a, Expr::Starred(_)))
+}
+
+/// If `e` is a list/tuple LITERAL with no nested `*` element, return its element
+/// expressions — a compile-time-known spread (`f(*[1, 2, 3])`) the slot-matching
+/// path can flatten into plain positionals. `None` for a runtime sequence (a
+/// variable / call result / comprehension), which must spread at runtime.
+fn flatten_literal_seq(e: &Expr) -> Option<&[Expr]> {
+    match e {
+        Expr::List(l) if !l.elts.iter().any(|x| matches!(x, Expr::Starred(_))) => Some(&l.elts),
+        Expr::Tuple(t) if !t.elts.iter().any(|x| matches!(x, Expr::Starred(_))) => Some(&t.elts),
+        _ => None,
+    }
+}
+
+/// Classify a call's positional args, flattening literal `*` spreads
+/// ([`flatten_literal_seq`]) into plain positionals. Returns the ordered items
+/// plus whether any RUNTIME `*seq` spread remains (length unknown until run
+/// time, so the call routes to the general spread path).
+fn classify_pos_args(c: &ExprCall) -> (Vec<PosItem<'_>>, bool) {
+    let mut items = Vec::with_capacity(c.args.len());
+    let mut has_runtime_spread = false;
+    for a in &c.args {
+        match a {
+            Expr::Starred(s) => match flatten_literal_seq(s.value.as_ref()) {
+                Some(elts) => items.extend(elts.iter().map(PosItem::Plain)),
+                None => {
+                    items.push(PosItem::Spread(s.value.as_ref()));
+                    has_runtime_spread = true;
+                }
+            },
+            _ => items.push(PosItem::Plain(a)),
+        }
+    }
+    (items, has_runtime_spread)
 }
 
 /// True iff the call has a `**d` spread.
