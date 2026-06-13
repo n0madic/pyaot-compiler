@@ -330,7 +330,7 @@ const PHASE_CORPUS: &[&str] = &[
     // Consolidated core-types/operators suite (514 lines, no imports). Its sole
     // §5 blocker was `round` — closed by p18, so it now byte-matches CPython
     // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF (it
-    // still needs `map`/`filter`/`format`).
+    // still needs `issubclass`/`getattr`/`hasattr` — `map`/`filter`/`format` done).
     "test_core_types.py",
     // §9 str methods (runtime-ready batch): split/rsplit/splitlines, replace,
     // lstrip/rstrip, removeprefix/removesuffix, expandtabs, partition/
