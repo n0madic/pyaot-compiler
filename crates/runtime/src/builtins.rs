@@ -358,6 +358,18 @@ pub extern "C" fn rt_builtin_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_repr(obj.unwrap_ptr()))
 }
 
+/// ascii(obj) -> *mut Obj (StrObj)
+/// Like `repr(obj)` but with every non-ASCII char `\x`/`\u`/`\U`-escaped.
+/// Mirrors `rt_builtin_repr` → `rt_repr_collection` with the ascii dispatcher.
+pub fn rt_builtin_ascii(obj: *mut Obj) -> *mut Obj {
+    crate::conversions::rt_ascii_collection(obj)
+}
+#[export_name = "rt_builtin_ascii"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_ascii_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_ascii(obj.unwrap_ptr()))
+}
+
 /// type(obj) -> *mut Obj (StrObj)
 /// Returns type name string of object.
 pub fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
@@ -392,6 +404,7 @@ fn get_builtin_func_ptr_impl(builtin_id: i64) -> i64 {
         8 => rt_builtin_chr as *const () as usize as i64,
         9 => rt_builtin_repr as *const () as usize as i64,
         10 => rt_builtin_type as *const () as usize as i64,
+        11 => rt_builtin_ascii as *const () as usize as i64,
         _ => panic!(
             "Invalid builtin ID: {} (max: {})",
             builtin_id,
@@ -417,6 +430,7 @@ pub extern "C" fn rt_get_builtin_func_ptr(builtin_id: i64) -> i64 {
         8 => rt_builtin_chr as *const () as usize as i64,
         9 => rt_builtin_repr as *const () as usize as i64,
         10 => rt_builtin_type as *const () as usize as i64,
+        11 => rt_builtin_ascii as *const () as usize as i64,
         _ => unsafe {
             raise_exc!(
                 pyaot_core_defs::BuiltinExceptionKind::RuntimeError,
@@ -440,8 +454,8 @@ mod tests {
         // Verify that we have entries for all builtins
         assert_eq!(
             pyaot_core_defs::BUILTIN_FUNCTION_COUNT,
-            11,
-            "BUILTIN_FUNCTION_COUNT should be 11"
+            12,
+            "BUILTIN_FUNCTION_COUNT should be 12"
         );
     }
 

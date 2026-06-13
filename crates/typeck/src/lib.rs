@@ -2534,7 +2534,7 @@ impl<'a> Sweeper<'a> {
             K::Int => SemTy::Int,
             K::Float => SemTy::Float,
             K::Bool => SemTy::Bool,
-            K::Str | K::Repr | K::Chr => SemTy::Str,
+            K::Str | K::Repr | K::Chr | K::Ascii => SemTy::Str,
             // `abs` preserves the numeric kind of its argument.
             K::Abs => match args.first().map(|a| self.ety(*a)) {
                 Some(SemTy::Float) => SemTy::Float,

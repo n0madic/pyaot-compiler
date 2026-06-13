@@ -88,8 +88,8 @@ print("string truncation: OK")
 # ---------------------------------------------------------------------------
 # Bool formatting (treated as int subclass for numeric specs)
 # ---------------------------------------------------------------------------
-assert f"{True:5}" == " True"
-assert f"{False:5}" == "False"
+assert f"{True:5}" == "    1"
+assert f"{False:5}" == "    0"
 assert f"{True:d}" == "1"
 assert f"{False:d}" == "0"
 

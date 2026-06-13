@@ -50,6 +50,8 @@ pub(super) const FNV_INVERT: u64 = fnv1a(b"__invert__");
 pub(super) const FNV_INT: u64 = fnv1a(b"__int__");
 pub(super) const FNV_FLOAT: u64 = fnv1a(b"__float__");
 pub(super) const FNV_REPR: u64 = fnv1a(b"__repr__");
+pub(super) const FNV_STR: u64 = fnv1a(b"__str__");
+pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
@@ -193,6 +195,32 @@ pub unsafe fn try_float_dunder(obj: *mut Obj) -> Option<*mut Obj> {
 /// container element; this fn re-checks the `Instance` type tag).
 pub unsafe fn try_repr_dunder(obj: *mut Obj) -> Option<*mut Obj> {
     try_class_unary_dunder(obj, FNV_REPR)
+}
+
+/// Dispatch `str(self)` for a class instance via its `__str__`, falling back to
+/// `__repr__` (CPython: `str()` defaults to `__repr__`). Used by `rt_format`'s
+/// empty-spec path when an instance has no `__format__` — `object.__format__`
+/// with an empty spec returns `str(self)`. Returns `None` when the instance
+/// defines neither (the caller then renders the default object repr).
+///
+/// # Safety
+/// `obj` must be a valid object pointer; this fn re-checks the `Instance` tag.
+pub unsafe fn try_str_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_STR).or_else(|| try_class_unary_dunder(obj, FNV_REPR))
+}
+
+/// Dispatch `value.__format__(spec)` for a class instance (`f"{p:spec}"` ≡
+/// `format(p, "spec")` ≡ `type(p).__format__(p, "spec")`). `spec` is a `StrObj`
+/// pointer (an empty string for `f"{p}"`). Returns the dunder's `str` result, or
+/// `None` when the instance's class defines no `__format__` (the caller then
+/// emulates `object.__format__`). The reflected slot is unused — only the
+/// receiver is ever a class instance here.
+///
+/// # Safety
+/// `obj` must be a valid object pointer; `spec` a valid `StrObj` pointer. This
+/// fn re-checks the `Instance` tag on `obj`.
+pub unsafe fn try_format_dunder(obj: *mut Obj, spec: *mut Obj) -> Option<*mut Obj> {
+    try_class_dunder(obj, spec, FNV_FORMAT, 0)
 }
 
 /// Order two class instances for sorting via their `__lt__` dunder. CPython

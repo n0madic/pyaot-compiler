@@ -100,6 +100,7 @@ struct RuntimeFns {
     builtin_ord: FuncId,
     builtin_chr: FuncId,
     builtin_type: FuncId,
+    builtin_ascii: FuncId,
     assert_fail: FuncId,
     print_int: FuncId,
     print_float: FuncId,
@@ -313,6 +314,7 @@ impl RuntimeFns {
             builtin_ord: d("rt_builtin_ord", &[ti], &[ti])?,
             builtin_chr: d("rt_builtin_chr", &[ti], &[ti])?,
             builtin_type: d("rt_builtin_type", &[ti], &[ti])?,
+            builtin_ascii: d("rt_builtin_ascii", &[ti], &[ti])?,
             assert_fail: d("rt_assert_fail", &[ptr], &[])?,
             print_int: d("rt_print_int_value", &[ti], &[])?,
             print_float: d("rt_print_float_value", &[tf], &[])?,
@@ -2677,6 +2679,7 @@ impl FnGen<'_, '_> {
             K::Ord => self.rt.builtin_ord,
             K::Chr => self.rt.builtin_chr,
             K::Type => self.rt.builtin_type,
+            K::Ascii => self.rt.builtin_ascii,
             other => {
                 return Err(cg_error(format!(
                     "builtin {other:?} not supported in Phase 2"

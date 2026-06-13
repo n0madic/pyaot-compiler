@@ -37,6 +37,36 @@ pub unsafe fn rt_format(value: *mut Obj, spec: *mut Obj) -> *mut Obj {
         }
     };
 
+    // Class instances follow CPython's protocol: `format(v, spec)` ≡
+    // `type(v).__format__(v, spec)`. A user `__format__` takes precedence over
+    // the primitive paths below (and is the ONLY way `f"{p:polar}"` /
+    // `format(p, "polar")` route to user code). With no `__format__`, emulate
+    // `object.__format__`: an empty spec returns `str(self)` (honoring
+    // `__str__`/`__repr__`), a non-empty spec is an error.
+    {
+        let v = Value(value as u64);
+        if v.is_ptr() && !value.is_null() && (*value).type_tag() == TypeTagKind::Instance {
+            // The dunder receives the spec as a `str` — synthesize an empty one
+            // only when the caller passed a null spec (the frontend always passes
+            // a real string).
+            let spec_obj = if spec.is_null() {
+                crate::string::rt_make_str(b"".as_ptr(), 0)
+            } else {
+                spec
+            };
+            if let Some(res) = crate::ops::try_format_dunder(value, spec_obj) {
+                return res;
+            }
+            if spec_str.is_empty() {
+                if let Some(s) = crate::ops::try_str_dunder(value) {
+                    return s;
+                }
+                return crate::conversions::rt_obj_to_str(value);
+            }
+            raise_value_error("unsupported format string passed to object.__format__");
+        }
+    }
+
     if spec_str.is_empty() {
         return crate::conversions::rt_obj_to_str(value);
     }

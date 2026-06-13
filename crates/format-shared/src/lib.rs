@@ -532,25 +532,20 @@ pub fn format_str(s: &str, spec: &FormatSpec) -> Result<String, String> {
 
 /// Format a boolean value according to a parsed `FormatSpec`.
 ///
-/// CPython quirk: `f"{True:5}"` gives `' True'` (right-aligned), not `'True '`.
-/// When no type char is given, bool uses the integer default alignment `>` but
-/// displays as `"True"`/`"False"`. Explicit `'s'` type uses string default `<`.
+/// CPython: `bool` inherits `int.__format__`, so a non-empty spec formats the
+/// integer 1/0 — `f"{True:5}"` is `"    1"` (NOT `" True"`). Only an empty spec
+/// renders `"True"`/`"False"` (via `str(self)`), and that is handled by the
+/// caller before this function is reached.
 pub fn format_bool(value: bool, spec: &FormatSpec) -> Result<String, String> {
+    // CPython: `bool` inherits `int.__format__`. An EMPTY spec yields
+    // "True"/"False" (`str(self)`) — but that case never reaches here, the
+    // caller (`rt_format`/constfold) short-circuits an empty spec to `str()`.
+    // So any spec seen here is non-empty and formats the integer 1/0
+    // (`f"{True:5}"` == "    1", `f"{False:08b}"` == "00000000"). Only an
+    // unknown type char (e.g. the string-only `s`) is an error.
+    let int_value = if value { 1 } else { 0 };
     match spec.type_spec {
-        None => {
-            // No type char: show "True"/"False" with int-default alignment (>)
-            let s = if value { "True" } else { "False" };
-            let mut int_spec = spec.clone();
-            if int_spec.align.is_none() {
-                int_spec.align = Some('>');
-            }
-            Ok(apply_padding(s, &int_spec))
-        }
-        Some('s') => format_str(if value { "True" } else { "False" }, spec),
-        Some(c @ ('d' | 'b' | 'o' | 'x' | 'X' | 'c' | 'n')) => {
-            let _ = c;
-            format_int(if value { 1 } else { 0 }, spec)
-        }
+        None | Some('d' | 'b' | 'o' | 'x' | 'X' | 'c' | 'n') => format_int(int_value, spec),
         Some(c) => Err(format!(
             "Unknown format code '{}' for object of type 'bool'",
             c
@@ -645,9 +640,12 @@ mod tests {
     fn test_bool_basic() {
         assert_eq!(format_bool_spec(true, "d").unwrap(), "1");
         assert_eq!(format_bool_spec(false, "d").unwrap(), "0");
-        assert_eq!(format_bool_spec(true, "5").unwrap(), " True"); // CPython: right-align (int default)
-        assert_eq!(format_bool_spec(false, "5").unwrap(), "False");
-        assert_eq!(format_bool_spec(true, "5s").unwrap(), "True "); // 's' type: left-align (str default)
+        // CPython: a non-empty spec formats the integer 1/0 (bool → int.__format__).
+        assert_eq!(format_bool_spec(true, "5").unwrap(), "    1");
+        assert_eq!(format_bool_spec(false, "5").unwrap(), "    0");
+        // 's' is a string-only type code — invalid for bool/int.
+        assert!(format_bool_spec(true, "5s").is_err());
         assert_eq!(format_bool_spec(true, "5d").unwrap(), "    1");
+        assert_eq!(format_bool_spec(false, "08b").unwrap(), "00000000");
     }
 }

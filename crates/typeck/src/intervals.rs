@@ -718,8 +718,12 @@ fn record_all(
             }
             Interval::Top
         }
-        HirExprKind::FormatValue { value, .. }
-        | HirExprKind::Attribute { value, .. }
+        HirExprKind::FormatValue { value, spec } => {
+            child(*value, rec);
+            child(*spec, rec);
+            Interval::Top
+        }
+        HirExprKind::Attribute { value, .. }
         | HirExprKind::IsInstance { value, .. }
         | HirExprKind::IsInstanceBuiltin { value, .. }
         | HirExprKind::IsNone { value }

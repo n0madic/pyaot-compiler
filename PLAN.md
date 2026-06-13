@@ -170,9 +170,11 @@ These few gaps block the most files — close them before the long tail.
   `MethodCall.kwargs` + `pyaot_hir::match_keywords`), `list.sort(key=, reverse=)`.
   `str.split`/`str.encode`/`str.replace` now exist (§9) but are **positional-
   only** — the kwargs gate rejects `s.split(sep=",")` with a clean diagnostic
-  (no keyword params on non-class methods except `.sort`); `str.format(name=)`
-  still waits on the §13 mini-language. The kwargs mechanism is ready when those
-  surfaces grow keyword parameters. Caveats: `.sort(key=K)` desugars by
+  (no keyword params on non-class methods except `.sort`). `str.format(name=)` is
+  now handled out-of-band: a literal-receiver `"...".format(...)` desugars in the
+  frontend (§5/§9/§13), binding its keyword fields to args at compile time, so the
+  keyword-less method gate is never reached. The kwargs mechanism is ready when
+  other surfaces grow keyword parameters. Caveats: `.sort(key=K)` desugars by
   method NAME (runtime TypeError guard); virtual calls require identical
   parameter names/defaults across overrides when keywords/defaults are used.
   Constructor kwargs `Cls(x=1)` are nearly free now (match_keywords) — small
@@ -335,11 +337,51 @@ These few gaps block the most files — close them before the long tail.
   (StopIteration on exhaustion). Wired next to `next`/`sum`/`set` (recognized by
   name; shadowing unsupported). The 2-arg sentinel form `iter(callable, sentinel)`
   is out of scope. Gated by `corpus/p23_iter_isinstance.py`.
-- **Still pending**: `map`, `filter` (HOF — A4; follow the `reduce` shape above),
-  `format`, `ascii` (PEP-3101 mini-language, shared with §13 f-strings), `getattr`
-  (literal-name), `setattr`, `hasattr`, `issubclass`, `object` (`object.__new__`),
-  `NotImplemented`. `test_builtins.py` stays OFF the gate (still needs
-  `map`/`filter`/`format`).
+- ~~**`map`/`filter`**~~ — DONE: the next HOFs after `reduce`, following the SAME
+  shape. PURE FRONTEND desugar (`lower_map`/`lower_filter`) to an EAGER compiled
+  loop calling the callback per element through the ordinary uniform-tagged
+  indirect-call machinery, materializing into a `list`, then wrapping it in
+  `iter(...)` so `for`/`list`/`next`/`sum` consume it:
+  `map(f, xs) ~= iter([f(x) for x in xs])`,
+  `filter(f, xs) ~= iter([x for x in xs if f(x)])`,
+  `filter(None, xs) ~= iter([x for x in xs if x])` (element truthiness). This
+  AVOIDS the runtime `rt_map_new`/`rt_filter_new`/`IteratorKind::Map/Filter`
+  lazy-iterator HOF machinery — the PITFALLS A4 anti-pattern (parallel calling
+  convention, marker bits, `i8` predicate ABI). Builtin callbacks
+  (`map(str, …)`/`map(len, …)`/`map(abs, …)`) resolve through normal
+  `Symbol`-dispatch with NO extra code (the `min(…, key=len)` mechanism). `f` is
+  staged ONCE (CPython single function evaluation); the eager-vs-lazy side-effect
+  timing is observationally invisible on the finite/pure corpus (the
+  `lower_sum`/`reduce` materialization precedent). Intercepted in the
+  UNSHADOWED-name builtin block, so a user `map = …` binding wins. **Scope limit**:
+  single-iterable only — multi-iterable `map(f, xs, ys)` needs `zip` (§12). Gated
+  by `corpus/p28_map_filter.py`. **Runtime contract evolved**: the probe's
+  `filter(None, list-elements)` case surfaced a pre-existing latent bug —
+  `rt_list_eq`/`rt_tuple_eq` compared elements via the hashable-key
+  `eq_hashable_obj`, which falls back to POINTER identity for non-hashable types,
+  so `[[1]] == [[1]]` was wrongly `False`; both now compare elements via the full
+  structural `rt_obj_eq` (with a CPython `x is y or x == y` identity
+  short-circuit), so nested lists/dicts/sets compare by value.
+- ~~**`format`/`ascii`**~~ — DONE (the full PEP-3101 mini-language, §5/§9/§13 in
+  one stroke). `format(v[,spec])`, `str.format()`, f-string fields, and dynamic
+  specs (`f"{x:.{n}f}"`) ALL desugar in the FRONTEND to one node —
+  `FormatValue { value, spec }` (`spec` is now an `Idx<HirExpr>`, not an interned
+  literal) — backed by the existing `rt_format` (the `format-shared` PEP-3101
+  engine). No new runtime parser. `"...".format(...)` on a literal receiver parses
+  to literal `StrLit`s + per-field `FormatValue` joined by `+` (the f-string tail),
+  binding fields to pos/kw args at compile time. `ascii` is now a first-class
+  builtin (`rt_builtin_ascii` → the value-level ascii dispatcher), wiring both the
+  `ascii()` builtin and the f-string `!a` conversion. Runtime contract evolved
+  (Principle 8): `rt_format` gained a class-instance arm (user `__format__`, else
+  `object.__format__` → empty-spec `str(self)` via a new `try_str_dunder`); and
+  `format_bool` was corrected to CPython (bool inherits `int.__format__`, so a
+  non-empty spec formats the int 1/0 — `f"{True:5}"` == "    1", NOT " True"; the
+  test file's stale assertion was fixed to the live oracle). Gated by the lifted
+  `corpus/test_format_spec.py` + `corpus/p29_format.py`. See §9/§13 below.
+- **Still pending**: `getattr` (literal-name), `setattr`, `hasattr`, `issubclass`,
+  `object` (`object.__new__`), `NotImplemented`. `test_builtins.py` stays OFF the
+  gate — its 21 `format()` sites are now covered, but it still needs
+  `issubclass`/`getattr`/`hasattr`.
 
 ### 6. Builtins — `Phase 2 codegen not supported`
 - ~~**`type()`**~~ — DONE: incl. `type(x).__name__`, `str(type(x))`,
@@ -350,8 +392,8 @@ These few gaps block the most files — close them before the long tail.
   type(y)` (pointer-identity on distinct StrObjs; `p11_is_identity.py` already
   defers it) and `repr(type(x))` (would add quotes). `test_builtins.py` /
   `test_classes.py` (the type-blocked files) stay OFF the gate — now blocked by
-  unrelated gaps (`map`/`filter`/`format` §5; the `@` matmul operator §11
-  respectively).
+  unrelated gaps (`format` §5, with `map`/`filter` now done; the `@` matmul
+  operator §11 respectively).
 - **`hash()`** — still pending (`builtin Hash not supported in Phase 2`; needs its
   own probe and a `rt_builtin_hash` codegen arm).
 
@@ -391,9 +433,11 @@ These few gaps block the most files — close them before the long tail.
   rejects `s.split(sep=",")`); `replace` has no `count` (runtime is 2-arg);
   `splitlines` no `keepends`; `encode` ignores encoding/errors (always UTF-8);
   `find`/`index`/`rindex` take no `start`/`end`; predicates are **ASCII-only**
-  (`is_ascii_*` — `"café".isalpha()` → `False` here vs CPython `True`). Still
-  pending: `format` (= §13 mini-language). (`upper`/`lower`/`strip`/`find`/
-  `title`/`center`/`zfill`/`join`/… already worked.)
+  (`is_ascii_*` — `"café".isalpha()` → `False` here vs CPython `True`).
+  ~~`format`~~ is now DONE (the §5/§9/§13 mini-language — a literal-receiver
+  `"...".format(...)` frontend desugar onto the shared `FormatValue`/`rt_format`
+  path). (`upper`/`lower`/`strip`/`find`/`title`/`center`/`zfill`/`join`/…
+  already worked.)
 - **`bytes`**: ~~`startswith`, `endswith`, `find`, `rfind`, `count`, `replace`,
   `split`/`rsplit`, `strip`/`lstrip`/`rstrip`, `upper`/`lower`, `join`~~ — DONE
   (§9 runtime-ready batch: `corpus/p20_bytes_methods.py`). A bytes receiver
@@ -467,8 +511,15 @@ These few gaps block the most files — close them before the long tail.
 - **`zip()` with 3+ iterables** — exactly two are supported.
 
 ### 13. f-strings
-- **Dynamic/nested format specs** — `f"{x:.{n}f}"`, `f"{x:{w}d}"`.
-- **`!a` conversion** — `f"{x!a}"`, `f"{x=!a}"`. (`!r`/`!s`, debug `=`, static specs already work.)
+- ~~**Dynamic/nested format specs** — `f"{x:.{n}f}"`, `f"{x:{w}d}"`.~~ DONE — the
+  field's `:spec` is itself a `JoinedStr`, so a dynamic spec lowers through the
+  ordinary f-string concat (a literal spec collapses to a `StrLit`). See §5
+  `format`.
+- ~~**`!a` conversion** — `f"{x!a}"`.~~ DONE — wraps the value in an `ascii()`
+  call (now a first-class builtin), exactly like `!r`→`repr()`. Also fixed: a bare
+  `f"{p}"` now routes a class instance to `__format__`/`__str__` (was `str(x)`,
+  which skipped `__format__`). Still pending: the PEP-501 debug `=` self-documenting
+  f-string (`f"{x=}"`, `f"{x=!a}"`) — blocks `test_strings.py`.
 
 ### 14. Literals
 - **Non-UTF-8 bytes literals** — any byte ≥ `\x80`, e.g. `b"\xff"` (this is what fails `test_file_io.py`; ASCII and `\x00`–`\x7f` already work).
@@ -503,11 +554,15 @@ Read the matching note before starting an item.
   already decides direction at runtime (verified for negative steps), instead of a
   hand-emitted compile-time direction branch; `rt_iter_range` raises `ValueError`
   on `step == 0`. Gated by `corpus/p22_loop_targets.py`.
-- **§5 `map`/`filter`.** The single item that birthed PITFALLS A4 in the
-  previous compiler (parallel `rt_*_tagged` HOF variants, marker bits; `filter`
-  additionally broke on an i8-truthiness callback ABI). Implement as lazy
-  iterators over the uniform `fn(Value)→Value` callback first; unboxed-callback
-  specialization is a separate, proof-gated item.
+- ~~**§5 `map`/`filter`.**~~ DONE (see the §5 Builtins entry above). The single
+  item that birthed PITFALLS A4 in the previous compiler (parallel `rt_*_tagged`
+  HOF variants, marker bits; `filter` additionally broke on an i8-truthiness
+  callback ABI). Implemented NOT as runtime lazy iterators but as a pure frontend
+  EAGER desugar to a compiled list-materializing loop wrapped in `iter(...)`
+  (`lower_map`/`lower_filter`) — the same `reduce` shape, even simpler since it
+  needs no runtime callback machinery at all. The per-element call rides the
+  uniform tagged indirect-call/`Symbol`-dispatch path, so builtin callbacks
+  (`map(str, …)`) work with no extra code. Gated by `corpus/p28_map_filter.py`.
 - **§5 `getattr`/`setattr`/`hasattr` (literal name).** Desugar in the frontend
   to direct attribute access so the dynamic-`getattr` out-of-scope boundary
   stays syntactic. For `hasattr` on a gradual receiver the previous compiler's
@@ -524,10 +579,12 @@ Read the matching note before starting an item.
   bignum arm (precision loss above 2⁵³ matches CPython's `float(int)`) — never
   a noop. On the typeck side make `int ⊔ float = float` a deliberate lattice
   rule; the previous compiler repeatedly leaked these joins to `Any` instead.
-- **§9 `str.format` + §13 dynamic f-string specs.** The same mini-language.
-  Both must call the one `format-shared::parse_format_spec` engine (a dynamic
-  spec becomes a runtime call into it); the previous compiler's repr/format
-  drift came from duplicated formatting paths.
+- ~~**§9 `str.format` + §13 dynamic f-string specs.**~~ DONE — the same
+  mini-language, and the decisive simplification held: all four surfaces
+  (`format()`, `str.format()`, f-string fields, dynamic specs) desugar in the
+  FRONTEND to ONE `FormatValue { value, spec }` node, so there is exactly ONE
+  formatting path — the existing `rt_format` over `format-shared::parse_format_spec`.
+  No duplicated formatter, no repr/format drift. (See §5 `format` / §13.)
 - **§10 `deque`.** Its method names collide with `list` (`append`, `pop`, …);
   in the previous compiler that leaked wrong element-type constraints into the
   solver for look-alike receivers. Key §9–§11 method constraints by receiver

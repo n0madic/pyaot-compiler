@@ -432,6 +432,48 @@ const PHASE_CORPUS: &[&str] = &[
     // (int @ instance), `@=` (falls back to `__matmul__`), matmul over a loop, and the
     // TypeError for int@int / no-dunder objects. (Runtime contract: new rt_obj_matmul.)
     "p27_matmul.py",
+    // `map`/`filter` builtins (§5) — the next HOFs after `reduce`. Both are a PURE
+    // FRONTEND desugar (`lower_map`/`lower_filter`) to an EAGER compiled loop that
+    // calls the callback per element through the ordinary uniform-tagged
+    // indirect-call machinery, materializes into a `list`, and wraps it in
+    // `iter(...)` so `for`/`list`/`next`/`sum` consume it:
+    //   map(f, xs) ~= iter([f(x) for x in xs]); filter(f, xs) ~= iter([x for x in
+    //   xs if f(x)]); filter(None, xs) ~= iter([x for x in xs if x]).
+    // This deliberately AVOIDS the runtime `rt_map_new`/`rt_filter_new`/
+    // `IteratorKind::Map/Filter` lazy-iterator HOF machinery — the PITFALLS A4
+    // anti-pattern (a parallel calling convention with hand-encoded captures and an
+    // `i8` predicate ABI). Builtin callbacks (`map(str, …)`/`map(len, …)`) resolve
+    // through normal `Symbol`-dispatch with no extra code. `f` is staged ONCE
+    // (CPython single function evaluation); the eager-vs-lazy side-effect timing is
+    // observationally invisible on the finite/pure corpus (the `lower_sum`/`reduce`
+    // materialization precedent). Single-iterable only — multi-iterable `map` needs
+    // `zip` (§12). (Runtime contract evolved: `rt_list_eq`/`rt_tuple_eq` now compare
+    // elements via the full `rt_obj_eq` instead of the hashable-key
+    // `eq_hashable_obj`, so NESTED non-hashable elements — `[[1]] == [[1]]` — compare
+    // by value; the probe's `filter(None, list-elements)` case surfaced that
+    // pre-existing latent bug.)
+    "p28_map_filter.py",
+    // §5/§9/§13 — the `format()` mini-language (full). All four surfaces collapse
+    // onto ONE node: f-string fields, `format(v[,spec])`, `"...".format(...)`, and
+    // dynamic specs (`f"{x:.{n}f}"`) all desugar in the FRONTEND to the same
+    // `FormatValue { value, spec }` (`spec` is now an expr) that `rt_format`
+    // (PEP-3101 engine in `format-shared`) already backs — no new runtime parser.
+    // `"...".format` on a literal receiver parses to literal `StrLit`s + per-field
+    // `FormatValue` joined by `+` (the f-string tail), binding fields to pos/kw
+    // args at compile time (auto/manual/keyword + mix, `{{`/`}}`, static specs).
+    // Runtime contract evolved (Principle 8): `rt_format` gained a class-instance
+    // arm (`__format__`, else `object.__format__` → empty-spec `str(self)` via a
+    // new `try_str_dunder`); `ascii` is now a first-class builtin
+    // (`rt_builtin_ascii` → the value-level ascii dispatcher) wiring `!a` and
+    // `ascii()`; and `format_bool` was corrected (bool inherits `int.__format__`,
+    // so `f"{True:5}"` == "    1", not " True" — the test file's stale assertion
+    // was fixed to the CPython oracle). `test_format_spec.py` crosses format with
+    // f-strings × user classes × functions × dynamic specs; `p29_format.py` covers
+    // the `.format`/`!a` shapes. (`test_strings.py` stays OFF — needs the PEP-501
+    // `=` self-documenting f-string; `test_builtins.py` still needs
+    // `issubclass`/`getattr`/`hasattr`.)
+    "test_format_spec.py",
+    "p29_format.py",
     // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
     // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
     // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally

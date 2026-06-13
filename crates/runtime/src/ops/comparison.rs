@@ -161,11 +161,11 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
             TypeTagKind::None => 1,
             // Containers compare structurally (Python `==`), not by
             // identity. `rt_tuple_eq` / `rt_list_eq` recurse element-wise
-            // via `eq_hashable_obj`. Without these arms, comparing two
-            // distinct-but-equal tuples/lists through the generic
-            // `rt_obj_eq` path (an `Any`/`Union` operand vs a container)
-            // would fall to the identity check below and wrongly report
-            // inequality.
+            // back through `rt_obj_eq` (so NESTED containers compare by
+            // value). Without these arms, comparing two distinct-but-equal
+            // tuples/lists through the generic `rt_obj_eq` path (an
+            // `Any`/`Union` operand vs a container) would fall to the
+            // identity check below and wrongly report inequality.
             TypeTagKind::Tuple => crate::tuple::rt_tuple_eq(a, b),
             TypeTagKind::List => crate::list::rt_list_eq(a, b),
             // Dict, DefaultDict and Counter all share the `DictObj`

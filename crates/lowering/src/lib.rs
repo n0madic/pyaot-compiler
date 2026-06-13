@@ -3599,25 +3599,22 @@ impl<'a> FnLower<'a> {
         self.emit_runtime_call(slice_idx, def, ops, &pyaot_stdlib_defs::TypeSpec::Any)
     }
 
-    /// Lower an f-string formatted field with a static spec (Phase 8E):
-    /// `rt_format(value, spec)` → `str`. The value and the spec string literal
-    /// are both passed Tagged; `!s`/`!r` conversion is already in `value`.
+    /// Lower a format field — `rt_format(value, spec)` → `str` (§5/§9/§13). Both
+    /// the value and the spec are ordinary string-valued exprs passed `Tagged`:
+    /// the spec is a `StrLit` for a static spec (`f"{x:.4f}"`) or an f-string
+    /// concat for a dynamic one (`f"{x:.{n}f}"`). Any `!s`/`!r`/`!a` conversion
+    /// is already baked into `value` by the frontend; an empty spec routes a
+    /// class instance to its `__format__` inside `rt_format`.
     fn lower_format_value(
         &mut self,
         fmt_idx: Idx<HirExpr>,
         value: Idx<HirExpr>,
-        spec: InternedString,
+        spec: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
         let (vl, vr) = self.lower_expr(value)?;
         let value_op = self.coerce(vl, vr, Repr::Tagged)?;
-        self.str_pool
-            .insert(spec, self.interner.resolve(spec).as_bytes().to_vec());
-        let spec_str = self.alloc_temp(Repr::Heap(HeapShape::Str));
-        self.emit(MirInst::Const {
-            dst: spec_str,
-            val: Const::Str(spec),
-        });
-        let spec_op = self.coerce(spec_str, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+        let (sl, sr) = self.lower_expr(spec)?;
+        let spec_op = self.coerce(sl, sr, Repr::Tagged)?;
         self.emit_runtime_call(
             fmt_idx,
             &pyaot_core_defs::runtime_func_def::RT_FORMAT,

@@ -119,6 +119,7 @@ define_builtins! {
     Chr = 8 => "chr",
     Repr = 9 => "repr",
     Type = 10 => "type",
+    Ascii = 11 => "ascii",
 }
 
 #[cfg(test)]
@@ -203,6 +204,10 @@ mod tests {
             BuiltinFunctionKind::from_name("type"),
             Some(BuiltinFunctionKind::Type)
         );
+        assert_eq!(
+            BuiltinFunctionKind::from_name("ascii"),
+            Some(BuiltinFunctionKind::Ascii)
+        );
         assert_eq!(BuiltinFunctionKind::from_name("print"), None);
         assert_eq!(BuiltinFunctionKind::from_name("range"), None);
     }
@@ -217,7 +222,11 @@ mod tests {
             BuiltinFunctionKind::from_id(10),
             Some(BuiltinFunctionKind::Type)
         );
-        assert_eq!(BuiltinFunctionKind::from_id(11), None);
+        assert_eq!(
+            BuiltinFunctionKind::from_id(11),
+            Some(BuiltinFunctionKind::Ascii)
+        );
+        assert_eq!(BuiltinFunctionKind::from_id(12), None);
         assert_eq!(BuiltinFunctionKind::from_id(255), None);
     }
 

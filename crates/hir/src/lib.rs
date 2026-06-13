@@ -372,12 +372,17 @@ pub enum HirExprKind {
         end: Option<Idx<HirExpr>>,
         step: Option<Idx<HirExpr>>,
     },
-    /// An f-string field with a (static) format spec — `f"{x:.4f}"` (Phase 8E).
-    /// Lowers to `rt_format(value, spec)`; the result is always a `str`. Any
-    /// `!s`/`!r` conversion is already applied to `value` by the frontend.
+    /// An f-string field or `format()`/`str.format()` replacement — `f"{x:.4f}"`,
+    /// `format(x, spec)`, `"{:.4f}".format(x)` (§5/§9/§13). Lowers to
+    /// `rt_format(value, spec)`; the result is always a `str`. The `spec` is a
+    /// string-valued expr (a `StrLit` for a static spec, an f-string concat for a
+    /// dynamic one like `f"{x:.{n}f}"`). Any `!s`/`!r`/`!a` conversion is already
+    /// applied to `value` by the frontend (so `value` may be a `str(...)`/
+    /// `repr(...)`/`ascii(...)` call). An empty `spec` routes a class instance to
+    /// its `__format__` (CPython `f"{p}"` ≡ `format(p, "")`).
     FormatValue {
         value: Idx<HirExpr>,
-        spec: InternedString,
+        spec: Idx<HirExpr>,
     },
     /// `sum(iterable[, start])` (Phase 8H, D2). Typed by `typeck` (numeric
     /// promotion / inferred `__add__`/`__radd__` dunder returns ride the

@@ -4332,12 +4332,16 @@ impl<'a> FnLowerer<'a> {
 
     // ── comprehensions (Phase 4C) ──────────────────────────────────────────────
 
-    /// `[elt for … if …]` → an empty list built by nesting an iterator loop per
-    /// `for` clause; each `if` clause branches past the element push.
-    /// Minimal f-string lowering (Phase 8B): literal parts are `StrLit`s, each
-    /// `{expr}` part becomes `str(expr)` (the builtin, resolved by
-    /// `semantics`), and parts fold left-to-right with string `+`. Format
-    /// specs and `!r`/`!a` conversions are out of scope until Phase 8E.
+    /// f-string lowering (§13). Literal parts are `StrLit`s; each `{expr[!conv][:spec]}`
+    /// field becomes a `FormatValue { value, spec }` (CPython `f"{x:spec}"` ≡
+    /// `format(x, "spec")`); parts fold left-to-right with string `+`. Every
+    /// field — even a bare `{x}` — routes through `FormatValue` so a class
+    /// instance reaches its `__format__`/`__str__` (an empty spec degrades to
+    /// `str(x)` for non-instances). A `:spec` is itself a `JoinedStr`, so a
+    /// dynamic spec (`f"{x:.{n}f}"`) lowers through this same path; a static one
+    /// collapses to a single `StrLit`. `!s`/`!r`/`!a` wraps the value in
+    /// `str(...)`/`repr(...)`/`ascii(...)` FIRST (CPython applies the conversion,
+    /// then `__format__`).
     fn lower_joined_str(
         &mut self,
         j: &rustpython_parser::ast::ExprJoinedStr,
@@ -4354,86 +4358,93 @@ impl<'a> FnLowerer<'a> {
                     parts.push(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
                 }
                 Expr::FormattedValue(fv) => {
-                    use rustpython_parser::ast::ConversionFlag;
-                    // `!a` (ascii) has no builtin in our subset.
-                    if matches!(fv.conversion, ConversionFlag::Ascii) {
-                        return Err(parse_error(
-                            "f-string `!a` (ascii) conversion is out of scope (Phase 8E)",
-                            span,
-                        ));
-                    }
                     let raw = self.lower_expr(fv.value.as_ref())?;
-                    // Apply the `!s`/`!r` conversion first (CPython order), wrapping
-                    // the value in `str(...)` / `repr(...)`.
-                    let conv_builtin = match fv.conversion {
-                        ConversionFlag::Str => Some("str"),
-                        ConversionFlag::Repr => Some("repr"),
-                        ConversionFlag::None | ConversionFlag::Ascii => None,
-                    };
-                    let converted = match conv_builtin {
-                        Some(b) => {
-                            let fn_name = self.intern(b);
-                            let callee = self.alloc(
-                                HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
-                                SemTy::Dyn,
-                                span,
-                            );
-                            self.alloc(
-                                HirExprKind::Call {
-                                    callee,
-                                    args: vec![raw],
-                                },
-                                SemTy::Str,
-                                span,
-                            )
+                    // The field's `:spec` is itself a `JoinedStr` — a literal spec
+                    // collapses to a `StrLit`, a dynamic one (`{x:.{n}f}`) lowers
+                    // through the normal f-string concat. No spec ⇒ empty string.
+                    let spec = match &fv.format_spec {
+                        Some(spec_expr) => self.lower_format_spec_expr(spec_expr.as_ref(), span)?,
+                        None => {
+                            let id = self.intern("");
+                            self.alloc(HirExprKind::StrLit(id), SemTy::Str, span)
                         }
-                        None => raw,
                     };
-                    let part = match &fv.format_spec {
-                        // `{x:.4f}` → `rt_format(converted, spec)` (Phase 8E). The
-                        // spec must be a static string (no nested interpolation).
-                        Some(spec_expr) => {
-                            let spec = static_format_spec(spec_expr.as_ref(), span)?;
-                            let spec_id = self.intern(&spec);
-                            self.alloc(
-                                HirExprKind::FormatValue {
-                                    value: converted,
-                                    spec: spec_id,
-                                },
-                                SemTy::Str,
-                                span,
-                            )
-                        }
-                        // No spec: `{x}`/`{x!s}` → `str(x)`; `{x!r}` → `repr(x)`.
-                        None => match conv_builtin {
-                            Some(_) => converted,
-                            None => {
-                                let fn_name = self.intern("str");
-                                let callee = self.alloc(
-                                    HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
-                                    SemTy::Dyn,
-                                    span,
-                                );
-                                self.alloc(
-                                    HirExprKind::Call {
-                                        callee,
-                                        args: vec![raw],
-                                    },
-                                    SemTy::Str,
-                                    span,
-                                )
-                            }
-                        },
-                    };
-                    parts.push(part);
+                    parts.push(self.emit_format_field(raw, fv.conversion, spec, span));
                 }
                 _ => return Err(parse_error("unsupported f-string part", span)),
             }
         }
+        Ok(self.concat_str_parts(parts, span))
+    }
+
+    /// Lower a format field's `:spec` (an f-string `JoinedStr`) to a string-valued
+    /// expr. A purely-literal spec (the common static case, `f"{x:.4f}"`) collapses
+    /// to one `StrLit`; a spec with a nested `{}` (`f"{x:.{n}f}"`) lowers through
+    /// the ordinary f-string concat so the embedded value is `format()`-ed and
+    /// spliced in.
+    fn lower_format_spec_expr(&mut self, spec: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        if let Some(lit) = static_spec_literal(spec) {
+            let id = self.intern(&lit);
+            return Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+        }
+        self.lower_expr(spec)
+    }
+
+    /// Apply an f-string / `str.format` conversion (`!s`/`!r`/`!a`) to `value`,
+    /// then wrap it in a `FormatValue` with `spec` (a string-valued expr). The
+    /// shared field-builder for f-strings (`lower_joined_str`) and `str.format`
+    /// (`lower_str_format`). CPython applies the conversion FIRST, then formats
+    /// the (string) result with the spec.
+    fn emit_format_field(
+        &mut self,
+        value: Idx<HirExpr>,
+        conv: rustpython_parser::ast::ConversionFlag,
+        spec: Idx<HirExpr>,
+        span: Span,
+    ) -> Idx<HirExpr> {
+        use rustpython_parser::ast::ConversionFlag;
+        let converted = match conv {
+            ConversionFlag::Str => self.call_builtin1("str", value, span),
+            ConversionFlag::Repr => self.call_builtin1("repr", value, span),
+            ConversionFlag::Ascii => self.call_builtin1("ascii", value, span),
+            ConversionFlag::None => value,
+        };
+        self.alloc(
+            HirExprKind::FormatValue {
+                value: converted,
+                spec,
+            },
+            SemTy::Str,
+            span,
+        )
+    }
+
+    /// Build a one-argument call to an unshadowed builtin by name
+    /// (`str`/`repr`/`ascii`), resolved by `semantics` to `Symbol::Builtin`.
+    fn call_builtin1(&mut self, name: &str, arg: Idx<HirExpr>, span: Span) -> Idx<HirExpr> {
+        let fn_name = self.intern(name);
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(fn_name)),
+            SemTy::Dyn,
+            span,
+        );
+        self.alloc(
+            HirExprKind::Call {
+                callee,
+                args: vec![arg],
+            },
+            SemTy::Str,
+            span,
+        )
+    }
+
+    /// Fold string parts left-to-right with `+` (the f-string / `str.format`
+    /// tail). An empty part list yields the empty `StrLit`.
+    fn concat_str_parts(&mut self, parts: Vec<Idx<HirExpr>>, span: Span) -> Idx<HirExpr> {
         let mut iter = parts.into_iter();
         let Some(mut acc) = iter.next() else {
             let id = self.intern("");
-            return Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+            return self.alloc(HirExprKind::StrLit(id), SemTy::Str, span);
         };
         for p in iter {
             acc = self.alloc(
@@ -4446,7 +4457,7 @@ impl<'a> FnLowerer<'a> {
                 span,
             );
         }
-        Ok(acc)
+        acc
     }
 
     fn lower_listcomp(&mut self, c: &ExprListComp, span: Span) -> Result<Idx<HirExpr>> {
@@ -5158,6 +5169,252 @@ impl<'a> FnLowerer<'a> {
 
         self.switch(exit);
         Ok(self.local_ref(acc, span))
+    }
+
+    /// `map(func, iterable)` — the next higher-order builtin after `reduce`,
+    /// desugared to an EAGER compiled loop that calls `func(elem)` per element
+    /// through the ordinary uniform-tagged indirect-call machinery, materializes
+    /// the results into a `list`, and wraps it in an iterator (`ContainerOp::Iter`)
+    /// so `for`/`list`/`next`/`sum` consume it like any other iterable.
+    ///
+    /// This deliberately AVOIDS the runtime `rt_map_new` / `IteratorKind::Map`
+    /// lazy-iterator HOF machinery (the PITFALLS A4 anti-pattern — a parallel
+    /// calling convention with hand-encoded captures, marker bits, and an `i8`
+    /// predicate ABI). `func` is staged ONCE (CPython evaluates the callable a
+    /// single time), and builtin callbacks (`map(str, …)` / `map(len, …)`) resolve
+    /// through the normal `Symbol`-dispatch in `lowering::lower_call` with no extra
+    /// code — they ride the same tagged `Call` a compiled lambda/closure does. The
+    /// eager-vs-lazy side-effect timing is observationally identical on the finite,
+    /// pure corpus (the `lower_sum`/`reduce` materialization precedent). Only the
+    /// single-iterable form is supported; multi-iterable `map` needs `zip`
+    /// (§12, out of scope).
+    fn lower_map(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        match args.len() {
+            2 => {}
+            n if n > 2 => {
+                return Err(parse_error(
+                    "single iterable only — multi-iterable map() needs zip (§12), out of scope",
+                    span,
+                ))
+            }
+            _ => return Err(parse_error("map() takes a function and one iterable", span)),
+        }
+        // Stage the callable FIRST (CPython evaluates `func` once, before the
+        // iterable), with the `min`/`max` `key=` discipline.
+        let func = self.stage_callable(&args[0])?;
+        let iterable = self.lower_expr(&args[1])?;
+
+        // result = [] — a heap ListObj of uniform-Tagged elements, GC-rooted as a
+        // stack local (the same B5-safe shape as `set()`/`sum(genexpr)`).
+        let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
+
+        // for elem in iterable: result.append(func(elem)).
+        let lp = self.begin_iter_loop(iterable, span)?;
+        let mapped = self.emit_key_call(&func, lp.elem, span)?;
+        self.push_stmt(HirStmt::ContainerPush {
+            container: result,
+            value: mapped,
+        });
+        self.end_iter_loop(lp);
+
+        let list_ref = self.local_ref(result, span);
+        Ok(self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![list_ref],
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// `filter(func, iterable)` — the conditional sibling of [`Self::lower_map`]:
+    /// an EAGER loop that pushes `elem` only when `func(elem)` is truthy. The
+    /// special `filter(None, xs)` form (the predicate is the `None` literal)
+    /// filters on the element's own truthiness instead. The survivors are
+    /// materialized into a `list` wrapped in an iterator. Same A4 avoidance as
+    /// `map` — the predicate rides the ordinary tagged `Call` (lowering
+    /// truthiness-tests the result), never the `rt_filter_new` / `i8`-predicate-ABI
+    /// HOF path. `func` is staged once (CPython single evaluation).
+    fn lower_filter(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 2 {
+            return Err(parse_error(
+                "filter() takes a predicate (or None) and one iterable",
+                span,
+            ));
+        }
+        // `filter(None, xs)` keeps truthy elements directly; otherwise stage the
+        // predicate once.
+        let pred_is_none = is_none_lit(&args[0]);
+        let func = if pred_is_none {
+            None
+        } else {
+            Some(self.stage_callable(&args[0])?)
+        };
+        let iterable = self.lower_expr(&args[1])?;
+
+        let result = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: result,
+            value: empty,
+        });
+
+        // for elem in iterable: if <pred>: result.append(elem). A falsy test
+        // branches straight back to the loop header (skip), mirroring the
+        // comprehension `if`-filter.
+        let lp = self.begin_iter_loop(iterable, span)?;
+        let cond = match &func {
+            Some(mode) => self.emit_key_call(mode, lp.elem, span)?,
+            None => self.local_ref(lp.elem, span),
+        };
+        let push_b = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond,
+            then: push_b,
+            else_: lp.header,
+        });
+        self.switch(push_b);
+        let elem_ref = self.local_ref(lp.elem, span);
+        self.push_stmt(HirStmt::ContainerPush {
+            container: result,
+            value: elem_ref,
+        });
+        self.end_iter_loop(lp);
+
+        let list_ref = self.local_ref(result, span);
+        Ok(self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![list_ref],
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// `format(value[, spec])` (§5) — the value/spec sibling of an f-string field
+    /// and `str.format`. Desugars to the same `FormatValue { value, spec }`
+    /// (`rt_format`) node, with the spec defaulting to the empty string (which
+    /// routes a class instance to its `__format__`). Unshadowed-gated by the
+    /// caller; no `!` conversion. A dynamic spec (`format(x, var)`) just lowers
+    /// `var` as an ordinary string-valued expr.
+    fn lower_format_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        let (value_expr, spec_expr) = match args {
+            [v] => (v, None),
+            [v, s] => (v, Some(s)),
+            _ => return Err(parse_error("format() takes one or two arguments", span)),
+        };
+        let value = self.lower_expr(value_expr)?;
+        let spec = match spec_expr {
+            Some(s) => self.lower_expr(s)?,
+            None => {
+                let id = self.intern("");
+                self.alloc(HirExprKind::StrLit(id), SemTy::Str, span)
+            }
+        };
+        Ok(self.emit_format_field(
+            value,
+            rustpython_parser::ast::ConversionFlag::None,
+            spec,
+            span,
+        ))
+    }
+
+    /// `"literal".format(args, kwargs)` (§9) — a literal-receiver desugar onto the
+    /// f-string field machinery. Each replacement field binds to a positional /
+    /// keyword arg AT COMPILE TIME, so the runtime sees the same `FormatValue`
+    /// concat an equivalent f-string would produce. All args are staged ONCE in
+    /// written order (CPython evaluates every arg before formatting, and a field
+    /// may reference the same positional twice). Scope limits (clean errors):
+    /// auto↔manual numbering mix, `{0.attr}`/`{0[k]}` access, nested `{}` in a
+    /// spec, a missing keyword/index.
+    fn lower_str_format(
+        &mut self,
+        template: &str,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        // Stage positionals then keyword values, in written order. (`*`/`**`
+        // spreads were already rejected by the method-call gate.)
+        let mut pos: Vec<LocalId> = Vec::with_capacity(c.args.len());
+        for a in &c.args {
+            pos.push(self.stage_arg(a)?);
+        }
+        let mut kw: Vec<(InternedString, LocalId)> = Vec::with_capacity(c.keywords.len());
+        for k in &c.keywords {
+            let name = k.arg.as_ref().ok_or_else(|| {
+                parse_error("`**kwargs` spreading is not supported for .format()", span)
+            })?;
+            let id = self.intern(name.as_str());
+            kw.push((id, self.stage_arg(&k.value)?));
+        }
+
+        let segs = parse_format_template(template, span)?;
+        let mut auto_idx = 0usize;
+        let mut numbering = FmtNumbering::Unset;
+        let mut parts: Vec<Idx<HirExpr>> = Vec::with_capacity(segs.len());
+        for seg in segs {
+            match seg {
+                FmtSeg::Lit(text) => {
+                    let id = self.intern(&text);
+                    parts.push(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+                }
+                FmtSeg::Field { field, conv, spec } => {
+                    let value_local = match field {
+                        FmtFieldRef::Auto => {
+                            if numbering == FmtNumbering::Manual {
+                                return Err(parse_error(
+                                    "cannot switch from manual field numbering to automatic field specification",
+                                    span,
+                                ));
+                            }
+                            numbering = FmtNumbering::Auto;
+                            let i = auto_idx;
+                            auto_idx += 1;
+                            *pos.get(i).ok_or_else(|| {
+                                parse_error(
+                                    format!("Replacement index {i} out of range for positional args tuple"),
+                                    span,
+                                )
+                            })?
+                        }
+                        FmtFieldRef::Index(i) => {
+                            if numbering == FmtNumbering::Auto {
+                                return Err(parse_error(
+                                    "cannot switch from automatic field specification to manual field numbering",
+                                    span,
+                                ));
+                            }
+                            numbering = FmtNumbering::Manual;
+                            *pos.get(i).ok_or_else(|| {
+                                parse_error(
+                                    format!("Replacement index {i} out of range for positional args tuple"),
+                                    span,
+                                )
+                            })?
+                        }
+                        FmtFieldRef::Keyword(name) => {
+                            let id = self.intern(&name);
+                            kw.iter()
+                                .find(|(k, _)| *k == id)
+                                .map(|(_, l)| *l)
+                                .ok_or_else(|| parse_error(format!("missing keyword argument '{name}' for .format()"), span))?
+                        }
+                    };
+                    let value = self.local_ref(value_local, span);
+                    let spec_id = self.intern(&spec);
+                    let spec_expr = self.alloc(HirExprKind::StrLit(spec_id), SemTy::Str, span);
+                    parts.push(self.emit_format_field(value, conv, spec_expr, span));
+                }
+            }
+        }
+        Ok(self.concat_str_parts(parts, span))
     }
 
     /// Stage a callable argument (reduce's `function`) with the `min`/`max`
@@ -6129,6 +6386,20 @@ impl<'a> FnLowerer<'a> {
                     return Ok(out);
                 }
             }
+            // `"literal".format(...)` (§9) desugars HERE, on a STRING-LITERAL
+            // receiver, into the same `FormatValue` field machinery f-strings
+            // use (the fields bind to positional / keyword args at compile time,
+            // so `.format(name=…)` never reaches the keyword-less method gate). A
+            // non-literal `var.format(...)` falls through to the generic
+            // `MethodCall`, which reports an unsupported-method error.
+            if attr.attr.as_str() == "format" && !is_super_call(attr.value.as_ref()) {
+                if let Expr::Constant(rc) = attr.value.as_ref() {
+                    if let Constant::Str(template) = &rc.value {
+                        let template = template.clone();
+                        return self.lower_str_format(&template, c, span);
+                    }
+                }
+            }
             let staging = !c.keywords.is_empty();
             let recv = if is_super_call(attr.value.as_ref()) {
                 let cid = self
@@ -6277,6 +6548,18 @@ impl<'a> FnLowerer<'a> {
                     "all" | "any" => {
                         reject_call_extras(c, span, "all()/any()")?;
                         return self.lower_all_any(&c.args, span, n.id.as_str() == "all");
+                    }
+                    "map" => {
+                        reject_call_extras(c, span, "map()")?;
+                        return self.lower_map(&c.args, span);
+                    }
+                    "filter" => {
+                        reject_call_extras(c, span, "filter()")?;
+                        return self.lower_filter(&c.args, span);
+                    }
+                    "format" => {
+                        reject_call_extras(c, span, "format()")?;
+                        return self.lower_format_builtin(&c.args, span);
                     }
                     "id" => {
                         reject_call_extras(c, span, "id()")?;
@@ -9444,40 +9727,171 @@ fn collect_target_names<'a>(target: &'a Expr, out: &mut Vec<&'a str>) {
     }
 }
 
-/// Extract a *static* f-string format spec (`:.4f`, `:4d`) as a plain string.
-/// rustpython models the spec as a `JoinedStr` of literal parts; a spec with a
-/// nested `{}` interpolation (`{x:{width}}`) is out of scope (Phase 8E).
-fn static_format_spec(spec: &Expr, span: Span) -> Result<String> {
-    let mut out = String::new();
+/// If a format-spec (modeled by rustpython as a `JoinedStr` of literal parts) is
+/// purely literal text (`:.4f`, `:4d`), return it as a plain string — the static
+/// fast-path that keeps a constant spec a `Const::Str`. Returns `None` when the
+/// spec carries a nested `{}` interpolation (`f"{x:.{n}f}"`), which the caller
+/// then lowers dynamically through the f-string concat.
+fn static_spec_literal(spec: &Expr) -> Option<String> {
     match spec {
         Expr::JoinedStr(j) => {
+            let mut out = String::new();
             for part in &j.values {
                 match part {
                     Expr::Constant(c) => match &c.value {
                         Constant::Str(s) => out.push_str(s),
-                        _ => return Err(parse_error("unsupported f-string format spec", span)),
+                        _ => return None,
                     },
-                    _ => {
-                        return Err(parse_error(
-                            "dynamic f-string format specs (`{x:{w}}`) are out of scope (Phase 8E)",
-                            span,
-                        ))
-                    }
+                    _ => return None,
                 }
             }
+            Some(out)
         }
         Expr::Constant(c) => match &c.value {
-            Constant::Str(s) => out.push_str(s),
-            _ => return Err(parse_error("unsupported f-string format spec", span)),
+            Constant::Str(s) => Some(s.clone()),
+            _ => None,
         },
-        _ => {
-            return Err(parse_error(
-                "dynamic f-string format specs (`{x:{w}}`) are out of scope (Phase 8E)",
-                span,
-            ))
+        _ => None,
+    }
+}
+
+/// Auto- vs manual-numbering mode of a `str.format` template (CPython forbids
+/// mixing empty `{}` auto-indexing with explicit `{0}` indices).
+#[derive(PartialEq)]
+enum FmtNumbering {
+    Unset,
+    Auto,
+    Manual,
+}
+
+/// Which argument a `str.format` replacement field binds to.
+enum FmtFieldRef {
+    /// `{}` — the next auto-index positional.
+    Auto,
+    /// `{0}` — an explicit positional index.
+    Index(usize),
+    /// `{name}` — a keyword argument.
+    Keyword(String),
+}
+
+/// One parsed segment of a `str.format` template.
+enum FmtSeg {
+    /// Literal text (with `{{`/`}}` already unescaped).
+    Lit(String),
+    /// A replacement field `{[name][!conv][:spec]}`.
+    Field {
+        field: FmtFieldRef,
+        conv: rustpython_parser::ast::ConversionFlag,
+        spec: String,
+    },
+}
+
+/// Parse a `str.format` template into literal-text / replacement-field segments.
+/// Handles `{{`/`}}` escapes; rejects a nested `{}` inside a field (a dynamic
+/// `.format` spec — deferred), an unmatched / stray brace, and (in
+/// [`parse_format_field`]) `{0.attr}`/`{0[k]}` field access.
+fn parse_format_template(s: &str, span: Span) -> Result<Vec<FmtSeg>> {
+    let mut segs = Vec::new();
+    let mut lit = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    lit.push('{');
+                    continue;
+                }
+                if !lit.is_empty() {
+                    segs.push(FmtSeg::Lit(std::mem::take(&mut lit)));
+                }
+                // Read the field body up to the matching '}'.
+                let mut body = String::new();
+                let mut closed = false;
+                while let Some(&nc) = chars.peek() {
+                    if nc == '}' {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    if nc == '{' {
+                        return Err(parse_error(
+                            "a nested `{}` inside a .format() field/spec is out of scope",
+                            span,
+                        ));
+                    }
+                    body.push(nc);
+                    chars.next();
+                }
+                if !closed {
+                    return Err(parse_error("unmatched '{' in format string", span));
+                }
+                segs.push(parse_format_field(&body, span)?);
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    lit.push('}');
+                    continue;
+                }
+                return Err(parse_error(
+                    "single '}' encountered in format string",
+                    span,
+                ));
+            }
+            _ => lit.push(ch),
         }
     }
-    Ok(out)
+    if !lit.is_empty() {
+        segs.push(FmtSeg::Lit(lit));
+    }
+    Ok(segs)
+}
+
+/// Parse a single `str.format` field body `[name][!conv][:spec]` (the braces
+/// already stripped). The spec is static text (a nested `{}` was rejected by
+/// the caller).
+fn parse_format_field(body: &str, span: Span) -> Result<FmtSeg> {
+    use rustpython_parser::ast::ConversionFlag;
+    // Split off `:spec` at the first colon, then `!conv` from the remaining head.
+    let (head, spec) = match body.find(':') {
+        Some(i) => (&body[..i], body[i + 1..].to_string()),
+        None => (body, String::new()),
+    };
+    let (name, conv) = match head.find('!') {
+        Some(i) => {
+            let flag = match &head[i + 1..] {
+                "r" => ConversionFlag::Repr,
+                "s" => ConversionFlag::Str,
+                "a" => ConversionFlag::Ascii,
+                other => {
+                    return Err(parse_error(
+                        format!("unknown conversion specifier '{other}' in format string"),
+                        span,
+                    ))
+                }
+            };
+            (&head[..i], flag)
+        }
+        None => (head, ConversionFlag::None),
+    };
+    if name.contains('.') || name.contains('[') {
+        return Err(parse_error(
+            "`{0.attr}` / `{0[key]}` field access in .format() is out of scope",
+            span,
+        ));
+    }
+    let field = if name.is_empty() {
+        FmtFieldRef::Auto
+    } else if name.bytes().all(|b| b.is_ascii_digit()) {
+        let idx = name.parse::<usize>().map_err(|_| {
+            parse_error(format!("invalid field index '{name}' in format string"), span)
+        })?;
+        FmtFieldRef::Index(idx)
+    } else {
+        FmtFieldRef::Keyword(name.to_string())
+    };
+    Ok(FmtSeg::Field { field, conv, spec })
 }
 
 /// Reject the empty-tuple initializer as a *class attribute* (it is only valid

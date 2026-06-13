@@ -36,12 +36,15 @@ pub fn rt_tuple_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         let data_a = (*tuple_a).data.as_ptr();
         let data_b = (*tuple_b).data.as_ptr();
 
-        // After F.7c: all slots are uniform tagged Values.
-        // eq_hashable_obj handles Value-tagged primitives and heap pointers.
+        // After F.7c: all slots are uniform tagged Values. Element equality
+        // mirrors CPython's `x is y or x == y` (identity short-circuit, then
+        // structural `==`) and routes through the full `rt_obj_eq` rather than
+        // the hashable-key `eq_hashable_obj`, so NESTED non-hashable elements
+        // (e.g. a tuple holding a list) compare by value, not by pointer.
         for i in 0..len {
-            let va = *data_a.add(i);
-            let vb = *data_b.add(i);
-            if !crate::hash_table_utils::eq_hashable_obj(va.0 as *mut Obj, vb.0 as *mut Obj) {
+            let a_raw = (*data_a.add(i)).0 as *mut Obj;
+            let b_raw = (*data_b.add(i)).0 as *mut Obj;
+            if a_raw != b_raw && crate::ops::rt_obj_eq(a_raw, b_raw) == 0 {
                 return 0;
             }
         }

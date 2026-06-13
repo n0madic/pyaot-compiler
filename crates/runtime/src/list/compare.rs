@@ -1,6 +1,5 @@
 //! List comparison operations (equality and ordering)
 
-use crate::hash_table_utils::eq_hashable_obj;
 use crate::object::{ListObj, Obj};
 use pyaot_core_defs::Value;
 use std::cmp::Ordering;
@@ -57,7 +56,14 @@ pub fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         for i in 0..len {
             let a_raw = (*data_a.add(i)).0 as *mut Obj;
             let b_raw = (*data_b.add(i)).0 as *mut Obj;
-            if !eq_hashable_obj(a_raw, b_raw) {
+            // Element equality mirrors CPython's `x is y or x == y`: an identity
+            // short-circuit first (also makes `[nan] == [nan]` true for the SAME
+            // object, as in CPython), then full structural `==` via `rt_obj_eq`.
+            // Routing through `rt_obj_eq` — NOT the hashable-key `eq_hashable_obj`
+            // — is what lets NESTED, non-hashable elements (lists, dicts, sets)
+            // compare by value: `eq_hashable_obj` falls back to pointer identity
+            // for those, so `[[1]] == [[1]]` would wrongly be False.
+            if a_raw != b_raw && crate::ops::rt_obj_eq(a_raw, b_raw) == 0 {
                 return 0;
             }
         }
