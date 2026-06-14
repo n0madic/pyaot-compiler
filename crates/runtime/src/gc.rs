@@ -280,7 +280,11 @@ fn mark_object(root: Value) {
                         enqueue_val!(*(*p).data.add(i));
                     }
                 }
-                TypeTagKind::Tuple => {
+                // A closure is a `TupleObj`-layout object with a distinct tag:
+                // trace it identically (slot 0's int-tagged code address is not a
+                // pointer, so `enqueue_val!`'s `is_ptr` check skips it; slots 1..=N
+                // are the captured cells).
+                TypeTagKind::Tuple | TypeTagKind::Closure => {
                     let p = obj as *mut TupleObj;
                     for i in 0..(*p).len {
                         enqueue_val!(*(*p).data.as_ptr().add(i));

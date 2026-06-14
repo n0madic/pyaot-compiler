@@ -846,7 +846,7 @@ impl<'a> ProgramLowerer<'a> {
         for d in &decorated {
             let orig_name_str = format!("{}.<orig>", d.name.as_str());
             let orig_name = self.interner.intern(&orig_name_str);
-            let orig_fid = lower_callable(
+            let _orig_fid = lower_callable(
                 &mut *self.interner,
                 &module_ctx,
                 &mut self.shared,
@@ -875,20 +875,24 @@ impl<'a> ProgramLowerer<'a> {
                     to_span(d.range()),
                 ));
             }
-            let arity = parsed.fixed.len();
             let ret = match &d.returns {
                 Some(e) => annotation_to_semty(e.as_ref(), &module_ctx),
                 None => SemTy::Dyn,
             };
-            let thunk_fid = build_generic_thunk(
-                &mut *self.interner,
-                &module_ctx,
-                &mut self.shared,
-                orig_fid,
-                &orig_name_str,
-                arity,
+            // The decorated wrapper's slot holds the uniform thunk over the renamed
+            // `<orig>` body (`orig_name` resolves to it). All params are fixed
+            // (varargs/kwargs/kw-only rejected above), `pass_env=false` (top-level).
+            let target = UniformTarget {
+                name: orig_name,
                 ret,
-            );
+                pass_env: false,
+                fixed: parsed.fixed.iter().map(ThunkParam::from_param_info).collect(),
+                kwonly: vec![],
+                varargs: false,
+                kwargs: false,
+            };
+            let thunk_fid =
+                build_uniform_thunk(&mut *self.interner, &module_ctx, &mut self.shared, &target)?;
             let slot = col.promoted[d.name.as_str()];
             decorated_info.insert(
                 d.name.as_str().to_string(),
@@ -5935,6 +5939,46 @@ impl<'a> FnLowerer<'a> {
         }))
     }
 
+    /// Build the uniform thunk over an already-lowered **nested** function `fid`
+    /// (its synthetic name resolves to `Symbol::Function(fid)`), so the closure's
+    /// slot 0 is the arity-generic `(args, kwargs) → Value` entry that forwards
+    /// the env tuple as `fid`'s leading positional. `n_fixed` / `n_kwonly` split
+    /// `fid`'s parameter list (after the env param) into positional vs
+    /// keyword-only for the runtime arg→param bind. Returns the thunk's `FuncId`,
+    /// which becomes the `MakeClosure` target.
+    fn uniform_thunk_over_nested(
+        &mut self,
+        fid: FuncId,
+        n_fixed: usize,
+        n_kwonly: usize,
+    ) -> Result<FuncId> {
+        let target = {
+            let f = self.shared.funcs[fid.index()]
+                .as_ref()
+                .expect("nested function is filled before MakeClosure");
+            // params: [env, fixed.., kwonly.., *args?, **kwargs?] — skip env (base 1).
+            let base = 1;
+            let fixed = f.params[base..base + n_fixed]
+                .iter()
+                .map(ThunkParam::from_hir_param)
+                .collect();
+            let kwonly = f.params[base + n_fixed..base + n_fixed + n_kwonly]
+                .iter()
+                .map(ThunkParam::from_hir_param)
+                .collect();
+            UniformTarget {
+                name: f.name,
+                ret: f.ret_ty.clone(),
+                pass_env: true,
+                fixed,
+                kwonly,
+                varargs: f.varargs,
+                kwargs: f.kwargs,
+            }
+        };
+        build_uniform_thunk(self.interner, self.ctx, self.shared, &target)
+    }
+
     /// Lower a nested `def` (Phase 6A): a flat synthetic function with an
     /// explicit env param, then bind `MakeClosure` to the def's name. Recursion
     /// works through self-capture: the def's own name is in the enclosing celled
@@ -5965,7 +6009,12 @@ impl<'a> FnLowerer<'a> {
             Some((&captures, &facts)),
         )?;
         let mc_ty = self.closure_sem_ty(fid);
-        let mc = self.make_closure_expr(fid, &captures, span, mc_ty.clone())?;
+        // Slot 0 of the closure is the uniform thunk over `fid`, not `fid` itself
+        // (the specialized native entry survives only for direct by-name calls).
+        let n_fixed = d.args.posonlyargs.len() + d.args.args.len();
+        let n_kwonly = d.args.kwonlyargs.len();
+        let thunk = self.uniform_thunk_over_nested(fid, n_fixed, n_kwonly)?;
+        let mc = self.make_closure_expr(thunk, &captures, span, mc_ty.clone())?;
         let dname = self.intern(d.name.as_str());
         self.write_named(dname, mc_ty, mc);
         Ok(())
@@ -6018,7 +6067,11 @@ impl<'a> FnLowerer<'a> {
         self.shared.fill(fid, f);
 
         let lam_ty = self.closure_sem_ty(fid);
-        self.make_closure_expr(fid, &captures, span, lam_ty)
+        // Slot 0 is the uniform thunk over the lambda body (lambdas reject
+        // keyword-only / *args / **kwargs / defaults, so all params are fixed).
+        let n_fixed = args.posonlyargs.len() + args.args.len();
+        let thunk = self.uniform_thunk_over_nested(fid, n_fixed, 0)?;
+        self.make_closure_expr(thunk, &captures, span, lam_ty)
     }
 
     /// Install capture bindings: capture `i` is read out of env slot `i+1` into
@@ -6047,51 +6100,21 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// A top-level function referenced as a VALUE (Phase 6A): a memoized thunk
-    /// `f.<thunk>(env, params…) { return f(params…) }` wrapped in a captureless
-    /// closure — `f`'s own direct-call ABI is untouched. The thunk forwards the
-    /// full declared parameter list (incl. the `*args` tuple / `**kwargs` dict
-    /// slots) positionally, so a function with defaults/varargs is still
-    /// callable as a value (indirect calls require full arity — 6C).
+    /// A top-level function referenced as a VALUE (Phase 6A): the memoized
+    /// **uniform thunk** over `f` wrapped in a captureless closure — `f`'s own
+    /// direct-call ABI is untouched. The thunk binds the packed call args to
+    /// `f`'s parameters at run time (positional, defaults, `*args`), so a function
+    /// with defaults/varargs is callable as a value through the single uniform
+    /// indirect ABI (no arity match required at the call site any more).
     fn lower_top_fn_value(&mut self, fname: &str, span: Span) -> Result<Idx<HirExpr>> {
         let thunk_key = (self.shared.current_ns, fname.to_string());
         let fid = match self.shared.thunks.get(&thunk_key) {
             Some(f) => *f,
             None => {
                 let info = self.ctx.top_defs[fname].clone();
-                let param_tys = top_def_param_tys(&info);
-                let fid = self.shared.reserve();
-                let tname = self.interner.intern(&format!("{fname}.<thunk>"));
-                let mut fl = FnLowerer::new(
-                    self.interner,
-                    self.ctx,
-                    self.shared,
-                    tname,
-                    fname,
-                    info.ret.clone(),
-                    None,
-                );
-                let env_name = fl.intern("__env__");
-                fl.add_param(env_name, SemTy::Dyn);
-                for (i, pty) in param_tys.iter().enumerate() {
-                    let pname = fl.interner.intern(&format!("p{i}"));
-                    fl.add_param(pname, pty.clone());
-                }
-                let target = fl.intern(fname);
-                let callee = fl.alloc(
-                    HirExprKind::Name(SymbolRef::Unresolved(target)),
-                    SemTy::Dyn,
-                    span,
-                );
-                let args: Vec<Idx<HirExpr>> = (0..param_tys.len())
-                    .map(|i| fl.local_ref(LocalId::new(i as u32 + 1), span))
-                    .collect();
-                let call = fl.alloc(HirExprKind::Call { callee, args }, SemTy::Dyn, span);
-                fl.seal(HirTerminator::Return(Some(call)));
-                let mut f = fl.finish(HirTerminator::Return(None));
-                f.varargs = info.varargs.is_some();
-                f.kwargs = info.kwargs.is_some();
-                self.shared.fill(fid, f);
+                let name = self.interner.intern(fname);
+                let target = UniformTarget::from_top_def(name, &info);
+                let fid = build_uniform_thunk(self.interner, self.ctx, self.shared, &target)?;
                 self.shared.thunks.insert(thunk_key, fid);
                 fid
             }
@@ -6966,17 +6989,12 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // A decorated module-level function called by name (Phase 6D): its slot
-        // holds a `(*args, **kwargs)` wrapper, so pack positional / keyword args
-        // into the variadic slots and call the slot indirectly.
-        if let Expr::Name(n) = c.func.as_ref() {
-            let iname = self.intern(n.id.as_str());
-            if !self.scope.contains_key(&iname) && self.ctx.decorated.contains(n.id.as_str()) {
-                if let Some(var_id) = self.promoted_id(iname) {
-                    return self.lower_decorated_call(var_id, c, span);
-                }
-            }
-        }
+        // A decorated module-level function called by name (Phase 6D): its
+        // promoted slot holds the decorator-wrapped uniform-thunk closure, so the
+        // call is just an ordinary uniform indirect call on that slot (the
+        // `lower_callee` global-read path reads it; lowering packs the args and
+        // routes through `CallIndirect`). No bespoke `(*args, **kwargs)` pre-pack.
+        //
         // A known top-level function called by name (not shadowed locally): the
         // frontend adapts keywords / defaults / `*args` packing at compile time
         // (Phase 6C). Everything else (indirect, builtins, classes) just lowers
@@ -7361,73 +7379,6 @@ impl<'a> FnLowerer<'a> {
             });
         }
         Ok(self.local_ref(d, span))
-    }
-
-    /// Pack a call to a decorated function into the wrapper's `(*args, **kwargs)`
-    /// ABI and call its global slot indirectly (Phase 6D).
-    fn lower_decorated_call(
-        &mut self,
-        slot: u32,
-        c: &ExprCall,
-        span: Span,
-    ) -> Result<Idx<HirExpr>> {
-        if has_doublestar_kwarg(c) {
-            return Err(parse_error(
-                "`**` spreading into a decorated call is out of scope",
-                span,
-            ));
-        }
-        if !c.keywords.is_empty() {
-            return Err(parse_error(
-                "keyword arguments are not supported for calls to decorated functions",
-                span,
-            ));
-        }
-        // The decorated slot holds a `(*args, **kwargs)` wrapper, so the whole
-        // positional sequence — plain args and any `*seq` spread — becomes its
-        // `*args` tuple. A runtime spread builds the tuple from a materialized
-        // `argv` list; an all-plain (incl. flattened literal-spread) call builds
-        // a fixed tuple literal directly.
-        let (items, has_runtime_spread) = classify_pos_args(c);
-        let tuple = if has_runtime_spread {
-            let argv = self.build_spread_argv(&items, span)?;
-            let argv_ref = self.local_ref(argv, span);
-            let it = self.alloc(
-                HirExprKind::ContainerExpr {
-                    op: ContainerOp::Iter,
-                    args: vec![argv_ref],
-                },
-                SemTy::Dyn,
-                span,
-            );
-            self.alloc(
-                HirExprKind::ContainerExpr {
-                    op: ContainerOp::TupleFromIter,
-                    args: vec![it],
-                },
-                SemTy::tuple_var_of(SemTy::Dyn),
-                span,
-            )
-        } else {
-            let mut elems = Vec::with_capacity(items.len());
-            for item in &items {
-                let PosItem::Plain(e) = *item else {
-                    unreachable!("runtime spreads handled above")
-                };
-                elems.push(self.lower_expr(e)?);
-            }
-            self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
-        };
-        let dict = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
-        let callee = self.alloc(HirExprKind::GlobalGet { var_id: slot }, SemTy::Dyn, span);
-        Ok(self.alloc(
-            HirExprKind::Call {
-                callee,
-                args: vec![tuple, dict],
-            },
-            SemTy::Dyn,
-            span,
-        ))
     }
 
     /// Emit a decorated module-level function's rebinding into `__main__`
@@ -8595,6 +8546,199 @@ impl<'a> FnLowerer<'a> {
         self.local_ref(slot, span)
     }
 
+    /// Bind a gradual (`Dyn`) argument into a `float` / `bool` parameter slot
+    /// through the Phase-1 **checked** unbox (`rt_unbox_float` / `rt_unbox_bool`),
+    /// for the uniform-thunk arg→param bind where the value comes from the
+    /// untyped `__args__` tuple. Unlike [`Self::launder_arg`] (a `pin_tagged`
+    /// slot → unchecked `UnboxFloat`/`UntagBool` at the call coercion), this
+    /// stores into a *real* annotated `float`/`bool` local: the annotated-local
+    /// `Assign` seam routes the `Dyn → Raw(F64/I8)` store through `coerce_value`,
+    /// which emits the **checked** unbox (TypeError on a wrong tag, never SEGV) —
+    /// the soundness crux of the uniform value-call convention. `int` / `str` /
+    /// container / `Dyn` params keep the value as-is (the existing tagged /
+    /// gradual-heap seams).
+    fn bind_arg_checked(&mut self, value: Idx<HirExpr>, param_ty: &SemTy, span: Span) -> Idx<HirExpr> {
+        if !matches!(param_ty, SemTy::Float | SemTy::Bool) {
+            return value;
+        }
+        let slot = self.fresh_local(param_ty.clone());
+        self.push_stmt(HirStmt::Assign {
+            target: slot,
+            value,
+        });
+        self.local_ref(slot, span)
+    }
+
+    /// Emit the body of a uniform thunk (params already installed as
+    /// `env`/`__args__`/`__kwargs__`): bind the packed positional tuple to `F`'s
+    /// parameters and make ONE direct call to `F`, returning its (boxed) result.
+    /// `F`'s value-call binding mirrors the `*seq`-spread slot matching
+    /// ([`Self::lower_spread_call`]) but sources from the `__args__` tuple param,
+    /// uses the **checked** float/bool unbox, and forwards `env` first for nested
+    /// targets. See [`build_uniform_thunk`].
+    fn emit_uniform_dispatch(
+        &mut self,
+        target: &UniformTarget,
+        fname: &str,
+        span: Span,
+    ) -> Result<()> {
+        // Re-type the `Dyn` `__args__` param (param 1, repr `Tagged`) into a tuple
+        // local so subscript / len / slice have a concrete container type. The
+        // runtime value IS a tuple (the indirect-call site packs one), so the
+        // gradual `Tagged → tuple` retype is the existing sound seam.
+        let args_t = self.fresh_local(SemTy::tuple_var_of(SemTy::Dyn));
+        let args_param = self.local_ref(LocalId::new(1), span);
+        self.push_stmt(HirStmt::Assign {
+            target: args_t,
+            value: args_param,
+        });
+
+        let n_fixed = target.fixed.len();
+        // Required = leading fixed params without a default (Python keeps defaults
+        // trailing, so the first defaulted index IS the required count).
+        let req = target
+            .fixed
+            .iter()
+            .position(|p| p.default.is_some())
+            .unwrap_or(n_fixed);
+
+        // n = len(__args__): the arity guard + default-slot tests read it.
+        let n_local = self.fresh_local(SemTy::Int);
+        let args_len_recv = self.local_ref(args_t, span);
+        let n_expr = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Len,
+                args: vec![args_len_recv],
+            },
+            SemTy::Int,
+            span,
+        );
+        self.push_stmt(HirStmt::Assign {
+            target: n_local,
+            value: n_expr,
+        });
+        let max = if target.varargs { None } else { Some(n_fixed) };
+        self.emit_argcount_check(n_local, req, max, fname, span);
+
+        // Materialize a real keyword dict ONLY when `F` consumes keywords
+        // (keyword-only or `**kwargs`). The indirect call site passes the null
+        // sentinel for `__kwargs__` on the common (no-keyword) path, so normalize
+        // it: `kd = {}; kd.update(__kwargs__)`. `rt_dict_update` is null-tolerant (a
+        // null `other` is a no-op), so a null `__kwargs__` yields a fresh EMPTY
+        // dict and a real keyword dict is copied in — kwonly `dict.get` /
+        // `**kwargs` forwarding then never dereferences the null sentinel.
+        let kwargs_dict = if !target.kwonly.is_empty() || target.kwargs {
+            let kd = self.fresh_local(SemTy::dict_of(SemTy::Str, SemTy::Dyn));
+            let fresh = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
+            self.push_stmt(HirStmt::Assign {
+                target: kd,
+                value: fresh,
+            });
+            let kd_ref = self.local_ref(kd, span);
+            let kparam = self.local_ref(LocalId::new(2), span);
+            let upd = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::DictUpdate,
+                    args: vec![kd_ref, kparam],
+                },
+                SemTy::NoneTy,
+                span,
+            );
+            self.push_stmt(HirStmt::Expr(upd));
+            Some(kd)
+        } else {
+            None
+        };
+
+        // Build the param-aligned argument vector matching `F`'s MIR parameter
+        // order: [env?] → fixed → keyword-only → *args tuple → **kwargs dict.
+        let mut out: Vec<Idx<HirExpr>> = Vec::new();
+        if target.pass_env {
+            out.push(self.local_ref(LocalId::new(0), span));
+        }
+        for (i, p) in target.fixed.iter().enumerate() {
+            let raw = if i < req {
+                let base = self.local_ref(args_t, span);
+                let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
+                self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
+            } else {
+                let def = p
+                    .default
+                    .as_ref()
+                    .expect("trailing fixed param has a default");
+                let default = self.lower_param_default(def, span);
+                self.emit_spread_default(args_t, n_local, i, default, span)
+            };
+            out.push(self.bind_arg_checked(raw, &p.ty, span));
+        }
+        for p in &target.kwonly {
+            let pinfo = ParamInfo {
+                name: p.name,
+                ty: p.ty.clone(),
+                default: p.default.clone(),
+            };
+            let raw = self
+                .bind_from_kw_dict(kwargs_dict, &pinfo, span)
+                .expect("kwargs_dict is Some when keyword-only params are present");
+            out.push(self.bind_arg_checked(raw, &p.ty, span));
+        }
+        if target.varargs {
+            let base = self.local_ref(args_t, span);
+            let start = self.alloc(HirExprKind::IntLit(n_fixed as i64), SemTy::Int, span);
+            let slice = self.alloc(
+                HirExprKind::Slice {
+                    base,
+                    start: Some(start),
+                    end: None,
+                    step: None,
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            );
+            let it = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Iter,
+                    args: vec![slice],
+                },
+                SemTy::Dyn,
+                span,
+            );
+            let rest = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::TupleFromIter,
+                    args: vec![it],
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            );
+            out.push(rest);
+        }
+        // `**kwargs` slot: forward the whole `__kwargs__` dict (the value-call
+        // path supplies no separate keywords, so leftover == the full dict).
+        if target.kwargs {
+            out.push(self.local_ref(
+                kwargs_dict.expect("kwargs_dict is Some when **kwargs is present"),
+                span,
+            ));
+        }
+
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(target.name)),
+            SemTy::Dyn,
+            span,
+        );
+        // `F`'s declared return type — typeck re-derives it from the resolved
+        // callee, and the return terminator boxes it to the thunk's `Dyn` (Tagged)
+        // result regardless.
+        let call = self.alloc(
+            HirExprKind::Call { callee, args: out },
+            target.ret.clone(),
+            span,
+        );
+        self.seal(HirTerminator::Return(Some(call)));
+        Ok(())
+    }
+
     /// Emit the argument-count guards for a runtime spread: too few values
     /// (`len(argv) < min`) and, for a non-`*args` callee, too many
     /// (`len(argv) > max`). Each raises `TypeError`, matching CPython's
@@ -8667,33 +8811,125 @@ impl<'a> FnLowerer<'a> {
         self.switch(ok);
     }
 
-    /// Lower an indirect / unknown-callee call (Phase 6C): plain positionals,
-    /// then a `*t` spread (the callee's `*args` slot), then a `**d` spread (the
-    /// `**kwargs` slot). Named keywords are rejected — an indirect call cannot
-    /// reorder against an unknown declaration.
+    /// Lower an indirect / unknown-callee call. A **simple positional** call
+    /// (`f(a, b)`) lowers to a flat [`HirExprKind::Call`] whose args lowering packs
+    /// into the uniform `(args_tuple, kwargs) → Value` ABI when the callee resolves
+    /// to a value (or passes individually when it resolves to a function/builtin —
+    /// the resolution-agnostic flat form). A `*seq` spread, a `**dict` forward, or
+    /// **named keyword args** cannot be expressed as flat args, so they pre-build
+    /// the positional `tuple` + keyword `dict` and emit a [`HirExprKind::CallValue`]
+    /// handed straight to the closure ABI. Keywords reach the callee's keyword-only
+    /// / `**kwargs` parameters (bound by name in its uniform thunk); the closure's
+    /// own positional params are still matched positionally (binding a positional
+    /// param BY keyword through a value call stays out of scope).
     fn lower_indirect_or_unknown_call(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
-        if c.keywords.iter().any(|k| k.arg.is_some()) {
-            return Err(parse_error(
-                "keyword arguments are not supported on indirect calls (annotate the \
-                 callee and pass positionally, or call a top-level function by name)",
-                span,
-            ));
-        }
         let callee = self.lower_callee(c.func.as_ref())?;
-        let mut args = Vec::with_capacity(c.args.len());
-        for a in &c.args {
-            match a {
-                Expr::Starred(s) => args.push(self.lower_expr(s.value.as_ref())?),
-                other => args.push(self.lower_expr(other)?),
+        // No spread and no keyword of any kind → the flat positional form (lowering
+        // packs / direct-resolves).
+        if !has_starred_arg(c) && c.keywords.is_empty() {
+            let mut args = Vec::with_capacity(c.args.len());
+            for a in &c.args {
+                args.push(self.lower_expr(a)?);
             }
+            return Ok(self.alloc(HirExprKind::Call { callee, args }, SemTy::Dyn, span));
         }
-        // A `**d` spread fills the trailing **kwargs slot.
+
+        // Pre-pack the positional tuple. A runtime `*seq` spread materializes
+        // through `argv`; an all-plain (incl. flattened literal-spread) call builds
+        // a fixed tuple literal directly. Positionals evaluate BEFORE keywords.
+        let (items, has_runtime_spread) = classify_pos_args(c);
+        let args_tuple = if has_runtime_spread {
+            let argv = self.build_spread_argv(&items, span)?;
+            let argv_ref = self.local_ref(argv, span);
+            let it = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Iter,
+                    args: vec![argv_ref],
+                },
+                SemTy::Dyn,
+                span,
+            );
+            self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::TupleFromIter,
+                    args: vec![it],
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            )
+        } else {
+            let mut elems = Vec::with_capacity(items.len());
+            for item in &items {
+                let PosItem::Plain(e) = *item else {
+                    unreachable!("runtime spreads handled above")
+                };
+                elems.push(self.lower_expr(e)?);
+            }
+            self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
+        };
+        // Build the keyword dict from named keywords and `**d` forwards (or the
+        // null sentinel when there are none).
+        let kwargs = self.build_indirect_kwargs(c, span)?;
+        Ok(self.alloc(
+            HirExprKind::CallValue {
+                callee,
+                args: args_tuple,
+                kwargs,
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// Build the keyword dict for a value-position call from its `key=value` and
+    /// `**d` keyword sources, in source order (CPython left-to-right) — `None` when
+    /// the call has no keywords (the indirect call site then passes the null
+    /// sentinel, no allocation). The dict reaches the callee's keyword-only /
+    /// `**kwargs` params via its uniform thunk.
+    fn build_indirect_kwargs(
+        &mut self,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        if c.keywords.is_empty() {
+            return Ok(None);
+        }
+        let kd = self.fresh_local(SemTy::dict_of(SemTy::Str, SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: kd,
+            value: empty,
+        });
         for kw in &c.keywords {
-            if kw.arg.is_none() {
-                args.push(self.lower_expr(&kw.value)?);
+            match &kw.arg {
+                // `name=value` → insert a single entry.
+                Some(name) => {
+                    let key_id = self.intern(name.as_str());
+                    let key = self.alloc(HirExprKind::StrLit(key_id), SemTy::Str, span);
+                    let val = self.lower_expr(&kw.value)?;
+                    self.push_stmt(HirStmt::ContainerInsert {
+                        container: kd,
+                        key,
+                        value: val,
+                    });
+                }
+                // `**d` → merge `d`'s entries (CPython update order).
+                None => {
+                    let other = self.lower_expr(&kw.value)?;
+                    let kd_ref = self.local_ref(kd, span);
+                    let upd = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::DictUpdate,
+                            args: vec![kd_ref, other],
+                        },
+                        SemTy::NoneTy,
+                        span,
+                    );
+                    self.push_stmt(HirStmt::Expr(upd));
+                }
             }
         }
-        Ok(self.alloc(HirExprKind::Call { callee, args }, SemTy::Dyn, span))
+        Ok(Some(self.local_ref(kd, span)))
     }
 
     /// Materialize a constant default value (Phase 6C) as a literal expr.
@@ -8889,87 +9125,108 @@ fn subscript_type_args(slice: &Expr, ctx: &AnnCtx) -> Vec<SemTy> {
     }
 }
 
-/// Build a decorated function's generic `(*args, **kwargs)` adapter thunk
-/// (Phase 6D): `thunk(env, args, kwargs) { return orig(args[0], …, args[k-1]) }`.
-/// This gives the function VALUE a `Callable[..., R]` signature matching a
-/// decorator's `func` parameter, while `orig`'s own direct-call ABI is intact.
+/// One bindable parameter of a [`UniformTarget`]: its name (for `**kwargs`
+/// by-name binding), annotated type (for the checked float/bool seam), and
+/// optional default.
+#[derive(Clone)]
+struct ThunkParam {
+    name: InternedString,
+    ty: SemTy,
+    default: Option<ParamDefault>,
+}
+
+impl ThunkParam {
+    fn from_param_info(p: &ParamInfo) -> Self {
+        Self {
+            name: p.name,
+            ty: p.ty.clone(),
+            default: p.default.clone(),
+        }
+    }
+    fn from_hir_param(p: &HirParam) -> Self {
+        Self {
+            name: p.name,
+            ty: p.ty.clone(),
+            default: p.default.clone(),
+        }
+    }
+}
+
+/// The call-facing shape a single uniform thunk needs to bind `__args__` /
+/// `__kwargs__` to a target function `F` and call it (the one mechanism that
+/// replaces the old decorator generic thunk *and* the top-level-fn-value typed
+/// thunk).
+struct UniformTarget {
+    /// The name resolving to `Symbol::Function(F)` — a top-level def, a renamed
+    /// decorated `<orig>`, or a synthetic nested-def / lambda name.
+    name: InternedString,
+    /// `F`'s declared return type (the body call's type; the thunk's own return
+    /// is `Dyn`, so a non-`Tagged` `F` result is boxed by the return terminator).
+    ret: SemTy,
+    /// Pass the closure env tuple as `F`'s leading positional — true for nested
+    /// defs / lambdas (env param 0), false for top-level / decorated targets.
+    pass_env: bool,
+    fixed: Vec<ThunkParam>,
+    kwonly: Vec<ThunkParam>,
+    varargs: bool,
+    kwargs: bool,
+}
+
+impl UniformTarget {
+    /// Derive the target shape from a top-level `def`'s [`TopDefInfo`].
+    fn from_top_def(name: InternedString, info: &TopDefInfo) -> Self {
+        Self {
+            name,
+            ret: info.ret.clone(),
+            pass_env: false,
+            fixed: info.fixed.iter().map(ThunkParam::from_param_info).collect(),
+            kwonly: info.kwonly.iter().map(ThunkParam::from_param_info).collect(),
+            varargs: info.varargs.is_some(),
+            kwargs: info.kwargs.is_some(),
+        }
+    }
+}
+
+/// Build the **single uniform thunk** for a callable value (replaces the Phase-6D
+/// decorator generic thunk and the Phase-6A top-level-fn-value typed thunk). The
+/// thunk is `F.<uniform>(env, __args__, __kwargs__) → Dyn` where `__args__` /
+/// `__kwargs__` are `Dyn` (repr `Tagged`, the visible `GENERIC_SIG` shape). Its
+/// body binds the packed positional tuple / keyword dict to `F`'s parameters at
+/// run time — positional, defaults, `*args` — using the Phase-1 **checked** unbox
+/// for `float` / `bool` params, then makes ONE **direct** call to `F` (specialized
+/// native ABI, the hot path), forwarding `env` first for nested targets. The
+/// result is boxed to `Value` by the return terminator (thunk ret = `Dyn`).
 ///
-/// The thunk's declared return type is the decorated function's own (`ret`), so
-/// the closure's representation-level signature matches a decorator annotated
-/// `Callable[..., float]` / `Callable[..., str]` / … — not only `int`. The
-/// decorated function must carry the matching return annotation (the `Callable`
-/// slot IS the native ABI). A non-`Tagged` *parameter* still cannot be fed from
-/// the generic tuple-element unpack (it is `Dyn`), so decorated functions with
-/// `float`/`bool` params remain out of scope (documented).
-fn build_generic_thunk(
+/// Keyword-only / `**kwargs` parameters are bound from `__kwargs__`, but a value
+/// call never carries keywords in the corpus (the call site passes the null
+/// `__kwargs__` sentinel), so that binding is the deferred path — it runs only if
+/// such a closure is invoked indirectly. A keyword-bearing closure that is only
+/// ever called directly never invokes this thunk, so building it is harmless.
+fn build_uniform_thunk(
     interner: &mut StringInterner,
     ctx: &AnnCtx,
     shared: &mut Shared,
-    _orig_fid: FuncId,
-    orig_name_str: &str,
-    arity: usize,
-    ret: SemTy,
-) -> FuncId {
+    target: &UniformTarget,
+) -> Result<FuncId> {
     let span = Span::dummy();
     let fid = shared.reserve();
-    let tname = interner.intern(&format!("{orig_name_str}.<thunk>"));
-    let mut fl = FnLowerer::new(interner, ctx, shared, tname, orig_name_str, ret, None);
-    let env = fl.intern("__env__");
-    fl.add_param(env, SemTy::Dyn);
+    let base = interner.resolve(target.name).to_string();
+    let tname = interner.intern(&format!("{base}.<uniform>"));
+    let mut fl = FnLowerer::new(interner, ctx, shared, tname, &base, SemTy::Dyn, None);
+    let env_name = fl.intern("__env__");
+    fl.add_param(env_name, SemTy::Dyn);
+    // `__args__` / `__kwargs__` are `Dyn` (repr `Tagged`) so the thunk's visible
+    // signature is exactly `GENERIC_SIG` — the verifier's strict closure-sig
+    // check then holds with no relaxation.
     let args_name = fl.intern("__args__");
-    fl.add_param(args_name, SemTy::tuple_var_of(SemTy::Dyn));
+    fl.add_param(args_name, SemTy::Dyn);
     let kwargs_name = fl.intern("__kwargs__");
-    fl.add_param(kwargs_name, SemTy::dict_of(SemTy::Str, SemTy::Dyn));
-    // orig(args[0], …, args[arity-1]) — a direct call resolved by semantics.
-    let orig = fl.intern(orig_name_str);
-    let callee = fl.alloc(
-        HirExprKind::Name(SymbolRef::Unresolved(orig)),
-        SemTy::Dyn,
-        span,
-    );
-    let mut call_args = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let base = fl.local_ref(LocalId::new(1), span); // the `__args__` tuple param
-        let idx = fl.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-        let sub = fl.alloc(
-            HirExprKind::Subscript { base, index: idx },
-            SemTy::Dyn,
-            span,
-        );
-        call_args.push(sub);
-    }
-    let call = fl.alloc(
-        HirExprKind::Call {
-            callee,
-            args: call_args,
-        },
-        SemTy::Dyn,
-        span,
-    );
-    fl.seal(HirTerminator::Return(Some(call)));
-    let mut f = fl.finish(HirTerminator::Return(None));
-    f.varargs = true;
-    f.kwargs = true;
+    fl.add_param(kwargs_name, SemTy::Dyn);
+    fl.emit_uniform_dispatch(target, &base, span)?;
+    let f = fl.finish(HirTerminator::Return(None));
+    // The thunk itself is a plain 3-param function — no `*args`/`**kwargs` ABI.
     shared.fill(fid, f);
-    fid
-}
-
-/// The full ABI parameter types of a top-level def, in MIR order: fixed →
-/// keyword-only → `*args` tuple → `**kwargs` dict (Phase 6C).
-fn top_def_param_tys(info: &TopDefInfo) -> Vec<SemTy> {
-    let mut v: Vec<SemTy> = info
-        .fixed
-        .iter()
-        .chain(&info.kwonly)
-        .map(|p| p.ty.clone())
-        .collect();
-    if info.varargs.is_some() {
-        v.push(SemTy::tuple_var_of(SemTy::Dyn));
-    }
-    if info.kwargs.is_some() {
-        v.push(SemTy::dict_of(SemTy::Str, SemTy::Dyn));
-    }
-    v
+    Ok(fid)
 }
 
 /// Take (mark consumed) the first unconsumed keyword named `name`, returning its
@@ -10690,11 +10947,13 @@ def outer():
     return 0
 ";
         let (m, i) = parsed(src);
+        // Exclude each nested def's `.<uniform>` value-call thunk (its name also
+        // contains "helper") — count only the two def bodies themselves.
         let names: Vec<&str> = m
             .functions
             .iter()
             .map(|f| i.resolve(f.name))
-            .filter(|n| n.contains("helper"))
+            .filter(|n| n.contains("helper") && !n.contains("<uniform>"))
             .collect();
         assert_eq!(names.len(), 2);
         assert_ne!(names[0], names[1], "sibling synthetics must be unique");

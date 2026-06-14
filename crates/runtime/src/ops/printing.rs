@@ -174,6 +174,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Deque => print_deque_repr(obj),
         TypeTagKind::Request => print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
         TypeTagKind::NotImplemented => print!("NotImplemented"),
+        TypeTagKind::Closure => print!("<{} at {:p}>", TypeTagKind::Closure.type_name(), obj),
     }
 }
 
@@ -412,6 +413,9 @@ pub fn rt_print_obj(obj: *mut Obj) {
                 print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj)
             }
             TypeTagKind::NotImplemented => print!("NotImplemented"),
+            TypeTagKind::Closure => {
+                print!("<{} at {:p}>", TypeTagKind::Closure.type_name(), obj)
+            }
         }
     }
 }

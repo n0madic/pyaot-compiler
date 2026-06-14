@@ -83,7 +83,7 @@ use pyaot_hir::{
     BinOp, BuiltinFunctionKind, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
     HirFunction, HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
-use pyaot_types::{repr_of, sig_repr, RawKind, Repr, SemTy, Sig, TypeLattice};
+use pyaot_types::{repr_of, RawKind, Repr, SemTy, Sig, TypeLattice};
 use pyaot_utils::{ClassId, InternedString, StringInterner};
 
 /// Widening bound: how many moves a variable — a module-level `ret_ty` /
@@ -888,7 +888,7 @@ fn check_repr_boundaries(
                         // guarded against the signature's param reprs (the
                         // poly(3) seam, extended to closures).
                         None => {
-                            check_indirect_call(func, *callee, args, classes)?;
+                            check_indirect_call(func, *callee)?;
                             continue;
                         }
                     }
@@ -1059,69 +1059,24 @@ fn check_call_runtime_args(
     Ok(())
 }
 
-/// Validate an indirect call `value(args…)` (Phase 6A): the callee's static
-/// type must be a concrete `Callable` of matching arity, and each argument is
-/// guarded against the parameter types exactly like direct-call arguments.
-fn check_indirect_call(
-    func: &HirFunction,
-    callee: Idx<HirExpr>,
-    args: &[Idx<HirExpr>],
-    classes: &ClassTable,
-) -> Result<()> {
+/// Validate an indirect call `value(args…)` on the **uniform value-call path**:
+/// the callee may be a concrete `Callable` *or* a genuinely-`Dyn` value (Principle
+/// 2 — inference is no longer required for correctness; the precise `Callable`
+/// signature is only a devirtualization hint). There is no static arity or
+/// per-argument reinterpret boundary at the call site any more: lowering packs the
+/// args into a tuple and the closure's uniform thunk binds + checks them at run
+/// time (with the Phase-1 checked unbox). A statically-known **non-callable**
+/// (e.g. `x: int = 5; x()`) is still rejected loudly; a `Dyn` callee that turns
+/// out non-callable raises `TypeError` at run time (the Phase-C guard).
+fn check_indirect_call(func: &HirFunction, callee: Idx<HirExpr>) -> Result<()> {
     let cexpr = &func.exprs[callee];
-    let sig = match &cexpr.ty {
-        SemTy::Callable(sig) => sig,
-        // Unreachable code may call anything.
-        SemTy::Never => return Ok(()),
-        SemTy::Dyn => {
-            return Err(CompilerError::type_error(
-                "cannot call a value of unknown type: annotate it (e.g. \
-                 `Callable[[int], int]`) so the compiler can build its native \
-                 call signature"
-                    .to_string(),
-                cexpr.span,
-            ))
-        }
-        other => {
-            return Err(CompilerError::type_error(
-                format!("`{}` object is not callable", type_name(other)),
-                cexpr.span,
-            ))
-        }
-    };
-    let fixed = sig.fixed_arity();
-    let arity_ok = if sig.varargs {
-        args.len() >= fixed
-    } else {
-        args.len() == fixed
-    };
-    if !arity_ok {
-        return Err(CompilerError::type_error(
-            format!(
-                "this callable takes {} positional argument(s){} but {} were given \
-                 (indirect calls require the full declared arity — defaults are \
-                 filled only at direct call sites)",
-                fixed,
-                if sig.varargs { " or more" } else { "" },
-                args.len(),
-            ),
+    match &cexpr.ty {
+        SemTy::Callable(_) | SemTy::Dyn | SemTy::Never => Ok(()),
+        other => Err(CompilerError::type_error(
+            format!("`{}` object is not callable", type_name(other)),
             cexpr.span,
-        ));
+        )),
     }
-    for (arg, pty) in args.iter().zip(sig.params.iter().take(fixed)) {
-        if let Some(kind) = reinterpret_kind(pty) {
-            check_reinterpret(
-                &func.exprs[*arg],
-                pty,
-                kind,
-                "passed to",
-                classes,
-                // Indirect-call param-pass: deferred (§8).
-                false,
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// The `__init__` parameter list for class `cid`, or `None` if it defines none.
@@ -1286,16 +1241,13 @@ fn check_reinterpret(
         return Ok(());
     }
     let ok = match kind {
-        // A Callable slot requires representation-level signature equality —
-        // ordinary subtyping could change a param/ret `Repr` and forge a
-        // different indirect-call ABI (Phase 6A). `Dyn` is admitted gradually.
+        // Every closure shares the ONE uniform repr (`Closure(GENERIC_SIG)`), so
+        // any `Callable` value fits any `Callable` slot — the precise signature is
+        // a devirtualization hint, never an indirect-call ABI contract (there is
+        // no per-signature ABI left to forge). `Dyn` is admitted gradually; a
+        // non-callable value into a `Callable` slot is still rejected.
         ReinterpretKind::Closure => {
-            value.ty == SemTy::Never
-                || value.ty == SemTy::Dyn
-                || match (&value.ty, target) {
-                    (SemTy::Callable(vs), SemTy::Callable(ts)) => sig_repr(vs) == sig_repr(ts),
-                    _ => false,
-                }
+            matches!(value.ty, SemTy::Never | SemTy::Dyn | SemTy::Callable(_))
         }
         _ => {
             value.ty == SemTy::Never
@@ -1810,6 +1762,9 @@ impl<'a> Sweeper<'a> {
             HirExprKind::Unary { op, operand } => self.unary_ty(*op, self.ety(*operand)),
             HirExprKind::BinOp { op, l, r } => self.binop_ty(*op, self.ety(*l), self.ety(*r)),
             HirExprKind::Call { callee, args } => self.call_ty(*callee, args),
+            // A pre-packed uniform indirect call always yields the tagged baseline
+            // (`Dyn`); the consuming seam recovers precision via the checked unbox.
+            HirExprKind::CallValue { .. } => SemTy::Dyn,
             // ── containers (Phase 4) ──
             // `sum(iterable[, start])` (Phase 8H, D2). Class elements with
             // `__add__`/`__radd__` take the join of the inferred dunder returns

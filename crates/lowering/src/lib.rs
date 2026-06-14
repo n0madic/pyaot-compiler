@@ -39,7 +39,7 @@ use pyaot_mir::{
     StrPool, UnaryOp as MUnaryOp,
 };
 use pyaot_types::{
-    repr_of, sig_repr, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND,
+    generic_sig, repr_of, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND,
 };
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner};
 
@@ -1173,6 +1173,11 @@ impl<'a> FnLower<'a> {
             HirExprKind::Unary { op, operand } => self.lower_unary(*op, *operand),
             HirExprKind::Compare { op, l, r } => self.lower_compare(*op, *l, *r),
             HirExprKind::Call { callee, args } => self.lower_call(idx, *callee, args.clone()),
+            HirExprKind::CallValue {
+                callee,
+                args,
+                kwargs,
+            } => self.lower_call_value(*callee, *args, *kwargs),
             // ── containers (Phase 4) ──
             HirExprKind::ListLit { elems } => self.lower_list_lit(idx, &elems.clone()),
             HirExprKind::SetLit { elems } => self.lower_set_lit(idx, &elems.clone()),
@@ -1439,47 +1444,105 @@ impl<'a> FnLower<'a> {
         Ok((dst, dst_repr))
     }
 
-    /// Lower an indirect call through a callable value (Phase 6A): coerce the
-    /// callee to the exact `Closure(sig)` representation, coerce every arg to
-    /// the signature's param reprs, and `CallIndirect`.
+    /// Lower an indirect call through a callable value — the **single uniform
+    /// value-call path** (the prior precise-`Sig` route is gone). The callee may
+    /// be a `Callable` *or* a genuinely-`Dyn` value: every closure shares the one
+    /// `Closure(GENERIC_SIG)` repr (slot 0 is the arity-generic uniform thunk), so
+    /// this packs the positional args into a `tuple[Dyn, ...]`, passes the null
+    /// kwargs sentinel (call-site keywords are out of scope here), coerces the
+    /// callee to `Closure(GENERIC_SIG)`, and emits a `CallIndirect` carrying
+    /// `GENERIC_SIG`. The result is the tagged baseline (`Dyn`); the consuming
+    /// seam (`: bool` / `: float` / return) recovers precision via the Phase-1
+    /// checked unbox. Runtime arg→param binding (defaults, `*args`, the checked
+    /// float/bool unbox) happens inside the thunk, so a fixed-arity native closure
+    /// is bound correctly here without any static arity/repr coercion.
     fn lower_indirect_call(
         &mut self,
         callee: Idx<HirExpr>,
         args: &[Idx<HirExpr>],
     ) -> Result<(LocalId, Repr)> {
-        let span = self.func.exprs[callee].span;
-        let SemTy::Callable(sem_sig) = self.func.exprs[callee].ty.clone() else {
-            return Err(CompilerError::type_error(
-                "cannot call a value of unknown type: annotate it (e.g. \
-                 `Callable[[int], int]`)"
-                    .to_string(),
-                span,
-            ));
-        };
-        let srepr = sig_repr(&sem_sig);
-        if args.len() != srepr.params.len() {
-            return Err(CompilerError::semantic_error(
-                "wrong number of arguments in indirect call".to_string(),
-                span,
-            ));
-        }
+        let sig = generic_sig();
+        let closure_repr = Repr::Closure(Box::new(sig.clone()));
         let (cl, cr) = self.lower_expr(callee)?;
-        let closure_repr = Repr::Closure(Box::new(srepr.clone()));
         let ccl = self.coerce(cl, cr, closure_repr)?;
-        let mut argvals = Vec::with_capacity(args.len());
-        for (a, prepr) in args.iter().zip(&srepr.params) {
+
+        // Pack the positional args into a `tuple[Dyn, ...]` (Tagged elements).
+        let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
+        let size = self.raw_i64_const(args.len() as i64);
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
+        let tup = tup.expect("TupleNew produces a tuple");
+        for (i, a) in args.iter().enumerate() {
             let (al, ar) = self.lower_expr(*a)?;
-            argvals.push(Operand::Local(self.coerce(al, ar, prepr.clone())?));
+            let pos = self.raw_i64_const(i as i64);
+            self.emit_container(
+                ContainerOp::TupleSet,
+                vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (al, ar)],
+                None,
+            )?;
         }
-        let ret = (*srepr.ret).clone();
-        let dst = self.alloc_temp(ret.clone());
+        let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
+
+        // No call-site keywords on the uniform path → the null `__kwargs__`
+        // sentinel (no allocation; the thunk reads it only when `F` has
+        // keyword-only / `**kwargs` params, which a value call never supplies).
+        let kwargs = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst: kwargs,
+            val: Const::NullPtr,
+        });
+
+        let dst = self.alloc_temp(Repr::Tagged);
         self.emit(MirInst::CallIndirect {
             dst: Some(dst),
             callee: Operand::Local(ccl),
-            args: argvals,
-            sig: srepr,
+            args: vec![Operand::Local(args_tuple), Operand::Local(kwargs)],
+            sig,
         });
-        Ok((dst, ret))
+        Ok((dst, Repr::Tagged))
+    }
+
+    /// Lower a **pre-packed** indirect call ([`HirExprKind::CallValue`]): the
+    /// frontend already built the positional `args` tuple and optional `kwargs`
+    /// dict (a `*seq` / `**dict` forward into a value callee), so this just coerces
+    /// the callee to `Closure(GENERIC_SIG)` and the two operands to `Tagged`, then
+    /// emits the uniform `CallIndirect`. Result is the tagged baseline (`Dyn`).
+    fn lower_call_value(
+        &mut self,
+        callee: Idx<HirExpr>,
+        args: Idx<HirExpr>,
+        kwargs: Option<Idx<HirExpr>>,
+    ) -> Result<(LocalId, Repr)> {
+        let sig = generic_sig();
+        let (cl, cr) = self.lower_expr(callee)?;
+        let ccl = self.coerce(cl, cr, Repr::Closure(Box::new(sig.clone())))?;
+        let (al, ar) = self.lower_expr(args)?;
+        let args_tagged = self.coerce(al, ar, Repr::Tagged)?;
+        let kw_tagged = match kwargs {
+            Some(k) => {
+                let (kl, kr) = self.lower_expr(k)?;
+                self.coerce(kl, kr, Repr::Tagged)?
+            }
+            None => {
+                let n = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const {
+                    dst: n,
+                    val: Const::NullPtr,
+                });
+                n
+            }
+        };
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallIndirect {
+            dst: Some(dst),
+            callee: Operand::Local(ccl),
+            args: vec![Operand::Local(args_tagged), Operand::Local(kw_tagged)],
+            sig,
+        });
+        Ok((dst, Repr::Tagged))
     }
 
     // ── classes (Phase 5) ────────────────────────────────────────────────────

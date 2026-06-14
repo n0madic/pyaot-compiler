@@ -129,8 +129,13 @@ pub fn repr_of(ty: &SemTy) -> Repr {
 
         // A callable VALUE is always the uniform env-tuple closure (Phase 6) —
         // never a bare code address, so one indirect-call ABI covers captureless
-        // functions, closures, and thunked top-level functions alike.
-        SemTy::Callable(sig) => Repr::Closure(Box::new(sig_repr(sig))),
+        // functions, closures, and thunked top-level functions alike. Every
+        // closure shares ONE repr, [`GENERIC_SIG`]: slot 0 is an arity-generic
+        // `(args_tuple, kwargs_dict) → Value` uniform thunk, so even a
+        // genuinely-`Dyn` callee is callable through the single indirect ABI.
+        // The precise `Sig` survives in `SemTy::Callable` only as a (later)
+        // devirtualization hint — it is no longer the call signature.
+        SemTy::Callable(_) => Repr::Closure(Box::new(generic_sig())),
 
         // Exception instances are heap objects but flow through tagged slots in
         // handler/raise paths; tagged is the correctness-first choice.
@@ -164,8 +169,25 @@ fn repr_of_generic(base: ClassId, args: &[SemTy]) -> Repr {
     }
 }
 
+/// The single uniform closure ABI signature: every callable value is the
+/// arity-generic `(args_tuple: Tagged, kwargs_dict: Tagged) → Value` shape, with
+/// the env tuple added as a leading arg by codegen. All closures share this
+/// `Repr::Closure(GENERIC_SIG)`, so every `CallIndirect` carries it and the MIR
+/// verifier's strict `Closure(s) == sig` check holds with no relaxation. The
+/// per-function specialized native ABI survives only for **direct** by-name
+/// calls; value-position calls route through this uniform entry (PITFALLS A4: one
+/// ABI, no per-function flags).
+pub fn generic_sig() -> SigRepr {
+    SigRepr {
+        params: vec![Repr::Tagged, Repr::Tagged],
+        ret: Box::new(Repr::Tagged),
+    }
+}
+
 /// The representation-level signature of a semantic [`Sig`] (the visible
-/// signature — the closure env param is an ABI detail added at lowering).
+/// signature — the closure env param is an ABI detail added at lowering). Used
+/// for the dunder `FuncPtr` shape and as a devirtualization hint; a closure
+/// VALUE's repr is always [`generic_sig`], never this.
 pub fn sig_repr(sig: &Sig) -> SigRepr {
     SigRepr {
         params: sig.params.iter().map(repr_of).collect(),
@@ -184,16 +206,17 @@ mod tests {
 
     #[test]
     fn repr_of_callable_is_closure() {
-        // A callable VALUE always maps to the env-tuple closure repr (Phase 6A),
-        // never a bare FuncPtr.
+        // A callable VALUE always maps to the uniform env-tuple closure repr
+        // (the single `GENERIC_SIG` ABI), regardless of its precise signature —
+        // so a genuinely-`Dyn` callee is callable through the same indirect ABI.
         let c = callable(vec![SemTy::Int], SemTy::Int);
         match repr_of(&c) {
-            Repr::Closure(sig) => {
-                assert_eq!(sig.params, vec![Repr::Tagged]); // int -> Tagged
-                assert_eq!(*sig.ret, Repr::Tagged);
-            }
+            Repr::Closure(sig) => assert_eq!(*sig, generic_sig()),
             other => panic!("expected Closure, got {other:?}"),
         }
+        // A different precise signature still yields the very same repr.
+        let c2 = callable(vec![SemTy::Str, SemTy::Float], SemTy::NoneTy);
+        assert_eq!(repr_of(&c), repr_of(&c2));
         assert!(repr_of(&c).is_gc_root());
     }
 

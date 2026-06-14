@@ -95,6 +95,16 @@ const PHASE_CORPUS: &[&str] = &[
     // test_functions.py lift, Phase 2 (b1) — closure/lambda values typed
     // `Callable(sig)`: a lambda or returned closure bound and called by value.
     "p39_closure_values.py",
+    // Uniform value-call carrying KEYWORDS into a kwonly / `**kwargs` closure:
+    // the call site builds a keyword dict (named + `**d` merge), and the closure's
+    // uniform thunk normalizes the null `__kwargs__` sentinel (no-keyword common
+    // path) to an empty dict, so `**kwargs` inspection / kwonly binding is sound.
+    "p40_value_call_kwargs.py",
+    // Runtime callable guard on the uniform value-call path: a non-closure `Dyn`
+    // callee (int / str / None / a DATA tuple — distinct `Closure` vs `Tuple` tag)
+    // raises `TypeError` instead of crashing on a bad slot-0 read; a real closure
+    // through the same `Dyn` path still calls. Pins the closure/tuple tag split.
+    "p41_call_guard.py",
     // Phase 6D — user decorators (functions).
     "p6_decorators.py",
     // Phase 6E — generators, send/close, generator expressions, GC soak.
@@ -587,6 +597,17 @@ const PHASE_CORPUS: &[&str] = &[
     "test_gc_simple.py",
     "test_generators.py",
     "test_print_output.py",
+    // Consolidated functions suite (LIFTED): its last out-of-scope root was a
+    // genuinely-`Dyn` callee that is a native closure (a curried `chain(1)(2)(3)`
+    // whose intermediate returns widen to `Dyn`; an unannotated decorator's
+    // `func()`). The uniform value-call convention closes it — every closure's
+    // slot 0 is one arity-generic `(args, kwargs) → Value` thunk, so a `Dyn`
+    // callee is callable through the single indirect ABI (the precise `Callable`
+    // typing is now only a devirtualization hint). A pre-existing inliner bug
+    // (a value-returning callee's bare-`return`/fall-off left the call's `dst`
+    // stale under -O) rode along its `_test_mixed_value_void` probe and is fixed.
+    // Byte-matches CPython end-to-end (debug + release).
+    "test_functions.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

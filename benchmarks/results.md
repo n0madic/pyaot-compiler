@@ -114,3 +114,27 @@
 | bench_containers | 0.098129s | 0.171591s | 1.75x |
 | bench_exc_hotpath | 0.143464s | 0.117930s | 0.82x |
 | microgpt | 0.040027s | 0.044985s | 1.12x |
+
+## 2026-06-14 22:29 — e6d50d0 — uniform-value-call
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.692466s | 0.344283s | 0.50x |
+| bench_float_kernel | 0.160385s | 0.367251s | 2.29x |
+| bench_calls | 0.657994s | 0.925629s | 1.41x |
+| bench_str | 0.117348s | 0.123222s | 1.05x |
+| bench_containers | 0.097232s | 0.171364s | 1.76x |
+| bench_exc_hotpath | 0.139624s | 0.117822s | 0.84x |
+| microgpt | 0.040863s | 0.045104s | 1.10x |
+
+> **Note (uniform-value-call regression):** `bench_calls` (a closure `f(v, w)` called in
+> a 3M-iteration hot loop) regressed ~16% vs the prior baseline (`b87168d`: 0.568s →
+> 0.658s; ratio 1.63x → 1.41x) — the uniform value-call ABI now allocates a per-call
+> positional args-tuple at every value-position (indirect) call. This is the accepted
+> cost of the single sound `Dyn`-callee ABI, **recoverable** by the deferred
+> devirtualization pass (rewrite a monomorphic `CallIndirect` whose `MakeClosure`
+> `FuncId` is statically known back to a direct `Call`). **microgpt is unaffected**
+> (0.040s → 0.041s, within noise): its hot path is class-method dispatch (vtable = direct
+> calls), no value-position closure in the loop. Other benches are within run-to-run
+> noise (int-loop stays the A7 irreducible-loop limitation). lambda/HOF-heavy code shows
+> this regression until devirtualization lands.

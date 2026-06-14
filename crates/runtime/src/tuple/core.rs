@@ -7,10 +7,12 @@ use crate::object::{Obj, TypeTagKind};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
 use pyaot_core_defs::Value;
 
-/// Create a new tuple with given size.
-/// Returns: pointer to allocated TupleObj
-pub fn rt_make_tuple(size: i64) -> *mut Obj {
-    use crate::object::{TupleObj, TypeTagKind};
+/// Allocate a `TupleObj`-layout object of `size` slots (all null-initialized)
+/// with the given runtime `tag` — the shared core of [`rt_make_tuple`] (tag
+/// `Tuple`) and [`rt_make_closure`] (tag `Closure`). The two differ ONLY by the
+/// tag; the memory layout and GC tracing are identical.
+fn make_tuple_like(size: i64, tag: TypeTagKind) -> *mut Obj {
+    use crate::object::TupleObj;
 
     let size = size.max(0) as usize;
 
@@ -34,7 +36,7 @@ pub fn rt_make_tuple(size: i64) -> *mut Obj {
     };
 
     // Allocate TupleObj using GC
-    let obj = gc::gc_alloc(tuple_size, TypeTagKind::Tuple as u8);
+    let obj = gc::gc_alloc(tuple_size, tag as u8);
 
     unsafe {
         let tuple = obj as *mut TupleObj;
@@ -49,10 +51,31 @@ pub fn rt_make_tuple(size: i64) -> *mut Obj {
 
     obj
 }
+
+/// Create a new tuple with given size.
+/// Returns: pointer to allocated TupleObj
+pub fn rt_make_tuple(size: i64) -> *mut Obj {
+    make_tuple_like(size, TypeTagKind::Tuple)
+}
 #[export_name = "rt_make_tuple"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_make_tuple_abi(size: i64) -> Value {
     Value::from_ptr(rt_make_tuple(size))
+}
+
+/// Create a new closure env tuple of `size` slots (`1 + N` for a target + `N`
+/// captures), tagged [`TypeTagKind::Closure`]. Identical `TupleObj` layout to a
+/// plain tuple — `rt_tuple_get`/`rt_tuple_set` operate on it for slot access and
+/// the GC traces it like a tuple — but the distinct tag lets `rt_call_check`
+/// accept only genuine closures (a data `tuple` is rejected, closing the
+/// `(1, 2)()` SEGV).
+pub fn rt_make_closure(size: i64) -> *mut Obj {
+    make_tuple_like(size, TypeTagKind::Closure)
+}
+#[export_name = "rt_make_closure"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_closure_abi(size: i64) -> Value {
+    Value::from_ptr(rt_make_closure(size))
 }
 
 /// Set element in tuple at given index (used during tuple construction)
@@ -62,7 +85,16 @@ pub fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
     }
 
     unsafe {
-        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_tuple_set");
+        // Closures share the `TupleObj` layout (a distinct tag, same slots), so
+        // the closure machinery stores its slot 0 / captures through here too.
+        debug_assert!(
+            matches!(
+                (*tuple).type_tag(),
+                TypeTagKind::Tuple | TypeTagKind::Closure
+            ),
+            "rt_tuple_set: expected Tuple or Closure, got {:?}",
+            (*tuple).type_tag()
+        );
         let tuple_obj = tuple as *mut crate::object::TupleObj;
         let len = (*tuple_obj).len as i64;
 
@@ -97,7 +129,16 @@ pub fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_tuple_get");
+        // Closures share the `TupleObj` layout (a distinct tag, same slots): the
+        // CallIndirect slot-0 read and a closure's capture reads come through here.
+        debug_assert!(
+            matches!(
+                (*tuple).type_tag(),
+                TypeTagKind::Tuple | TypeTagKind::Closure
+            ),
+            "rt_tuple_get: expected Tuple or Closure, got {:?}",
+            (*tuple).type_tag()
+        );
         let tuple_obj = tuple as *mut crate::object::TupleObj;
         let len = (*tuple_obj).len as i64;
 

@@ -179,6 +179,12 @@ define_tag_kinds! {
     // Arbitrary-precision integer (heap). It is still a Python `int`, so its
     // type_class/type_name match `int`. The one sanctioned substrate extension.
     BigInt = 29 => "BigInt" => "<class 'int'>" => "int",
+    // A closure value (Phase 6 uniform value-call ABI): physically a `TupleObj`
+    // (slot 0 the int-tagged target code address, slots 1..=N the captured cells),
+    // but a DISTINCT tag so a data `tuple` is never mistaken for a callable —
+    // `rt_call_check` accepts only `Closure`, closing the `(1, 2)()` SEGV. The GC
+    // traces it exactly like `Tuple` (same layout). type() reports `function`.
+    Closure = 30 => "Closure" => "<class 'function'>" => "function",
 }
 
 #[cfg(test)]
@@ -240,7 +246,8 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(27), Some(TypeTagKind::Request));
         assert_eq!(TypeTagKind::from_tag(28), Some(TypeTagKind::NotImplemented));
         assert_eq!(TypeTagKind::from_tag(29), Some(TypeTagKind::BigInt));
-        assert_eq!(TypeTagKind::from_tag(30), None);
+        assert_eq!(TypeTagKind::from_tag(30), Some(TypeTagKind::Closure));
+        assert_eq!(TypeTagKind::from_tag(31), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

@@ -119,12 +119,17 @@ struct RuntimeFns {
     make_dict: FuncId,
     make_set: FuncId,
     make_tuple: FuncId,
+    /// Allocates a `Closure`-tagged env tuple (`MakeClosure` slot 0 + captures).
+    make_closure: FuncId,
     make_bytes: FuncId,
     list_push: FuncId,
     list_set: FuncId,
     dict_set: FuncId,
     set_add: FuncId,
     tuple_set: FuncId,
+    /// Guards an indirect call's callee (must be a closure tuple) — `TypeError`
+    /// on a non-callable value instead of a bad slot-0 read.
+    call_check: FuncId,
     list_get: FuncId,
     dict_get: FuncId,
     tuple_get: FuncId,
@@ -336,12 +341,14 @@ impl RuntimeFns {
             make_dict: d("rt_make_dict", &[ti], &[ti])?,
             make_set: d("rt_make_set", &[ti], &[ti])?,
             make_tuple: d("rt_make_tuple", &[ti], &[ti])?,
+            make_closure: d("rt_make_closure", &[ti], &[ti])?,
             make_bytes: d("rt_make_bytes", &[ptr, ptr], &[ti])?,
             list_push: d("rt_list_push", &[ti, ti], &[])?,
             list_set: d("rt_list_set", &[ti, ti, ti], &[])?,
             dict_set: d("rt_dict_set", &[ti, ti, ti], &[])?,
             set_add: d("rt_set_add", &[ti, ti], &[])?,
             tuple_set: d("rt_tuple_set", &[ti, ti, ti], &[])?,
+            call_check: d("rt_call_check", &[ti], &[ti])?,
             list_get: d("rt_list_get", &[ti, ti], &[ti])?,
             dict_get: d("rt_dict_get", &[ti, ti], &[ti])?,
             tuple_get: d("rt_tuple_get", &[ti, ti], &[ti])?,
@@ -2198,10 +2205,12 @@ impl FnGen<'_, '_> {
         Ok(())
     }
 
-    /// Lower `MakeClosure` (Phase 6A): an ordinary runtime tuple of `1+N` slots.
-    /// Slot 0 holds the target's code address **int-tagged** (`(addr << 3) | 1`)
-    /// so the GC's `is_ptr` check skips it when tracing tuple slots; slots
-    /// `1..=N` hold the captured cells (tagged Values, traced normally).
+    /// Lower `MakeClosure` (Phase 6A): a `Closure`-tagged runtime tuple of `1+N`
+    /// slots (same `TupleObj` layout as a plain tuple, distinct tag so a data
+    /// `tuple` is never mistaken for a callable — `rt_call_check`). Slot 0 holds the
+    /// target's code address **int-tagged** (`(addr << 3) | 1`) so the GC's `is_ptr`
+    /// check skips it when tracing slots; slots `1..=N` hold the captured cells
+    /// (tagged Values, traced normally).
     fn lower_make_closure(
         &mut self,
         dst: LocalId,
@@ -2212,7 +2221,7 @@ impl FnGen<'_, '_> {
             .builder
             .ins()
             .iconst(types::I64, 1 + captures.len() as i64);
-        let env = self.call(self.rt.make_tuple, &[count]).unwrap();
+        let env = self.call(self.rt.make_closure, &[count]).unwrap();
         // Root the env tuple immediately: the capture stores below call into the
         // runtime, and a later allocation must not collect it.
         self.def_local(dst, env);
@@ -2245,7 +2254,11 @@ impl FnGen<'_, '_> {
         args: &[Operand],
         sig: &pyaot_types::SigRepr,
     ) -> Result<()> {
-        let env = self.use_operand(callee);
+        // Guard the callee: a non-callable value (an immediate or non-tuple heap
+        // object) raises `TypeError` instead of mis-reading slot 0. Returns the
+        // (verified) env tuple.
+        let raw_callee = self.use_operand(callee);
+        let env = self.call(self.rt.call_check, &[raw_callee]).unwrap();
         let slot0 = self.builder.ins().iconst(types::I64, 0);
         let tagged_addr = self.call(self.rt.tuple_get, &[env, slot0]).unwrap();
         let fnaddr = self

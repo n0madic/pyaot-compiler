@@ -338,6 +338,20 @@ pub enum HirExprKind {
         callee: Idx<HirExpr>,
         args: Vec<Idx<HirExpr>>,
     },
+    /// A **pre-packed** indirect call through a callable VALUE: `callee` is a
+    /// closure value and `args` is an already-built `tuple[Dyn, ...]` of the
+    /// positional arguments, with `kwargs` an optional `dict[str, Dyn]` (the null
+    /// sentinel when absent). Unlike [`HirExprKind::Call`], the args are NOT
+    /// individually slot-matched / packed by lowering — they are handed straight
+    /// to the uniform closure ABI (`CallIndirect` over `GENERIC_SIG`). The
+    /// frontend emits this only where the positional sequence cannot be expressed
+    /// as flat args — a runtime `*seq` spread / `**dict` forward into a value
+    /// callee (e.g. a decorator wrapper's `func(*args, **kwargs)`).
+    CallValue {
+        callee: Idx<HirExpr>,
+        args: Idx<HirExpr>,
+        kwargs: Option<Idx<HirExpr>>,
+    },
 
     // ── containers (Phase 4) ──
     /// A list literal `[e0, e1, …]` (possibly empty).

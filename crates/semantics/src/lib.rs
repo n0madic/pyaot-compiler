@@ -761,11 +761,11 @@ print(add(1, 2))
             .functions
             .iter()
             .any(|f| interner.resolve(f.name) == "add.<orig>"));
-        // ... and a `<thunk>` adapter for it.
+        // ... and a `<uniform>` value-call adapter thunk for it.
         assert!(module
             .functions
             .iter()
-            .any(|f| interner.resolve(f.name).contains("add.<orig>.<thunk>")));
+            .any(|f| interner.resolve(f.name).contains("add.<orig>.<uniform>")));
         // Every resolved `add` name occurrence is NOT a Symbol::Function.
         for func in &module.functions {
             for (_idx, expr) in func.exprs.iter() {

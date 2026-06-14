@@ -38,9 +38,10 @@
 //! are the linker's problem (`-dead_strip` / `--gc-sections`).
 
 use pyaot_mir::{
-    CoerceInst, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator, Operand,
+    CoerceInst, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator,
+    Operand,
 };
-use pyaot_types::Repr;
+use pyaot_types::{RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
 
 use crate::OptimizationPass;
@@ -253,15 +254,27 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
         let rb = |b: BlockId| BlockId::new(b_off + b.index() as u32);
         let term = match &cb.term {
             MirTerminator::Return(op) => {
-                if let (Some(d), Some(op)) = (dst, op) {
-                    // The return value moves into the call's dst (reprs are
-                    // identical: callee.ret == dst's repr, verifier-checked).
-                    let Operand::Local(src) = op;
-                    let src = LocalId::new(l_off + src.index() as u32);
-                    let ret_repr = caller.locals[d.index()].repr.clone();
-                    let mv = CoerceInst::new(d, Operand::Local(src), ret_repr.clone(), ret_repr)
-                        .expect("identity coercion is always legal");
-                    insts.push(MirInst::Coerce(mv));
+                if let Some(d) = dst {
+                    match op {
+                        // The return value moves into the call's dst (reprs are
+                        // identical: callee.ret == dst's repr, verifier-checked).
+                        Some(Operand::Local(src)) => {
+                            let src = LocalId::new(l_off + src.index() as u32);
+                            let ret_repr = caller.locals[d.index()].repr.clone();
+                            let mv =
+                                CoerceInst::new(d, Operand::Local(src), ret_repr.clone(), ret_repr)
+                                    .expect("identity coercion is always legal");
+                            insts.push(MirInst::Coerce(mv));
+                        }
+                        // A bare `return` / fall-off in a **value-returning** callee
+                        // yields its return repr's default — the SAME value codegen's
+                        // `default_ret` emits when not inlined (`Tagged → None`,
+                        // `Raw(F64) → 0.0`, `Raw(I*) → 0`). Without this write the
+                        // call's `dst` is left holding a STALE value across the
+                        // inlined None path (a `def f(): if x: return x` then a bare
+                        // `return` reads back the previous result, not `None`).
+                        None => emit_default_ret(&mut insts, caller, d),
+                    }
                 }
                 MirTerminator::Jump(cont)
             }
@@ -290,6 +303,36 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
         handler: site_handler,
     });
     cont.index()
+}
+
+/// Write the default return value for `d`'s repr — the value an inlined callee's
+/// bare `return` / fall-off (`MirTerminator::Return(None)`) must store into the
+/// call's `dst`, mirroring codegen's [`default_ret`] for the non-inlined ABI:
+/// `Tagged → None`, `Raw(F64) → 0.0`, `Raw(I*) → 0`. A typed-heap / closure
+/// return (rare for a bare return) takes the `None` bits via a `Tagged` temp + the
+/// gradual retype — the same `NONE_TAG` codegen returns for an I64-class slot.
+fn emit_default_ret(insts: &mut Vec<MirInst>, caller: &mut MirFunction, d: LocalId) {
+    let repr = caller.locals[d.index()].repr.clone();
+    let val = match &repr {
+        Repr::Raw(RawKind::F64) => Const::Float(0.0),
+        Repr::Raw(_) => Const::Int(0),
+        Repr::Tagged => Const::None,
+        _ => {
+            let tmp = LocalId::new(caller.locals.len() as u32);
+            caller.locals.push(LocalDecl {
+                repr: Repr::Tagged,
+            });
+            insts.push(MirInst::Const {
+                dst: tmp,
+                val: Const::None,
+            });
+            let mv = CoerceInst::new(d, Operand::Local(tmp), Repr::Tagged, repr)
+                .expect("Tagged -> heap/closure is the gradual retype");
+            insts.push(MirInst::Coerce(mv));
+            return;
+        }
+    };
+    insts.push(MirInst::Const { dst: d, val });
 }
 
 /// Tarjan SCC over the direct-call graph (iterative). Returns each

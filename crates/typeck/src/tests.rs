@@ -670,21 +670,26 @@ print(f(1))
 }
 
 #[test]
-fn rejects_calling_dyn_value() {
-    // Calling a value of unknown (Dyn) type cannot build an indirect-call
-    // signature → a loud compile error (Phase 6A).
+fn accepts_calling_dyn_value() {
+    // Uniform value-call convention: calling a genuinely-`Dyn` value is ADMITTED
+    // (Principle 2 — inference is no longer required for correctness). The
+    // closure's slot 0 is the arity-generic uniform thunk; a non-callable `Dyn`
+    // raises `TypeError` at run time (the runtime callable guard), not at compile
+    // time.
     let src = "\
 def f(g):
     return g()
 print(f(0))
 ";
-    assert!(try_infer(src).is_err());
+    assert!(try_infer(src).is_ok());
 }
 
 #[test]
-fn rejects_callable_sig_repr_mismatch() {
-    // Passing a closure whose signature differs from the annotated `Callable`
-    // slot is rejected (the slot IS the native call ABI, Phase 6A).
+fn accepts_callable_sig_mismatch_uniform() {
+    // Every closure shares the ONE uniform repr, so a closure of ANY signature
+    // fits a `Callable[...]` slot — the precise signature is a devirtualization
+    // hint, not an ABI contract. Arity is bound/checked at run time by the thunk,
+    // never statically.
     let src = "\
 from typing import Callable
 def takes(f: Callable[[int], int]) -> int:
@@ -693,20 +698,22 @@ def two(a: int, b: int) -> int:
     return a + b
 print(takes(two))
 ";
-    assert!(try_infer(src).is_err());
+    assert!(try_infer(src).is_ok());
 }
 
 #[test]
-fn indirect_arg_poly_guard_fires() {
-    // An indirect call guards each argument against the callee's param reprs:
-    // a `float`-annotated param fed an `int` is rejected (the poly(3) seam).
+fn indirect_call_has_no_static_arg_guard() {
+    // The uniform value-call path packs args into a tuple and binds them in the
+    // thunk at run time (with the Phase-1 checked unbox), so there is no static
+    // per-argument reinterpret boundary at an indirect call site — this type-checks
+    // (the `int` 3 is checked-unboxed into the `float` param at run time).
     let src = "\
 from typing import Callable
 def apply(f: Callable[[float], float]) -> float:
     return f(3)
 print(apply(lambda x: x))
 ";
-    assert!(try_infer(src).is_err());
+    assert!(try_infer(src).is_ok());
 }
 
 #[test]

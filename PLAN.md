@@ -238,20 +238,52 @@ These few gaps block the most files — close them before the long tail.
   `CallIndirect` ABI (no new runtime; `closure_sem_ty` mirrors `repr_of`, and the
   raw-int proofs are gated off for any address-taken function, so the closure ABI stays
   the Tagged baseline). Gated by `corpus/p39_closure_values.py`.
-- **`corpus/test_functions.py` stays OFF.** The remaining blockers are NOT new roots
-  but one out-of-scope construct: a **genuinely-`Dyn` callee** that is a *native*
-  closure (a curried chain `chain(1)(2)(3)` whose intermediate return widens to `Dyn`
-  because an unannotated nested `def`'s declared return is `Dyn`; an unannotated
-  decorator's `func()` and its slot). These need a *sound* uniform dynamic-call ABI,
-  which the file proves is impossible without per-callee ABI info: native closures
-  carry typed-param signatures, so the generic-thunk `(tuple, dict)` convention
-  (correct for decorated thunks / 0-arg wrappers) silently MIS-PASSES a fixed-arity
-  closure's positional args (`chain`'s `inner2(c)` would read the packed tuple as `c`
-  → `int + tuple`). Routing `Dyn` callees through it would convert a loud
-  "cannot call a value of unknown type" into silent runtime corruption, violating the
-  always-correct Tagged baseline (Principle 2), so it is refused. The real fix is
-  precise nested-closure return-type inference (so these callees stay `Callable` and
-  ride the native ABI) — a `typeck` fixpoint improvement, out of scope here.
+- ~~**`corpus/test_functions.py` stays OFF.**~~ — LIFTED by the **uniform value-call
+  convention** (the sound root fix for `Dyn` callees). Its last out-of-scope root was
+  a genuinely-`Dyn` callee that is a *native* closure (a curried chain
+  `chain(1)(2)(3)` whose intermediate return widens to `Dyn`; an unannotated
+  decorator's `func()` and its slot). The prior two value-call mechanisms (the
+  Phase-6D decorator generic `(tuple, dict)` thunk and the Phase-6A typed
+  top-level-fn-value thunk) are replaced by **one**: every function that can become a
+  closure value gets an **arity-generic uniform entry** `F.<uniform>(env, args_tuple,
+  kwargs_dict) → Value` as its slot 0, `repr_of(Callable) → Closure(GENERIC_SIG)` for
+  ALL closures, and **every** indirect call routes through that single ABI
+  (`lower_indirect_call` packs the positional args into a tuple + null kwargs;
+  `CallValue` pre-packs a `*seq`/`**dict` forward). The uniform thunk does the
+  runtime arg→param bind (positional / defaults / `*args` / the Phase-1 **checked**
+  float/bool unbox via `bind_arg_checked`) then makes ONE **direct** call to `F`
+  (specialized native ABI — the hot path is untouched). So a fixed-arity native
+  closure is bound correctly, not corrupted; Principle 2 becomes literally true for
+  callables (the precise `Callable` sig demotes to an optional devirtualization
+  *hint*); and the closure-leaked-through-`Dyn` hole closes. A non-callable `Dyn`
+  callee raises `TypeError` at run time (`rt_call_check` guards slot 0; a
+  statically-known non-callable is still a loud compile error). Closures carry a
+  **distinct `TypeTagKind::Closure`** (same `TupleObj` layout, allocated by
+  `rt_make_closure`; GC traces it like a tuple), so a *data* tuple is never
+  mistaken for a callable — `rt_call_check` accepts only the `Closure` tag, closing
+  the former `(1, 2)()` / `Dyn`-holding-a-data-tuple SEGV (it was newly reachable
+  once `Dyn` callees stopped being a compile error). Gated by
+  `corpus/p41_call_guard.py`. A pre-existing
+  inliner bug rode along the file's `_test_mixed_value_void` probe — a value-returning
+  callee's bare-`return`/fall-off (`Return(None)`) left the call's `dst` STALE under
+  `-O` instead of writing the default return value; fixed in `optimizer::inline`
+  (`emit_default_ret`, mirroring codegen's `default_ret`). Byte-matches CPython
+  end-to-end (debug + release).
+  - ~~Deferred: a value call *carrying* keyword args into a keyword-only / `**kwargs`
+    closure.~~ — DONE: `lower_indirect_or_unknown_call` now accepts `name=value` and
+    `**d` on a value-position call (`build_indirect_kwargs` builds the keyword dict
+    from named entries + `**d` merges in source order → the `kwargs` slot of
+    `CallValue`); the callee's uniform thunk **normalizes** the null `__kwargs__`
+    sentinel (no-keyword common path → no alloc) into a fresh empty dict via
+    `kd = {}; kd.update(__kwargs__)` (`rt_dict_update` is null-tolerant), so kwonly
+    binding (`dict.get`/`dict[]`) and `**kwargs` forwarding never dereference null.
+    Keywords reach the closure's keyword-only / `**kwargs` params; binding a
+    *positional* param BY keyword through a value call stays out of scope (the
+    positional slots are still matched positionally — a loud arity error, not a
+    crash). Gated by `corpus/p40_value_call_kwargs.py`.
+  - Still deferred: the heap-arg seam (`list`/`str` param of a `Dyn` callee) keeps
+    the existing `TaggedToHeap` trust; devirtualization of monomorphic indirect
+    calls back to the specialized ABI is a separate additive optimizer pass.
 
 ### 2. Operators & expressions
 - ~~**`is`/`is not` against non-`None`**~~ — DONE: `x is True`, `a is b` lower to

@@ -30,6 +30,28 @@ unsafe fn raise_type_error(msg: &'static str) -> ! {
     raise_exc!(pyaot_core_defs::BuiltinExceptionKind::TypeError, "{}", msg)
 }
 
+/// Verify a value is callable before an indirect (value-position) call, returning
+/// it unchanged on success. Every closure is a `Closure`-tagged `TupleObj` (slot 0
+/// the int-tagged uniform-thunk address, slots `1..=N` the captures), so a callable
+/// is exactly a non-null `Closure`-tagged pointer. An immediate (int / bool / None
+/// / float), a non-closure heap object, OR a **data `tuple`** (which now has a
+/// distinct `Tuple` tag) is not callable → `TypeError`, matching CPython's "object
+/// is not callable" instead of crashing on a bad slot-0 read. The distinct tag
+/// closes the former `(1, 2)()` SEGV (a data tuple is no longer mistaken for a
+/// closure).
+#[export_name = "rt_call_check"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_call_check(callee: Value) -> Value {
+    let ptr = callee.0 as *mut Obj;
+    let callable =
+        callee.is_ptr() && !ptr.is_null() && unsafe { (*ptr).type_tag() } == TypeTagKind::Closure;
+    if !callable {
+        // SAFETY: static byte string literal is valid for the duration of the call.
+        unsafe { raise_type_error("object is not callable") };
+    }
+    callee
+}
+
 /// len(obj) -> *mut Obj (boxed Int)
 /// Returns the length of sequences (list, tuple, dict, set, str, bytes).
 pub fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
