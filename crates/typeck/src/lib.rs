@@ -2123,6 +2123,15 @@ impl<'a> Sweeper<'a> {
                 _ => {}
             }
         }
+        // int / bool receiver methods (§9): all four yield `int`
+        // (`bit_length`/`bit_count` counts; `conjugate`/`__index__` the value
+        // itself — bool widens to int, so the result is Int-typed not Bool).
+        if matches!(recv, SemTy::Int | SemTy::Bool) {
+            match self.interner.resolve(method_name) {
+                "bit_length" | "bit_count" | "conjugate" | "__index__" => return SemTy::Int,
+                _ => {}
+            }
+        }
         // A stdlib runtime object's method (`m.group()`, Phase 8C): typed from
         // its `StdlibMethodDef` in the object-type registry.
         if let SemTy::RuntimeObject(tag) = &recv {

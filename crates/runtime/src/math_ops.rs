@@ -1,19 +1,56 @@
 //! Mathematical operations for Python runtime
 
+use pyaot_core_defs::Value;
+
+use crate::bigint::{classify_num, make_int_value, Num};
+
 /// `int.bit_length()` — number of bits needed to represent the absolute
 /// value, ignoring sign and leading zeros. `(0).bit_length() == 0`,
-/// `(255).bit_length() == 8`, `(-7).bit_length() == 3`. Uses `unsigned_abs`
-/// so `i64::MIN` does not overflow.
-#[no_mangle]
-pub extern "C" fn rt_int_bit_length(n: i64) -> i64 {
-    (64 - n.unsigned_abs().leading_zeros()) as i64
+/// `(255).bit_length() == 8`, `(-7).bit_length() == 3`. The argument is a
+/// tagged `int` / `bool` `Value` (the receiver baseline, §9); a heap `BigInt`
+/// uses `BigInt::bits()`, a fixnum/bool `unsigned_abs().leading_zeros()` (so
+/// `i64::MIN` does not overflow). The bit count itself always fits a fixnum.
+#[export_name = "rt_int_bit_length"]
+pub extern "C" fn rt_int_bit_length(n: Value) -> i64 {
+    // SAFETY: `n` is an int/bool tagged value or a live heap `BigInt` (typeck
+    // gates the receiver to `int`/`bool`); `classify_num` only derefs a ptr
+    // after confirming its type tag.
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => (64 - i.unsigned_abs().leading_zeros()) as i64,
+        Some(Num::Big(b)) => b.bits() as i64,
+        // Unreachable for an int/bool receiver; a defensive 0 (not a SEGV).
+        _ => 0,
+    }
 }
 
 /// `int.bit_count()` (Python 3.10+) — number of set bits in the absolute
-/// value. `(255).bit_count() == 8`, `(-7).bit_count() == 3`.
-#[no_mangle]
-pub extern "C" fn rt_int_bit_count(n: i64) -> i64 {
-    n.unsigned_abs().count_ones() as i64
+/// value. `(255).bit_count() == 8`, `(-7).bit_count() == 3`. Bignum-aware via
+/// `BigUint::count_ones()` on the magnitude; the argument is a tagged
+/// `int` / `bool` `Value`.
+#[export_name = "rt_int_bit_count"]
+pub extern "C" fn rt_int_bit_count(n: Value) -> i64 {
+    // SAFETY: see `rt_int_bit_length`.
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => i.unsigned_abs().count_ones() as i64,
+        Some(Num::Big(b)) => b.magnitude().count_ones() as i64,
+        _ => 0,
+    }
+}
+
+/// `int.conjugate()` / `int.__index__()` — an int is its own conjugate and its
+/// own index, so this returns the receiver's integer VALUE. Normalizes a
+/// `bool` receiver to its int value (`True.conjugate() == 1`) and preserves a
+/// bignum (re-boxed via `make_int_value`, demoting to a fixnum when it fits).
+/// The argument is a tagged `int` / `bool` `Value`; the result is a tagged int.
+#[export_name = "rt_int_index"]
+pub extern "C" fn rt_int_index(n: Value) -> Value {
+    // SAFETY: see `rt_int_bit_length`.
+    match unsafe { classify_num(n) } {
+        Some(Num::Int(i)) => Value::from_int(i),
+        Some(Num::Big(b)) => Value::from_ptr(make_int_value(b)),
+        // Unreachable for an int/bool receiver; return the value verbatim.
+        _ => n,
+    }
 }
 
 /// Power function: pow(base, exp) -> f64

@@ -329,14 +329,7 @@ const PHASE_CORPUS: &[&str] = &[
     "p18_scalar_builtins.py",
     // Consolidated core-types/operators suite (514 lines, no imports). Its sole
     // §5 blocker was `round` — closed by p18, so it now byte-matches CPython
-    // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF: its
-    // §5 introspection blockers (`issubclass`/`getattr`/`hasattr`/`setattr`,
-    // gated by `p30_introspection.py`) and its multi-iterable `zip` blocker
-    // (line 1324, §12, gated by `p31_zip_multi.py`) are now BOTH closed, but each
-    // fix unmasked the next phase's blocker. The remaining wall is a cluster of
-    // INT METHODS it exercises — `(n).bit_length()` (line 60), `.bit_count()`,
-    // `.conjugate()`, `.__index__()` — a §9 int-method gap (needs runtime
-    // bignum-aware impls). Keep OFF until int methods land.
+    // end-to-end and is lifted onto the gate.
     "test_core_types.py",
     // §9 str methods (runtime-ready batch): split/rsplit/splitlines, replace,
     // lstrip/rstrip, removeprefix/removesuffix, expandtabs, partition/
@@ -476,9 +469,7 @@ const PHASE_CORPUS: &[&str] = &[
     // was fixed to the CPython oracle). `test_format_spec.py` crosses format with
     // f-strings × user classes × functions × dynamic specs; `p29_format.py` covers
     // the `.format`/`!a` shapes. (`test_strings.py` stays OFF — needs the PEP-501
-    // `=` self-documenting f-string; `test_builtins.py` introspection + multi-zip
-    // blockers are now done — see `test_core_types.py` above for its remaining
-    // int-method wall.)
+    // `=` self-documenting f-string.)
     "test_format_spec.py",
     "p29_format.py",
     // §5 introspection builtins (`getattr`/`setattr`/`hasattr`/`issubclass`) —
@@ -491,7 +482,8 @@ const PHASE_CORPUS: &[&str] = &[
     // round-trips, and already-green features (f-strings, arithmetic). Scope
     // limits (clean errors): dynamic getattr (non-literal name), getattr 3-arg
     // default, hasattr on a Dyn receiver, issubclass with a builtin-type / tuple
-    // arg. (`test_builtins.py` still OFF — see below.)
+    // arg. (One of the four blockers that, together with p31/p32, lifted
+    // `test_builtins.py` — below.)
     "p30_introspection.py",
     // Multi-iterable `zip` (3+ iterables), §12. The runtime already had
     // `rt_zip3_new`/`rt_zipn_new` + the Zip3/ZipN iterator objects; only the
@@ -502,8 +494,30 @@ const PHASE_CORPUS: &[&str] = &[
     // `list(zip(xs, ys, zs))` types as `list[tuple[X,Y,Z]]` and fills an
     // annotated container slot. The 2-iterable `rt_zip_new` path is unchanged.
     // Covers 3/4/5-arity, shortest-wins, direct for-unpacking, and the 2-arity
-    // regression. (Closed `test_builtins.py`'s line-1324 blocker — see below.)
+    // regression. (Closed `test_builtins.py`'s line-1324 blocker.)
     "p31_zip_multi.py",
+    // §9 int / bool methods: `bit_length` / `bit_count` / `conjugate` /
+    // `__index__`. `bit_*` route to BIGNUM-AWARE runtime counts (the pre-existing
+    // `rt_int_bit_*` were rewired from a raw-i64 ABI to a tagged `Value` that
+    // `classify_num`-splits fixnum vs heap `BigInt`); `conjugate`/`__index__`
+    // return the receiver's int value via the new `rt_int_index` (bool→int 0/1,
+    // bignum preserved), so a bool receiver is Int-typed (no i8/i64 verifier
+    // clash). Covers fixnum/bignum/bool receivers, loop-var receivers, and a
+    // comprehension/f-string cross. (Closed `test_builtins.py`'s line-60 blocker.)
+    "p32_int_methods.py",
+    // Comprehensive builtins suite (1633 lines) — LIFTED. Its blocker chain fell
+    // across every phase as each fix unmasked the next: `issubclass`/`getattr`/
+    // `hasattr`/`setattr` (semantics, p30) → multi-iterable `zip` into a typed
+    // `list[tuple[…]]` slot (typeck, p31) → int methods (lowering, p32) → the
+    // `hash()` builtin (codegen: a `K::Hash` arm wiring the pre-existing
+    // `rt_builtin_hash`, plus `hash(None)` → CPython 3.12's `0xFCA86420` instead
+    // of 0) → zero-arg `int()`/`float()`/`bool()` (folded to their default
+    // constants, never an arity-mismatched `rt_builtin_*` call) → two-arg
+    // `int(str, base)` (routed to `rt_str_to_int_with_base`, whose descriptor was
+    // corrected to `[Tagged, Raw]` so the base rides a raw i64). Byte-matches
+    // CPython end-to-end (hash/id values are never printed — only determinism and
+    // fixed cases like `hash(True)==1` are asserted).
+    "test_builtins.py",
     // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
     // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
     // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally

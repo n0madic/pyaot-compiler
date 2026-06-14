@@ -91,6 +91,7 @@ struct RuntimeFns {
     obj_lshift: FuncId,
     obj_rshift: FuncId,
     builtin_abs: FuncId,
+    builtin_hash: FuncId,
     builtin_int: FuncId,
     builtin_float: FuncId,
     builtin_str: FuncId,
@@ -306,6 +307,7 @@ impl RuntimeFns {
             obj_lshift: d("rt_obj_lshift", &[ti, ti], &[ti])?,
             obj_rshift: d("rt_obj_rshift", &[ti, ti], &[ti])?,
             builtin_abs: d("rt_builtin_abs", &[ti], &[ti])?,
+            builtin_hash: d("rt_builtin_hash", &[ti], &[ti])?,
             builtin_int: d("rt_builtin_int", &[ti], &[ti])?,
             builtin_float: d("rt_builtin_float", &[ti], &[ti])?,
             builtin_str: d("rt_builtin_str", &[ti], &[ti])?,
@@ -2674,6 +2676,7 @@ impl FnGen<'_, '_> {
         use pyaot_mir::BuiltinFunctionKind as K;
         Ok(match kind {
             K::Abs => self.rt.builtin_abs,
+            K::Hash => self.rt.builtin_hash,
             K::Int => self.rt.builtin_int,
             K::Float => self.rt.builtin_float,
             K::Str => self.rt.builtin_str,
@@ -2684,11 +2687,6 @@ impl FnGen<'_, '_> {
             K::Chr => self.rt.builtin_chr,
             K::Type => self.rt.builtin_type,
             K::Ascii => self.rt.builtin_ascii,
-            other => {
-                return Err(cg_error(format!(
-                    "builtin {other:?} not supported in Phase 2"
-                )))
-            }
         })
     }
 

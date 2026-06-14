@@ -156,7 +156,7 @@ These few gaps block the most files — close them before the long tail.
 | ~~**`*seq` spread into a non-`*args` callee**~~ — DONE (backlog §1) | 3 | ~~`f() takes no *args, cannot spread * into it`~~ |
 | ~~**Nested destructuring** `a, (b, c) = …` (assign / `for` / comprehension)~~ — DONE (backlog §4) | 2 | ~~`tuple/list unpacking assignment is not yet supported`~~ |
 | ~~**Attr/subscript `for`-targets + non-literal `range()` step**~~ — DONE (backlog §4) | 1 | ~~`unsupported for-loop target` / `range() step must be an integer literal`~~ |
-| ~~**`type()` builtin** (incl. `type(x).__name__`)~~ — DONE (§6); `hash()` still pending | 3 | ~~`builtin Type not supported in Phase 2`~~ |
+| ~~**`type()` builtin** (incl. `type(x).__name__`)~~ — DONE (§6); ~~`hash()`~~ — DONE (§6) | 3 | ~~`builtin Type not supported in Phase 2`~~ |
 | ~~**int→float numeric tower through a `float` slot**~~ — DONE for return + annotated-local seams (§8); global/field/param deferred | 2 | ~~`int cannot be returned/assigned to a float slot`~~ |
 
 ### 1. Calls & arguments
@@ -393,13 +393,10 @@ These few gaps block the most files — close them before the long tail.
   Scope limits (clean compile errors): dynamic `getattr(o, name_var)`
   (non-literal name), `getattr` 3-arg default, `hasattr` on a `Dyn`/non-class
   receiver, `issubclass` with a builtin-type (`issubclass(bool,int)`) or tuple
-  second arg. Gated by `corpus/p30_introspection.py`. `test_builtins.py` stays
-  OFF the gate: these four fixes closed its introspection blockers, and the
-  follow-up multi-`zip` work (below) closed its line-1324 blocker, but each fix
-  unmasks the next phase's blocker. The remaining wall is a cluster of INT
-  METHODS it exercises — `(n).bit_length()` (line 60), `.bit_count()`,
-  `.conjugate()`, `.__index__()` — a §9 int-method gap (needs runtime
-  bignum-aware impls). Keep OFF until int methods land.
+  second arg. Gated by `corpus/p30_introspection.py`. One of the four blockers
+  that, together with the multi-`zip` (§12), int-method (§9), and `hash`/zero-arg-
+  `int`/`int(str,base)` (§6) fixes, finally **LIFTED `test_builtins.py`** onto the
+  gate (its blocker chain fell across every phase, each fix unmasking the next).
 - **Still pending**: `object` (`object.__new__`), `NotImplemented` (these belong
   to the class-OOP cluster that `test_classes.py` needs — gated by
   `@abstractmethod`, not part of the introspection step).
@@ -411,12 +408,25 @@ These few gaps block the most files — close them before the long tail.
   lowering peephole through `rt_type_name_extract` (same runtime string, bare last
   segment). Out of scope (unprobed divergences): `type(x) is T` / `type(x) is
   type(y)` (pointer-identity on distinct StrObjs; `p11_is_identity.py` already
-  defers it) and `repr(type(x))` (would add quotes). `test_builtins.py` /
-  `test_classes.py` (the type-blocked files) stay OFF the gate — now blocked by
-  unrelated gaps (`format` §5, with `map`/`filter` now done; the `@` matmul
-  operator §11 respectively).
-- **`hash()`** — still pending (`builtin Hash not supported in Phase 2`; needs its
-  own probe and a `rt_builtin_hash` codegen arm).
+  defers it) and `repr(type(x))` (would add quotes). `test_builtins.py` is now
+  **LIFTED** (all its blockers closed — see below); `test_classes.py` stays OFF
+  (the `@abstractmethod` wall, §11).
+- ~~**`hash()`**~~ — DONE: a `K::Hash` codegen arm wiring the pre-existing
+  `rt_builtin_hash` (which already returns the right tagged-int hash for
+  int/bool/str/float/tuple via `rt_hash_*`). One fix: `hash(None)` now returns
+  CPython 3.12's fixed `0xFCA86420` (the builtin must be non-zero; the dict-key
+  hashing path `hash_hashable_obj` keeps its own 0 for bucket placement). The
+  `builtin_fn` match is now exhaustive (all 12 kinds wired). Gated via
+  `test_builtins.py`. (Bignum `hash()` still raises "unhashable" — a pre-existing
+  limit, not exercised; CPython's `_PyHASH_MODULUS` folding is a later add.)
+- ~~**zero-arg `int()`/`float()`/`bool()`**~~ — DONE: folded to their default
+  constants (`0`/`0.0`/`False`) in lowering, never an arity-mismatched unary
+  `rt_builtin_*` call (which built invalid Cranelift IR). Other zero-arg builtins
+  now get a clean error instead of invalid IR.
+- ~~**two-arg `int(str, base)`**~~ — DONE: routed to the (pre-existing)
+  `rt_str_to_int_with_base`, whose descriptor was corrected from `binary_to_i64`
+  (`[Tagged, Tagged]`) to `[Tagged, Raw]` so the base rides a raw i64, not its
+  tagged bits. Handles `0x`/`0b`/`0o` prefixes. Gated via `test_builtins.py`.
 
 ### 7. `isinstance`
 - **Tuple of types** — `isinstance(x, (int, str))` (single-type form works).
@@ -437,11 +447,16 @@ These few gaps block the most files — close them before the long tail.
     - **Passing int/bool to a `float` PARAMETER** (free-fn / method / ctor / dunder). The method/ctor/dunder arg seams pass `(loc, repr)` without a per-arg `SemTy`, so `needs_check` can't be evaluated without threading types through. Kept rejecting to avoid an accept-then-SEGV.
 
 ### 9. Methods on builtin types
-- **`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__` — **still
-  pending** (deliberately OUT of the bytes/tuple/set/dict batch): the runtime
-  formatters are raw-`i64` (`rt_int_bit_length`/`bit_count`), so a bignum-aware
-  check is needed before wiring (a tagged `int` may be a heap `BigInt`, B16) —
-  the same hazard `bin`/`hex`/`oct` solved with TAGGED-`Value` runtime fns (§5).
+- ~~**`int`**: `bit_length`, `bit_count`, `conjugate`, `__index__`~~ — DONE.
+  Dispatched on an int/bool receiver in `lower_method_call` (`lower_int_method`),
+  typed `→ Int`. The pre-existing `rt_int_bit_length`/`rt_int_bit_count` were
+  rewired from a raw-`i64` ABI to a tagged `Value` that `classify_num`-splits
+  fixnum vs heap `BigInt` (the B16 hazard `bin`/`hex`/`oct` solved the same way —
+  `BigInt::bits()` / `BigUint::count_ones()`). `conjugate`/`__index__` return the
+  receiver's int value via the new `rt_int_index` (bool → int 0/1, bignum
+  preserved), so a bool receiver is **Int-typed** — avoiding the i8-vs-i64
+  verifier clash a naive bool pass-through would hit. Gated by
+  `corpus/p32_int_methods.py` (+ the lifted `test_builtins.py`).
 - **`str`**: ~~`split`, `rsplit`, `splitlines`, `replace`, `lstrip`/`rstrip`,
   `removeprefix`/`removesuffix`, `expandtabs`, `partition`/`rpartition`,
   `rindex`, `encode`, predicates `isdigit`/`isalpha`/`isalnum`/`isspace`/

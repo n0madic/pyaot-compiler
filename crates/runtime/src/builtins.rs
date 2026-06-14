@@ -273,11 +273,19 @@ pub extern "C" fn rt_builtin_abs_abi(obj: Value) -> Value {
 
 /// hash(obj) -> *mut Obj (boxed Int)
 /// Returns hash value of hashable object.
+/// CPython 3.12's fixed `hash(None)` constant (`0xFCA86420`). The builtin
+/// `hash()` returns this for `None`; the dict-key hashing path keeps its own 0.
+const HASH_NONE: i64 = 0xFCA8_6420;
+
 pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
     // Check tagged primitives before heap dereference.
     let v = Value(obj as u64);
     let value = if obj.is_null() || v.is_none() {
-        0 // hash(None) == 0
+        // CPython 3.12 gives `None` a FIXED non-zero hash (`0xFCA86420`),
+        // distinct from the dict-key hashing path (`hash_hashable_obj`, which
+        // keeps the legacy 0 for bucket placement). `hash(None)` the builtin
+        // must be non-zero to match the oracle.
+        HASH_NONE
     } else if v.is_int() {
         crate::hash::rt_hash_int(v.unwrap_int())
     } else if v.is_bool() {
@@ -300,7 +308,7 @@ pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
                 }
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
                 TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
-                TypeTagKind::None => 0,
+                TypeTagKind::None => HASH_NONE,
                 _ => raise_type_error("unhashable type"),
             }
         }

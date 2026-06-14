@@ -893,10 +893,15 @@ pub static RT_ROUND_TO_DIGITS: RuntimeFuncDef =
 pub static RT_INT_TO_CHR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_chr");
 /// rt_chr_to_int(s: *mut Obj) -> i64
 pub static RT_CHR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_chr_to_int");
-/// rt_int_bit_length(n: i64) -> i64 — `int.bit_length()`
+/// rt_int_bit_length(n: Value) -> i64 — `int.bit_length()`. The arg is a tagged
+/// int/bool `Value` (bignum-aware); the count is a raw i64.
 pub static RT_INT_BIT_LENGTH: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_int_bit_length");
-/// rt_int_bit_count(n: i64) -> i64 — `int.bit_count()` (3.10+)
+/// rt_int_bit_count(n: Value) -> i64 — `int.bit_count()` (3.10+). Tagged
+/// int/bool arg (bignum-aware); raw i64 count.
 pub static RT_INT_BIT_COUNT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_int_bit_count");
+/// rt_int_index(n: Value) -> Value — `int.conjugate()` / `int.__index__()`: the
+/// receiver's integer value (bool → int, bignum preserved). Tagged in, tagged out.
+pub static RT_INT_INDEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_index");
 
 // ===== Comparison operations =====
 // Compare(kind, op) → static defs for all valid (kind, op) combinations.
@@ -1009,9 +1014,19 @@ pub static RT_STR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_str_
 /// rt_str_to_float(s: *mut Obj) -> f64
 pub static RT_STR_TO_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_str_to_float", &[PI64], Some(RF64), false);
-/// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64
-pub static RT_STR_TO_INT_WITH_BASE: RuntimeFuncDef =
-    RuntimeFuncDef::binary_to_i64("rt_str_to_int_with_base");
+/// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 — `int(s, base)`. The
+/// string is a tagged `Value`; the base is a RAW i64 (not a tagged int), so this
+/// needs the mixed `[Tagged, Raw]` semantics, NOT `binary_to_i64`'s `[Tagged,
+/// Tagged]` (which would feed the runtime the base's tagged bits).
+const STR_BASE_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
+pub static RT_STR_TO_INT_WITH_BASE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_to_int_with_base",
+    &[PI64, PI64],
+    Some(RI64),
+    false,
+    STR_BASE_BINARY,
+    Some(MirSemantic::Raw),
+);
 /// rt_builtin_int(obj: Value) -> Value (boxed Int). Dynamic `int(obj)` for
 /// non-statically-resolved args (Union/Any/class instance): dispatches
 /// `__int__`, raises TypeError for non-convertible types.

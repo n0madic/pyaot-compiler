@@ -2124,6 +2124,56 @@ impl<'a> FnLower<'a> {
         )?))
     }
 
+    /// Lower an `int` / `bool` receiver method (§9). All four are zero-arg and
+    /// yield `int`. `bit_length`/`bit_count` route to bignum-aware runtime counts
+    /// (`rt_int_bit_*`, Tagged receiver → Raw(I64) → tagged int). `conjugate` /
+    /// `__index__` return the receiver's int value via `rt_int_index` (which
+    /// widens a `bool` to its int 0/1 and preserves a bignum), so a `bool`
+    /// receiver produces an Int-typed result, never a tagged bool. Returns `None`
+    /// for an unrecognized name so the caller falls through.
+    fn lower_int_method(
+        &mut self,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        span: pyaot_utils::Span,
+    ) -> Result<Option<(LocalId, Repr)>> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let name = self.interner.resolve(method_name);
+        let def: &'static pyaot_core_defs::RuntimeFuncDef = match name {
+            "bit_length" => &rf::RT_INT_BIT_LENGTH,
+            "bit_count" => &rf::RT_INT_BIT_COUNT,
+            "conjugate" | "__index__" => &rf::RT_INT_INDEX,
+            _ => return Ok(None),
+        };
+        if !args.is_empty() {
+            return Err(CompilerError::semantic_error(
+                format!("`int.{name}()` takes no arguments"),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_tagged = self.coerce(rl, rr, Repr::Tagged)?;
+        // `bit_*` return a Raw(I64) count (normalized to a tagged int); `index`
+        // returns the tagged int value directly.
+        let returns_count = matches!(name, "bit_length" | "bit_count");
+        let dst = self.alloc_temp(if returns_count {
+            Repr::Raw(RawKind::I64)
+        } else {
+            Repr::Tagged
+        });
+        self.emit(MirInst::CallRuntime {
+            dst: Some(dst),
+            def,
+            args: vec![Operand::Local(recv_tagged)],
+        });
+        if returns_count {
+            Ok(Some(self.normalize_container_result(dst, Repr::Raw(RawKind::I64))?))
+        } else {
+            Ok(Some((dst, Repr::Tagged)))
+        }
+    }
+
     /// Shared post-plan emitter for a sequence-method runtime call (`str`/
     /// `bytes`). Given a descriptor already resolved from a `StrPlan`/`BytesPlan`
     /// row, it runs the common arg loop and emits the `CallRuntime`:
@@ -2881,6 +2931,13 @@ impl<'a> FnLower<'a> {
         // split/rsplit/strip family/upper/lower/join).
         if matches!(recv_ty, SemTy::Bytes) {
             if let Some(res) = self.lower_bytes_method(call_idx, recv, method_name, args, span)? {
+                return Ok(res);
+            }
+        }
+        // int / bool receiver methods (§9): `bit_length`/`bit_count` (bignum-aware
+        // runtime counts) and `conjugate`/`__index__` (the receiver's int value).
+        if matches!(recv_ty, SemTy::Int | SemTy::Bool) {
+            if let Some(res) = self.lower_int_method(recv, method_name, args, span)? {
                 return Ok(res);
             }
         }
@@ -4398,6 +4455,67 @@ impl<'a> FnLower<'a> {
         match sym {
             Symbol::Builtin(kind) => {
                 use pyaot_mir::BuiltinFunctionKind as BK;
+                // Zero-arg type-conversion builtins yield their default constant
+                // (CPython: `int() == 0`, `float() == 0.0`, `bool() == False`).
+                // The unary `rt_builtin_*` take one argument, so calling them with
+                // none would build an arity-mismatched (invalid) Cranelift call —
+                // fold the literal here instead. (`list()`/`dict()`/… empty forms
+                // ride the separate `Symbol::Container` path.)
+                if args.is_empty() {
+                    match kind {
+                        BK::Int => {
+                            let dst = self.alloc_temp(Repr::Tagged);
+                            self.emit(MirInst::Const {
+                                dst,
+                                val: Const::Int(0),
+                            });
+                            return Ok((dst, Repr::Tagged));
+                        }
+                        BK::Bool => {
+                            let dst = self.alloc_temp(Repr::Tagged);
+                            self.emit(MirInst::Const {
+                                dst,
+                                val: Const::Bool(false),
+                            });
+                            return Ok((dst, Repr::Tagged));
+                        }
+                        BK::Float => {
+                            let dst = self.alloc_temp(Repr::Raw(RawKind::F64));
+                            self.emit(MirInst::Const {
+                                dst,
+                                val: Const::Float(0.0),
+                            });
+                            return Ok((dst, Repr::Raw(RawKind::F64)));
+                        }
+                        // Every other builtin (incl. `str()` — needs an interned
+                        // empty string, out of scope here; and `abs()`/`ord()`/…
+                        // which are `TypeError` with no args) gets a clean error,
+                        // never an arity-mismatched runtime call.
+                        _ => {
+                            return Err(CompilerError::semantic_error(
+                                format!("`{kind:?}()` requires at least one argument"),
+                                span,
+                            ))
+                        }
+                    }
+                }
+                // `int(s, base)` — the two-arg form parses string `s` in the
+                // given radix via `rt_str_to_int_with_base` (the base is a RAW
+                // i64). The generic unary `rt_builtin_int` path ignores a second
+                // argument (parsing in base 10), so intercept here.
+                if kind == BK::Int && args.len() == 2 {
+                    let (sl, sr) = self.lower_expr(args[0])?;
+                    let s_tagged = self.coerce(sl, sr, Repr::Tagged)?;
+                    let (bl, br) = self.lower_expr(args[1])?;
+                    let base_raw = self.coerce_to_i64(bl, br)?;
+                    let dst = self.alloc_temp(Repr::Raw(RawKind::I64));
+                    self.emit(MirInst::CallRuntime {
+                        dst: Some(dst),
+                        def: &pyaot_core_defs::runtime_func_def::RT_STR_TO_INT_WITH_BASE,
+                        args: vec![Operand::Local(s_tagged), Operand::Local(base_raw)],
+                    });
+                    return self.normalize_container_result(dst, Repr::Raw(RawKind::I64));
+                }
                 // `str(x)` / `repr(x)` of a concrete class instance route to the
                 // user dunder (CPython precedence: `str` → `__str__` then
                 // `__repr__`; `repr` → `__repr__`), mirroring the print path (5C).
