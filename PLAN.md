@@ -419,10 +419,14 @@ These few gaps block the most files — close them before the long tail.
   `builtin_fn` match is now exhaustive (all 12 kinds wired). Gated via
   `test_builtins.py`. (Bignum `hash()` still raises "unhashable" — a pre-existing
   limit, not exercised; CPython's `_PyHASH_MODULUS` folding is a later add.)
-- ~~**zero-arg `int()`/`float()`/`bool()`**~~ — DONE: folded to their default
-  constants (`0`/`0.0`/`False`) in lowering, never an arity-mismatched unary
-  `rt_builtin_*` call (which built invalid Cranelift IR). Other zero-arg builtins
-  now get a clean error instead of invalid IR.
+- ~~**zero-arg `int()`/`float()`/`bool()`/`str()`**~~ — DONE: folded to their
+  default constants (`0`/`0.0`/`False`/`""`), never an arity-mismatched unary
+  `rt_builtin_*` call (which built invalid Cranelift IR). `int`/`float`/`bool`
+  fold in lowering; `str()` folds to a `""` literal in the FRONTEND (the mutable
+  interner lives there — lowering's is immutable), unshadowed-gated so a user
+  `str` binding still wins. Other zero-arg builtins get a clean error, not
+  invalid IR. Gated by `corpus/p33_zero_arg_conversions.py` (+ `test_builtins.py`
+  for int/float/bool).
 - ~~**two-arg `int(str, base)`**~~ — DONE: routed to the (pre-existing)
   `rt_str_to_int_with_base`, whose descriptor was corrected from `binary_to_i64`
   (`[Tagged, Tagged]`) to `[Tagged, Raw]` so the base rides a raw i64, not its

@@ -6639,6 +6639,16 @@ impl<'a> FnLowerer<'a> {
                         reject_call_extras(c, span, "format()")?;
                         return self.lower_format_builtin(&c.args, span);
                     }
+                    // `str()` with no args → the empty string. Interned HERE (the
+                    // frontend owns the mutable interner; lowering's is immutable
+                    // and cannot mint the `""` literal). The one-arg `str(x)` form
+                    // fails this guard and falls through to the `Symbol::Builtin`
+                    // path, which honours `__str__`/`__repr__`.
+                    "str" if c.args.is_empty() => {
+                        reject_call_extras(c, span, "str()")?;
+                        let id = self.intern("");
+                        return Ok(self.alloc(HirExprKind::StrLit(id), SemTy::Str, span));
+                    }
                     "getattr" => {
                         reject_call_extras(c, span, "getattr()")?;
                         return self.lower_getattr_builtin(&c.args, span);

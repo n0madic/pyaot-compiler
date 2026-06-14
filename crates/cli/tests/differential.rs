@@ -505,6 +505,14 @@ const PHASE_CORPUS: &[&str] = &[
     // clash). Covers fixnum/bignum/bool receivers, loop-var receivers, and a
     // comprehension/f-string cross. (Closed `test_builtins.py`'s line-60 blocker.)
     "p32_int_methods.py",
+    // Zero-arg type conversions `int()`/`float()`/`bool()`/`str()` → their
+    // defaults (`0`/`0.0`/`False`/`""`). `int`/`float`/`bool` fold to a constant
+    // in lowering; `str()` folds to a `""` literal in the FRONTEND (interning
+    // lives there — lowering's interner is immutable). A no-arg call must never
+    // reach the unary `rt_builtin_*` (arity-mismatched, invalid IR). Covers the
+    // empty-string shape (len/concat/join/truthiness), arithmetic use, the
+    // with-args forms (no regression), and the unshadowed gate.
+    "p33_zero_arg_conversions.py",
     // Comprehensive builtins suite (1633 lines) — LIFTED. Its blocker chain fell
     // across every phase as each fix unmasked the next: `issubclass`/`getattr`/
     // `hasattr`/`setattr` (semantics, p30) → multi-iterable `zip` into a typed

@@ -4487,10 +4487,10 @@ impl<'a> FnLower<'a> {
                             });
                             return Ok((dst, Repr::Raw(RawKind::F64)));
                         }
-                        // Every other builtin (incl. `str()` — needs an interned
-                        // empty string, out of scope here; and `abs()`/`ord()`/…
-                        // which are `TypeError` with no args) gets a clean error,
-                        // never an arity-mismatched runtime call.
+                        // `str()` with no args is desugared to a `""` literal in
+                        // the frontend (interning lives there). Everything else
+                        // here (`abs()`/`ord()`/… — a `TypeError` with no args)
+                        // gets a clean error, never an arity-mismatched call.
                         _ => {
                             return Err(CompilerError::semantic_error(
                                 format!("`{kind:?}()` requires at least one argument"),
