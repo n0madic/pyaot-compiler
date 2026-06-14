@@ -378,10 +378,31 @@ These few gaps block the most files — close them before the long tail.
   non-empty spec formats the int 1/0 — `f"{True:5}"` == "    1", NOT " True"; the
   test file's stale assertion was fixed to the live oracle). Gated by the lifted
   `corpus/test_format_spec.py` + `corpus/p29_format.py`. See §9/§13 below.
-- **Still pending**: `getattr` (literal-name), `setattr`, `hasattr`, `issubclass`,
-  `object` (`object.__new__`), `NotImplemented`. `test_builtins.py` stays OFF the
-  gate — its 21 `format()` sites are now covered, but it still needs
-  `issubclass`/`getattr`/`hasattr`.
+- ~~**`getattr`/`setattr`/`hasattr`/`issubclass`**~~ — DONE (the §5 introspection
+  set, ZERO runtime changes — all collapse onto existing machinery, exactly the
+  `isinstance` template). `getattr(o,"x")` ≡ `o.x` and `setattr(o,"x",v)` ≡
+  `o.x=v` are pure FRONTEND desugars onto the existing `Attribute` read /
+  `SetAttr` write (static `GetField`/`SetField` for a concrete receiver; a `Dyn`
+  receiver rides the gradual `GetFieldNamed`/`SetFieldNamed` →
+  `rt_getattr_name`/`rt_setattr_name` path for free). `hasattr(o,"x")` and
+  `issubclass(A,B)` are two new compile-time-`Bool` HIR nodes (`HasAttr`,
+  `IsSubclass`) folded in `lowering` to `Const::Bool` — `hasattr` from the
+  receiver's `ClassInfo` (field/method/property/static-/class-method/class-attr),
+  `issubclass` via `ClassTable::is_subclass` (the C3-MRO check) — just like
+  `IsInstanceBuiltin`. Unshadowed-gated (a user `def getattr(...)` still wins).
+  Scope limits (clean compile errors): dynamic `getattr(o, name_var)`
+  (non-literal name), `getattr` 3-arg default, `hasattr` on a `Dyn`/non-class
+  receiver, `issubclass` with a builtin-type (`issubclass(bool,int)`) or tuple
+  second arg. Gated by `corpus/p30_introspection.py`. `test_builtins.py` stays
+  OFF the gate: these four fixes closed its introspection blockers, and the
+  follow-up multi-`zip` work (below) closed its line-1324 blocker, but each fix
+  unmasks the next phase's blocker. The remaining wall is a cluster of INT
+  METHODS it exercises — `(n).bit_length()` (line 60), `.bit_count()`,
+  `.conjugate()`, `.__index__()` — a §9 int-method gap (needs runtime
+  bignum-aware impls). Keep OFF until int methods land.
+- **Still pending**: `object` (`object.__new__`), `NotImplemented` (these belong
+  to the class-OOP cluster that `test_classes.py` needs — gated by
+  `@abstractmethod`, not part of the introspection step).
 
 ### 6. Builtins — `Phase 2 codegen not supported`
 - ~~**`type()`**~~ — DONE: incl. `type(x).__name__`, `str(type(x))`,
@@ -508,7 +529,16 @@ These few gaps block the most files — close them before the long tail.
 ### 12. Typing / generics
 - **Subscripted instance annotation** — `b: Box[int] = …` (the `Generic[T]` base parses; the `Name[T]` *annotation use* fails).
 - **`Protocol` base class** — `unknown base class Protocol` (structural subtyping unsupported); also **`Protocol[T]`** subscripted base.
-- **`zip()` with 3+ iterables** — exactly two are supported.
+- ~~**`zip()` with 3+ iterables**~~ — DONE. The runtime already had
+  `rt_zip3_new`/`rt_zipn_new` + the Zip3/ZipN iterator objects (kind-dispatched
+  `rt_iter_next`); only the front-half was wired for 2. `zip(a,b,c,…)` (N≥3) now
+  lowers to a fresh runtime list of the N `iter()`-wrapped sources +
+  `rt_zipn_new(list, count)` (one new `ContainerOp::ZipN`, ABI `[Val, Idx]`,
+  Heap result), and typeck infers the element as a fixed-arity `tuple[…]` (one
+  type per iterable), so `list(zip(xs, ys, zs))` types as `list[tuple[X,Y,Z]]`
+  and fills an annotated container slot. The 2-iterable `rt_zip_new` path is
+  unchanged. Gated by `corpus/p31_zip_multi.py`. (No runtime change — the
+  substrate was already complete.)
 
 ### 13. f-strings
 - ~~**Dynamic/nested format specs** — `f"{x:.{n}f}"`, `f"{x:{w}d}"`.~~ DONE — the
@@ -563,11 +593,14 @@ Read the matching note before starting an item.
   needs no runtime callback machinery at all. The per-element call rides the
   uniform tagged indirect-call/`Symbol`-dispatch path, so builtin callbacks
   (`map(str, …)`) work with no extra code. Gated by `corpus/p28_map_filter.py`.
-- **§5 `getattr`/`setattr`/`hasattr` (literal name).** Desugar in the frontend
-  to direct attribute access so the dynamic-`getattr` out-of-scope boundary
-  stays syntactic. For `hasattr` on a gradual receiver the previous compiler's
-  design is reusable: a name-hash method/field registry probe (existence-only,
-  no vtable lookup).
+- ~~**§5 `getattr`/`setattr`/`hasattr` (literal name) + `issubclass`.**~~ DONE
+  (see the §5 Builtins entry above). Desugared in the frontend to direct
+  attribute access (`getattr`/`setattr` → `Attribute`/`SetAttr`) plus two
+  compile-time-`Bool` fold nodes (`HasAttr`/`IsSubclass`) — the `isinstance`
+  template, ZERO runtime changes. The dynamic-`getattr` out-of-scope boundary
+  stays syntactic (a non-literal name is a clean error). `hasattr` on a gradual
+  receiver is still a loud error (the name-hash method/field registry probe is a
+  later add when a corpus needs it). Gated by `corpus/p30_introspection.py`.
 - **§6 `type()`.** DONE. `print(type(x))` / `str(type(x))` give the
   module-qualified `<class '__main__.Foo'>`, `type(x).__name__` the bare name, and
   the default instance repr is module-qualified again — all three from ONE metadata

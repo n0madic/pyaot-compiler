@@ -726,11 +726,15 @@ fn record_all(
         HirExprKind::Attribute { value, .. }
         | HirExprKind::IsInstance { value, .. }
         | HirExprKind::IsInstanceBuiltin { value, .. }
+        | HirExprKind::HasAttr { value, .. }
         | HirExprKind::IsNone { value }
         | HirExprKind::ExcInstanceStr { value } => {
             child(*value, rec);
             Interval::Top
         }
+        // `issubclass(sub, sup)` carries no expr children (both are `ClassId`s) —
+        // it folds to a compile-time `Bool`, so it is a `⊤` leaf.
+        HirExprKind::IsSubclass { .. } => Interval::Top,
         HirExprKind::Sum { iterable, start } => {
             child(*iterable, rec);
             if let Some(s) = start {

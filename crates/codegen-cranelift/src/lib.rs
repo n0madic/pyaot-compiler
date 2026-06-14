@@ -146,6 +146,7 @@ struct RuntimeFns {
     // ── iteration builtins (Phase 4C) ──
     iter_enumerate: FuncId,
     zip_new: FuncId,
+    zipn_new: FuncId,
     list_from_iter: FuncId,
     tuple_from_iter: FuncId,
     dict_from_pairs: FuncId,
@@ -359,6 +360,8 @@ impl RuntimeFns {
             iter_is_exhausted: d("rt_iter_is_exhausted", &[ti], &[t8])?,
             iter_enumerate: d("rt_iter_enumerate", &[ti, ti], &[ti])?,
             zip_new: d("rt_zip_new", &[ti, ti], &[ti])?,
+            // rt_zipn_new(iters_list: Value, count: i64) -> iterator
+            zipn_new: d("rt_zipn_new", &[ti, ti], &[ti])?,
             list_from_iter: d("rt_list_from_iter", &[ti], &[ti])?,
             tuple_from_iter: d("rt_tuple_from_iter", &[ti], &[ti])?,
             dict_from_pairs: d("rt_dict_from_pairs", &[ti], &[ti])?,
@@ -2562,6 +2565,7 @@ impl FnGen<'_, '_> {
             ContainerOp::IterExhausted => self.rt.iter_is_exhausted,
             ContainerOp::Enumerate => self.rt.iter_enumerate,
             ContainerOp::Zip => self.rt.zip_new,
+            ContainerOp::ZipN => self.rt.zipn_new,
             ContainerOp::ListFromIter => self.rt.list_from_iter,
             ContainerOp::TupleFromIter => self.rt.tuple_from_iter,
             ContainerOp::DictFromPairs => self.rt.dict_from_pairs,

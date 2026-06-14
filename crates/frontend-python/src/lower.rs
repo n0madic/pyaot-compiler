@@ -5326,6 +5326,84 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
+    /// `getattr(obj, "name")` (§5) ≡ `obj.name` — a pure frontend desugar onto the
+    /// existing [`HirExprKind::Attribute`] read (static `GetField` for a concrete
+    /// receiver, gradual `GetFieldNamed` → `rt_getattr_name` for a `Dyn` one). The
+    /// name must be a string literal — dynamic `getattr(o, var)` is the documented
+    /// out-of-scope boundary — and the 3-arg `default` form is rejected.
+    fn lower_getattr_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        match args.len() {
+            2 => {}
+            3 => return Err(parse_error("getattr() default is out of scope", span)),
+            _ => return Err(parse_error("getattr() takes two arguments", span)),
+        }
+        let name = string_literal_arg(&args[1]).ok_or_else(|| {
+            parse_error("dynamic getattr (non-literal name) is out of scope", span)
+        })?;
+        let value = self.lower_expr(&args[0])?;
+        let name = self.intern(name);
+        Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))
+    }
+
+    /// `setattr(obj, "name", value)` (§5) ≡ `obj.name = value` — a pure frontend
+    /// desugar onto the existing [`HirStmt::SetAttr`] write (the `SetFieldNamed`
+    /// legalize path for a gradual receiver). The name must be a string literal;
+    /// the call evaluates to `None` (CPython's `setattr` return).
+    fn lower_setattr_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 3 {
+            return Err(parse_error("setattr() takes three arguments", span));
+        }
+        let name = string_literal_arg(&args[1]).ok_or_else(|| {
+            parse_error("dynamic setattr (non-literal name) is out of scope", span)
+        })?;
+        let base = self.lower_expr(&args[0])?;
+        let value = self.lower_expr(&args[2])?;
+        let name = self.intern(name);
+        self.push_stmt(HirStmt::SetAttr { base, name, value });
+        Ok(self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span))
+    }
+
+    /// `hasattr(obj, "name")` (§5) → `Bool`, folded statically at lowering from
+    /// the receiver's `ClassInfo`. The name must be a string literal; a
+    /// `Dyn` / non-class receiver is rejected in lowering (a runtime probe is out
+    /// of scope), mirroring `isinstance` against a builtin type.
+    fn lower_hasattr_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 2 {
+            return Err(parse_error("hasattr() takes two arguments", span));
+        }
+        let name = string_literal_arg(&args[1]).ok_or_else(|| {
+            parse_error("dynamic hasattr (non-literal name) is out of scope", span)
+        })?;
+        let value = self.lower_expr(&args[0])?;
+        let name = self.intern(name);
+        Ok(self.alloc(HirExprKind::HasAttr { value, name }, SemTy::Bool, span))
+    }
+
+    /// `issubclass(Sub, Sup)` (§5) → `Bool`, folded at lowering via the C3-MRO
+    /// check. Both args must be bare names resolving to user classes (mirrors the
+    /// `isinstance` builder); the builtin-type (`issubclass(bool, int)`) and tuple
+    /// second-arg forms are out of scope (clean error).
+    fn lower_issubclass_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 2 {
+            return Err(parse_error("issubclass() takes two arguments", span));
+        }
+        let resolve = |arg: &Expr| -> Option<ClassId> {
+            if let Expr::Name(n) = arg {
+                self.ctx.class_map.get(n.id.as_str()).map(|(cid, _)| *cid)
+            } else {
+                None
+            }
+        };
+        let (Some(sub), Some(sup)) = (resolve(&args[0]), resolve(&args[1])) else {
+            return Err(parse_error(
+                "issubclass() requires user-class names \
+                 (builtin-type / tuple forms out of scope)",
+                span,
+            ));
+        };
+        Ok(self.alloc(HirExprKind::IsSubclass { sub, sup }, SemTy::Bool, span))
+    }
+
     /// `"literal".format(args, kwargs)` (§9) — a literal-receiver desugar onto the
     /// f-string field machinery. Each replacement field binds to a positional /
     /// keyword arg AT COMPILE TIME, so the runtime sees the same `FormatValue`
@@ -6560,6 +6638,22 @@ impl<'a> FnLowerer<'a> {
                     "format" => {
                         reject_call_extras(c, span, "format()")?;
                         return self.lower_format_builtin(&c.args, span);
+                    }
+                    "getattr" => {
+                        reject_call_extras(c, span, "getattr()")?;
+                        return self.lower_getattr_builtin(&c.args, span);
+                    }
+                    "setattr" => {
+                        reject_call_extras(c, span, "setattr()")?;
+                        return self.lower_setattr_builtin(&c.args, span);
+                    }
+                    "hasattr" => {
+                        reject_call_extras(c, span, "hasattr()")?;
+                        return self.lower_hasattr_builtin(&c.args, span);
+                    }
+                    "issubclass" => {
+                        reject_call_extras(c, span, "issubclass()")?;
+                        return self.lower_issubclass_builtin(&c.args, span);
                     }
                     "id" => {
                         reject_call_extras(c, span, "id()")?;
@@ -8380,6 +8474,18 @@ fn flatten_attr_chain(e: &Expr) -> Option<(&str, String)> {
 /// Phase 8D).
 fn is_none_lit(e: &Expr) -> bool {
     matches!(e, Expr::Constant(c) if matches!(c.value, Constant::None))
+}
+
+/// The string value of `e` if it is a plain string-literal constant (the
+/// attribute-name argument to `getattr`/`setattr`/`hasattr`, §5).
+fn string_literal_arg(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Constant(c) => match &c.value {
+            Constant::Str(s) => Some(s.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// If `stmt` is `Name = TypeVar(...)` (or `ParamSpec`/`TypeVarTuple`), return the

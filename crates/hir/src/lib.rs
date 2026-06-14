@@ -441,6 +441,22 @@ pub enum HirExprKind {
         value: Idx<HirExpr>,
         target: SemTy,
     },
+    /// `hasattr(value, "name")` (§5) → `Bool`. Folded statically at lowering from
+    /// `value`'s `ClassInfo` (field / method / property / static- or class-method);
+    /// a `Dyn` / non-class receiver is a loud compile error (a runtime attribute
+    /// probe is out of scope), mirroring [`Self::IsInstanceBuiltin`].
+    HasAttr {
+        value: Idx<HirExpr>,
+        name: InternedString,
+    },
+    /// `issubclass(sub, sup)` (§5) → `Bool`. Both classes are resolved by the
+    /// frontend to user [`ClassId`]s; lowering folds via [`ClassTable::is_subclass`]
+    /// (the C3-MRO check). The builtin-type / tuple second-arg forms are rejected
+    /// by the frontend (out of scope).
+    IsSubclass {
+        sub: ClassId,
+        sup: ClassId,
+    },
     /// `value is None` (Phase 8D) → `Bool`, via `rt_is_none` — the identity test
     /// that recognizes both the immediate `None` tag and a heap `None` object
     /// (which `==` does not). `value is not None` is `Unary{Not, IsNone}`.
@@ -877,6 +893,11 @@ pub enum ContainerOp {
     Enumerate,
     /// `zip(iter1, iter2)` → an iterator of pairs (both args pre-wrapped).
     Zip,
+    /// `zip(iter1, …, iterN)` for N≥3 → an iterator of N-tuples. Arg 0 is a
+    /// runtime list holding the N pre-`iter()`-wrapped iterators; arg 1 is the
+    /// `Raw(I64)` count. (The 2-iterable form stays the dedicated [`Self::Zip`].)
+    /// Lowering builds the list; `rt_zipn_new` consumes it.
+    ZipN,
     /// `list(iter)` → a fresh list materialized from a pre-wrapped iterator.
     ListFromIter,
     /// `tuple(iter)` → a fresh tuple from a pre-wrapped iterator.
@@ -1122,6 +1143,9 @@ impl ContainerOp {
             | ContainerOp::TupleCmp(_)
             | ContainerOp::Zip => &[Val, Val],
             ContainerOp::Enumerate => &[Val, Idx],
+            // `rt_zipn_new(iters_list, count)` — the iterators ride a tagged list
+            // pointer, the count an unboxed `Raw(I64)`.
+            ContainerOp::ZipN => &[Val, Idx],
             ContainerOp::RangeIter => &[Idx, Idx, Idx],
             ContainerOp::Len
             | ContainerOp::Iter
@@ -1151,6 +1175,7 @@ impl ContainerOp {
             | ContainerOp::Iter
             | ContainerOp::Enumerate
             | ContainerOp::Zip
+            | ContainerOp::ZipN
             | ContainerOp::ListFromIter
             | ContainerOp::TupleFromIter
             | ContainerOp::DictFromPairs

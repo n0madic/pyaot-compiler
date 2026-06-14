@@ -1916,6 +1916,7 @@ impl<'a> Sweeper<'a> {
                 .unwrap_or(SemTy::Dyn),
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
+            HirExprKind::HasAttr { .. } | HirExprKind::IsSubclass { .. } => SemTy::Bool,
             HirExprKind::IsNone { .. } => SemTy::Bool,
             HirExprKind::Is { .. } => SemTy::Bool,
             // A stdlib runtime call types as its descriptor's declared return
@@ -2318,13 +2319,16 @@ impl<'a> Sweeper<'a> {
                 SemTy::Int,
                 iter_elem_ty(&arg0(), self.classes),
             ]))),
+            // `zip(a, b, …)` → an iterator of fixed-arity tuples, one element per
+            // iterable (any arity ≥ 2; lowering splits 2 vs N at the runtime ABI).
+            // So `list(zip(xs, ys, zs))` infers `list[tuple[X, Y, Z]]` and matches
+            // an annotated container slot.
             C::Zip => {
-                let a = iter_elem_ty(&arg0(), self.classes);
-                let b = args
-                    .get(1)
+                let elems: Vec<SemTy> = args
+                    .iter()
                     .map(|x| iter_elem_ty(&self.ety(*x), self.classes))
-                    .unwrap_or(SemTy::Dyn);
-                SemTy::Iterator(Box::new(SemTy::tuple_of(vec![a, b])))
+                    .collect();
+                SemTy::Iterator(Box::new(SemTy::tuple_of(elems)))
             }
             C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
             C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0(), self.classes)),

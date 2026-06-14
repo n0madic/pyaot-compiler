@@ -1190,6 +1190,8 @@ impl<'a> FnLower<'a> {
             HirExprKind::IsInstanceBuiltin { value, target } => {
                 self.lower_isinstance_builtin(*value, target)
             }
+            HirExprKind::HasAttr { value, name } => self.lower_hasattr(*value, *name),
+            HirExprKind::IsSubclass { sub, sup } => self.lower_issubclass(*sub, *sup),
             HirExprKind::IsNone { value } => {
                 // `value is None` → `rt_is_none(value)` (recognizes both the
                 // immediate None tag and a heap None object). Result is Raw(I8).
@@ -1552,6 +1554,60 @@ impl<'a> FnLower<'a> {
         };
         // Evaluate the receiver for side effects, then materialize the verdict.
         let _ = self.lower_expr(value)?;
+        let tagged = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst: tagged,
+            val: Const::Bool(verdict),
+        });
+        let dst = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I8))?;
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// `hasattr(value, "name")` (§5): folded statically from `value`'s
+    /// `ClassInfo`. The verdict is true iff the name resolves to any member —
+    /// field, method, `@property`, `@staticmethod`, or `@classmethod`. A
+    /// `Dyn` / non-class receiver is a loud compile error (the same posture as
+    /// [`Self::lower_isinstance_builtin`]: a runtime name-hash probe on a gradual
+    /// value is out of scope). The receiver is still evaluated for side effects.
+    fn lower_hasattr(&mut self, value: Idx<HirExpr>, name: InternedString) -> Result<(LocalId, Repr)> {
+        let got = &self.func.exprs[value].ty;
+        let span = self.func.exprs[value].span;
+        let verdict = match class_of(got, self.classes) {
+            Some(cid) => {
+                let info = self.classes.get(cid).ok_or_else(|| {
+                    CompilerError::semantic_error("hasattr() on unknown class", span)
+                })?;
+                info.field_slot(name).is_some()
+                    || info.method(name).is_some()
+                    || info.property(name).is_some()
+                    || info.static_method(name).is_some()
+                    || info.class_method(name).is_some()
+                    || info.class_attr(name).is_some()
+            }
+            None => {
+                return Err(CompilerError::type_error(
+                    "hasattr() requires a statically-typed class instance \
+                     (a runtime attribute probe on a gradual value is out of scope)",
+                    span,
+                ));
+            }
+        };
+        // Evaluate the receiver for side effects, then materialize the verdict.
+        let _ = self.lower_expr(value)?;
+        let tagged = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst: tagged,
+            val: Const::Bool(verdict),
+        });
+        let dst = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I8))?;
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// `issubclass(sub, sup)` (§5): folded statically via
+    /// [`ClassTable::is_subclass`] (the C3-MRO check). Both classes are user
+    /// classes resolved by the frontend; there is no receiver to evaluate.
+    fn lower_issubclass(&mut self, sub: ClassId, sup: ClassId) -> Result<(LocalId, Repr)> {
+        let verdict = self.classes.is_subclass(sub, sup);
         let tagged = self.alloc_temp(Repr::Tagged);
         self.emit(MirInst::Const {
             dst: tagged,
@@ -4575,18 +4631,49 @@ impl<'a> FnLower<'a> {
                     self.emit_container(C::Enumerate, vec![it, start], Some(result_heap))?;
                 Ok((dst.unwrap(), ret))
             }
-            C::Zip => {
-                if args.len() != 2 {
-                    return Err(CompilerError::semantic_error(
-                        "zip() currently supports exactly two iterables",
-                        span,
-                    ));
+            C::Zip => match args.len() {
+                // The dedicated 2-iterable path: `rt_zip_new(iter1, iter2)`.
+                2 => {
+                    let a = self.lower_iter_arg(args[0])?;
+                    let b = self.lower_iter_arg(args[1])?;
+                    let (dst, ret) = self.emit_container(C::Zip, vec![a, b], Some(result_heap))?;
+                    Ok((dst.unwrap(), ret))
                 }
-                let a = self.lower_iter_arg(args[0])?;
-                let b = self.lower_iter_arg(args[1])?;
-                let (dst, ret) = self.emit_container(C::Zip, vec![a, b], Some(result_heap))?;
-                Ok((dst.unwrap(), ret))
-            }
+                // N≥3 iterables: collect each `iter()`-wrapped source into a fresh
+                // runtime list (GC-rooted as a local), then `rt_zipn_new(list,
+                // count)`. The result is an iterator of N-tuples consumed through
+                // the normal iterator protocol (the object's kind dispatches
+                // `rt_iter_next` to `iter_next_zipn`).
+                n if n >= 3 => {
+                    let list_repr = Repr::Heap(HeapShape::List(Box::new(Repr::Tagged)));
+                    let cap = self.raw_i64_const(n as i64);
+                    let (list, _) = self.emit_container(
+                        ContainerOp::ListNew,
+                        vec![(cap, Repr::Raw(RawKind::I64))],
+                        Some(list_repr.clone()),
+                    )?;
+                    let list = list.expect("ListNew produces a list");
+                    for &arg in args {
+                        let it = self.lower_iter_arg(arg)?;
+                        self.emit_container(
+                            ContainerOp::ListPush,
+                            vec![(list, list_repr.clone()), it],
+                            None,
+                        )?;
+                    }
+                    let count = self.raw_i64_const(n as i64);
+                    let (dst, ret) = self.emit_container(
+                        ContainerOp::ZipN,
+                        vec![(list, list_repr), (count, Repr::Raw(RawKind::I64))],
+                        Some(result_heap),
+                    )?;
+                    Ok((dst.unwrap(), ret))
+                }
+                _ => Err(CompilerError::semantic_error(
+                    "zip() requires at least two iterables",
+                    span,
+                )),
+            },
             C::Sorted => {
                 // Evaluate the iterable, then the (optional) reverse flag —
                 // written order — BEFORE materializing the copy.

@@ -329,8 +329,14 @@ const PHASE_CORPUS: &[&str] = &[
     "p18_scalar_builtins.py",
     // Consolidated core-types/operators suite (514 lines, no imports). Its sole
     // §5 blocker was `round` — closed by p18, so it now byte-matches CPython
-    // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF (it
-    // still needs `issubclass`/`getattr`/`hasattr` — `map`/`filter`/`format` done).
+    // end-to-end and is lifted onto the gate. `test_builtins.py` stays OFF: its
+    // §5 introspection blockers (`issubclass`/`getattr`/`hasattr`/`setattr`,
+    // gated by `p30_introspection.py`) and its multi-iterable `zip` blocker
+    // (line 1324, §12, gated by `p31_zip_multi.py`) are now BOTH closed, but each
+    // fix unmasked the next phase's blocker. The remaining wall is a cluster of
+    // INT METHODS it exercises — `(n).bit_length()` (line 60), `.bit_count()`,
+    // `.conjugate()`, `.__index__()` — a §9 int-method gap (needs runtime
+    // bignum-aware impls). Keep OFF until int methods land.
     "test_core_types.py",
     // §9 str methods (runtime-ready batch): split/rsplit/splitlines, replace,
     // lstrip/rstrip, removeprefix/removesuffix, expandtabs, partition/
@@ -470,10 +476,34 @@ const PHASE_CORPUS: &[&str] = &[
     // was fixed to the CPython oracle). `test_format_spec.py` crosses format with
     // f-strings × user classes × functions × dynamic specs; `p29_format.py` covers
     // the `.format`/`!a` shapes. (`test_strings.py` stays OFF — needs the PEP-501
-    // `=` self-documenting f-string; `test_builtins.py` still needs
-    // `issubclass`/`getattr`/`hasattr`.)
+    // `=` self-documenting f-string; `test_builtins.py` introspection + multi-zip
+    // blockers are now done — see `test_core_types.py` above for its remaining
+    // int-method wall.)
     "test_format_spec.py",
     "p29_format.py",
+    // §5 introspection builtins (`getattr`/`setattr`/`hasattr`/`issubclass`) —
+    // all collapse onto existing machinery (ZERO runtime changes): getattr/setattr
+    // are frontend desugars onto the `Attribute` read / `SetAttr` write (static
+    // `GetField`/`SetField` for a concrete receiver), and hasattr/issubclass fold
+    // to a compile-time `Const::Bool` (from the receiver's `ClassInfo` /
+    // `ClassTable::is_subclass` C3-MRO check) exactly like `IsInstanceBuiltin`.
+    // Crosses the four with class inheritance (Animal→Dog/Cat), concrete-instance
+    // round-trips, and already-green features (f-strings, arithmetic). Scope
+    // limits (clean errors): dynamic getattr (non-literal name), getattr 3-arg
+    // default, hasattr on a Dyn receiver, issubclass with a builtin-type / tuple
+    // arg. (`test_builtins.py` still OFF — see below.)
+    "p30_introspection.py",
+    // Multi-iterable `zip` (3+ iterables), §12. The runtime already had
+    // `rt_zip3_new`/`rt_zipn_new` + the Zip3/ZipN iterator objects; only the
+    // front-half was wired for 2. Now `zip(a,b,c,…)` (N≥3) lowers to a fresh
+    // runtime list of the N `iter()`-wrapped sources + `rt_zipn_new(list, count)`
+    // (one new `ContainerOp::ZipN`, ABI `[Val, Idx]`), and typeck infers the
+    // element as a fixed-arity `tuple[…]` (one type per iterable) so
+    // `list(zip(xs, ys, zs))` types as `list[tuple[X,Y,Z]]` and fills an
+    // annotated container slot. The 2-iterable `rt_zip_new` path is unchanged.
+    // Covers 3/4/5-arity, shortest-wins, direct for-unpacking, and the 2-arity
+    // regression. (Closed `test_builtins.py`'s line-1324 blocker — see below.)
+    "p31_zip_multi.py",
     // Consolidated iteration/comprehension suite (LIFTED): its blockers fell in
     // sequence — attribute/subscript `for`-targets (p22), the standalone `iter()`
     // builtin + container `isinstance` (p23), `functools.reduce` (p24), and finally
