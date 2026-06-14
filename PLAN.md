@@ -544,7 +544,40 @@ These few gaps block the most files — close them before the long tail.
   (operator-level, a distinct feature beyond "methods on builtin types").
 
 ### 10. `collections` module
-- **`Counter`** — `undefined symbol rt_make_counter` at link. The runtime fork *already has* `counter.rs` (`rt_make_counter_empty` / `rt_make_counter_from_iter` / `rt_counter_most_common`) — the frontend emits a symbol name that doesn't exist, so this is pure wiring, not runtime work. `.total()`, `.most_common()` likewise.
+- ~~**`Counter`**~~ — DONE. Front-half WIRING over the pre-existing `counter.rs`
+  (`Counter` shares `DictObj` layout under `TypeTagKind::Counter`), plus the
+  runtime additions a differential-correct Counter needs (the original "pure
+  wiring" estimate was short — `RuntimeObject`s aren't dict-iterable, subscript,
+  repr, or truthy out of the box):
+  - **Construction**: frontend intercept (mirrors the `reduce` intercept on the
+    `COUNTER_NEW` sentinel `runtime_name`) picks `rt_make_counter_empty` (0-arg)
+    vs `rt_make_counter_from_iter` (1-arg) and types the result
+    `RuntimeObject(Counter)`. The three counting entry points
+    (`from_iter`/`update`/`subtract`) now normalize any iterable to an iterator
+    internally via `rt_iter_value_dyn` (so `c.update("ab")` works, not just
+    iterators).
+  - **Subscript**: `c[k]` → new `rt_counter_get` (missing key → boxed `0`, no
+    KeyError, no insert); `c[k] = v` / `c[k] += n` → `rt_dict_set` (intercepts in
+    `lower_subscript` / `lower_setitem` on the Counter tag).
+  - **dict-family seam**: `len` / `in` / iteration / `keys`/`values`/`items` /
+    truthiness all route through the generic tag-dispatched runtime
+    (`rt_obj_len` already had it; added `Counter` to `rt_obj_contains`,
+    `rt_iter_value_dyn`, `rt_is_truthy`, `rt_builtin_len`/bool). A new
+    `debug_assert_dict_family!` guard replaces the `== Dict` seam guard on the
+    `rt_dict_*` primitives the family shares.
+  - **repr**: `Counter({...})` in most-common order (count desc, stable ties) via
+    a new `counter_repr_string`, shared by stdout print and `str()`/`repr()`.
+  - **methods**: `.most_common()/.total()/.update()/.subtract()` dispatch via the
+    object-type registry; `keys`/`values`/`items` added there → `rt_dict_*`.
+    `most_common()` uses an `i64::MIN` no-arg sentinel (= all) distinct from an
+    explicit `most_common(0)`/`(-1)` (both `[]`) — fixed `lower_runtime_object_method`
+    to emit a method's DECLARED optional default instead of a hardcoded `0` (also
+    fixes latent `deque.rotate()`/`OrderedDict.popitem()` defaults).
+  - **annotation**: `Counter` is an annotatable param/return type (import-gated in
+    `named_annotation`; a user `class Counter` still wins).
+  - Out of scope (documented, clean): `Counter(mapping)` / `Counter(**kwargs)`
+    (would count keys), Counter arithmetic (`c1 + c2`, `&`, `|`), `.elements()`.
+  - Gated by `corpus/p35_counter.py` (byte-matches CPython, debug **and** release).
 - **`defaultdict`** — a type passed as the factory (`defaultdict(int)`); subscript-store `dd[k]=v`.
 - **`deque`** — all mutating/query methods (`append`/`appendleft`/`pop`/`popleft`/`rotate`/…) and item assignment `dq[i]=v`. (Construction, read, iteration, `list/sum/sorted(dq)` already work.)
 - **`OrderedDict`** — `move_to_end`, `popitem`.

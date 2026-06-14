@@ -655,7 +655,12 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
 
     unsafe {
         match (*container).type_tag() {
-            TypeTagKind::Dict => crate::dict::rt_dict_contains(container, elem),
+            // The dict family (Dict / DefaultDict / Counter) shares `DictObj`
+            // layout, so membership is a key lookup. `x in counter` tests for a
+            // present key (CPython: a key with count 0 is still "in").
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                crate::dict::rt_dict_contains(container, elem)
+            }
             TypeTagKind::Set => crate::set::rt_set_contains(container, elem),
             TypeTagKind::List => {
                 // Use linear search with value equality
@@ -964,7 +969,9 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
                     0
                 }
             }
-            TypeTagKind::Dict => {
+            // The dict family (Dict / DefaultDict / Counter) shares `DictObj`
+            // layout; an empty one is falsy (e.g. `not Counter()`).
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 let dict_obj = obj as *mut DictObj;
                 if (*dict_obj).len > 0 {
                     1

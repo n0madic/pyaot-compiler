@@ -16,7 +16,7 @@ pub use factory::{
     rt_iter_bytes, rt_iter_deque, rt_iter_dict, rt_iter_enumerate, rt_iter_generator, rt_iter_list,
     rt_iter_range, rt_iter_reversed_bytes, rt_iter_reversed_deque, rt_iter_reversed_dict,
     rt_iter_reversed_list, rt_iter_reversed_range, rt_iter_reversed_str, rt_iter_reversed_tuple,
-    rt_iter_set, rt_iter_str, rt_iter_tuple,
+    rt_iter_set, rt_iter_str, rt_iter_tuple, rt_iter_value_dyn,
 };
 pub(crate) use next::rt_iter_next_internal;
 pub use next::{rt_iter_is_exhausted, rt_iter_next, rt_iter_next_no_exc};

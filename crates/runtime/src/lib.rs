@@ -36,6 +36,29 @@ macro_rules! debug_assert_type_tag {
     };
 }
 
+/// Seam guard for the dict FAMILY: `Dict`, `DefaultDict`, and `Counter` all share
+/// the `DictObj` memory layout, so the same `rt_dict_*` primitives operate on any
+/// of them. Use this at shared seams instead of [`debug_assert_type_tag`] (which
+/// pins a single tag) — e.g. `rt_dict_set` is called on a `Counter` by both the
+/// compiler's subscript-write path and `counter.rs`'s own counting loops.
+#[macro_export]
+macro_rules! debug_assert_dict_family {
+    ($obj:expr, $func_name:expr) => {{
+        let tag = (*$obj).header.type_tag;
+        debug_assert!(
+            matches!(
+                tag,
+                $crate::object::TypeTagKind::Dict
+                    | $crate::object::TypeTagKind::DefaultDict
+                    | $crate::object::TypeTagKind::Counter
+            ),
+            "{}: expected a dict-family tag (Dict/DefaultDict/Counter), got {:?}",
+            $func_name,
+            tag
+        );
+    }};
+}
+
 /// Raise a runtime exception with a formatted message without leaking memory.
 ///
 /// Creates a formatted String, transfers ownership of its buffer to the exception

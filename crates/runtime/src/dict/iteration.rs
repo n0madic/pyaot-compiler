@@ -1,9 +1,9 @@
 //! Dictionary iteration: keys, values, items
 
 #[allow(unused_imports)]
-use crate::debug_assert_type_tag;
+use crate::debug_assert_dict_family;
 use crate::list::{rt_list_push, rt_make_list};
-use crate::object::{DictObj, ListObj, Obj, TypeTagKind};
+use crate::object::{DictObj, ListObj, Obj};
 use crate::tuple::{rt_make_tuple, rt_tuple_set};
 use pyaot_core_defs::Value;
 
@@ -17,7 +17,7 @@ pub fn rt_dict_keys(dict: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_keys");
+        debug_assert_dict_family!(dict, "rt_dict_keys");
         let dict_obj = dict as *mut DictObj;
         let keys_list = rt_make_list((*dict_obj).len as i64);
         let list_obj = keys_list as *mut ListObj;
@@ -61,7 +61,7 @@ pub fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_values");
+        debug_assert_dict_family!(dict, "rt_dict_values");
         let dict_obj = dict as *mut DictObj;
         let values_list = rt_make_list((*dict_obj).len as i64);
         let list_obj = values_list as *mut ListObj;
@@ -104,7 +104,7 @@ pub fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_items");
+        debug_assert_dict_family!(dict, "rt_dict_items");
         let dict_obj = dict as *mut DictObj;
 
         let items_list = rt_make_list((*dict_obj).len as i64);

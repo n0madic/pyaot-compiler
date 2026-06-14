@@ -770,6 +770,20 @@ impl<'a> FnLower<'a> {
             self.emit_dunder_call(fid, vec![(bl, br), (il, ir), (vl, vr)])?;
             return Ok(());
         }
+        // Counter item assignment (§10): `counter[key] = v` writes directly into
+        // the shared `DictObj` via the dict setter (the dict family shares layout).
+        // This also backs `counter[key] += n` (read via `rt_counter_get`, write here).
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::Counter) {
+            let (bl, br) = self.lower_expr(base)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let (vl, vr) = self.lower_expr(value)?;
+            self.emit_container(
+                ContainerOp::DictSet,
+                vec![(bl, br), (il, ir), (vl, vr)],
+                None,
+            )?;
+            return Ok(());
+        }
         let kind = sub_kind(
             &self.func.exprs[base].ty,
             &repr_of(&self.func.exprs[base].ty),
@@ -1867,13 +1881,18 @@ impl<'a> FnLower<'a> {
                 let (al, ar) = self.lower_expr(args[i])?;
                 ops.push(Operand::Local(self.coerce(al, ar, want)?));
             } else {
-                // Absent optional param: a zero in its raw register class, else
-                // the null-pointer object sentinel.
+                // Absent optional param: emit its DECLARED default in the param's
+                // register class (e.g. `Counter.most_common()` → `i64::MIN`
+                // sentinel = "all"; `deque.rotate()` → `1`; `OrderedDict.popitem()`
+                // → `last=true`). Falls back to a zero / null-pointer sentinel when
+                // the descriptor declares no default.
+                use pyaot_stdlib_defs::ConstValue;
                 let d = self.alloc_temp(want.clone());
-                let val = if let Repr::Raw(_) = want {
-                    Const::Int(0)
-                } else {
-                    Const::NullPtr
+                let val = match (&p.default, &want) {
+                    (Some(ConstValue::Int(v)), Repr::Raw(_)) => Const::Int(*v),
+                    (Some(ConstValue::Bool(b)), Repr::Raw(_)) => Const::Int(*b as i64),
+                    _ if matches!(want, Repr::Raw(_)) => Const::Int(0),
+                    _ => Const::NullPtr,
                 };
                 self.emit(MirInst::Const { dst: d, val });
                 ops.push(Operand::Local(d));
@@ -3622,6 +3641,23 @@ impl<'a> FnLower<'a> {
             let (bl, br) = self.lower_expr(base)?;
             let (il, ir) = self.lower_expr(index)?;
             return self.emit_dunder_call(fid, vec![(bl, br), (il, ir)]);
+        }
+        // Counter subscript (§10): `counter[key]` returns the count, or a boxed
+        // `0` for a MISSING key — Counter's defining semantic (no KeyError). The
+        // key rides Tagged (`rt_counter_get` reads its raw bits, like dict get).
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::Counter) {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let key = self.coerce(il, ir, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &rf::RT_COUNTER_GET,
+                args: vec![Operand::Local(recv), Operand::Local(key)],
+            });
+            return self.normalize_container_result(dst, Repr::Tagged);
         }
         let kind = sub_kind(
             &self.func.exprs[base].ty,

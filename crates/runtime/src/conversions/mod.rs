@@ -14,6 +14,8 @@ pub use to_str::{
 
 pub(crate) use repr::repr_escape_into;
 
+pub(crate) use to_str::counter_repr_string;
+
 pub use repr::{rt_repr_bool, rt_repr_collection, rt_repr_float, rt_repr_int, rt_repr_none};
 
 pub use ascii::rt_ascii_collection;

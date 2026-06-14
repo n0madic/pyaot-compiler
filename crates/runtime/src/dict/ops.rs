@@ -2,6 +2,8 @@
 
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
+#[allow(unused_imports)]
+use crate::debug_assert_dict_family;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictObj, Obj, StrObj, TypeTagKind};
 use crate::string::rt_make_str_interned;
@@ -23,7 +25,7 @@ pub fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj) {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_set");
+        debug_assert_dict_family!(dict, "rt_dict_set");
 
         // Intern string keys under the size threshold.
         //
@@ -162,7 +164,7 @@ pub fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_contains");
+        debug_assert_dict_family!(dict, "rt_dict_contains");
         let dict_obj = dict as *mut DictObj;
         let hash = hash_hashable_obj(key);
         let entry_idx = lookup_entry(dict_obj, key, hash);

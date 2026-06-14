@@ -522,6 +522,22 @@ const PHASE_CORPUS: &[&str] = &[
     // with a side-effecting receiver (single-eval check) and use under
     // `if`/`and`/`or`/comprehension filters.
     "p34_isinstance_tuple.py",
+    // `collections.Counter` (§10) — pure front-half WIRING over the pre-existing
+    // `counter.rs` runtime (the `Counter` shares `DictObj` layout under
+    // `TypeTagKind::Counter`), plus the runtime additions a differential-correct
+    // Counter needs: `rt_counter_get` (missing key → 0, not KeyError), a
+    // CPython-faithful `Counter({...})` repr in most-common order, the dict-family
+    // seam guard (`Dict`/`DefaultDict`/`Counter`), and the Counter tag wired into
+    // the generic `rt_obj_contains` / `rt_iter_value` / `rt_is_truthy` / len
+    // dispatchers. Construction picks `rt_make_counter_empty` vs
+    // `rt_make_counter_from_iter` by arity (the runtime normalizes any iterable to
+    // an iterator); the result is typed `RuntimeObject(Counter)` so
+    // `.most_common()/.total()/.update()/.subtract()` dispatch, and `Counter` is an
+    // annotatable param/return type. Covers construction/repr, subscript (incl.
+    // missing→0 and `+=`), len/`in`/iteration, keys/values/items, the methods,
+    // truthiness (`not`/`if`/`bool`), and Counter through annotated functions.
+    // `Counter(mapping)`, Counter arithmetic, and `.elements()` are out of scope.
+    "p35_counter.py",
     // Comprehensive builtins suite (1633 lines) — LIFTED. Its blocker chain fell
     // across every phase as each fix unmasked the next: `issubclass`/`getattr`/
     // `hasattr`/`setattr` (semantics, p30) → multi-iterable `zip` into a typed

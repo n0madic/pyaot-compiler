@@ -392,6 +392,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             s.push('}');
             s
         }
+        TypeTagKind::Counter => counter_repr_string(obj),
         TypeTagKind::Set => {
             let set = obj as *mut SetObj;
             let len = (*set).len;
@@ -458,6 +459,46 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
         }
         _ => format!("<object at {:p}>", obj),
     }
+}
+
+/// Build the repr string of a `Counter` — `Counter({k: c, ...})` with entries in
+/// most-common order (count descending, ties keeping insertion order via a stable
+/// sort), or `Counter()` when empty. Matches CPython 3.x's `Counter.__repr__`.
+/// Shared by `str()`/`repr()` (here) and the stdout print path.
+pub(crate) unsafe fn counter_repr_string(obj: *mut Obj) -> String {
+    use crate::object::DictObj;
+    let dict = obj as *mut DictObj;
+    let entries_len = (*dict).entries_len;
+    let entries = (*dict).entries;
+
+    // Collect live (key, count) pairs. Counts are tagged fixints (`unwrap_int`).
+    let mut pairs: Vec<(*mut Obj, i64)> = Vec::new();
+    for i in 0..entries_len {
+        let entry = entries.add(i);
+        if (*entry).key.0 != 0 {
+            let count = Value((*entry).value.0).unwrap_int();
+            pairs.push(((*entry).key.0 as *mut Obj, count));
+        }
+    }
+    if pairs.is_empty() {
+        return "Counter()".to_string();
+    }
+    // Stable sort by count descending — most-common order.
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+
+    use std::fmt::Write;
+    let mut s = String::from("Counter({");
+    let mut first = true;
+    for (key, count) in pairs {
+        if !first {
+            s.push_str(", ");
+        }
+        first = false;
+        obj_repr_string(&mut s, key);
+        let _ = write!(s, ": {}", count);
+    }
+    s.push_str("})");
+    s
 }
 
 /// Write repr of a value that may be a heap object or Value-tagged primitive

@@ -168,7 +168,9 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::StringIO => print!("<_io.StringIO object>"),
         TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
         TypeTagKind::DefaultDict => print_dict_repr(obj), // Same repr as dict
-        TypeTagKind::Counter => print_dict_repr(obj),     // Same repr as dict
+        TypeTagKind::Counter => {
+            print!("{}", crate::conversions::counter_repr_string(obj))
+        }
         TypeTagKind::Deque => print_deque_repr(obj),
         TypeTagKind::Request => print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
         TypeTagKind::NotImplemented => print!("NotImplemented"),
@@ -402,7 +404,9 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::StringIO => print!("<_io.StringIO object>"),
             TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
             TypeTagKind::DefaultDict => print_dict_repr(obj),
-            TypeTagKind::Counter => print_dict_repr(obj),
+            TypeTagKind::Counter => {
+                print!("{}", crate::conversions::counter_repr_string(obj))
+            }
             TypeTagKind::Deque => print_deque_repr(obj),
             TypeTagKind::Request => {
                 print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj)

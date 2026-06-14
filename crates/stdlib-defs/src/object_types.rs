@@ -552,6 +552,9 @@ static COUNTER_METHODS: &[&StdlibMethodDef] = &[
     &collections::COUNTER_TOTAL,
     &collections::COUNTER_UPDATE,
     &collections::COUNTER_SUBTRACT,
+    &collections::COUNTER_KEYS,
+    &collections::COUNTER_VALUES,
+    &collections::COUNTER_ITEMS,
 ];
 
 pub static COUNTER: ObjectTypeDef = ObjectTypeDef {

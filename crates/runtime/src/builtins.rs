@@ -44,7 +44,9 @@ pub fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
         match (*obj).type_tag() {
             TypeTagKind::List => crate::list::rt_list_len(obj),
             TypeTagKind::Str => crate::string::rt_str_len_int(obj),
-            TypeTagKind::Dict => crate::dict::rt_dict_len(obj),
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                crate::dict::rt_dict_len(obj)
+            }
             TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj),
             TypeTagKind::Set => crate::set::rt_set_len(obj),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
@@ -217,7 +219,9 @@ pub fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
                 }
                 TypeTagKind::List => crate::list::rt_list_len(obj) > 0,
                 TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj) > 0,
-                TypeTagKind::Dict => crate::dict::rt_dict_len(obj) > 0,
+                TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                    crate::dict::rt_dict_len(obj) > 0
+                }
                 TypeTagKind::Set => crate::set::rt_set_len(obj) > 0,
                 TypeTagKind::Bytes => {
                     let bytes_obj = obj as *mut BytesObj;

@@ -27,28 +27,36 @@ pub extern "C" fn rt_make_counter_empty_abi() -> Value {
     Value::from_ptr(rt_make_counter_empty())
 }
 
-/// Create a Counter from an iterator — counts occurrences of each element.
-/// The iterator elements are used as dict keys.
-pub fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
+/// Create a Counter from any iterable — counts occurrences of each element,
+/// which become dict keys. Accepts any Python iterable (list/str/tuple/set/dict
+/// keys/generator/…): the argument is normalized to an iterator internally via
+/// `rt_iter_value_dyn` (idempotent for objects that are already iterators), so
+/// the frontend passes the raw iterable. A `Counter(mapping)` would count the
+/// mapping's KEYS (CPython reads its values as counts) — out of scope (§10).
+pub fn rt_make_counter_from_iter(iterable: *mut Obj) -> *mut Obj {
     let obj = rt_make_counter_empty();
 
-    if iter.is_null() {
+    if iterable.is_null() {
         return obj;
     }
 
     unsafe {
-        // Root both obj (counter) and iter for the entire loop.
-        // rt_iter_next_no_exc may allocate (e.g., string iterators call
-        // rt_str_getchar → rt_make_str → gc_alloc), sweeping both obj and iter
-        // if they are not on the shadow stack.  elem is stored at roots[2] so
-        // it stays alive across allocating calls.
-        let mut roots: [*mut Obj; 3] = [obj, iter, std::ptr::null_mut()];
+        // Root both obj (counter) and the iterable for the entire loop.
+        // rt_iter_value_dyn / rt_iter_next_no_exc may allocate (e.g., string
+        // iterators call rt_str_getchar → rt_make_str → gc_alloc), sweeping both
+        // obj and the iterator if they are not on the shadow stack.  elem is
+        // stored at roots[2] so it stays alive across allocating calls.
+        let mut roots: [*mut Obj; 3] = [obj, iterable, std::ptr::null_mut()];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
             nroots: 3,
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
+
+        // Normalize the iterable to an iterator (obj + iterable are rooted across
+        // this allocation); the resulting iterator roots its own source.
+        roots[1] = crate::iterator::rt_iter_value_dyn(roots[1]);
 
         // Iterate and count
         loop {
@@ -79,12 +87,17 @@ pub fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
 }
 #[export_name = "rt_make_counter_from_iter"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_make_counter_from_iter_abi(iter: Value) -> Value {
-    Value::from_ptr(rt_make_counter_from_iter(iter.unwrap_ptr()))
+pub extern "C" fn rt_make_counter_from_iter_abi(iterable: Value) -> Value {
+    Value::from_ptr(rt_make_counter_from_iter(iterable.unwrap_ptr()))
 }
 
-/// Counter.most_common(n) — return list of (element, count) tuples, sorted by count descending.
-/// If n <= 0, return all elements sorted by count.
+/// Counter.most_common(n) — list of (element, count) tuples sorted by count
+/// descending (stable, so ties keep insertion order — matching CPython). The
+/// frontend passes `i64::MIN` for the no-argument form (`most_common()` → all);
+/// any other `n` mirrors `heapq.nlargest(n, ...)`: `n <= 0` → empty,
+/// `n >= len` → all. This distinguishes `most_common()` (all) from an explicit
+/// `most_common(0)` / `most_common(-1)` (both `[]`), which a plain `n <= 0`
+/// sentinel could not.
 pub fn rt_counter_most_common(counter: *mut Obj, n: i64) -> *mut Obj {
     use crate::list::{rt_list_push, rt_make_list};
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
@@ -113,9 +126,12 @@ pub fn rt_counter_most_common(counter: *mut Obj, n: i64) -> *mut Obj {
         // Sort by count descending (no allocation — safe)
         pairs.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Limit to n items
-        let limit = if n <= 0 {
+        // Limit to n items. `i64::MIN` is the no-argument sentinel (return all);
+        // an explicit `n <= 0` returns none (CPython `nlargest` semantics).
+        let limit = if n == i64::MIN {
             pairs.len()
+        } else if n <= 0 {
+            0
         } else {
             (n as usize).min(pairs.len())
         };
@@ -191,10 +207,10 @@ pub fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
     }
 
     unsafe {
-        // Root counter and the iterator (other) for the entire loop so neither
-        // is swept by a GC triggered inside rt_iter_next_no_exc.  elem is kept
-        // alive at roots[2] across the per-iter Value-tagging and rt_dict_set
-        // calls.
+        // Root counter and the iterable (other) for the entire loop so neither
+        // is swept by a GC triggered inside rt_iter_value_dyn / rt_iter_next_no_exc.
+        // elem is kept alive at roots[2] across the per-iter Value-tagging and
+        // rt_dict_set calls.
         let mut roots: [*mut Obj; 3] = [counter, other, std::ptr::null_mut()];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
@@ -202,6 +218,9 @@ pub fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
+
+        // Accept any iterable: normalize to an iterator first (idempotent).
+        roots[1] = crate::iterator::rt_iter_value_dyn(roots[1]);
 
         loop {
             let elem = crate::iterator::rt_iter_next_no_exc(roots[1]);
@@ -233,8 +252,8 @@ pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
     }
 
     unsafe {
-        // Root counter and the iterator (other) for the entire loop so neither
-        // is swept by a GC triggered inside rt_iter_next_no_exc.
+        // Root counter and the iterable (other) for the entire loop so neither
+        // is swept by a GC triggered inside rt_iter_value_dyn / rt_iter_next_no_exc.
         let mut roots: [*mut Obj; 3] = [counter, other, std::ptr::null_mut()];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
@@ -242,6 +261,9 @@ pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
+
+        // Accept any iterable: normalize to an iterator first (idempotent).
+        roots[1] = crate::iterator::rt_iter_value_dyn(roots[1]);
 
         loop {
             let elem = crate::iterator::rt_iter_next_no_exc(roots[1]);
@@ -264,6 +286,27 @@ pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_counter_subtract_abi(counter: Value, other: Value) {
     rt_counter_subtract(counter.unwrap_ptr(), other.unwrap_ptr())
+}
+
+/// Counter.__getitem__ — the count for `key`, or a boxed `0` for a missing key.
+/// This is Counter's defining semantic: a missing key yields `0` rather than
+/// raising `KeyError` (unlike a plain dict). The result is a tagged fixint
+/// `Value` (the same boxing the counting paths store), returned as a
+/// `Value`-as-pointer so the compiler's Tagged read seam can consume it.
+pub fn rt_counter_get(counter: *mut Obj, key: *mut Obj) -> *mut Obj {
+    let count = if counter.is_null() || key.is_null() {
+        0
+    } else {
+        unsafe { get_count_or_zero(counter as *mut DictObj, key) }
+    };
+    Value::from_int(count).0 as *mut Obj
+}
+#[export_name = "rt_counter_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_counter_get_abi(counter: Value, key: Value) -> Value {
+    // The key may be a tagged fixint, so pass its raw bits (mirrors
+    // `rt_dict_get_abi`); the counter is always a real heap pointer.
+    Value::from_ptr(rt_counter_get(counter.unwrap_ptr(), key.0 as *mut Obj))
 }
 
 // =============================================================================

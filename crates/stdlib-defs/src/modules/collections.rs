@@ -136,14 +136,16 @@ pub static DEFAULTDICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
 // Counter
 // =============================================================================
 
-/// Counter.most_common(n=-1)
+/// Counter.most_common(n=<all>). The no-argument form returns every entry; the
+/// `i64::MIN` default is the runtime's "return all" sentinel, kept distinct from
+/// an explicit `most_common(0)` / `most_common(-1)` (both `[]`, per CPython).
 pub static COUNTER_MOST_COMMON: StdlibMethodDef = StdlibMethodDef {
     name: "most_common",
     runtime_name: "rt_counter_most_common",
     params: &[ParamDef::optional_with_default(
         "n",
         TypeSpec::Int,
-        ConstValue::Int(-1),
+        ConstValue::Int(i64::MIN),
     )],
     return_type: TypeSpec::List(&TypeSpec::Tuple(&TypeSpec::Any)),
     min_args: 0,
@@ -189,17 +191,82 @@ pub static COUNTER_SUBTRACT: StdlibMethodDef = StdlibMethodDef {
     codegen: RuntimeFuncDef::void("rt_counter_subtract", &[P_I64, P_I64]),
 };
 
-/// Counter(iterable?) -- registered as function for import recognition.
-/// Frontend intercepts and converts to Builtin::Counter.
+// Counter inherits dict's view methods. They share `DictObj` layout, so the
+// dict view runtime functions operate on a Counter unchanged (the `rt_dict_*`
+// seam guards accept the dict family).
+
+/// Counter.keys() — the elements (dict keys), as a materialized list.
+pub static COUNTER_KEYS: StdlibMethodDef = StdlibMethodDef {
+    name: "keys",
+    runtime_name: "rt_dict_keys",
+    params: &[],
+    return_type: TypeSpec::List(&TypeSpec::Any),
+    min_args: 0,
+    max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_dict_keys", &[P_I64], Some(R_I64), true),
+};
+
+/// Counter.values() — the counts, as a materialized list.
+pub static COUNTER_VALUES: StdlibMethodDef = StdlibMethodDef {
+    name: "values",
+    runtime_name: "rt_dict_values",
+    params: &[],
+    return_type: TypeSpec::List(&TypeSpec::Int),
+    min_args: 0,
+    max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_dict_values", &[P_I64], Some(R_I64), true),
+};
+
+/// Counter.items() — `(element, count)` pairs, as a materialized list of tuples.
+pub static COUNTER_ITEMS: StdlibMethodDef = StdlibMethodDef {
+    name: "items",
+    runtime_name: "rt_dict_items",
+    params: &[],
+    return_type: TypeSpec::List(&TypeSpec::Tuple(&TypeSpec::Any)),
+    min_args: 0,
+    max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_dict_items", &[P_I64], Some(R_I64), true),
+};
+
+/// Counter(iterable?) -- registered as function for import recognition only.
+/// Its sentinel `runtime_name` ("rt_make_counter", which has no runtime symbol)
+/// is what the frontend matches on to intercept construction; the actual call is
+/// routed to `COUNTER_EMPTY` / `COUNTER_FROM_ITER` by arity.
 pub static COUNTER_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "Counter",
     runtime_name: "rt_make_counter",
     params: &[ParamDef::optional("iterable", TypeSpec::Any)],
-    return_type: TypeSpec::Any,
+    return_type: TypeSpec::Counter,
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_make_counter", &[P_I64], Some(R_I64), false),
+};
+
+/// `Counter()` — empty construction. The frontend routes the 0-arg form here;
+/// the result is typed `RuntimeObject(Counter)` via `TypeSpec::Counter`.
+pub static COUNTER_EMPTY: StdlibFunctionDef = StdlibFunctionDef {
+    name: "Counter",
+    runtime_name: "rt_make_counter_empty",
+    params: &[],
+    return_type: TypeSpec::Counter,
+    min_args: 0,
+    max_args: 0,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_counter_empty", &[], Some(R_I64), true),
+};
+
+/// `Counter(iterable)` — the frontend wraps the iterable in an iterator and
+/// routes the 1-arg form here; the runtime counts the iterator's elements.
+pub static COUNTER_FROM_ITER: StdlibFunctionDef = StdlibFunctionDef {
+    name: "Counter",
+    runtime_name: "rt_make_counter_from_iter",
+    params: &[ParamDef::required("iterator", TypeSpec::Any)],
+    return_type: TypeSpec::Counter,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_counter_from_iter", &[P_I64], Some(R_I64), true),
 };
 
 // =============================================================================

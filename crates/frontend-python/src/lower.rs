@@ -5622,6 +5622,50 @@ impl<'a> FnLowerer<'a> {
         Ok(self.local_ref(result, span))
     }
 
+    /// `collections.Counter(...)` construction (§10) — a pure-frontend intercept
+    /// that picks the runtime symbol by arity and types the result
+    /// `RuntimeObject(Counter)`:
+    ///   * `Counter()`         → `rt_make_counter_empty()`.
+    ///   * `Counter(iterable)` → `rt_make_counter_from_iter(iterable)`; the
+    ///     runtime normalizes the iterable to an iterator internally and counts
+    ///     its elements.
+    ///
+    /// `Counter(mapping)` and `Counter(**kwargs)` are out of scope (a mapping
+    /// iterates its keys, so it would count each key once rather than honoring the
+    /// mapped counts — documented limitation).
+    fn lower_counter_construct(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        reject_call_extras(c, span, "Counter()")?;
+        let cty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter);
+        match c.args.len() {
+            0 => Ok(self.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(
+                        &pyaot_stdlib_defs::modules::collections::COUNTER_EMPTY,
+                    ),
+                    args: vec![],
+                    provided: 0,
+                },
+                cty,
+                span,
+            )),
+            1 => {
+                let iterable = self.lower_expr(&c.args[0])?;
+                Ok(self.alloc(
+                    HirExprKind::CallRuntime {
+                        target: pyaot_hir::RuntimeCallTarget::Func(
+                            &pyaot_stdlib_defs::modules::collections::COUNTER_FROM_ITER,
+                        ),
+                        args: vec![Some(iterable)],
+                        provided: 1,
+                    },
+                    cty,
+                    span,
+                ))
+            }
+            _ => Err(parse_error("Counter() takes at most 1 argument", span)),
+        }
+    }
+
     /// Emit the innermost comprehension element action (push / insert).
     fn emit_comp_elem(&mut self, kind: &CompKind, span: Span) -> Result<()> {
         match kind {
@@ -6411,6 +6455,9 @@ impl<'a> FnLowerer<'a> {
                         reject_call_extras(c, span, "reduce()")?;
                         return self.lower_reduce(&c.args, span);
                     }
+                    if is_counter_def(def) {
+                        return self.lower_counter_construct(c, span);
+                    }
                     return self.lower_stdlib_call(def, c, span);
                 }
             }
@@ -6429,6 +6476,11 @@ impl<'a> FnLowerer<'a> {
                     if is_reduce_def(def) {
                         reject_call_extras(c, span, "reduce()")?;
                         return self.lower_reduce(&c.args, span);
+                    }
+                    // `collections.Counter(...)` (qualified) — same construction
+                    // intercept as the from-imported bare form above.
+                    if is_counter_def(def) {
+                        return self.lower_counter_construct(c, span);
                     }
                     return self.lower_stdlib_call(def, c, span);
                 }
@@ -8763,6 +8815,14 @@ fn is_reduce_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
     def.runtime_name == "rt_reduce"
 }
 
+/// `collections.Counter` — recognized by the `COUNTER_NEW` import binding's
+/// sentinel runtime name. The frontend intercepts construction (see
+/// [`Lowerer::lower_counter_construct`]) to pick the empty vs from-iterable
+/// runtime symbol and type the result `RuntimeObject(Counter)`.
+fn is_counter_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
+    def.runtime_name == "rt_make_counter"
+}
+
 fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result<()> {
     if !c.keywords.is_empty() {
         return Err(parse_error(
@@ -8912,6 +8972,13 @@ fn annotation_to_semty(ann: &Expr, ctx: &AnnCtx) -> SemTy {
                     if let Some(ty) = ctx.stdlib.classes.get(&qual) {
                         return ty.clone();
                     }
+                    // `import collections; x: collections.Counter` — the qualified
+                    // construction function names the runtime-object type.
+                    if let Some(def) = ctx.stdlib.funcs.get(&qual) {
+                        if is_counter_def(def) {
+                            return SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter);
+                        }
+                    }
                 }
             }
             SemTy::Dyn
@@ -8956,6 +9023,16 @@ fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
             // A from-imported stdlib class (`from time import struct_time`).
             if let Some(ty) = ctx.stdlib.classes.get(other) {
                 return ty.clone();
+            }
+            // `collections.Counter` is bound as a construction FUNCTION (not a
+            // class), so `from collections import Counter` puts it in `funcs`.
+            // Used as an annotation (`x: Counter`) it names the runtime-object
+            // type. Import-gated (an un-imported name stays `Dyn`) and checked
+            // after user classes (a user `class Counter` wins, above).
+            if let Some(def) = ctx.stdlib.funcs.get(other) {
+                if is_counter_def(def) {
+                    return SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter);
+                }
             }
             SemTy::Dyn
         }

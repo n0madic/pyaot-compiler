@@ -625,6 +625,9 @@ pub static RT_MAKE_COUNTER_FROM_ITER: RuntimeFuncDef =
 /// rt_make_counter_empty() -> *mut Obj
 pub static RT_MAKE_COUNTER_EMPTY: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_make_counter_empty", &[], Some(RI64), true);
+/// rt_counter_get(counter: *mut Obj, key: i64) -> *mut Obj — Counter subscript:
+/// the count for `key`, or a boxed `0` for a missing key (no KeyError).
+pub static RT_COUNTER_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_counter_get");
 /// rt_make_deque(iterable: *mut Obj) -> *mut Obj
 pub static RT_MAKE_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_make_deque");
 /// rt_deque_from_iter(iter: *mut Obj, maxlen: *mut Obj) -> *mut Obj

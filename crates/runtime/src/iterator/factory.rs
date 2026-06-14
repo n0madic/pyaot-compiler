@@ -3,6 +3,8 @@
 //! Creates iterators for various collection types (forward and reversed).
 
 #[allow(unused_imports)]
+use crate::debug_assert_dict_family;
+#[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::dict::rt_dict_keys;
 use crate::gc;
@@ -72,7 +74,7 @@ pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_iter_dict");
+        debug_assert_dict_family!(dict, "rt_iter_dict");
     }
 
     // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
@@ -419,7 +421,9 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
     match type_tag {
         TypeTagKind::List => rt_iter_list(obj),
         TypeTagKind::Tuple => rt_iter_tuple(obj),
-        TypeTagKind::Dict => rt_iter_dict(obj),
+        // The dict family (Dict / DefaultDict / Counter) shares `DictObj` layout;
+        // iterating any of them yields its keys.
+        TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => rt_iter_dict(obj),
         TypeTagKind::Set => rt_iter_set(obj),
         TypeTagKind::Str => rt_iter_str(obj),
         TypeTagKind::Bytes => rt_iter_bytes(obj),
