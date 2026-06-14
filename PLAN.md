@@ -198,9 +198,60 @@ These few gaps block the most files — close them before the long tail.
   factory.py` `plain_deco` shape (its wrapper lacks a `Callable[...]` return
   annotation, so the decorated slot is `Dyn` — a decorator-return-type-inference
   gap, NOT spread). Keyword args are not combined with a runtime `*` spread.
-- **`**d` spread into a call** — `f(**{"a":1})` (was Phase 6C out-of-scope).
-- **Mutable default parameter** — `def f(x, lst=[])`, `d={}`.
-- **Non-literal default** — `def f(count=5+5)`.
+- ~~**`**d` spread into a call**~~ — DONE (backlog §1): `f(**{"a":1})`, `f(a=1, **d)`,
+  `f(**make_dict())`. Entirely front-half (`lower_direct_known_call`): a `**{literal}`
+  dict (string-literal keys) flattens into keyword args at compile time (reusing the
+  slot-matching path, with CPython `got multiple values` duplicate detection); a
+  non-literal `**d` (variable / call result) is evaluated ONCE and each named
+  parameter bound from it at run time — `dict[name]` (`DictGet`) for a required param,
+  `dict.get(name, default)` (`DictGetDefault`) for a defaulted one. Combining a runtime
+  `*` spread with `**`, and a runtime `**d` into a `**kwargs` callee, stay out of scope
+  (loud errors); `**` into a method call / constructor is still rejected. Documented
+  gaps (the static callee shape can't see a runtime dict's contents): an unexpected key
+  in the dict, and a key colliding with an explicit positional/keyword, are not
+  diagnosed at run time. Gated by `corpus/p37_kwargs_spread.py`.
+- ~~**Mutable default parameter**~~ — DONE (backlog §1): `def f(x, lst=[])`, `d={}`.
+- ~~**Non-literal default**~~ — DONE (backlog §1): `def f(count=5+5)`. Both realized as a
+  synthetic GC-rooted promoted-global slot per non-literal default of a **top-level**
+  `def`: evaluated ONCE at the def's module-init position (CPython def-time
+  once-evaluation, in module scope so no captures) and read — shared — at every
+  defaulted call, so a mutable default is the SAME object reused (`f(1); f(2)` → shared
+  list). `ParamDefault::{Const,Slot}` in `hir`; the slot read coerces into the param
+  repr at the existing fill seam (no new pass/Repr/coercion site). Non-literal defaults
+  on nested defs / methods / decorated defs / generators / lambdas are a clean error
+  (top-level-only — a process-global slot cannot hold a per-closure-instance capture).
+  Gated by `corpus/p36_mutable_defaults.py`.
+- ~~**`Dyn → : bool` annotated-slot checked unbox**~~ — DONE (test_functions.py lift,
+  Phase 1): `rt_unbox_bool` completes the checked-unbox family as the third shape
+  (`Tagged → Raw(I8)`, B18-sanctioned — the guard B18 demands). A gradual value into a
+  `: bool` local takes the CHECKED unbox (TypeError on a non-bool tag) instead of a
+  blind `UntagBool`. `new_checked`/the MIR verifier/`coerce_value`/the `Assign` gate
+  admit `Raw(I8)`; `check_reinterpret` adds a **Dyn-only** bool arm (admitting
+  `Int`/`Bool` would diverge from CPython — `3 == True` is `False`). Gated by
+  `corpus/p38_unbox_bool.py` (success path; the wrong-shape guard can't byte-match
+  CPython at an annotation seam — CPython ignores annotations — so it rides a runtime
+  unit test).
+- ~~**Closure/lambda VALUES typed `Callable(sig)`**~~ — DONE (test_functions.py lift,
+  Phase 2 b1): a lambda / nested `def` used as a value carries its static
+  `Callable(sig)` (visible param/return reprs from the lowered function) instead of
+  `Dyn`, so binding it to a name and calling that name rides the existing native
+  `CallIndirect` ABI (no new runtime; `closure_sem_ty` mirrors `repr_of`, and the
+  raw-int proofs are gated off for any address-taken function, so the closure ABI stays
+  the Tagged baseline). Gated by `corpus/p39_closure_values.py`.
+- **`corpus/test_functions.py` stays OFF.** The remaining blockers are NOT new roots
+  but one out-of-scope construct: a **genuinely-`Dyn` callee** that is a *native*
+  closure (a curried chain `chain(1)(2)(3)` whose intermediate return widens to `Dyn`
+  because an unannotated nested `def`'s declared return is `Dyn`; an unannotated
+  decorator's `func()` and its slot). These need a *sound* uniform dynamic-call ABI,
+  which the file proves is impossible without per-callee ABI info: native closures
+  carry typed-param signatures, so the generic-thunk `(tuple, dict)` convention
+  (correct for decorated thunks / 0-arg wrappers) silently MIS-PASSES a fixed-arity
+  closure's positional args (`chain`'s `inner2(c)` would read the packed tuple as `c`
+  → `int + tuple`). Routing `Dyn` callees through it would convert a loud
+  "cannot call a value of unknown type" into silent runtime corruption, violating the
+  always-correct Tagged baseline (Principle 2), so it is refused. The real fix is
+  precise nested-closure return-type inference (so these callees stay `Callable` and
+  ride the native ABI) — a `typeck` fixpoint improvement, out of scope here.
 
 ### 2. Operators & expressions
 - ~~**`is`/`is not` against non-`None`**~~ — DONE: `x is True`, `a is b` lower to
@@ -629,10 +680,12 @@ Read the matching note before starting an item.
   order reorders side effects — add a side-effecting-args corpus probe. (b) A
   default expression that captures a free variable is evaluated in the *def*
   scope, once — the previous compiler had an SSA/capture bug exactly there.
-- **§1 mutable defaults.** `lst=[]` is evaluated once at def time and shared
-  across calls. The naive per-call evaluation diffs clean on everything except
-  the aliasing probe (`f(1); f(2)` → `[1, 2]`) — put that probe in the corpus
-  *first*. Needs a per-default static cell that is a GC root.
+- ~~**§1 mutable defaults.**~~ DONE. `lst=[]` is evaluated once at def time and
+  shared across calls. The naive per-call evaluation diffs clean on everything
+  except the aliasing probe (`f(1); f(2)` → `[1, 2]`) — that probe is now the
+  first assert in `corpus/p36_mutable_defaults.py`. Realized as a per-default
+  GC-rooted promoted-global slot (`ParamDefault::Slot`), set once at the def's
+  module-init position and read shared at every defaulted call.
 - **§2 `is` / `is not`.** Under fixnum tagging all equal small ints are
   bit-identical, while CPython caches only −5..256; identity of value types is
   implementation-defined in CPython anyway. Define `is` as bit-identity

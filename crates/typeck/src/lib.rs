@@ -1273,6 +1273,18 @@ fn check_reinterpret(
     {
         return Ok(());
     }
+    // The symmetric bool seam (Phase 1 of the test_functions.py lift): a gradual
+    // value flowing into a `bool` slot lands as a CHECKED `Tagged → Raw(I8)`
+    // unbox (`rt_unbox_bool`, TypeError on a non-bool tag). Unlike the float arm
+    // above, this is Dyn-ONLY — admitting `Int`/`Bool` would diverge observably
+    // from CPython: a contract-coerced `bool(3)` is `True`, but `3 == True` is
+    // `False`, so a statically-int value must NOT silently become a bool (the
+    // float arm tolerates its int→f64 divergence because it is only
+    // repr-print-visible). The gradual `Dyn` value is genuinely a bool at run
+    // time, and the runtime guard rejects any non-bool that slips through.
+    if allow_numeric_coerce && *target == SemTy::Bool && value.ty == SemTy::Dyn {
+        return Ok(());
+    }
     let ok = match kind {
         // A Callable slot requires representation-level signature equality —
         // ordinary subtyping could change a param/ret `Repr` and forge a

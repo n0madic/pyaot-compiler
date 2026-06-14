@@ -365,3 +365,18 @@ fn rt_check_bound_passes_through_a_bound_value() {
     // exercised end-to-end by the corpus probe, not here).
     assert!(Value::UNBOUND.is_unbound());
 }
+
+#[test]
+fn rt_unbox_bool_unboxes_tagged_bools() {
+    let _guard = crate::RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    use pyaot_core_defs::Value;
+    // The success path of the third checked-unbox shape (Tagged -> Raw(I8)): a
+    // tagged True/False unboxes to 1/0. The strict wrong-shape guard (TypeError
+    // on any non-bool tag — int, float, None, heap) longjmps via `raise_exc!`,
+    // so like the other raise paths it is exercised end-to-end by the corpus
+    // (an `extern "C"` raise cannot unwind into a `#[test]`), not here.
+    assert_eq!(crate::boxing::rt_unbox_bool_abi(Value::TRUE), 1);
+    assert_eq!(crate::boxing::rt_unbox_bool_abi(Value::FALSE), 0);
+}

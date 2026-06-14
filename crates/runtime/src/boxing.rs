@@ -131,6 +131,40 @@ pub extern "C" fn rt_unbox_int_abi(v: Value) -> i64 {
     }
 }
 
+/// Unbox a bool from a Tagged Value at a CHECKED raw-ABI boundary — the third
+/// checked-unbox shape (`Tagged → Raw(I8)`), completing the
+/// `rt_unbox_float` / `rt_unbox_int` family (Phase 1 of the `test_functions.py`
+/// lift; PITFALLS B18). STRICT, unlike `rt_unbox_int` (which coerces bool→int):
+/// a `: bool` slot is a contract, so only a tagged bool unboxes — an int, float,
+/// None, or any heap object raises `TypeError` rather than silently truncating
+/// (a `Dyn` int into a `: bool` slot is a contract violation, not a coercion;
+/// the gradual `Dyn` success case at run time is genuinely a bool).
+#[export_name = "rt_unbox_bool"]
+pub extern "C" fn rt_unbox_bool_abi(v: Value) -> i8 {
+    if v.is_bool() {
+        return if v.unwrap_bool() { 1 } else { 0 };
+    }
+    let got = if v.is_int() {
+        "int"
+    } else if v.is_none() {
+        "NoneType"
+    } else {
+        let obj: *mut Obj = v.unwrap_ptr_or_null();
+        if obj.is_null() {
+            "NoneType"
+        } else {
+            unsafe { (*obj).header.type_tag.type_name() }
+        }
+    };
+    unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "a bool is required, got {}",
+            got
+        );
+    }
+}
+
 /// Box None as a heap-allocated NoneObj
 /// Used for Union types when the value is None
 pub fn rt_box_none() -> *mut Obj {

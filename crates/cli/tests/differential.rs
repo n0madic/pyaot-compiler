@@ -85,6 +85,16 @@ const PHASE_CORPUS: &[&str] = &[
     // Phase 6C — defaults, keyword args, *args / **kwargs.
     "p6_varargs.py",
     "p6_defaults_kwargs.py",
+    // Backlog §1 — mutable / computed parameter defaults (top-level functions).
+    "p36_mutable_defaults.py",
+    // Backlog §1 — `**dict` spread into a direct call (literal + runtime).
+    "p37_kwargs_spread.py",
+    // test_functions.py lift, Phase 1 — `rt_unbox_bool` (third checked-unbox
+    // shape, Tagged -> Raw(I8)): a Dyn value into an annotated `: bool` slot.
+    "p38_unbox_bool.py",
+    // test_functions.py lift, Phase 2 (b1) — closure/lambda values typed
+    // `Callable(sig)`: a lambda or returned closure bound and called by value.
+    "p39_closure_values.py",
     // Phase 6D — user decorators (functions).
     "p6_decorators.py",
     // Phase 6E — generators, send/close, generator expressions, GC soak.

@@ -440,6 +440,12 @@ pub static RT_NOT_IMPLEMENTED_SINGLETON: RuntimeFuncDef =
 pub static RT_UNBOX_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_unbox_float", &[PI64], Some(RF64), false);
 
+/// rt_unbox_bool(v: Value) -> i8 — the third checked-unbox shape
+/// (`Tagged → Raw(I8)`), strict (TypeError on a non-bool tag). The codegen path
+/// registers `rt_unbox_bool` by string, so this descriptor is for symmetry.
+pub static RT_UNBOX_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_unbox_bool", &[PI64], Some(RI8), false);
+
 // ===== File I/O operations =====
 
 /// rt_file_open(filename: *mut Obj, mode: *mut Obj, encoding: *mut Obj) -> *mut Obj

@@ -154,10 +154,13 @@ pub struct NamespaceImports {
 pub struct HirParam {
     pub name: InternedString,
     pub ty: SemTy,
-    /// Constant default value (Phase 6C; immutable literals only, the
-    /// [`ClassAttrInit`] shape). Direct call sites fill missing trailing args
-    /// from it; indirect calls require full declared arity.
-    pub default: Option<ClassAttrInit>,
+    /// Default value (Phase 6C). An immutable literal is materialized fresh per
+    /// call ([`ParamDefault::Const`]); a mutable/computed default of a top-level
+    /// function reads a synthetic GC-rooted global slot evaluated once at
+    /// def-time ([`ParamDefault::Slot`], CPython's shared-default semantics).
+    /// Direct call sites fill missing trailing args from it; indirect calls
+    /// require full declared arity.
+    pub default: Option<ParamDefault>,
 }
 
 /// A local slot. Index into [`HirFunction::locals`] is the [`LocalId`].
@@ -1511,6 +1514,22 @@ pub enum ClassAttrInit {
     /// where it is materialized as a fresh empty `TupleLit` at each direct call
     /// site. Not supported as a class-level attribute (no empty-tuple `Const`).
     EmptyTuple,
+}
+
+/// A function parameter's default value. A constant literal is materialized
+/// fresh at each call site (the today's-baseline [`Self::Const`] path); a
+/// mutable/computed default of a **top-level** function is evaluated exactly
+/// once at the `def`'s module-init position into a synthetic GC-rooted global
+/// slot, then read (shared) at every defaulted call — CPython's "mutable
+/// default is one object reused across calls" semantics ([`Self::Slot`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamDefault {
+    /// Immutable literal — materialized fresh per call (the [`ClassAttrInit`]
+    /// shape, shared with class attributes).
+    Const(ClassAttrInit),
+    /// Non-literal (mutable/computed) — read the promoted global slot `var_id`,
+    /// which holds the one object evaluated once at def-time.
+    Slot(u32),
 }
 
 /// One instance field's resolved layout entry: its name, best-effort static type

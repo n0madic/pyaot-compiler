@@ -25,8 +25,8 @@ use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
     BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
     HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProgram,
-    HirProperty, HirRaise, HirStmt, HirTerminator, NamespaceImports, NamespaceTable, SymbolRef,
-    UnaryOp,
+    HirProperty, HirRaise, HirStmt, HirTerminator, NamespaceImports, NamespaceTable, ParamDefault,
+    SymbolRef, UnaryOp,
 };
 use pyaot_types::{SemTy, Sig};
 use pyaot_utils::{ClassId, FuncId, InternedString, LineMap, LocalId, Span, StringInterner};
@@ -45,13 +45,21 @@ type ClassNameMap = HashMap<String, (ClassId, InternedString)>;
 type TypeVarSet = HashMap<String, InternedString>;
 
 /// One parameter's call-facing shape (Phase 6C): name, annotated type, optional
-/// constant default.
+/// default (a literal `Const` or a `Slot` for a mutable/computed top-level
+/// default).
 #[derive(Debug, Clone)]
 pub(crate) struct ParamInfo {
     pub name: InternedString,
     pub ty: SemTy,
-    pub default: Option<ClassAttrInit>,
+    pub default: Option<ParamDefault>,
 }
+
+/// `(top-level def name, parameter name) → synthetic promoted-global slot`, for
+/// the mutable/computed parameter defaults of top-level `def`s. Allocated once
+/// per module in `lower_module_into`; a non-literal default reads its slot at
+/// every defaulted call and the slot is set once at the def's module-init
+/// position (CPython def-time once-evaluation + shared-object aliasing).
+type DefaultSlotMap = HashMap<(InternedString, InternedString), u32>;
 
 /// A top-level `def`'s call-facing shape, collected up front so any function
 /// can synthesize a value-position thunk for it (Phase 6A) and reorder / fill
@@ -76,6 +84,10 @@ type TopDefMap = HashMap<String, TopDefInfo>;
 
 /// Annotation-resolution context: the class-name map + the in-scope type vars +
 /// the top-level def table + the promoted module-globals table (Phase 6B).
+///
+/// `Copy` so a callee that must restrict the context (e.g. a nested def must not
+/// see the enclosing top-level def's `default_slots`) can cheaply clone-and-edit.
+#[derive(Clone, Copy)]
 pub(crate) struct AnnCtx<'a> {
     class_map: &'a ClassNameMap,
     type_vars: &'a TypeVarSet,
@@ -96,6 +108,13 @@ pub(crate) struct AnnCtx<'a> {
     /// Stdlib bindings (Phase 8B): names bound to frozen-runtime descriptors by
     /// `import math` / `from math import sqrt` when no user module shadows them.
     stdlib: &'a StdlibBindings,
+    /// Mutable/computed parameter-default slots, set `Some` **only** while
+    /// lowering top-level `def`s (so a non-literal default resolves to its
+    /// global slot). `None` everywhere else — nested defs, methods, decorated
+    /// defs, generators — where such a default is a clean parse error. Threaded
+    /// as `Option` (not relied-on key absence) so a method/nested function that
+    /// shares a top-level function's name cannot wrongly pick up its slot.
+    default_slots: Option<&'a DefaultSlotMap>,
 }
 
 /// Per-module stdlib bindings (Phase 8B), collected during the import scan.
@@ -709,6 +728,40 @@ impl<'a> ProgramLowerer<'a> {
         // Restore the namespace for this module's own function reservations.
         self.shared.current_ns = my_ns;
 
+        // ── Mutable/computed parameter-default slots (allocated ONCE, before the
+        // pre-context). For each top-level NON-generator `def`, a parameter whose
+        // default is a non-literal expression (`[]`, `5 + 5`, …) takes a synthetic
+        // promoted-global slot: evaluated once at the def's module-init position
+        // (CPython def-time once-evaluation) and read — shared — at every
+        // defaulted call. Keyed by (interned def name, interned param name). The
+        // map carries ONLY top-level non-generator defs, so methods / nested /
+        // decorated / generators (which never key into it, and whose contexts
+        // carry `default_slots = None`) keep rejecting non-literal defaults. ──
+        let mut default_slots: DefaultSlotMap = HashMap::new();
+        for def in &defs {
+            if body_has_yield(&def.body) {
+                continue; // generators are out of scope for slot defaults
+            }
+            let fname = self.interner.intern(def.name.as_str());
+            let dargs = def.args.as_ref();
+            for awd in dargs
+                .posonlyargs
+                .iter()
+                .chain(dargs.args.iter())
+                .chain(dargs.kwonlyargs.iter())
+            {
+                let Some(e) = &awd.default else { continue };
+                if try_literal_default(&mut *self.interner, e)?.is_none() {
+                    let pname = self.interner.intern(awd.def.arg.as_str());
+                    default_slots.entry((fname, pname)).or_insert_with(|| {
+                        let id = self.next_global;
+                        self.next_global += 1;
+                        id
+                    });
+                }
+            }
+        }
+
         // ── Top-level def table (own defs through a pre-context, then imports). ──
         let empty_defs: TopDefMap = HashMap::new();
         let pre_ctx = AnnCtx {
@@ -720,14 +773,18 @@ impl<'a> ProgramLowerer<'a> {
             aliases: &col.aliases,
             alias_vars: &col.alias_vars,
             stdlib: &col.stdlib,
+            // Top-level defs resolve their non-literal defaults to slots.
+            default_slots: Some(&default_slots),
         };
         let mut top_defs: TopDefMap = HashMap::new();
         for def in &defs {
+            let fname = self.interner.intern(def.name.as_str());
             let parsed = parse_params(
                 &mut *self.interner,
                 &pre_ctx,
                 def.args.as_ref(),
                 &FirstParam::Plain,
+                fname,
             )?;
             let ret = match &def.returns {
                 Some(e) => annotation_to_semty(e.as_ref(), &pre_ctx),
@@ -747,6 +804,9 @@ impl<'a> ProgramLowerer<'a> {
         for (key, info) in &col.imported_funcs {
             top_defs.insert(key.clone(), info.clone());
         }
+        // The general module context carries NO `default_slots`: decorated defs,
+        // the module-init body, and classes/methods all reject non-literal
+        // defaults. Only the top-level-def lowering (`defs_ctx`) sees the slots.
         let module_ctx = AnnCtx {
             class_map: &col.class_map,
             type_vars: &module_type_vars,
@@ -756,6 +816,11 @@ impl<'a> ProgramLowerer<'a> {
             aliases: &col.aliases,
             alias_vars: &col.alias_vars,
             stdlib: &col.stdlib,
+            default_slots: None,
+        };
+        let defs_ctx = AnnCtx {
+            default_slots: Some(&default_slots),
+            ..module_ctx
         };
 
         // ── Phase B: lower own functions, the module-init body, and classes. ──
@@ -764,7 +829,7 @@ impl<'a> ProgramLowerer<'a> {
             let name = self.interner.intern(def.name.as_str());
             let fid = lower_callable(
                 &mut *self.interner,
-                &module_ctx,
+                &defs_ctx,
                 &mut self.shared,
                 def,
                 def.name.as_str(),
@@ -793,11 +858,15 @@ impl<'a> ProgramLowerer<'a> {
                 true,
                 None,
             )?;
+            // A decorated def is lowered under `module_ctx` (no `default_slots`),
+            // so any non-literal default is rejected — the `fname` is immaterial.
+            let dname = self.interner.intern(d.name.as_str());
             let parsed = parse_params(
                 &mut *self.interner,
                 &module_ctx,
                 d.args.as_ref(),
                 &FirstParam::Plain,
+                dname,
             )?;
             if parsed.varargs.is_some() || parsed.kwargs.is_some() || !parsed.kwonly.is_empty() {
                 return Err(parse_error(
@@ -873,7 +942,14 @@ impl<'a> ProgramLowerer<'a> {
                         let info = &decorated_info[f.name.as_str()];
                         main.emit_decorated_rebinding(f, info.thunk_fid, info.slot)?;
                     }
-                    Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
+                    // A plain top-level def evaluates its non-literal (slot)
+                    // defaults ONCE here, at the def's textual position (CPython
+                    // def-time once-evaluation), storing each shared object into
+                    // its synthetic GC-rooted global slot.
+                    Stmt::FunctionDef(f) => {
+                        main.emit_default_slots(f, &default_slots)?;
+                    }
+                    Stmt::ClassDef(_) => {}
                     _ if type_var_assign_name(stmt).is_some() => {}
                     other => {
                         if main.lower_stmt(other)? {
@@ -1358,12 +1434,13 @@ impl<'a> FnLowerer<'a> {
         self.add_param_default(name, ty, None);
     }
 
-    /// Register a parameter carrying a constant default (Phase 6C).
+    /// Register a parameter carrying a default (Phase 6C; literal `Const` or a
+    /// `Slot` for a mutable/computed top-level default).
     fn add_param_default(
         &mut self,
         name: InternedString,
         ty: SemTy,
-        default: Option<ClassAttrInit>,
+        default: Option<ParamDefault>,
     ) {
         let id = LocalId::new(self.locals.len() as u32);
         self.params.push(HirParam {
@@ -5810,6 +5887,7 @@ impl<'a> FnLowerer<'a> {
         fid: FuncId,
         captures: &[(String, SemTy)],
         span: Span,
+        sem_ty: SemTy,
     ) -> Result<Idx<HirExpr>> {
         let mut cap_exprs = Vec::with_capacity(captures.len());
         for (cname, _) in captures {
@@ -5828,9 +5906,33 @@ impl<'a> FnLowerer<'a> {
                 func: fid,
                 captures: cap_exprs,
             },
-            SemTy::Dyn,
+            sem_ty,
             span,
         ))
+    }
+
+    /// The static `Callable` signature of an already-lowered nested function /
+    /// lambda (Phase 2 of the test_functions.py lift — the call bridge). The
+    /// visible signature is the function's declared params *minus* the synthetic
+    /// env param 0; the result type is its return annotation (`Dyn` when
+    /// unannotated, as for every lambda). Typing the `MakeClosure` value
+    /// `Callable(sig)` instead of `Dyn` lets a later `f()` ride the existing
+    /// `CallIndirect` path. By construction `sig_repr` of this signature equals
+    /// the `Repr::Closure` `lower_make_closure` derives from the MIR sig: both
+    /// flow each `SemTy` through `repr_of`, and the raw-int return/param proofs
+    /// are gated off for any address-taken function (a `MakeClosure` IS the
+    /// address-take), so the closure ABI stays the tagged baseline (Invariant 3,
+    /// PITFALLS A4 — no per-function ABI flag).
+    fn closure_sem_ty(&self, fid: FuncId) -> SemTy {
+        let f = self.shared.funcs[fid.index()]
+            .as_ref()
+            .expect("closure function is filled before MakeClosure");
+        SemTy::Callable(Box::new(Sig {
+            params: f.params[1..].iter().map(|p| p.ty.clone()).collect(),
+            ret: f.ret_ty.clone(),
+            varargs: f.varargs,
+            kwargs: f.kwargs,
+        }))
     }
 
     /// Lower a nested `def` (Phase 6A): a flat synthetic function with an
@@ -5843,9 +5945,16 @@ impl<'a> FnLowerer<'a> {
         let captures = self.capture_list(&facts.free);
         let synth = self.synth_name(d.name.as_str());
         let name = self.interner.intern(&synth);
+        // A nested def must NOT inherit the enclosing top-level def's
+        // `default_slots`: a process-global slot cannot hold a per-closure-
+        // instance capture, so a non-literal default here is a clean error.
+        let nested_ctx = AnnCtx {
+            default_slots: None,
+            ..*self.ctx
+        };
         let fid = lower_callable(
             self.interner,
-            self.ctx,
+            &nested_ctx,
             self.shared,
             d,
             &synth,
@@ -5855,9 +5964,10 @@ impl<'a> FnLowerer<'a> {
             false,
             Some((&captures, &facts)),
         )?;
-        let mc = self.make_closure_expr(fid, &captures, span)?;
+        let mc_ty = self.closure_sem_ty(fid);
+        let mc = self.make_closure_expr(fid, &captures, span, mc_ty.clone())?;
         let dname = self.intern(d.name.as_str());
-        self.write_named(dname, SemTy::Dyn, mc);
+        self.write_named(dname, mc_ty, mc);
         Ok(())
     }
 
@@ -5907,7 +6017,8 @@ impl<'a> FnLowerer<'a> {
         let f = fl.finish(HirTerminator::Return(None));
         self.shared.fill(fid, f);
 
-        self.make_closure_expr(fid, &captures, span)
+        let lam_ty = self.closure_sem_ty(fid);
+        self.make_closure_expr(fid, &captures, span, lam_ty)
     }
 
     /// Install capture bindings: capture `i` is read out of env slot `i+1` into
@@ -7352,6 +7463,37 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Emit the once-eval `GlobalSet`s for a top-level def's non-literal (slot)
+    /// parameter defaults at its module-init position. Each default expression is
+    /// lowered in module scope (names resolve to module globals; there are no
+    /// enclosing locals — which is why this is top-level-only and free of the
+    /// free-var-capture trap) and stored into its synthetic global slot, so every
+    /// defaulted call reads the same shared object (CPython aliasing semantics).
+    fn emit_default_slots(
+        &mut self,
+        f: &StmtFunctionDef,
+        slots: &DefaultSlotMap,
+    ) -> Result<()> {
+        let fname = self.intern(f.name.as_str());
+        let args = f.args.as_ref();
+        for awd in args
+            .posonlyargs
+            .iter()
+            .chain(args.args.iter())
+            .chain(args.kwonlyargs.iter())
+        {
+            let Some(default_expr) = &awd.default else {
+                continue;
+            };
+            let pname = self.intern(awd.def.arg.as_str());
+            if let Some(&var_id) = slots.get(&(fname, pname)) {
+                let value = self.lower_expr(default_expr)?;
+                self.push_stmt(HirStmt::GlobalSet { var_id, value });
+            }
+        }
+        Ok(())
+    }
+
     fn emit_decorated_rebinding(
         &mut self,
         f: &StmtFunctionDef,
@@ -7989,19 +8131,21 @@ impl<'a> FnLowerer<'a> {
         c: &ExprCall,
         span: Span,
     ) -> Result<Idx<HirExpr>> {
-        if has_doublestar_kwarg(c) {
-            return Err(parse_error(
-                "`**kwargs` spreading into a direct call is out of scope (Phase 6C)",
-                span,
-            ));
-        }
         // Classify positional args. A `*list` / `*tuple` LITERAL spread has a
         // compile-time-known arity, so its elements flatten into plain
         // positionals and reuse the slot-matching path below. A runtime `*seq`
         // spread (a variable / call result / comprehension) has an unknown
         // length, so it routes to the general runtime-spread path.
         let (items, has_runtime_spread) = classify_pos_args(c);
+        let has_kw_spread = has_doublestar_kwarg(c);
         if has_runtime_spread {
+            if has_kw_spread {
+                return Err(parse_error(
+                    "combining a runtime `*` spread with `**` unpacking in one call \
+                     is out of scope",
+                    span,
+                ));
+            }
             return self.lower_spread_call(info, fname, &items, c, span);
         }
 
@@ -8020,17 +8164,49 @@ impl<'a> FnLowerer<'a> {
                 ArgSrc::Plain(e)
             });
         }
-        // (keyword name, value, consumed?)
+        // (keyword name, value, consumed?). Explicit keywords and the entries of
+        // a `**{literal}` dict (string-literal keys, known at compile time) flatten
+        // into this list — a duplicate across either source is a clean error
+        // (`got multiple values for keyword argument`). A non-literal `**d`
+        // (a variable / call result / comprehension) is evaluated ONCE into
+        // `kw_dict` and bound per parameter by name at run time.
         let mut keywords: Vec<(String, ArgSrc, bool)> = Vec::new();
+        let mut kw_dict: Option<LocalId> = None;
         for kw in &c.keywords {
-            let Some(name) = &kw.arg else {
-                return Err(parse_error(
-                    "`**kwargs` spreading is out of scope here",
-                    span,
-                ));
-            };
-            let src = self.stage_arg_src(&kw.value)?;
-            keywords.push((name.as_str().to_string(), src, false));
+            match &kw.arg {
+                Some(name) => {
+                    let src = self.stage_arg_src(&kw.value)?;
+                    push_call_keyword(&mut keywords, name.as_str(), src, fname, span)?;
+                }
+                None => match literal_kwargs_dict(&kw.value) {
+                    // `**{"a": 1, "b": 2}` — keys known now; flatten to keywords.
+                    Some(entries) => {
+                        for (k, ve) in entries {
+                            let src = self.stage_arg_src(ve)?;
+                            push_call_keyword(&mut keywords, &k, src, fname, span)?;
+                        }
+                    }
+                    // `**d` — a runtime dict, bound by name per slot below.
+                    None => {
+                        if info.kwargs.is_some() {
+                            return Err(parse_error(
+                                format!(
+                                    "`{fname}()` — a runtime `**dict` spread into a function \
+                                     with `**kwargs` is out of scope"
+                                ),
+                                span,
+                            ));
+                        }
+                        if kw_dict.is_some() {
+                            return Err(parse_error(
+                                "multiple runtime `**dict` spreads in one call is out of scope",
+                                span,
+                            ));
+                        }
+                        kw_dict = Some(self.stage_arg(&kw.value)?);
+                    }
+                },
+            }
         }
 
         let n_fixed = info.fixed.len();
@@ -8054,8 +8230,10 @@ impl<'a> FnLowerer<'a> {
                 } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name))
                 {
                     self.arg_src_value(kv, span)?
+                } else if let Some(v) = self.bind_from_kw_dict(kw_dict, p, span) {
+                    v
                 } else if let Some(def) = &p.default {
-                    self.lower_const_default(def, span)
+                    self.lower_param_default(def, span)
                 } else {
                     return Err(parse_error(
                         format!(
@@ -8082,8 +8260,10 @@ impl<'a> FnLowerer<'a> {
         for p in &info.kwonly {
             let v = if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name)) {
                 self.arg_src_value(kv, span)?
+            } else if let Some(v) = self.bind_from_kw_dict(kw_dict, p, span) {
+                v
             } else if let Some(def) = &p.default {
-                self.lower_const_default(def, span)
+                self.lower_param_default(def, span)
             } else {
                 return Err(parse_error(
                     format!(
@@ -8135,6 +8315,41 @@ impl<'a> FnLowerer<'a> {
             span,
         );
         Ok(self.alloc(HirExprKind::Call { callee, args: out }, SemTy::Dyn, span))
+    }
+
+    /// Bind parameter `p` from a runtime `**dict` spread (`kw_dict`), if present:
+    /// a defaulted parameter reads `dict.get(name, default)` (the default fills an
+    /// absent key); a required parameter reads `dict[name]`. Returns `None` when
+    /// there is no runtime dict, so the caller falls through to the literal default
+    /// (or the missing-argument error). Documented gaps (the static callee shape
+    /// can't see a runtime dict's contents at compile time): an unexpected key in
+    /// the dict is not diagnosed, and a key that collides with an explicit
+    /// positional/keyword is not detected as a duplicate — the corpus never
+    /// exercises either (its dicts match the parameter names exactly and avoid
+    /// conflicts; see `corpus/test_functions.py`).
+    fn bind_from_kw_dict(
+        &mut self,
+        kw_dict: Option<LocalId>,
+        p: &ParamInfo,
+        span: Span,
+    ) -> Option<Idx<HirExpr>> {
+        let dvar = kw_dict?;
+        let key = self.alloc(HirExprKind::StrLit(p.name), SemTy::Str, span);
+        let dref = self.local_ref(dvar, span);
+        let node = match &p.default {
+            Some(def) => {
+                let default = self.lower_param_default(def, span);
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::DictGetDefault,
+                    args: vec![dref, key, default],
+                }
+            }
+            None => HirExprKind::ContainerExpr {
+                op: ContainerOp::DictGet,
+                args: vec![dref, key],
+            },
+        };
+        Some(self.alloc(node, SemTy::Dyn, span))
     }
 
     /// Lower a known-callee call carrying a runtime `*seq` spread — a sequence
@@ -8206,7 +8421,7 @@ impl<'a> FnLowerer<'a> {
                 self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
             } else {
                 let def = p.default.as_ref().expect("trailing fixed param has a default");
-                let default = self.lower_const_default(def, span);
+                let default = self.lower_param_default(def, span);
                 self.emit_spread_default(argv, n_local, i, default, span)
             };
             let v = self.launder_arg(raw, &p.ty, span);
@@ -8224,7 +8439,7 @@ impl<'a> FnLowerer<'a> {
                     span,
                 ));
             };
-            let d = self.lower_const_default(def, span);
+            let d = self.lower_param_default(def, span);
             let v = self.launder_arg(d, &p.ty, span);
             out.push(v);
         }
@@ -8482,18 +8697,26 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Materialize a constant default value (Phase 6C) as a literal expr.
-    fn lower_const_default(&mut self, init: &ClassAttrInit, span: Span) -> Idx<HirExpr> {
+    fn lower_param_default(&mut self, init: &ParamDefault, span: Span) -> Idx<HirExpr> {
         let (kind, ty) = match init {
-            ClassAttrInit::Int(v) => (HirExprKind::IntLit(*v), SemTy::Int),
-            ClassAttrInit::BigInt(s) => (HirExprKind::BigIntLit(*s), SemTy::Int),
-            ClassAttrInit::Float(f) => (HirExprKind::FloatLit(*f), SemTy::Float),
-            ClassAttrInit::Bool(b) => (HirExprKind::BoolLit(*b), SemTy::Bool),
-            ClassAttrInit::Str(s) => (HirExprKind::StrLit(*s), SemTy::Str),
-            ClassAttrInit::Bytes(s) => (HirExprKind::BytesLit(*s), SemTy::Bytes),
-            ClassAttrInit::None => (HirExprKind::NoneLit, SemTy::NoneTy),
+            // A mutable/computed top-level default reads its once-evaluated,
+            // GC-rooted global slot (the shared object, CPython aliasing). The
+            // tagged `Dyn` read coerces into the param's repr at the call seam.
+            ParamDefault::Slot(var_id) => {
+                return self.alloc(HirExprKind::GlobalGet { var_id: *var_id }, SemTy::Dyn, span)
+            }
+            ParamDefault::Const(ClassAttrInit::Int(v)) => (HirExprKind::IntLit(*v), SemTy::Int),
+            ParamDefault::Const(ClassAttrInit::BigInt(s)) => (HirExprKind::BigIntLit(*s), SemTy::Int),
+            ParamDefault::Const(ClassAttrInit::Float(f)) => (HirExprKind::FloatLit(*f), SemTy::Float),
+            ParamDefault::Const(ClassAttrInit::Bool(b)) => (HirExprKind::BoolLit(*b), SemTy::Bool),
+            ParamDefault::Const(ClassAttrInit::Str(s)) => (HirExprKind::StrLit(*s), SemTy::Str),
+            ParamDefault::Const(ClassAttrInit::Bytes(s)) => (HirExprKind::BytesLit(*s), SemTy::Bytes),
+            ParamDefault::Const(ClassAttrInit::None) => (HirExprKind::NoneLit, SemTy::NoneTy),
             // `()` default → a fresh empty tuple (immutable, so per-call freshness
             // matches CPython's shared singleton observably).
-            ClassAttrInit::EmptyTuple => (HirExprKind::TupleLit { elems: vec![] }, SemTy::Dyn),
+            ParamDefault::Const(ClassAttrInit::EmptyTuple) => {
+                (HirExprKind::TupleLit { elems: vec![] }, SemTy::Dyn)
+            }
         };
         self.alloc(kind, ty, span)
     }
@@ -8803,6 +9026,46 @@ fn classify_pos_args(c: &ExprCall) -> (Vec<PosItem<'_>>, bool) {
 /// True iff the call has a `**d` spread.
 fn has_doublestar_kwarg(c: &ExprCall) -> bool {
     c.keywords.iter().any(|k| k.arg.is_none())
+}
+
+/// If `e` is a dict LITERAL whose every key is a string literal (`{"a": 1}`,
+/// the compile-time-known form of a `**{...}` spread), return its `(key, value)`
+/// entries in written order. `None` for any non-literal / non-string-keyed dict
+/// (a runtime `**d`, or `{**x}` nested unpacking), which binds at run time.
+fn literal_kwargs_dict(e: &Expr) -> Option<Vec<(String, &Expr)>> {
+    let Expr::Dict(d) = e else { return None };
+    let mut out = Vec::with_capacity(d.values.len());
+    for (k, v) in d.keys.iter().zip(&d.values) {
+        let Some(Expr::Constant(c)) = k.as_ref() else {
+            return None;
+        };
+        let Constant::Str(s) = &c.value else {
+            return None;
+        };
+        out.push((s.clone(), v));
+    }
+    Some(out)
+}
+
+/// Append a resolved keyword `(name, value)` to a direct-call's keyword list,
+/// rejecting a duplicate name (an explicit keyword colliding with a `**{literal}`
+/// entry, or two literal-dict entries) the way CPython does:
+/// `got multiple values for keyword argument`.
+fn push_call_keyword<'a>(
+    keywords: &mut Vec<(String, ArgSrc<'a>, bool)>,
+    name: &str,
+    src: ArgSrc<'a>,
+    fname: &str,
+    span: Span,
+) -> Result<()> {
+    if keywords.iter().any(|(n, _, _)| n == name) {
+        return Err(parse_error(
+            format!("`{fname}()` got multiple values for keyword argument `{name}`"),
+            span,
+        ));
+    }
+    keywords.push((name.to_string(), src, false));
+    Ok(())
 }
 
 /// Reject keyword args and `*`/`**` spreads for a call form that does not
@@ -9158,7 +9421,7 @@ fn lower_callable(
         Some(e) => annotation_to_semty(e.as_ref(), ctx),
         None => SemTy::Dyn,
     };
-    let parsed = parse_params(interner, ctx, def.args.as_ref(), &first)?;
+    let parsed = parse_params(interner, ctx, def.args.as_ref(), &first, name)?;
     // The function's own scoping facts (computed by the caller for nested defs,
     // fresh here for top-level ones — same analysis either way).
     let own_facts;
@@ -9404,6 +9667,7 @@ fn parse_params(
     ctx: &AnnCtx,
     args: &rustpython_parser::ast::Arguments,
     first: &FirstParam,
+    fname: InternedString,
 ) -> Result<ParsedParams> {
     let skip = matches!(first, FirstParam::SkipCls) as usize;
     let mut fixed = Vec::new();
@@ -9421,12 +9685,13 @@ fn parse_params(
                 None => SemTy::Dyn,
             },
         };
+        let pname = interner.intern(awd.def.arg.as_str());
         let default = match &awd.default {
-            Some(e) => Some(class_attr_init(interner, e)?),
+            Some(e) => Some(resolve_param_default(interner, ctx, fname, pname, e)?),
             None => None,
         };
         fixed.push(ParamInfo {
-            name: interner.intern(awd.def.arg.as_str()),
+            name: pname,
             ty,
             default,
         });
@@ -9437,12 +9702,13 @@ fn parse_params(
             Some(a) => annotation_to_semty(a.as_ref(), ctx),
             None => SemTy::Dyn,
         };
+        let pname = interner.intern(awd.def.arg.as_str());
         let default = match &awd.default {
-            Some(e) => Some(class_attr_init(interner, e)?),
+            Some(e) => Some(resolve_param_default(interner, ctx, fname, pname, e)?),
             None => None,
         };
         kwonly.push(ParamInfo {
-            name: interner.intern(awd.def.arg.as_str()),
+            name: pname,
             ty,
             default,
         });
@@ -9541,6 +9807,9 @@ fn lower_class(
         aliases: ctx.aliases,
         alias_vars: ctx.alias_vars,
         stdlib: ctx.stdlib,
+        // Methods reject non-literal defaults (mutable/computed defaults are a
+        // top-level-function-only feature).
+        default_slots: None,
     };
 
     let name = interner.intern(cdef.name.as_str());
@@ -9786,47 +10055,97 @@ fn classify_method_decorator(m: &StmtFunctionDef) -> Result<MethodDecor> {
     }
 }
 
-/// Lower a class-attribute initializer; only constant literals are supported (5D).
-fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassAttrInit> {
+/// The single literal accept-set, shared by class attributes (`class_attr_init`)
+/// and parameter defaults (the allocation pass + `resolve_param_default`).
+/// `Ok(Some(init))` = a recognized constant literal; `Ok(None)` = a valid but
+/// non-literal expression (e.g. `[]`, `5 + 5` — a mutable/computed default
+/// candidate); `Err` = a malformed literal (non-UTF-8 bytes).
+fn try_literal_default(
+    interner: &mut StringInterner,
+    value: &Expr,
+) -> Result<Option<ClassAttrInit>> {
     let span = to_span(value.range());
     // Fold a unary +/- over a numeric literal first.
     if let Expr::UnaryOp(u) = value {
         if matches!(u.op, PyUnaryOp::USub | PyUnaryOp::UAdd) {
             if let Expr::Constant(c) = u.operand.as_ref() {
                 let neg = matches!(u.op, PyUnaryOp::USub);
-                return match &c.value {
-                    Constant::Int(b) => Ok(int_attr_init(interner, &b.to_string(), neg)),
-                    Constant::Float(f) => Ok(ClassAttrInit::Float(if neg { -*f } else { *f })),
-                    _ => Err(parse_error(
-                        "class-attribute initializer must be a literal",
-                        span,
-                    )),
-                };
+                return Ok(match &c.value {
+                    Constant::Int(b) => Some(int_attr_init(interner, &b.to_string(), neg)),
+                    Constant::Float(f) => Some(ClassAttrInit::Float(if neg { -*f } else { *f })),
+                    // `-x`, `+obj`, … → non-literal (computed-default candidate).
+                    _ => None,
+                });
             }
+            // `-(expr)` → non-literal.
+            return Ok(None);
         }
     }
     match value {
-        Expr::Constant(c) => match &c.value {
-            Constant::Int(b) => Ok(int_attr_init(interner, &b.to_string(), false)),
-            Constant::Float(f) => Ok(ClassAttrInit::Float(*f)),
-            Constant::Bool(b) => Ok(ClassAttrInit::Bool(*b)),
-            Constant::Str(s) => Ok(ClassAttrInit::Str(interner.intern(s))),
-            Constant::None => Ok(ClassAttrInit::None),
+        Expr::Constant(c) => Ok(match &c.value {
+            Constant::Int(b) => Some(int_attr_init(interner, &b.to_string(), false)),
+            Constant::Float(f) => Some(ClassAttrInit::Float(*f)),
+            Constant::Bool(b) => Some(ClassAttrInit::Bool(*b)),
+            Constant::Str(s) => Some(ClassAttrInit::Str(interner.intern(s))),
+            Constant::None => Some(ClassAttrInit::None),
             Constant::Bytes(b) => {
                 let s = std::str::from_utf8(b)
                     .map_err(|_| parse_error("non-UTF-8 bytes literal is out of scope", span))?;
-                Ok(ClassAttrInit::Bytes(interner.intern(s)))
+                Some(ClassAttrInit::Bytes(interner.intern(s)))
             }
-            _ => Err(parse_error("unsupported class-attribute literal", span)),
-        },
+            // Complex / ellipsis / tuple constant → non-literal here.
+            _ => None,
+        }),
         // The empty tuple `()` — accepted only as a parameter default (Phase 8E,
         // e.g. `children=()`); materialized as a fresh empty tuple at each call
         // site. A non-empty tuple default stays out of scope.
-        Expr::Tuple(t) if t.elts.is_empty() => Ok(ClassAttrInit::EmptyTuple),
-        _ => Err(parse_error(
+        Expr::Tuple(t) if t.elts.is_empty() => Ok(Some(ClassAttrInit::EmptyTuple)),
+        // Any other expression is non-literal (a slot candidate for a top-level
+        // parameter default; rejected as a class-attribute initializer).
+        _ => Ok(None),
+    }
+}
+
+/// Lower a class-attribute initializer; only constant literals are supported (5D).
+fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassAttrInit> {
+    let span = to_span(value.range());
+    match try_literal_default(interner, value)? {
+        Some(init) => Ok(init),
+        None => Err(parse_error(
             "class-attribute initializers must be constant literals (Phase 5D)",
             span,
         )),
+    }
+}
+
+/// Resolve a parameter default expression to a [`ParamDefault`]. A literal
+/// becomes a per-call-materialized `Const`; a non-literal (mutable/computed)
+/// default of a **top-level** function (where `ctx.default_slots` is `Some` and
+/// holds a slot for `(fname, pname)`) becomes a once-evaluated global `Slot`.
+/// Everywhere else (nested defs, methods, decorated defs, generators) a
+/// non-literal default is a clean parse error.
+fn resolve_param_default(
+    interner: &mut StringInterner,
+    ctx: &AnnCtx,
+    fname: InternedString,
+    pname: InternedString,
+    value: &Expr,
+) -> Result<ParamDefault> {
+    let span = to_span(value.range());
+    match try_literal_default(interner, value)? {
+        Some(init) => Ok(ParamDefault::Const(init)),
+        None => {
+            if let Some(slots) = ctx.default_slots {
+                if let Some(&var_id) = slots.get(&(fname, pname)) {
+                    return Ok(ParamDefault::Slot(var_id));
+                }
+            }
+            Err(parse_error(
+                "a mutable/computed default is only supported on a top-level \
+                 function parameter; otherwise defaults must be constant literals",
+                span,
+            ))
+        }
     }
 }
 

@@ -68,6 +68,7 @@ struct RuntimeFns {
     box_float: FuncId,
     unbox_float_checked: FuncId,
     unbox_int_checked: FuncId,
+    unbox_bool_checked: FuncId,
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
@@ -280,6 +281,7 @@ impl RuntimeFns {
             box_float: d("rt_box_float", &[tf], &[ti])?,
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
             unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
+            unbox_bool_checked: d("rt_unbox_bool", &[ti], &[t8])?,
             // Raw i64 arithmetic (Phase 3c): used only on range-proven cursors.
             // These RAISE OverflowError on i64 overflow (unlike CPython's bignum
             // promotion), so they are correct only where overflow provably cannot
@@ -2344,6 +2346,7 @@ impl FnGen<'_, '_> {
             let v = match to {
                 Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
+                Repr::Raw(RawKind::I8) => self.call(self.rt.unbox_bool_checked, &[s]).unwrap(),
                 other => return Err(cg_error(format!("illegal checked coercion to {other:?}"))),
             };
             self.def_local(dst, v);

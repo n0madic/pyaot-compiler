@@ -210,11 +210,12 @@ struct FnSig {
     /// Source parameter names (parallel to `params`, including `self` and the
     /// `*args`/`**kwargs` slots) — keyword → slot matching (Phase 10).
     param_names: Vec<InternedString>,
-    /// Per-param constant default (parallel to `params`; `None` for `self` and
-    /// for params without a default). Lets constructor calls fill missing
-    /// trailing args (Phase 8E) the way direct function calls already do in the
-    /// frontend.
-    defaults: Vec<Option<pyaot_hir::ClassAttrInit>>,
+    /// Per-param default (parallel to `params`; `None` for `self` and for params
+    /// without a default). Lets constructor / method calls fill missing trailing
+    /// args (Phase 8E) the way direct function calls already do in the frontend.
+    /// A `Slot` default reads a once-evaluated GC-rooted global (mutable/computed
+    /// top-level defaults).
+    defaults: Vec<Option<pyaot_hir::ParamDefault>>,
     ret: Repr,
     varargs: bool,
     kwargs: bool,
@@ -446,6 +447,10 @@ impl<'a> FnLower<'a> {
         let needs_check = match &want {
             Repr::Raw(RawKind::F64) => *ty != SemTy::Float,
             Repr::Raw(RawKind::I64) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
+            // A bool slot (`Raw(I8)`) fed a gradual value takes the CHECKED unbox
+            // (`rt_unbox_bool`, the third member of the checked family) — a
+            // statically-proven `bool` keeps the plain `UntagBool`.
+            Repr::Raw(RawKind::I8) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
             _ => false,
         };
         if !needs_check {
@@ -511,11 +516,14 @@ impl<'a> FnLower<'a> {
             HirStmt::Assign { target, value } => {
                 let (vloc, vrepr) = self.lower_expr(*value)?;
                 let target_repr = self.local_repr(*target);
-                if target_repr == Repr::Raw(RawKind::F64) {
-                    // Numeric tower (PLAN §8): an int/bool/gradual value into an
-                    // annotated `: float` local is a real (checked) coercion —
-                    // compute the f64 via the shared helper, then store it into
-                    // the existing slot (a `Raw(F64)→Raw(F64)` Noop copy).
+                if matches!(target_repr, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8)) {
+                    // A gradual value into an annotated `: float`/`: bool` local is
+                    // a real (checked) coercion, not a bit reinterpret. Float is the
+                    // numeric tower (PLAN §8: int/bool/gradual → f64); bool is the
+                    // Dyn→`Raw(I8)` checked unbox (`rt_unbox_bool`). Route through
+                    // the shared helper (which only emits the checked unbox for a
+                    // genuinely gradual source — a statically-proven value stays a
+                    // Noop), then store into the existing slot (a same-repr copy).
                     let ty = self.func.exprs[*value].ty.clone();
                     let f = self.coerce_value(vloc, vrepr, &ty, target_repr.clone())?;
                     self.coerce_into(*target, f, target_repr.clone(), target_repr)?;
@@ -2775,11 +2783,33 @@ impl<'a> FnLower<'a> {
         Ok((inst, inst_repr))
     }
 
-    /// Materialize a constant parameter default (Phase 8E) as a fresh MIR value,
-    /// mirroring how `lower_expr` lowers the equivalent literal. Used to fill
-    /// missing trailing constructor args. The empty-tuple default builds a fresh
-    /// zero-length tuple (immutable, so per-call freshness is unobservable).
-    fn materialize_default(&mut self, init: &pyaot_hir::ClassAttrInit) -> Result<(LocalId, Repr)> {
+    /// Materialize a parameter default (Phase 8E) as a fresh MIR value. A `Const`
+    /// literal mirrors how `lower_expr` lowers the equivalent literal; a `Slot`
+    /// reads the once-evaluated GC-rooted global (the shared mutable/computed
+    /// top-level default), leaving the caller's existing `coerce(.., prepr)` to
+    /// reinterpret the tagged slot value into the param repr.
+    fn materialize_default(&mut self, init: &pyaot_hir::ParamDefault) -> Result<(LocalId, Repr)> {
+        use pyaot_hir::ParamDefault as PD;
+        match init {
+            PD::Const(c) => self.materialize_const_default(c),
+            PD::Slot(var_id) => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::GlobalGet {
+                    dst,
+                    var_id: *var_id,
+                });
+                Ok((dst, Repr::Tagged))
+            }
+        }
+    }
+
+    /// Materialize a constant (literal) parameter default. The empty-tuple
+    /// default builds a fresh zero-length tuple (immutable, so per-call freshness
+    /// is unobservable).
+    fn materialize_const_default(
+        &mut self,
+        init: &pyaot_hir::ClassAttrInit,
+    ) -> Result<(LocalId, Repr)> {
         use pyaot_hir::ClassAttrInit as A;
         Ok(match init {
             A::Int(v) => {

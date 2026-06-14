@@ -41,19 +41,24 @@ impl CoerceInst {
     }
 
     /// A CHECKED (runtime-validated) unbox at a stdlib raw-ABI boundary
-    /// (Phase 8H, D3) — `Some` iff `from` is `Tagged` and `to` is `Raw(F64)`
-    /// or `Raw(I64)` (the `rt_unbox_float` / `rt_unbox_int` shapes).
+    /// (Phase 8H, D3) — `Some` iff `from` is `Tagged` and `to` is `Raw(F64)`,
+    /// `Raw(I64)`, or `Raw(I8)` (the `rt_unbox_float` / `rt_unbox_int` /
+    /// `rt_unbox_bool` shapes).
     ///
-    /// These two shapes (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`) are the only
-    /// checked admissions because each has a matching runtime guard that raises
-    /// `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int`,
+    /// These three shapes (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`,
+    /// `Tagged→Raw(I8)`) are the only checked admissions because each has a
+    /// matching runtime guard that raises `TypeError` instead of SEGV
+    /// (`rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`,
     /// `runtime/src/boxing.rs`). Never widen this set without adding the matching
     /// `rt_*` guard first — doing so reopens the Phase 8B–8F gradual-seam SEGV
     /// family (a wrong-shape `Value` blind-cast to a typed heap pointer in a
     /// frozen `rt_*`). See PITFALLS B18.
     pub fn new_checked(dst: LocalId, src: Operand, from: Repr, to: Repr) -> Option<Self> {
-        let legal =
-            from == Repr::Tagged && matches!(to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
+        let legal = from == Repr::Tagged
+            && matches!(
+                to,
+                Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8)
+            );
         if !legal {
             return None;
         }
@@ -136,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_admits_only_the_two_unbox_shapes() {
+    fn checked_admits_only_the_three_unbox_shapes() {
         assert!(
             CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::F64))
                 .is_some_and(|c| c.checked())
@@ -145,10 +150,12 @@ mod tests {
             CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I64))
                 .is_some_and(|c| c.checked())
         );
-        // Wrong target / wrong source are unrepresentable.
+        // The third shape: `Tagged → Raw(I8)`, backed by `rt_unbox_bool`.
         assert!(
-            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8)).is_none()
+            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8))
+                .is_some_and(|c| c.checked())
         );
+        // Wrong source is unrepresentable.
         assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Tagged).is_none());
         assert!(CoerceInst::new_checked(
             l(1),

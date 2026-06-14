@@ -299,13 +299,17 @@ must run in BOTH debug and release (the register-state class of bug only
 reproduces against the optimized runtime).
 
 ### B18. Widening the checked-unbox shapes without a runtime guard
-**Trap:** the MIR verifier admits exactly two *checked* coercions —
-`Tagged → Raw(F64)` and `Tagged → Raw(I64)` (`mir/src/verify.rs`,
-`CoerceInst::new_checked`). Each is sound *only* because a matching runtime guard
-(`rt_unbox_float` / `rt_unbox_int`, `runtime/src/boxing.rs`) inspects the tag and
-raises `TypeError` on a wrong shape instead of casting blind. Adding a third
-checked shape — e.g. `Tagged → Heap(List)` — because "inference should prove it"
-silently extends the set to a pair with **no** runtime guard: the wrong-shape
+**Trap:** the MIR verifier admits exactly three *checked* coercions —
+`Tagged → Raw(F64)`, `Tagged → Raw(I64)`, and `Tagged → Raw(I8)`
+(`mir/src/verify.rs`, `CoerceInst::new_checked`). Each is sound *only* because a
+matching runtime guard (`rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`,
+`runtime/src/boxing.rs`) inspects the tag and raises `TypeError` on a wrong shape
+instead of casting blind. (`rt_unbox_bool` is the *sanctioned* way to widen the
+set: a new shape is admissible exactly when its raising `rt_*` guard lands with
+it — `Raw(I8)` joined the family in lockstep with `rt_unbox_bool`.) Adding a
+fourth checked shape — e.g. `Tagged → Heap(List)` — because "inference should
+prove it" silently extends the set to a pair with **no** runtime guard: the
+wrong-shape
 `Value` is then blind-cast to a typed heap pointer in an `rt_*` and
 dereferenced → **SEGV in the runtime, not a `TypeError`**. This is the same trust
 the proof-trusted `Tagged → Heap` no-op already places in `typeck` (A2, B5), and

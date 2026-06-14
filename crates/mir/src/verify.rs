@@ -485,16 +485,20 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // Pair-legality is unreachable via `CoerceInst::new`/`new_checked`
             // — kept as defense-in-depth against in-crate construction.
             if c.checked {
-                // A checked (runtime-validated) unbox is legal ONLY for the two
-                // stdlib raw-ABI boundary shapes (Phase 8H, D3). These two shapes
-                // (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`) are the only checked
+                // A checked (runtime-validated) unbox is legal ONLY for the three
+                // raw-ABI boundary shapes (Phase 8H, D3; Phase 1 of the
+                // test_functions.py lift). These three shapes (`Tagged→Raw(F64)`,
+                // `Tagged→Raw(I64)`, `Tagged→Raw(I8)`) are the only checked
                 // admissions because each has a matching runtime guard that raises
-                // `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int`,
-                // `runtime/src/boxing.rs`). Never widen this set without adding the
-                // matching `rt_*` guard first — doing so reopens the Phase 8B–8F
-                // gradual-seam SEGV family. See PITFALLS B18.
+                // `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int` /
+                // `rt_unbox_bool`, `runtime/src/boxing.rs`). Never widen this set
+                // without adding the matching `rt_*` guard first — doing so reopens
+                // the Phase 8B–8F gradual-seam SEGV family. See PITFALLS B18.
                 let legal = c.from == Repr::Tagged
-                    && matches!(c.to, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64));
+                    && matches!(
+                        c.to,
+                        Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8)
+                    );
                 if !legal {
                     return Err(VerifyError::IllegalCoercion {
                         from: c.from.clone(),
@@ -1315,29 +1319,38 @@ mod tests {
 
     #[test]
     fn checked_coerce_legal_only_for_raw_unbox_shapes() {
-        // Phase 8H, D3: `checked: true` is legal for (Tagged, Raw(F64)) /
-        // (Tagged, Raw(I64)) and nothing else.
-        let ok = single_block(
-            vec![Repr::Tagged, Repr::Raw(RawKind::F64)],
-            vec![MirInst::Coerce(CoerceInst {
-                dst: LocalId::new(1),
-                src: Operand::Local(LocalId::new(0)),
-                from: Repr::Tagged,
-                to: Repr::Raw(RawKind::F64),
-                checked: true,
-            })],
-            MirTerminator::Return(None),
-        );
-        assert_eq!(verify(&ok, &[]), Ok(()));
+        // Phase 8H, D3 + Phase 1 lift: `checked: true` is legal for the three
+        // unbox shapes (Tagged, Raw(F64)) / (Tagged, Raw(I64)) / (Tagged,
+        // Raw(I8)) — each backed by a raising `rt_unbox_*` guard — and nothing
+        // else (B18).
+        for to in [
+            Repr::Raw(RawKind::F64),
+            Repr::Raw(RawKind::I64),
+            Repr::Raw(RawKind::I8),
+        ] {
+            let ok = single_block(
+                vec![Repr::Tagged, to.clone()],
+                vec![MirInst::Coerce(CoerceInst {
+                    dst: LocalId::new(1),
+                    src: Operand::Local(LocalId::new(0)),
+                    from: Repr::Tagged,
+                    to: to.clone(),
+                    checked: true,
+                })],
+                MirTerminator::Return(None),
+            );
+            assert_eq!(verify(&ok, &[]), Ok(()), "checked Tagged -> {to:?} is legal");
+        }
         // A `checked` pair the public constructor refuses — built directly
-        // (in-crate field access) to prove the verifier's own re-check.
+        // (in-crate field access) to prove the verifier's own re-check. The
+        // source must be `Tagged`; a `Raw(F64)` source has no unboxing guard.
         let bad = single_block(
-            vec![Repr::Tagged, Repr::Raw(RawKind::I8)],
+            vec![Repr::Raw(RawKind::F64), Repr::Raw(RawKind::I64)],
             vec![MirInst::Coerce(CoerceInst {
                 dst: LocalId::new(1),
                 src: Operand::Local(LocalId::new(0)),
-                from: Repr::Tagged,
-                to: Repr::Raw(RawKind::I8),
+                from: Repr::Raw(RawKind::F64),
+                to: Repr::Raw(RawKind::I64),
                 checked: true,
             })],
             MirTerminator::Return(None),
