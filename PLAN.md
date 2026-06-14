@@ -433,7 +433,17 @@ These few gaps block the most files — close them before the long tail.
   tagged bits. Handles `0x`/`0b`/`0o` prefixes. Gated via `test_builtins.py`.
 
 ### 7. `isinstance`
-- **Tuple of types** — `isinstance(x, (int, str))` (single-type form works).
+- ~~**Tuple of types** — `isinstance(x, (int, str))`~~ — DONE: a pure frontend
+  desugar to an `or` of the existing per-element checks — `IsInstance` (runtime,
+  user classes) and `IsInstanceBuiltin` (static fold, builtins) — over a receiver
+  staged ONCE (CPython single-eval), combined with the same short-circuit CFG as
+  `lower_boolop`. Nested type-tuples flatten recursively; the empty tuple is
+  `False`. ZERO new HIR / typeck / lowering / runtime change. A builtin-type
+  element crossed with a `Dyn`/`Union` receiver raises the same loud "requires a
+  statically-typed value" error as the single-type builtin fold (gradual receiver
+  is out of scope, below); a tuple element that is not a class / builtin-type
+  *name* is a clean error (matching single-type strictness). Gated by
+  `corpus/p34_isinstance_tuple.py`.
 - ~~**Container targets** — `isinstance(x, list/dict/tuple/set)`~~ — DONE: the
   builtin-isinstance static fold now matches container targets by KIND (element
   types are irrelevant to isinstance — a `list[int]` value satisfies

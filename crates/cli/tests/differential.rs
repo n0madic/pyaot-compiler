@@ -513,6 +513,15 @@ const PHASE_CORPUS: &[&str] = &[
     // empty-string shape (len/concat/join/truthiness), arithmetic use, the
     // with-args forms (no regression), and the unshadowed gate.
     "p33_zero_arg_conversions.py",
+    // `isinstance(x, (A, B, ...))` tuple-of-types (§7) — pure frontend desugar to
+    // an `or` of the existing per-element checks (`IsInstance` runtime / user
+    // classes, `IsInstanceBuiltin` static fold / builtins), over a receiver
+    // evaluated ONCE; nested type-tuples flatten, the empty tuple is `False`. No
+    // new HIR node, no runtime/typeck/lowering change. Crosses builtin-only,
+    // container-kind, user-class, MIXED user+builtin, nested, and empty tuples
+    // with a side-effecting receiver (single-eval check) and use under
+    // `if`/`and`/`or`/comprehension filters.
+    "p34_isinstance_tuple.py",
     // Comprehensive builtins suite (1633 lines) — LIFTED. Its blocker chain fell
     // across every phase as each fix unmasked the next: `issubclass`/`getattr`/
     // `hasattr`/`setattr` (semantics, p30) → multi-iterable `zip` into a typed

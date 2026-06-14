@@ -6231,6 +6231,95 @@ impl<'a> FnLowerer<'a> {
         Ok(self.local_ref(res, span))
     }
 
+    /// Collect per-element `isinstance` checks for a type-tuple
+    /// `isinstance(x, (A, B, ...))`. Each check reads the singly-staged receiver
+    /// `recv`. Nested tuples flatten (CPython semantics); a `Name` resolves to a
+    /// user class (`IsInstance`) or a builtin-type target (`IsInstanceBuiltin`);
+    /// any other element is a clean error (matching the single-type form's
+    /// strictness — the second arg must be a class / builtin-type name).
+    fn collect_isinstance_checks(
+        &mut self,
+        elts: &[Expr],
+        recv: LocalId,
+        checks: &mut Vec<Idx<HirExpr>>,
+        span: Span,
+    ) -> Result<()> {
+        for elt in elts {
+            match elt {
+                Expr::Tuple(t) => {
+                    self.collect_isinstance_checks(&t.elts, recv, checks, span)?;
+                }
+                Expr::Name(cls) => {
+                    if let Some((class_id, _)) = self.ctx.class_map.get(cls.id.as_str()).copied() {
+                        let value = self.local_ref(recv, span);
+                        checks.push(self.alloc(
+                            HirExprKind::IsInstance { value, class_id },
+                            SemTy::Bool,
+                            span,
+                        ));
+                    } else if let Some(target) = isinstance_builtin_target(cls.id.as_str()) {
+                        let value = self.local_ref(recv, span);
+                        checks.push(self.alloc(
+                            HirExprKind::IsInstanceBuiltin { value, target },
+                            SemTy::Bool,
+                            span,
+                        ));
+                    } else {
+                        return Err(parse_error(
+                            format!(
+                                "isinstance() type-tuple element `{}` is not a known class \
+                                 or builtin type",
+                                cls.id.as_str()
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(parse_error(
+                        "isinstance() type-tuple elements must be class / builtin-type names",
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Combine `checks` into a short-circuit `or` (mirrors `lower_boolop`'s `or`
+    /// arm): empty ⇒ `False`; else a `Bool` result local + `join` block, each
+    /// check assigned to `res` and (non-last) branching to `join` when truthy.
+    /// Every check is side-effect-free (it reads the staged receiver), so this is
+    /// observationally an eager OR but stays uniform with `lower_boolop`.
+    fn or_combine_checks(&mut self, checks: Vec<Idx<HirExpr>>, span: Span) -> Idx<HirExpr> {
+        if checks.is_empty() {
+            return self.alloc(HirExprKind::BoolLit(false), SemTy::Bool, span);
+        }
+        let res = self.fresh_local(SemTy::Bool);
+        let join = self.new_block();
+        let n = checks.len();
+        for (i, check) in checks.into_iter().enumerate() {
+            self.push_stmt(HirStmt::Assign {
+                target: res,
+                value: check,
+            });
+            if i + 1 < n {
+                let next = self.new_block();
+                let cond = self.local_ref(res, span);
+                self.seal(HirTerminator::Branch {
+                    cond,
+                    then: join,
+                    else_: next,
+                });
+                self.switch(next);
+            } else {
+                self.seal(HirTerminator::Jump(join));
+            }
+        }
+        self.switch(join);
+        self.local_ref(res, span)
+    }
+
     /// A call used as a value (builtins now; user functions in 2d). `print` is a
     /// statement, not a value-call, so reject it here.
     fn lower_call_expr(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
@@ -6275,22 +6364,7 @@ impl<'a> FnLowerer<'a> {
                             span,
                         ));
                     }
-                    // Container builtins carry a canonical (Dyn-element) target;
-                    // `lower_isinstance_builtin` matches by KIND (isinstance ignores
-                    // element types), so the concrete element types don't matter here.
-                    let target = match cls.id.as_str() {
-                        "str" => Some(SemTy::Str),
-                        "int" => Some(SemTy::Int),
-                        "float" => Some(SemTy::Float),
-                        "bool" => Some(SemTy::Bool),
-                        "bytes" => Some(SemTy::Bytes),
-                        "list" => Some(SemTy::list_of(SemTy::Dyn)),
-                        "dict" => Some(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn)),
-                        "set" => Some(SemTy::set_of(SemTy::Dyn)),
-                        "tuple" => Some(SemTy::tuple_var_of(SemTy::Dyn)),
-                        _ => None,
-                    };
-                    if let Some(target) = target {
+                    if let Some(target) = isinstance_builtin_target(cls.id.as_str()) {
                         let value = self.lower_expr(&c.args[0])?;
                         return Ok(self.alloc(
                             HirExprKind::IsInstanceBuiltin { value, target },
@@ -6298,6 +6372,20 @@ impl<'a> FnLowerer<'a> {
                             span,
                         ));
                     }
+                    // A single Name that is neither a known class nor a builtin
+                    // type: fall through WITHOUT lowering the receiver.
+                }
+                // `isinstance(value, (A, B, ...))` ≡ `isinstance(value, A) or
+                // isinstance(value, B) or ...`, with the receiver evaluated ONCE
+                // (CPython semantics) and an empty tuple ⇒ `False`. Pure frontend
+                // desugar over the existing per-element checks; nested type-tuples
+                // flatten. User-class (`IsInstance`, runtime check) and builtin
+                // (`IsInstanceBuiltin`, static fold) elements mix freely.
+                if let Expr::Tuple(t) = &c.args[1] {
+                    let recv = self.stage_arg(&c.args[0])?;
+                    let mut checks = Vec::new();
+                    self.collect_isinstance_checks(&t.elts, recv, &mut checks, span)?;
+                    return Ok(self.or_combine_checks(checks, span));
                 }
             }
         }
@@ -10071,6 +10159,27 @@ fn to_span(range: TextRange) -> Span {
 
 fn parse_error(msg: impl Into<String>, span: Span) -> CompilerError {
     CompilerError::parse_error(msg.into(), span)
+}
+
+/// The canonical `SemTy` target for a builtin-type `isinstance` element name
+/// (`isinstance(x, str)`, or a tuple element `isinstance(x, (str, int))`).
+/// Container builtins carry a canonical (Dyn-element) target; the static fold
+/// in `lowering::lower_isinstance_builtin` matches by KIND (isinstance ignores
+/// element types), so the concrete element types are irrelevant. `None` for a
+/// name with no canonical mapping (e.g. `frozenset`) — a loud error upstream.
+fn isinstance_builtin_target(name: &str) -> Option<SemTy> {
+    match name {
+        "str" => Some(SemTy::Str),
+        "int" => Some(SemTy::Int),
+        "float" => Some(SemTy::Float),
+        "bool" => Some(SemTy::Bool),
+        "bytes" => Some(SemTy::Bytes),
+        "list" => Some(SemTy::list_of(SemTy::Dyn)),
+        "dict" => Some(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn)),
+        "set" => Some(SemTy::set_of(SemTy::Dyn)),
+        "tuple" => Some(SemTy::tuple_var_of(SemTy::Dyn)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
