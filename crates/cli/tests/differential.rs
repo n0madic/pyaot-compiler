@@ -594,10 +594,25 @@ const PHASE_CORPUS: &[&str] = &[
     // Consolidated list/tuple suite (lifted): tuple.index/count was its first §9
     // blocker (closed by p21's ContainerMethod path) and `list.remove()` its last
     // (now wired → `rt_list_remove`, ValueError on miss). Byte-matches CPython
-    // end-to-end. (`test_collections_dict_set_bytes.py` stays OFF — still blocked
-    // by `dict.fromkeys()`, a classmethod whose `rt_dict_fromkeys(keys, value)`
-    // signature drops the receiver, and the `dict | / |=` merge operators.)
+    // end-to-end.
     "test_collections_list_tuple.py",
+    // Consolidated dict/set/bytes suite (LIFTED): closed FOUR blockers, all
+    // front-half wiring to an already-complete runtime. (1) set algebra
+    // OPERATORS `|`/`&`/`-`/`^` (never gated before — they lowered to the
+    // numeric `rt_obj_bitor`/… which TypeError at runtime) now route through
+    // `try_container_binop` to the typed `Set*` ops. (2) `dict | dict` →
+    // `ContainerOp::DictMerge` (`rt_dict_merge`, PEP 584). (3) `dict |=` is a
+    // TRUE in-place merge via the new `BinOp::IOr` (frontend maps `|=`→`IOr`;
+    // `rt_obj_ior` mutates `dict`/`set` in place and returns the same object so
+    // the `x = x | y` rebind preserves aliases; numeric `|=` delegates to
+    // `rt_obj_bitor`). (4) `d.fromkeys(keys[, value])` → `rt_dict_fromkeys`
+    // (receiver discarded). Also fixed pre-existing `bytes(n)` zero-fill and
+    // `bytes(str[, enc])` constructors (lowering routed every `bytes(...)` to
+    // `rt_make_bytes_from_list`, SEGV on a non-list arg) → new `BytesZero` /
+    // `BytesFromStr` ops over the existing runtime makers; and pinned the
+    // hash-randomized set print to `sorted()`. Byte-matches CPython end-to-end
+    // (debug + release).
+    "test_collections_dict_set_bytes.py",
     // Verified-clean lifts (compile + runtime-diff MATCH at ~0 code): PEP 563
     // `from __future__ import annotations` (string-form annotations ignored at
     // runtime), a GC smoke test, the generator surface, and print() formatting/

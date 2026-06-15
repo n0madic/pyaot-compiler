@@ -2416,6 +2416,8 @@ impl<'a> Sweeper<'a> {
             BinOp::Pow => "__pow__",
             BinOp::BitAnd => "__and__",
             BinOp::BitOr => "__or__",
+            // `|=` desugars to `x = x IOr y`; CPython tries `__ior__` first.
+            BinOp::IOr => "__ior__",
             BinOp::BitXor => "__xor__",
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
@@ -2467,7 +2469,11 @@ impl<'a> Sweeper<'a> {
                 }
             }
             // Bitwise / shift are integer-valued when both operands are int-like.
-            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+            // `|` / `|=` over two `set`s or two `dict`s instead join to that
+            // container (covariant lattice join: `set[int] | set[int]` → `set[int]`,
+            // `dict[str,int] | dict[str,int]` → `dict[str,int]`), which the
+            // `is_int_like` guard skips, so the trailing `join` types them.
+            BinOp::BitAnd | BinOp::BitOr | BinOp::IOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
                 if is_int_like(&l) && is_int_like(&r) {
                     SemTy::Int
                 } else if l == SemTy::Never || r == SemTy::Never {
@@ -2601,6 +2607,12 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
             M::Update | M::Clear => none,
             M::Copy => recv.clone(),
+            // `d.fromkeys(keys[, value])` → a fresh dict. The value type is not
+            // visible here (no arg types), so type it `dict[Dyn, Dyn]`; an
+            // annotated target slot narrows it and the `Heap(Dict)` family
+            // coercion is a Noop. `lower_container_method_call` builds it from
+            // `rt_dict_fromkeys` (the receiver is discarded).
+            M::Fromkeys => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
             // `popitem` → a fresh `(key, value)` 2-tuple, typed `Dyn` (a gradual
             // 2-tuple) so `k, v = d.popitem()` unpacks through the gradual seam
             // — the same approach as `str.partition`.

@@ -574,8 +574,12 @@ impl MirInst {
                     | BinOp::BitXor => false,
                     // `@` dispatches a user dunder (can raise / run arbitrary code);
                     // it is always Tagged, so the `non_raw` check above already
-                    // returns true, but spell it out for exhaustiveness.
+                    // returns true, but spell it out for exhaustiveness. `|=`
+                    // (`IOr`) is likewise always Tagged and additionally MUTATES
+                    // its `dict`/`set` operand in place (an effect observable
+                    // through aliases) — so it is unconditionally side-effecting.
                     BinOp::MatMul
+                    | BinOp::IOr
                     | BinOp::Div
                     | BinOp::FloorDiv
                     | BinOp::Mod
@@ -984,6 +988,10 @@ pub enum BinOp {
     Pow,
     BitAnd,
     BitOr,
+    /// In-place bitwise-or `|=` — always Tagged; the runtime mutates `dict`/`set`
+    /// operands in place (returning the same object) and delegates numeric
+    /// operands to the `BitOr` path. Never a raw fast path.
+    IOr,
     BitXor,
     Shl,
     Shr,

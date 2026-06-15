@@ -818,6 +818,12 @@ pub enum BinOp {
     Pow,
     BitAnd,
     BitOr,
+    /// In-place bitwise-or `|=`. The in-place sibling of [`BinOp::BitOr`]: the
+    /// frontend emits this (not `BitOr`) for `x |= y`, so the runtime can mutate
+    /// `dict`/`set` operands in place and return the same object — making the
+    /// `x = x |= y` rebind alias-preserving. Numeric `|=` still delegates to the
+    /// `BitOr` path inside the runtime. Always Tagged (no raw fast path).
+    IOr,
     BitXor,
     Shl,
     Shr,
@@ -923,6 +929,14 @@ pub enum ContainerOp {
     DictFromPairs,
     /// `bytes(list_of_ints)` → a fresh bytes object from a list of ints.
     BytesFromList,
+    /// `bytes(n)` → a fresh zero-filled bytes object of length `n` (the count is
+    /// a `Raw(I64)`). Selected by lowering when the `bytes(...)` argument is an
+    /// int/bool, distinct from `BytesFromList` (an iterable) / `BytesFromStr`.
+    BytesZero,
+    /// `bytes(s[, encoding])` → a fresh bytes object encoding the str `s` (UTF-8;
+    /// the encoding argument is accepted but only UTF-8 is supported). Selected
+    /// by lowering when the `bytes(...)` argument is a str.
+    BytesFromStr,
     /// `sorted(list, reverse)` → a new sorted list; the input is
     /// pre-materialized to a list, `reverse` is a `Raw(I8)` truthiness flag.
     Sorted,
@@ -962,6 +976,10 @@ pub enum ContainerOp {
     DictUpdate,
     DictClear,
     DictCopy,
+    /// `a | b` over two dicts (PEP 584) → a fresh merged dict (`rt_dict_merge`,
+    /// right operand wins on key collisions). The operator-only sibling of
+    /// `dict.update` / the `|=` in-place merge; routed from `try_container_binop`.
+    DictMerge,
     /// `dict.popitem()` → a fresh `(key, value)` 2-tuple (LIFO, KeyError if
     /// empty); the tuple is a `Value`/`Tagged` GC-rootable result (B5).
     DictPopitem,
@@ -1022,6 +1040,11 @@ pub enum ContainerMethod {
     IntersectionUpdate,
     DifferenceUpdate,
     SymmetricDifferenceUpdate,
+    /// `dict.fromkeys(keys[, value])` — build a fresh dict mapping every key in
+    /// the iterable to `value` (default `None`). Lowered specially (the receiver
+    /// is discarded; `rt_dict_fromkeys` takes only the keys list and the value),
+    /// so it does not fit the recv-first `ContainerOp` signature.
+    Fromkeys,
 }
 
 impl ContainerMethod {
@@ -1059,6 +1082,7 @@ impl ContainerMethod {
             "intersection_update" => ContainerMethod::IntersectionUpdate,
             "difference_update" => ContainerMethod::DifferenceUpdate,
             "symmetric_difference_update" => ContainerMethod::SymmetricDifferenceUpdate,
+            "fromkeys" => ContainerMethod::Fromkeys,
             _ => return None,
         })
     }
@@ -1100,7 +1124,9 @@ impl ContainerOp {
             ContainerOp::ListNew
             | ContainerOp::DictNew
             | ContainerOp::SetNew
-            | ContainerOp::TupleNew => &[Idx],
+            | ContainerOp::TupleNew
+            // `bytes(n)` zero-fill — the count is an unboxed `Raw(I64)`.
+            | ContainerOp::BytesZero => &[Idx],
             ContainerOp::ListPush | ContainerOp::SetAdd => &[Val, Val],
             ContainerOp::ListSet | ContainerOp::TupleSet => &[Val, Idx, Val],
             ContainerOp::DictSet => &[Val, Val, Val],
@@ -1121,6 +1147,7 @@ impl ContainerOp {
             | ContainerOp::TupleCount
             | ContainerOp::DictPopM
             | ContainerOp::DictUpdate
+            | ContainerOp::DictMerge
             | ContainerOp::SetRemove
             | ContainerOp::SetDiscard
             | ContainerOp::SetUpdate
@@ -1172,6 +1199,7 @@ impl ContainerOp {
             | ContainerOp::TupleFromIter
             | ContainerOp::DictFromPairs
             | ContainerOp::BytesFromList
+            | ContainerOp::BytesFromStr
             | ContainerOp::Reversed => &[Val],
             ContainerOp::Sorted => &[Val, Bool],
         }
@@ -1197,6 +1225,8 @@ impl ContainerOp {
             | ContainerOp::TupleFromIter
             | ContainerOp::DictFromPairs
             | ContainerOp::BytesFromList
+            | ContainerOp::BytesZero
+            | ContainerOp::BytesFromStr
             | ContainerOp::Sorted
             | ContainerOp::Reversed
             | ContainerOp::RangeIter
@@ -1205,6 +1235,7 @@ impl ContainerOp {
             | ContainerOp::DictValues
             | ContainerOp::DictItems
             | ContainerOp::DictCopy
+            | ContainerOp::DictMerge
             | ContainerOp::SetUnion
             | ContainerOp::SetIntersection
             | ContainerOp::SetDifference

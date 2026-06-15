@@ -2412,7 +2412,14 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_augassign(&mut self, a: &rustpython_parser::ast::StmtAugAssign) -> Result<()> {
         let span = to_span(a.range());
-        let op = binop_from_ast(&a.op);
+        // `x |= y` desugars to `x = x | y`, but `|=` must mutate in place for
+        // `dict`/`set` (alias semantics) — route it to the in-place `IOr` op so
+        // the runtime can return the same object (binary `|` keeps `BitOr` =
+        // new object). Type-blind: the runtime decides per operand tag.
+        let op = match binop_from_ast(&a.op) {
+            BinOp::BitOr => BinOp::IOr,
+            other => other,
+        };
         match a.target.as_ref() {
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());

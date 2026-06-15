@@ -4138,6 +4138,34 @@ impl<'a> FnLower<'a> {
                 M::Popitem if argn == 0 => {
                     self.method_scalar(ContainerOp::DictPopitem, recv_arg, vec![])
                 }
+                // `d.fromkeys(keys[, value])` — the receiver (already lowered
+                // above for its side effects) is discarded; `rt_dict_fromkeys`
+                // takes only the keys list and the per-key value. The keys arg
+                // is snapshotted to a list (accepts any iterable via the
+                // iterator protocol); an absent value defaults to a null pointer
+                // the runtime reads as `None`. Emitted as a `CallRuntime`
+                // directly (no receiver slot, so not `emit_container`).
+                M::Fromkeys if argn == 1 || argn == 2 => {
+                    let (keys_list, _) = self.materialize_list_from(a[0].0, a[0].1.clone())?;
+                    let value = if argn == 2 {
+                        self.coerce(a[1].0, a[1].1.clone(), Repr::Tagged)?
+                    } else {
+                        let n = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::Const {
+                            dst: n,
+                            val: Const::NullPtr,
+                        });
+                        n
+                    };
+                    let dst_repr = heap();
+                    let dst = self.alloc_temp(dst_repr.clone());
+                    self.emit(MirInst::CallRuntime {
+                        dst: Some(dst),
+                        def: &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_KEYS,
+                        args: vec![Operand::Local(keys_list), Operand::Local(value)],
+                    });
+                    Ok((dst, dst_repr))
+                }
                 _ => Err(bad("unsupported dict method / arity")),
             },
             MethodRecv::Set => match method {
@@ -4403,7 +4431,7 @@ impl<'a> FnLower<'a> {
         rl: LocalId,
         rr: &Repr,
     ) -> Result<Option<(LocalId, Repr)>> {
-        use HeapShape::{Bytes, List, Tuple, TupleVar};
+        use HeapShape::{Bytes, Dict, List, Set, Tuple, TupleVar};
         match op {
             MBinOp::Add => {
                 let cop = match (lr, rr) {
@@ -4444,8 +4472,59 @@ impl<'a> FnLower<'a> {
                 )?;
                 Ok(Some((dst.expect("repeat produces a container"), ret)))
             }
+            // Set algebra operators (`|` `&` `-` `^`) and dict merge (`|`, PEP
+            // 584). Fire ONLY when both operands are the same statically-known
+            // container; any other repr combo (a numeric pair, a gradual `Dyn`
+            // operand, …) returns `Ok(None)` so the numeric / tagged baseline is
+            // unchanged — numeric `|`/`&`/`-`/`^` and bignum paths are untouched.
+            MBinOp::BitOr => match (lr, rr) {
+                (Repr::Heap(Set(_)), Repr::Heap(Set(_))) => {
+                    self.emit_container_binop(ContainerOp::SetUnion, ll, lr, rl, rr)
+                }
+                (Repr::Heap(Dict(..)), Repr::Heap(Dict(..))) => {
+                    self.emit_container_binop(ContainerOp::DictMerge, ll, lr, rl, rr)
+                }
+                _ => Ok(None),
+            },
+            MBinOp::BitAnd => match (lr, rr) {
+                (Repr::Heap(Set(_)), Repr::Heap(Set(_))) => {
+                    self.emit_container_binop(ContainerOp::SetIntersection, ll, lr, rl, rr)
+                }
+                _ => Ok(None),
+            },
+            MBinOp::Sub => match (lr, rr) {
+                (Repr::Heap(Set(_)), Repr::Heap(Set(_))) => {
+                    self.emit_container_binop(ContainerOp::SetDifference, ll, lr, rl, rr)
+                }
+                _ => Ok(None),
+            },
+            MBinOp::BitXor => match (lr, rr) {
+                (Repr::Heap(Set(_)), Repr::Heap(Set(_))) => {
+                    self.emit_container_binop(ContainerOp::SetSymmetricDifference, ll, lr, rl, rr)
+                }
+                _ => Ok(None),
+            },
             _ => Ok(None),
         }
+    }
+
+    /// Emit a binary container op (set algebra / dict merge) whose result is a
+    /// fresh container of the left operand's representation. Both operands are
+    /// tagged (`Val`); the new container rides `lr` (left = right family here).
+    fn emit_container_binop(
+        &mut self,
+        cop: ContainerOp,
+        ll: LocalId,
+        lr: &Repr,
+        rl: LocalId,
+        rr: &Repr,
+    ) -> Result<Option<(LocalId, Repr)>> {
+        let (dst, ret) = self.emit_container(
+            cop,
+            vec![(ll, lr.clone()), (rl, rr.clone())],
+            Some(lr.clone()),
+        )?;
+        Ok(Some((dst.expect("container binop produces a container"), ret)))
     }
 
     fn lower_unary(&mut self, op: HUnaryOp, operand: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
@@ -4972,6 +5051,31 @@ impl<'a> FnLower<'a> {
                     )?;
                     return Ok((dst.unwrap(), ret));
                 }
+                // Dispatch the one-or-two-arg `bytes(...)` by the first arg's
+                // static type (CPython's overloaded constructor): an int/bool is
+                // a zero-fill count, a str is UTF-8 encoded, anything else is an
+                // iterable of ints. Each routes to its own runtime maker.
+                let arg0_ty = self.func.exprs[args[0]].ty.clone();
+                if matches!(arg0_ty, SemTy::Int | SemTy::Bool) {
+                    // `bytes(n)` → `n` zero bytes (emit_container unboxes the
+                    // count to `Raw(I64)`).
+                    let (nl, nr) = self.lower_expr(args[0])?;
+                    let (dst, ret) =
+                        self.emit_container(C::BytesZero, vec![(nl, nr)], Some(result_heap))?;
+                    return Ok((dst.unwrap(), ret));
+                }
+                if matches!(arg0_ty, SemTy::Str) {
+                    // `bytes(s[, encoding])` → encode `s` (UTF-8 only). The
+                    // optional encoding arg is evaluated for side effects but
+                    // otherwise ignored (only UTF-8 is supported).
+                    let (sl, sr) = self.lower_expr(args[0])?;
+                    if let Some(enc) = args.get(1) {
+                        self.lower_expr(*enc)?;
+                    }
+                    let (dst, ret) =
+                        self.emit_container(C::BytesFromStr, vec![(sl, sr)], Some(result_heap))?;
+                    return Ok((dst.unwrap(), ret));
+                }
                 let (ll, lr) = self.lower_expr(args[0])?;
                 let (dst, ret) =
                     self.emit_container(C::BytesFromList, vec![(ll, lr)], Some(result_heap))?;
@@ -5174,6 +5278,7 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::Pow => MBinOp::Pow,
         HBinOp::BitAnd => MBinOp::BitAnd,
         HBinOp::BitOr => MBinOp::BitOr,
+        HBinOp::IOr => MBinOp::IOr,
         HBinOp::BitXor => MBinOp::BitXor,
         HBinOp::Shl => MBinOp::Shl,
         HBinOp::Shr => MBinOp::Shr,

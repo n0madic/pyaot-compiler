@@ -24,7 +24,6 @@ ways: `python3` accepts the construct, `pyaot` does not. The "§" links the
 |---|---|---|---|
 | `test_classes.py` | `getattr() default is out of scope` (3-arg `getattr(o,"x",-1)`) | 3-arg `getattr` default; then `@abstractmethod` / method + class decorators / `object.__new__` / `NotImplemented` | §5, §11 |
 | `test_collections.py` | `undefined name 'set'` (`defaultdict(set)` — a type used as a factory value) | `defaultdict(factory)` + `dd[k]=v`; `deque` mutators; `OrderedDict` | §10 |
-| `test_collections_dict_set_bytes.py` | `unsupported method .fromkeys()` | `dict.fromkeys()` classmethod (drops the receiver) + the `dict\|` / `\|=` merge operators | §9 |
 | `test_dead_code_warnings.py` | `isinstance() … requires a statically-typed value` | `isinstance(x, T)` on a gradual/`Any` receiver — a runtime tag query + flow narrowing | §7 |
 | `test_file_io.py` | `non-UTF-8 bytes literals are out of scope` | non-UTF-8 `bytes` literals (`b"\xff"`, any byte ≥ `\x80`) | §14 |
 | `test_generics.py` | `unsupported statement` (`type IntPair[V] = …`) | PEP 695 `type` aliases (incl. generic); subscripted instance annotation `Box[int]`; `Protocol` | §3, §12 |
@@ -172,13 +171,22 @@ The `-> float` return seam and the annotated-`float`-LOCAL seam are done (checke
   to avoid an accept-then-SEGV.
 
 ### 9. Methods on builtin types — remaining
-- **`dict.fromkeys(keys, v)`** — a **classmethod** whose `rt_dict_fromkeys(keys,
-  value)` **drops the receiver**, so it does NOT fit the recv-first `MethodRecv`
-  ContainerOp signature; needs a distinct dispatch. Blocks
-  `test_collections_dict_set_bytes.py`.
-- **`dict | dict` / `dict |= dict` merge operators** (PEP 584) — operator-level,
-  beyond "methods on builtin types"; the other blocker on
-  `test_collections_dict_set_bytes.py`.
+- **DONE — `dict.fromkeys` / `dict |`,`|=` / set `|`,`&`,`-`,`^`** (lifted
+  `test_collections_dict_set_bytes.py`). `d.fromkeys(keys[, v])` is an
+  instance-form dict method routed to `rt_dict_fromkeys` (receiver discarded);
+  the **class form** `dict.fromkeys(...)` stays out of scope. `dict | dict` →
+  `ContainerOp::DictMerge` (`rt_dict_merge`, PEP 584). The set algebra
+  **operators** `|`/`&`/`-`/`^` were a *hidden* blocker — never gated, they
+  lowered to numeric `rt_obj_bitor`/… and TypeError'd at runtime — now routed
+  through `try_container_binop` to the existing `Set*` ops. **`|=`/augmented
+  in-place is now correct** for `dict`/`set`: the frontend maps `|=` to a new
+  `BinOp::IOr`, and `rt_obj_ior` mutates in place + returns the same object (so
+  the `x = x | y` rebind preserves aliases); numeric `|=` delegates to
+  `rt_obj_bitor`. Other augmented container ops (`&=`/`-=`/`^=`) stay the rebind
+  desugar (untested, unchanged). Pre-existing bonus fixes that were blocking the
+  same file: `bytes(n)` zero-fill + `bytes(str[, enc])` constructors (new
+  `BytesZero`/`BytesFromStr` ops over the existing runtime makers; lowering had
+  routed every `bytes(...)` to `rt_make_bytes_from_list` → SEGV on a non-list arg).
 - Documented scope limits on the shipped str/bytes batches (unprobed, not
   blocking): predicates are ASCII-only, `replace` has no `count`, `find`/`index`
   take no `start`/`end`, `encode`/`decode` ignore the encoding.

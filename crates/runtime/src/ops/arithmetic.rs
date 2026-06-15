@@ -506,6 +506,37 @@ bitwise_op!(
 bitwise_op!(rt_obj_lshift, rt_obj_lshift_abi, "rt_obj_lshift", num_shl);
 bitwise_op!(rt_obj_rshift, rt_obj_rshift_abi, "rt_obj_rshift", num_shr);
 
+/// In-place bitwise-or `a |= b`. For the in-place container types — `dict` and
+/// `set` — this mutates `a` in place (PEP 584 `dict.__ior__` / the set
+/// `__ior__`) and returns the SAME object, so the compiler's `a = a | b`
+/// augmented-assignment rebind is a no-op and aliases observe the mutation.
+/// Every other operand pair (numeric, bignum, or a `TypeError`) delegates to the
+/// new-object `rt_obj_bitor`, so `int |= int` keeps its existing semantics.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_ior(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() {
+            match (*a).type_tag() {
+                TypeTagKind::Dict => {
+                    crate::dict::rt_dict_update(a, b);
+                    return a;
+                }
+                TypeTagKind::Set => {
+                    crate::set::rt_set_update(a, b);
+                    return a;
+                }
+                _ => {}
+            }
+        }
+        rt_obj_bitor(a, b)
+    }
+}
+#[export_name = "rt_obj_ior"]
+pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_ior(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 // ==================== Unary obj operations (Union dispatch) ====================
 //
 // Generic unary helpers for Union-typed operands. The lowering routes

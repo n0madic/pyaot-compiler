@@ -262,9 +262,10 @@ print(print_dict_str)
 print_empty_dict: dict[str, int] = {}
 print(print_empty_dict)
 
-# Set printing
+# Set printing — set order is hash-randomized (non-deterministic across runs),
+# so compare via sorted (the corpus convention for set output).
 print_set: set[str] = {"x", "y"}
-print(print_set)
+print(sorted(print_set))
 
 # ===== SECTION: del statement =====
 

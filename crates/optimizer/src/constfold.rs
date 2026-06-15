@@ -86,9 +86,11 @@ fn fold_inst(
                         BinOp::BitAnd => a & b,
                         BinOp::BitOr => a | b,
                         BinOp::BitXor => a ^ b,
-                        // Raising ops never fold; `@` is a class dunder (never an
-                        // int-int constant), so it never reaches this fold either.
+                        // Raising ops never fold; `@` is a class dunder and `|=`
+                        // (`IOr`) is an in-place container mutation, so neither
+                        // ever reaches this int-int fold either.
                         BinOp::MatMul
+                        | BinOp::IOr
                         | BinOp::Div
                         | BinOp::FloorDiv
                         | BinOp::Mod
