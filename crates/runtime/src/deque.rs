@@ -74,6 +74,31 @@ pub extern "C" fn rt_deque_from_iter_abi(iter: Value, maxlen: i64) -> Value {
     Value::from_ptr(rt_deque_from_iter(iter.unwrap_ptr(), maxlen))
 }
 
+/// `deque()` — a fresh, unlimited (`maxlen=None`) deque. The 0-arg construction
+/// entry the frontend's `deque(...)` intercept routes to (mirrors
+/// `rt_make_counter_empty`); keeps the construction ABI free of the raw `maxlen`
+/// arg, which the front-half does not yet expose.
+pub fn rt_make_deque_empty() -> *mut Obj {
+    rt_make_deque(-1)
+}
+#[export_name = "rt_make_deque_empty"]
+pub extern "C" fn rt_make_deque_empty_abi() -> Value {
+    Value::from_ptr(rt_make_deque_empty())
+}
+
+/// `deque(iterable)` — a fresh, unlimited deque built from an `iter()`-wrapped
+/// iterator (the frontend wraps the iterable so this drives a real iterator,
+/// like `rt_make_counter_from_iter`). Any iterable — list/tuple/set/dict/deque/
+/// generator — flows through the one iterator seam.
+pub fn rt_make_deque_from_iter(iter: *mut Obj) -> *mut Obj {
+    rt_deque_from_iter(iter, -1)
+}
+#[export_name = "rt_make_deque_from_iter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_deque_from_iter_abi(iter: Value) -> Value {
+    Value::from_ptr(rt_make_deque_from_iter(iter.unwrap_ptr()))
+}
+
 /// Convert a deque to a list, preserving left-to-right order. Backs
 /// `list(deque)` and the for-loop iteration path (a deque is not an
 /// `IteratorObj`, so it cannot be fed to `rt_list_from_iter` directly —

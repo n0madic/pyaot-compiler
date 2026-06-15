@@ -9,7 +9,7 @@ release-safe pre-codegen MIR verifier; the uniform value-call convention + its
 each crate's `lib.rs` doc) and the auto-memory.
 
 What remains is **breadth**: the differential gate is green on its allowlist, but
-**8** aspirational `corpus/test_*.py` files still exercise valid Python 3 the
+**7** aspirational `corpus/test_*.py` files still exercise valid Python 3 the
 compiler does not yet accept. None of the gaps below widen the "Out of scope"
 list — they are subset breadth, not new dynamism.
 
@@ -28,7 +28,6 @@ ways: `python3` accepts the construct, `pyaot` does not. The "§" links the
 | `test_dead_code_warnings.py` | `isinstance() … requires a statically-typed value` | `isinstance(x, T)` on a gradual/`Any` receiver — a runtime tag query + flow narrowing | §7 |
 | `test_file_io.py` | `non-UTF-8 bytes literals are out of scope` | non-UTF-8 `bytes` literals (`b"\xff"`, any byte ≥ `\x80`) | §14 |
 | `test_generics.py` | `unsupported statement` (`type IntPair[V] = …`) | PEP 695 `type` aliases (incl. generic); subscripted instance annotation `Box[int]`; `Protocol` | §3, §12 |
-| `test_strings.py` | `unsupported method .split()` (receiver `Dyn` — `",".join({set})` → `Dyn`) | str-method on a gradual receiver (`join` over a `set`/`deque` return-typed `str`); PEP-501 debug `=` f-string | §9, §13 |
 | `test_types_system.py` | `unsupported statement` (`type IntSet = set[int]`) | PEP 695 `type` aliases; `X: TypeAlias = T`; `Protocol` | §3, §12 |
 
 `test_stdlib_urllib.py` is **not** a feature gap — it exercises the live
@@ -103,7 +102,7 @@ rationale in **[PITFALLS.md](PITFALLS.md)** — Part A.
 
 ### Where the work lands
 
-Syntax/semantic gaps (§3, §7–8, §11–14) are front-half work —
+Syntax/semantic gaps (§3, §7–8, §11–12, §14) are front-half work —
 `frontend-python` (parse/desugar), `typeck` (constraints), and `lowering` —
 gated by Principle 9 and the verifier. Builtin **functions** (§5) and **methods**
 on builtin/stdlib types (§9–10) follow the declarative two-file pattern of
@@ -180,9 +179,6 @@ The `-> float` return seam and the annotated-`float`-LOCAL seam are done (checke
 - **`dict | dict` / `dict |= dict` merge operators** (PEP 584) — operator-level,
   beyond "methods on builtin types"; the other blocker on
   `test_collections_dict_set_bytes.py`.
-- **`str.join` over a `set` / `deque`** return-typed `str` (currently `Dyn`, so a
-  chained `.split()` fails) — blocks `test_strings.py`. (The wider gap is a
-  str-method on a gradual receiver; cf. §7.)
 - Documented scope limits on the shipped str/bytes batches (unprobed, not
   blocking): predicates are ASCII-only, `replace` has no `count`, `find`/`index`
   take no `start`/`end`, `encode`/`decode` ignore the encoding.
@@ -193,9 +189,10 @@ The `-> float` return seam and the annotated-`float`-LOCAL seam are done (checke
   (Special-case the builtin factories `int`/`list`/`dict`/`set` → zero-value
   thunks plus user functions — don't grow first-class type objects.)
 - **`deque`** — all mutating/query methods (`append`/`appendleft`/`pop`/`popleft`/
-  `rotate`/…) and item assignment `dq[i]=v`. (Construction, read, iteration,
-  `list/sum/sorted(dq)` already work; `del dq[i]` is wired but unexercisable until
-  mutation lands.)
+  `rotate`/…), item assignment `dq[i]=v`, and the bounded-deque `maxlen` argument
+  (`deque(it, n)`). Construction-from-iterable (`deque([1,2,3])`), read, repr, and
+  iteration (`for`/`list`/`sum`/`",".join` — through the generic `rt_iter_deque`
+  seam) now work; `del dq[i]` is wired but unexercisable until mutation lands.
 - **`OrderedDict`** — `move_to_end`, `popitem`.
 
 ### 11. Classes / OOP (all open)
@@ -212,10 +209,6 @@ These together block `test_classes.py`.
   parses; the `Name[T]` *annotation use* fails). Blocks `test_generics.py`.
 - **`Protocol` base class** — `unknown base class Protocol` (structural subtyping
   unsupported); also subscripted **`Protocol[T]`**. (Multi-iterable `zip` is done.)
-
-### 13. f-strings — remaining
-- **PEP-501 debug `=`** — `f"{x=}"`, `f"{x=!a}"` (self-documenting f-string).
-  Blocks `test_strings.py`. (Dynamic/nested specs `f"{x:.{n}f}"` and `!a` are done.)
 
 ### 14. Literals
 - **Non-UTF-8 bytes literals** — any byte ≥ `\x80`, e.g. `b"\xff"` (blocks

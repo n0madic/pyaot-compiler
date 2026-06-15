@@ -488,10 +488,20 @@ const PHASE_CORPUS: &[&str] = &[
     // so `f"{True:5}"` == "    1", not " True" — the test file's stale assertion
     // was fixed to the CPython oracle). `test_format_spec.py` crosses format with
     // f-strings × user classes × functions × dynamic specs; `p29_format.py` covers
-    // the `.format`/`!a` shapes. (`test_strings.py` stays OFF — needs the PEP-501
-    // `=` self-documenting f-string.)
+    // the `.format`/`!a` shapes.
     "test_format_spec.py",
     "p29_format.py",
+    // Consolidated strings suite (LIFTED). PEP-501 debug `=` f-strings
+    // (`f"{x=}"`, `f"{x=!a}"`, verbatim-expression / whitespace / spec variants)
+    // already worked (rustpython-parser expands `=` into literal-text +
+    // `FormattedValue`). The real blockers were `str.join` over a non-list
+    // iterable: it returned `Dyn` (the str-method typing arm lacked `join`), so a
+    // chained `",".join(s).split(",")` saw a gradual receiver — now typed `str`;
+    // and `",".join(deque(...))`, which needed deque construction-from-iterable
+    // (the front-half routed `deque(it)` through a maxlen-only `rt_make_deque`,
+    // dropping the elements → a wired `DEQUE_FROM_ITER` intercept + `rt_iter_deque`
+    // in the generic iter dispatcher). Byte-matches CPython end-to-end.
+    "test_strings.py",
     // §5 introspection builtins (`getattr`/`setattr`/`hasattr`/`issubclass`) —
     // all collapse onto existing machinery (ZERO runtime changes): getattr/setattr
     // are frontend desugars onto the `Attribute` read / `SetAttr` write (static

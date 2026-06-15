@@ -2064,6 +2064,13 @@ impl<'a> Sweeper<'a> {
                 "upper" | "lower" | "strip" | "title" | "capitalize" | "swapcase" | "zfill"
                 | "center" | "ljust" | "rjust" | "lstrip" | "rstrip" | "replace"
                 | "removeprefix" | "removesuffix" | "expandtabs" => return SemTy::Str,
+                // `sep.join(iterable)` is always `str` regardless of the iterable's
+                // type (lowering materializes any iterable — list/tuple/set/dict/
+                // deque/generator — into a list via the iterator protocol before
+                // `rt_str_join`). Without this it fell to the `ContainerMethod`
+                // fallthrough → `Dyn`, so a chained str method (`",".join(s).split(",")`)
+                // wrongly saw a gradual receiver.
+                "join" => return SemTy::Str,
                 "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum" | "isspace"
                 | "isupper" | "islower" | "isascii" => return SemTy::Bool,
                 "find" | "rfind" | "index" | "count" | "rindex" => return SemTy::Int,

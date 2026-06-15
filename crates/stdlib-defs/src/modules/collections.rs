@@ -447,7 +447,9 @@ pub static DEQUE_LEN: StdlibFunctionDef = StdlibFunctionDef {
 };
 
 /// deque(iterable?, maxlen?) -- registered as function for import recognition.
-/// Frontend intercepts and converts to Builtin::Deque.
+/// Its `rt_make_deque` runtime name is the sentinel the frontend's
+/// `is_deque_def` intercept matches; construction is routed by arity to
+/// `DEQUE_EMPTY` / `DEQUE_FROM_ITER` (mirroring `COUNTER_NEW`).
 pub static DEQUE_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "deque",
     runtime_name: "rt_make_deque",
@@ -460,6 +462,32 @@ pub static DEQUE_NEW: StdlibFunctionDef = StdlibFunctionDef {
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_make_deque", &[P_I64, P_I64], Some(R_I64), false),
+};
+
+/// `deque()` — empty, unlimited (`maxlen=None`). The 0-arg construction target
+/// (mirrors `COUNTER_EMPTY`).
+pub static DEQUE_EMPTY: StdlibFunctionDef = StdlibFunctionDef {
+    name: "deque",
+    runtime_name: "rt_make_deque_empty",
+    params: &[],
+    return_type: TypeSpec::Deque,
+    min_args: 0,
+    max_args: 0,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_deque_empty", &[], Some(R_I64), true),
+};
+
+/// `deque(iterable)` — built from an `iter()`-wrapped iterable (the frontend
+/// wraps it). The 1-arg construction target (mirrors `COUNTER_FROM_ITER`).
+pub static DEQUE_FROM_ITER: StdlibFunctionDef = StdlibFunctionDef {
+    name: "deque",
+    runtime_name: "rt_make_deque_from_iter",
+    params: &[ParamDef::required("iterator", TypeSpec::Any)],
+    return_type: TypeSpec::Deque,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_deque_from_iter", &[P_I64], Some(R_I64), true),
 };
 
 // =============================================================================

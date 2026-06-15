@@ -425,6 +425,11 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
         // iterating any of them yields its keys.
         TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => rt_iter_dict(obj),
         TypeTagKind::Set => rt_iter_set(obj),
+        // A deque is a ring buffer, not an `IteratorObj`; `rt_iter_deque`
+        // materializes a left-to-right list snapshot and iterates that (the same
+        // derived-list strategy set/dict use), so `for`/`list`/`sum`/`",".join`
+        // over a deque all work through this one generic seam.
+        TypeTagKind::Deque => rt_iter_deque(obj),
         TypeTagKind::Str => rt_iter_str(obj),
         TypeTagKind::Bytes => rt_iter_bytes(obj),
         TypeTagKind::Iterator | TypeTagKind::Generator => obj,

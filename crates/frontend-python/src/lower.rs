@@ -5747,6 +5747,63 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// `collections.deque(...)` construction (§10) — a pure-frontend intercept
+    /// (mirroring [`Self::lower_counter_construct`]) that picks the runtime symbol
+    /// by arity and types the result `RuntimeObject(Deque)`:
+    ///   * `deque()`           → `rt_make_deque_empty()`.
+    ///   * `deque(iterable)`   → `rt_make_deque_from_iter(iter(iterable))`; the
+    ///     iterable is wrapped in `iter()` so the runtime drives a proper iterator
+    ///     (any iterable — list/tuple/set/dict/deque/generator — through one seam).
+    ///
+    /// `deque(iterable, maxlen)` (a bounded deque) is out of scope: the front-half
+    /// does not yet expose the raw `maxlen` arg, so the construction ABI omits it
+    /// (the runtime entries hardcode `maxlen = -1`, unlimited).
+    fn lower_deque_construct(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        reject_call_extras(c, span, "deque()")?;
+        let dty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque);
+        match c.args.len() {
+            0 => Ok(self.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(
+                        &pyaot_stdlib_defs::modules::collections::DEQUE_EMPTY,
+                    ),
+                    args: vec![],
+                    provided: 0,
+                },
+                dty,
+                span,
+            )),
+            1 => {
+                let iterable = self.lower_expr(&c.args[0])?;
+                // Wrap in `iter()` so `rt_deque_from_iter` (which drives
+                // `rt_iter_next`) receives a real iterator, not a raw container.
+                let it = self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::Iter,
+                        args: vec![iterable],
+                    },
+                    SemTy::Dyn,
+                    span,
+                );
+                Ok(self.alloc(
+                    HirExprKind::CallRuntime {
+                        target: pyaot_hir::RuntimeCallTarget::Func(
+                            &pyaot_stdlib_defs::modules::collections::DEQUE_FROM_ITER,
+                        ),
+                        args: vec![Some(it)],
+                        provided: 1,
+                    },
+                    dty,
+                    span,
+                ))
+            }
+            _ => Err(parse_error(
+                "deque(iterable, maxlen) — the bounded-deque `maxlen` argument is out of scope",
+                span,
+            )),
+        }
+    }
+
     /// Emit the innermost comprehension element action (push / insert).
     fn emit_comp_elem(&mut self, kind: &CompKind, span: Span) -> Result<()> {
         match kind {
@@ -6592,6 +6649,9 @@ impl<'a> FnLowerer<'a> {
                     if is_counter_def(def) {
                         return self.lower_counter_construct(c, span);
                     }
+                    if is_deque_def(def) {
+                        return self.lower_deque_construct(c, span);
+                    }
                     return self.lower_stdlib_call(def, c, span);
                 }
             }
@@ -6615,6 +6675,10 @@ impl<'a> FnLowerer<'a> {
                     // intercept as the from-imported bare form above.
                     if is_counter_def(def) {
                         return self.lower_counter_construct(c, span);
+                    }
+                    // `collections.deque(...)` (qualified) — same as the bare form.
+                    if is_deque_def(def) {
+                        return self.lower_deque_construct(c, span);
                     }
                     return self.lower_stdlib_call(def, c, span);
                 }
@@ -9341,6 +9405,14 @@ fn is_reduce_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
 /// runtime symbol and type the result `RuntimeObject(Counter)`.
 fn is_counter_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
     def.runtime_name == "rt_make_counter"
+}
+
+/// `collections.deque` — recognized by the `DEQUE_NEW` import binding's sentinel
+/// runtime name. The frontend intercepts construction (see
+/// [`Lowerer::lower_deque_construct`]) to pick the empty vs from-iterable runtime
+/// symbol and type the result `RuntimeObject(Deque)`.
+fn is_deque_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
+    def.runtime_name == "rt_make_deque"
 }
 
 fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result<()> {
