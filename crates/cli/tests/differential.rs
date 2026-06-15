@@ -608,6 +608,13 @@ const PHASE_CORPUS: &[&str] = &[
     // stale under -O) rode along its `_test_mixed_value_void` probe and is fixed.
     // Byte-matches CPython end-to-end (debug + release).
     "test_functions.py",
+    // Decorator factories (parameterized decorators, stacked decorators, a
+    // wrapper whose decorated slot widens to `Dyn`). LIFTED by the uniform
+    // value-call convention: the `plain_deco` shape — a wrapper without a
+    // `Callable[...]` return annotation, so the decorated callable is `Dyn` —
+    // now calls through the single arity-generic indirect ABI instead of
+    // rejecting. Byte-matches CPython end-to-end.
+    "test_decorator_factory.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is
