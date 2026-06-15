@@ -425,16 +425,22 @@ def test_curried_chain_three_call_no_annotation() -> None:
     result_no_anno = chain(1)(2)(3)
     assert result_no_anno == 6, "curried chain(1)(2)(3) no annotation should equal 6"
 
-# Note: `print(chain(a)(b)(c))` directly (without binding to a typed
-# local first) is a known limitation in the multi-candidate indirect
-# dispatch case. When several modules-level functions each define their
-# own `chain`/`inner2` helpers, the static call-graph filter sees more
-# than one return-type-Int candidate. The unification falls back to
-# `Any`, the indirect Call writes raw Int bits into an Any-typed dest,
-# and `rt_print_obj` then SEGV-s reading raw 6 (low bits 0b110, no
-# valid tag) as a heap pointer. Binding to a typed local first
-# (covered by the two tests above) goes through the narrowed
-# `CallDirect` path which does box correctly.
+def test_curried_chain_direct_print() -> None:
+    """The curried chain called and consumed directly (no intermediate typed
+    local). Under the uniform value-call ABI every closure shares one
+    `(args, kwargs) -> Value` entry, so the genuinely-`Dyn` intermediate results
+    (`chain(1)` / `chain(1)(2)`) are callable through the single indirect ABI and
+    the final `int` is boxed to a tagged `Value` — `print` / `==` consume it
+    correctly. (Formerly a SEGV: the multi-candidate dispatch wrote raw int bits
+    into an Any-typed dest that `rt_print_obj` decoded as a heap pointer.)"""
+    def chain(a: int):
+        def inner1(b: int):
+            def inner2(c: int) -> int:
+                return a + b + c
+            return inner2
+        return inner1
+    print(chain(1)(2)(3))
+    assert chain(2)(3)(4) == 9, "curried chain consumed directly should equal 9"
 
 # ===== SECTION: nonlocal statement =====
 
@@ -768,6 +774,7 @@ test_mixed_capture_levels()
 test_lambda_chain_capture()
 test_curried_chain_three_call_int()
 test_curried_chain_three_call_no_annotation()
+test_curried_chain_direct_print()
 
 # Run all nonlocal tests
 test_basic_nonlocal()
@@ -808,9 +815,9 @@ def count_kwargs(**kwargs: int) -> int:
         count = count + 1
     return count
 
-# Note: Since we can't call with keyword args yet, skip this for now
-# assert count_kwargs(a=1, b=2, c=3) == 3
-# assert count_kwargs() == 0
+assert count_kwargs(a=1, b=2, c=3) == 3
+assert count_kwargs() == 0
+assert count_kwargs(x=10, y=20) == 2
 
 # Test 4: *args with len() builtin
 def count_args(*args: int) -> int:

@@ -82,12 +82,25 @@ impl OptimizationPass for Inline {
             .map(|f| inlineable(f, self.max_insts))
             .collect();
 
+        // Functions that are the target of some `MakeClosure` are the uniform
+        // value-call thunks (under the uniform convention, slot 0 of every
+        // closure IS its arity-generic thunk). A thunk is a thin dispatch shim
+        // for the COLD fallback path: inlining its specialized callee `F` into it
+        // would both bloat that fallback AND sever the thunk→`F` link the `devirt`
+        // pass (which runs right after) needs to rewrite a monomorphic
+        // value-position call back to a direct `Call(F, …)`. So we never inline
+        // INTO a thunk — keeping it a thin `bind args → Call F` shim.
+        let is_thunk = makeclosure_targets(&program.funcs);
+
         // Callees-first: Tarjan emits an SCC only after every SCC it can
         // reach (its callees), so ascending emission index is bottom-up.
         let mut order: Vec<usize> = (0..program.funcs.len()).collect();
         order.sort_by_key(|&i| scc_of[i]);
 
         for caller in order {
+            if is_thunk[caller] {
+                continue;
+            }
             inline_into(program, caller, &scc_of, &original_ok, self.max_insts);
         }
     }
@@ -146,6 +159,24 @@ fn inline_into(
         // The continuation holds the rest of this block — keep scanning it.
         work.push(cont);
     }
+}
+
+/// The set of functions that are the target of some `MakeClosure` (the uniform
+/// value-call thunks). Indexed by `FuncId::index()`.
+fn makeclosure_targets(funcs: &[MirFunction]) -> Vec<bool> {
+    let mut is_target = vec![false; funcs.len()];
+    for f in funcs {
+        for block in &f.blocks {
+            for inst in &block.insts {
+                if let MirInst::MakeClosure { func, .. } = inst {
+                    if func.index() < is_target.len() {
+                        is_target[func.index()] = true;
+                    }
+                }
+            }
+        }
+    }
+    is_target
 }
 
 /// Instruction count for inlining decisions: `LineMarker`s are compile-time

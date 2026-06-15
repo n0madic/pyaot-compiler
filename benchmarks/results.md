@@ -138,3 +138,30 @@
 > calls), no value-position closure in the loop. Other benches are within run-to-run
 > noise (int-loop stays the A7 irreducible-loop limitation). lambda/HOF-heavy code shows
 > this regression until devirtualization lands.
+
+## 2026-06-15 00:47 — 2c702f0 — devirt
+
+| bench | pyaot | cpython | ratio (cpython/pyaot) |
+|---|---|---|---|
+| bench_int_loop | 0.680026s | 0.337038s | 0.50x |
+| bench_float_kernel | 0.156019s | 0.363221s | 2.33x |
+| bench_calls | 0.583000s | 0.914172s | 1.57x |
+| bench_str | 0.111377s | 0.116058s | 1.04x |
+| bench_containers | 0.094597s | 0.168963s | 1.79x |
+| bench_exc_hotpath | 0.143317s | 0.115226s | 0.80x |
+| microgpt | 0.039814s | 0.043151s | 1.08x |
+
+> **Note (devirt — uniform-value-call regression recovered):** the new `devirt`
+> MIR pass (`optimizer/src/devirt.rs`, registered right after `inline`) rewrites a
+> monomorphic value-position `CallIndirect` back to a direct `Call` to the
+> specialized function — eliminating the per-call args-tuple alloc, the slot-0 read,
+> the indirect dispatch, and the thunk re-bind. `bench_calls` recovers **0.658s →
+> 0.583s** (ratio **1.41x → 1.57x**), back near the pre-uniform baseline
+> (`b87168d`: 0.568s / 1.63x); the small residual is the env-arg coerce + checked-unbox
+> seam. `--emit-mir` of `bench_calls` `main` now shows `Call { func: <step>, [env, v, w] }`
+> in the hot loop with **no** `CallIndirect`/`TupleNew`. **microgpt unaffected**
+> (0.040s / 1.08x — vtable direct calls, no value-position closure in the loop). A
+> companion inliner change makes it not inline INTO uniform thunks (every `MakeClosure`
+> target): a thunk is the thin COLD-fallback shim, and inlining its specialized callee
+> `F` into it both bloats that fallback and severs the thunk→`F` link `devirt` needs.
+> Other benches are within run-to-run noise.

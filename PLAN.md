@@ -281,9 +281,27 @@ These few gaps block the most files — close them before the long tail.
     *positional* param BY keyword through a value call stays out of scope (the
     positional slots are still matched positionally — a loud arity error, not a
     crash). Gated by `corpus/p40_value_call_kwargs.py`.
+  - ~~Devirtualization of monomorphic indirect calls back to the specialized ABI is
+    a separate additive optimizer pass.~~ — DONE (the deferred Phase E): the new
+    `optimizer::devirt` pass (registered right after `inline::Inline`) rewrites a
+    monomorphic value-position `CallIndirect` — one whose callee resolves through
+    single-def bit-identity `Coerce` links to a `MakeClosure { func: thunk }` over a
+    *simple positional* uniform thunk (exactly one `Call` to the specialized `F`, no
+    varargs/`**kwargs`/`Dict*` machinery) — back to a direct `Call(F, [env?, args…])`,
+    recovering the positional args from the now-dead args-tuple builder (non-escape
+    proven by read-counts) and re-boxing F's non-`Tagged` return. It restores the
+    pre-uniform specialized call (`Call{step,[env,v,w]}` for `bench_calls`), recovering
+    the ~16% value-call regression (`bench_calls` 0.658s → 0.583s, 1.41x → 1.57x; see
+    `benchmarks/results.md`). Strictly additive: any unmet precondition leaves the
+    `CallIndirect` on the always-correct uniform path; no new ABI, no marker bits (A4);
+    the MIR verifier (debug+release) + the byte-exact differential gate are the backstop.
+    A companion `inline` change keeps it from inlining INTO uniform thunks (every
+    `MakeClosure` target) — a thunk is the thin COLD-fallback shim, and inlining its
+    callee `F` into it both bloats that fallback and severs the thunk→`F` link `devirt`
+    needs. `CallValue` (spread/keyword) and varargs/kwargs/default closures stay on the
+    uniform path (v1 scope).
   - Still deferred: the heap-arg seam (`list`/`str` param of a `Dyn` callee) keeps
-    the existing `TaggedToHeap` trust; devirtualization of monomorphic indirect
-    calls back to the specialized ABI is a separate additive optimizer pass.
+    the existing `TaggedToHeap` trust.
 
 ### 2. Operators & expressions
 - ~~**`is`/`is not` against non-`None`**~~ — DONE: `x is True`, `a is b` lower to

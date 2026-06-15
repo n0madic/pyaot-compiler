@@ -23,6 +23,7 @@
 pub mod analysis;
 pub mod constfold;
 pub mod dce;
+pub mod devirt;
 pub mod inline;
 pub mod peephole;
 #[cfg(test)]
@@ -59,8 +60,11 @@ impl PassManager {
     /// runs BEFORE inline so the inliner's size eligibility judges cleaned
     /// bodies — raw lowered MIR carries box/unbox churn that nearly doubles
     /// a small dunder's instruction count and would mis-refuse exactly the
-    /// functions the inliner exists for. The second trio then cleans the
-    /// round-trips the splices themselves expose.
+    /// functions the inliner exists for. `devirt` runs immediately AFTER
+    /// inline so a post-inline `MakeClosure` (a `make_step`-style factory
+    /// inlined into its caller, exposing the closure + its hot-loop
+    /// `CallIndirect` in one function) is visible to it. The second trio then
+    /// cleans the round-trips the splices and the devirt rewrites expose.
     pub fn phase9() -> Self {
         Self {
             passes: vec![
@@ -68,6 +72,7 @@ impl PassManager {
                 Box::new(peephole::Peephole),
                 Box::new(dce::Dce),
                 Box::new(inline::Inline::default()),
+                Box::new(devirt::Devirt),
                 Box::new(constfold::ConstFold),
                 Box::new(peephole::Peephole),
                 Box::new(dce::Dce),
