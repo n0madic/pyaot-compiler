@@ -20,6 +20,7 @@
 
 pub mod builtins;
 pub mod exceptions;
+pub mod isinstance_kind;
 pub mod layout;
 pub mod runtime_func_def;
 pub mod tag;

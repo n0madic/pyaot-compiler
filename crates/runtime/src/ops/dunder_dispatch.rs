@@ -47,6 +47,7 @@ pub(super) const FNV_RPOW: u64 = fnv1a(b"__rpow__");
 pub(super) const FNV_NEG: u64 = fnv1a(b"__neg__");
 pub(super) const FNV_POS: u64 = fnv1a(b"__pos__");
 pub(super) const FNV_INVERT: u64 = fnv1a(b"__invert__");
+pub(super) const FNV_ABS: u64 = fnv1a(b"__abs__");
 pub(super) const FNV_INT: u64 = fnv1a(b"__int__");
 pub(super) const FNV_FLOAT: u64 = fnv1a(b"__float__");
 pub(super) const FNV_REPR: u64 = fnv1a(b"__repr__");
@@ -207,6 +208,16 @@ pub unsafe fn try_repr_dunder(obj: *mut Obj) -> Option<*mut Obj> {
 /// `obj` must be a valid object pointer; this fn re-checks the `Instance` tag.
 pub unsafe fn try_str_dunder(obj: *mut Obj) -> Option<*mut Obj> {
     try_class_unary_dunder(obj, FNV_STR).or_else(|| try_class_unary_dunder(obj, FNV_REPR))
+}
+
+/// Dispatch `abs(self)` for a class instance via its `__abs__` dunder (§6 —
+/// `abs(UnaryNum(-5))`). Returns `None` when the instance defines no `__abs__`
+/// (the caller then raises `TypeError`, CPython's behavior).
+///
+/// # Safety
+/// `obj` must be a valid object pointer; this fn re-checks the `Instance` tag.
+pub unsafe fn try_abs_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_ABS)
 }
 
 /// Dispatch `value.__format__(spec)` for a class instance (`f"{p:spec}"` ≡

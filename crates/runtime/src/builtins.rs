@@ -287,6 +287,12 @@ pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
                 let value = (*(obj as *mut FloatObj)).value;
                 boxing::rt_box_float(value.abs())
             }
+            // `abs(instance)` dispatches the user `__abs__` dunder (§6); CPython
+            // raises `TypeError` when the class defines none.
+            TypeTagKind::Instance => match crate::ops::try_abs_dunder(obj) {
+                Some(res) => res,
+                None => raise_type_error("bad operand type for abs()"),
+            },
             _ => raise_type_error("bad operand type for abs()"),
         }
     }

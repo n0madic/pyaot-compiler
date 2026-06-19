@@ -491,6 +491,30 @@ pub static RT_IS_TRUTHY: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_tru
 pub static RT_IS_NONE: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_none");
 /// rt_is(a: *mut Obj, b: *mut Obj) -> i8 — bit-identity (`a is b`).
 pub static RT_IS: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_is");
+/// rt_isinstance_builtin(obj: Value, kind: i64) -> i8 — `isinstance(obj, T)`
+/// against a builtin type `T` for a gradual (`Dyn`/`Union`) value, by tag.
+/// `kind` is a raw [`crate::isinstance_kind`] code; `obj` is Tagged.
+pub static RT_ISINSTANCE_BUILTIN: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_isinstance_builtin",
+    &[PI64, PI64],
+    Some(RI8),
+    false,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    Some(MirSemantic::Raw),
+);
+/// rt_getattr_name_or_default(obj: Value, name_hash: i64, default: Value) -> Value.
+/// The 3-arg `getattr` sibling of `rt_getattr_name`: returns `default` (the
+/// third arg) on a miss/non-instance instead of raising `AttributeError`. The
+/// `name_hash` slot is RAW (the FNV-1a hash, passed verbatim, never tagged);
+/// `obj`/`default`/result are Tagged.
+pub static RT_GETATTR_NAME_OR_DEFAULT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_getattr_name_or_default",
+    &[PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw, MirSemantic::Tagged],
+    Some(MirSemantic::Tagged),
+);
 /// rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8
 pub static RT_OBJ_CONTAINS: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_contains");
 /// rt_obj_to_str(obj: *mut Obj) -> *mut Obj
@@ -1614,9 +1638,16 @@ pub static RT_REGISTER_CLASS_QUALNAME: RuntimeFuncDef =
 /// rt_register_method_name(class_id: i64, name_hash: i64, slot: i64) -> void
 pub static RT_REGISTER_METHOD_NAME: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_method_name", &[PI64, PI64, PI64]);
-/// rt_object_new(class_id: i8) -> *mut Obj
-pub static RT_OBJECT_NEW: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_object_new", &[PI8], Some(RI64), false);
+/// rt_object_new(class_id: i64) -> *mut Obj (a tagged heap instance, GC-rooted
+/// by the caller). `class_id` is the untagged `cls`-as-int value (§3).
+pub static RT_OBJECT_NEW: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_object_new",
+    &[PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
 /// rt_register_del_func(class_id: i8, func_ptr: i64) -> void
 pub static RT_REGISTER_DEL_FUNC: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_del_func", &[PI8, PI64]);

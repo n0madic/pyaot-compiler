@@ -725,6 +725,20 @@ fn record_all(
             child(*spec, rec);
             Interval::Top
         }
+        // `getattr` — visit the receiver and (if present) the default subexpr so
+        // their reads are recorded (the name is a static literal, no child).
+        HirExprKind::GetAttrByName { value, default, .. } => {
+            child(*value, rec);
+            if let Some(d) = default {
+                child(*d, rec);
+            }
+            Interval::Top
+        }
+        // `object.__new__(cls)` — visit the `cls` operand.
+        HirExprKind::ObjectNew { cls } => {
+            child(*cls, rec);
+            Interval::Top
+        }
         HirExprKind::Attribute { value, .. }
         | HirExprKind::IsInstance { value, .. }
         | HirExprKind::IsInstanceBuiltin { value, .. }

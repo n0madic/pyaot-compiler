@@ -1000,14 +1000,22 @@ fn stdlib_isinstance_builtin_folds_statically() {
 }
 
 #[test]
-fn stdlib_isinstance_on_dyn_rejected() {
-    // A gradual receiver cannot answer a builtin-type isinstance statically.
+fn stdlib_isinstance_on_dyn_runtime() {
+    // A gradual receiver answers a builtin-type isinstance at RUNTIME via
+    // `rt_isinstance_builtin` (§6 — the NI dunders need `isinstance(other,
+    // (int, float))` on a `Dyn` param). Previously rejected loudly.
     let src = "\
 def f(x):
     return x
 print(isinstance(f(1), str))
 ";
-    assert!(try_lower(src).is_err());
+    let p = lowered(src);
+    assert!(
+        runtime_calls(&p)
+            .iter()
+            .any(|(sym, _, _)| *sym == "rt_isinstance_builtin"),
+        "isinstance on a Dyn receiver lowers to rt_isinstance_builtin"
+    );
 }
 
 // ── Phase 8C: stdlib object types (re/Match, File I/O) ──────────────────────

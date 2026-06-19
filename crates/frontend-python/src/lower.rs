@@ -761,6 +761,39 @@ impl<'a> ProgramLowerer<'a> {
                 }
             }
         }
+        // Method params with non-literal defaults take a slot too (§6 — CPython's
+        // shared-mutable-default gotcha applies to `__init__(self, x=[])`), keyed
+        // by the method's SYNTHETIC lowered name so `resolve_param_default`
+        // resolves them through the class context's `default_slots`.
+        for cdef in &classdefs {
+            for stmt in &cdef.body {
+                let Stmt::FunctionDef(m) = stmt else { continue };
+                let synthetic = format!(
+                    "{}.{}{}",
+                    cdef.name.as_str(),
+                    m.name.as_str(),
+                    method_synthetic_suffix(m)
+                );
+                let fname = self.interner.intern(&synthetic);
+                let margs = m.args.as_ref();
+                for awd in margs
+                    .posonlyargs
+                    .iter()
+                    .chain(margs.args.iter())
+                    .chain(margs.kwonlyargs.iter())
+                {
+                    let Some(e) = &awd.default else { continue };
+                    if try_literal_default(&mut *self.interner, e).is_none() {
+                        let pname = self.interner.intern(awd.def.arg.as_str());
+                        default_slots.entry((fname, pname)).or_insert_with(|| {
+                            let id = self.next_global;
+                            self.next_global += 1;
+                            id
+                        });
+                    }
+                }
+            }
+        }
 
         // ── Top-level def table (own defs through a pre-context, then imports). ──
         let empty_defs: TopDefMap = HashMap::new();
@@ -953,7 +986,14 @@ impl<'a> ProgramLowerer<'a> {
                     Stmt::FunctionDef(f) => {
                         main.emit_default_slots(f, &default_slots)?;
                     }
-                    Stmt::ClassDef(_) => {}
+                    // A class evaluates its methods' non-literal (slot) defaults
+                    // ONCE here, at the class's textual position (§6 — CPython's
+                    // shared-mutable-default for `__init__(self, x=[])`), then
+                    // applies any class decorators (§5) over the class-id int.
+                    Stmt::ClassDef(c) => {
+                        main.emit_class_default_slots(c, &default_slots)?;
+                        main.emit_class_decorators(c)?;
+                    }
                     _ if type_var_assign_name(stmt).is_some() => {}
                     other => {
                         if main.lower_stmt(other)? {
@@ -966,11 +1006,13 @@ impl<'a> ProgramLowerer<'a> {
             self.shared.fill(init_fid, main_fn);
         }
 
-        // Classes (own).
+        // Classes (own). `defs_ctx` carries the mutable-default slot map so a
+        // method's non-literal default (`__init__(self, x=[])`, §6) resolves to
+        // its synthetic global slot instead of being rejected.
         for (i, cdef) in classdefs.iter().enumerate() {
             let hclass = lower_class(
                 &mut *self.interner,
-                &module_ctx,
+                &defs_ctx,
                 cdef,
                 class_ids[i],
                 &mut self.shared,
@@ -4208,6 +4250,17 @@ impl<'a> FnLowerer<'a> {
             Expr::Constant(c) => self.lower_constant(&c.value, span),
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());
+                // `NotImplemented` (§4a) resolves to the runtime singleton — the
+                // dunder-fallback control-flow signal. Intercepted before the
+                // scope lookup (no user shadows the builtin in the corpus) so a
+                // dunder body `return NotImplemented` produces the real value.
+                if n.id.as_str() == "NotImplemented" && !self.scope.contains_key(&name) {
+                    return Ok(self.alloc(
+                        HirExprKind::NotImplementedLit,
+                        SemTy::NotImplementedT,
+                        span,
+                    ));
+                }
                 // A name the frontend already has in scope resolves directly
                 // through its binding (a local read or a `CellGet`); a top-level
                 // function used as a VALUE becomes its memoized thunk closure
@@ -5420,17 +5473,31 @@ impl<'a> FnLowerer<'a> {
     /// name must be a string literal — dynamic `getattr(o, var)` is the documented
     /// out-of-scope boundary — and the 3-arg `default` form is rejected.
     fn lower_getattr_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
-        match args.len() {
-            2 => {}
-            3 => return Err(parse_error("getattr() default is out of scope", span)),
-            _ => return Err(parse_error("getattr() takes two arguments", span)),
+        if !matches!(args.len(), 2 | 3) {
+            return Err(parse_error("getattr() takes two or three arguments", span));
         }
         let name = string_literal_arg(&args[1]).ok_or_else(|| {
             parse_error("dynamic getattr (non-literal name) is out of scope", span)
         })?;
         let value = self.lower_expr(&args[0])?;
         let name = self.intern(name);
-        Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))
+        // Both forms become a `GetAttrByName` carrying the `getattr` fallback
+        // semantics (§5, L1681): lowering keeps the static fast path for a
+        // provably-present attr, else routes to the runtime probe (raising for
+        // 2-arg, returning `default` for 3-arg).
+        let default = match args.get(2) {
+            Some(d) => Some(self.lower_expr(d)?),
+            None => None,
+        };
+        Ok(self.alloc(
+            HirExprKind::GetAttrByName {
+                value,
+                name,
+                default,
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// `setattr(obj, "name", value)` (§5) ≡ `obj.name = value` — a pure frontend
@@ -6671,6 +6738,25 @@ impl<'a> FnLowerer<'a> {
                 ));
             }
         }
+        // `object.__new__(cls)` (§3): the allocator hook, called inside a user
+        // `__new__`. Lowers to `rt_object_new(cls as i8)` → a bare heap instance.
+        if let Expr::Attribute(a) = c.func.as_ref() {
+            if a.attr.as_str() == "__new__" {
+                if let Expr::Name(base) = a.value.as_ref() {
+                    let object_iname = self.intern("object");
+                    if base.id.as_str() == "object" && !self.scope.contains_key(&object_iname) {
+                        if c.args.len() != 1 || !c.keywords.is_empty() {
+                            return Err(parse_error(
+                                "object.__new__ takes a single positional `cls` argument",
+                                span,
+                            ));
+                        }
+                        let cls = self.lower_expr(&c.args[0])?;
+                        return Ok(self.alloc(HirExprKind::ObjectNew { cls }, SemTy::Dyn, span));
+                    }
+                }
+            }
+        }
         // `Cls[T](args)` → a subscripted generic construction (Phase 5E).
         if let Expr::Subscript(s) = c.func.as_ref() {
             if let Expr::Name(n) = s.value.as_ref() {
@@ -7618,6 +7704,74 @@ impl<'a> FnLowerer<'a> {
                 self.push_stmt(HirStmt::GlobalSet { var_id, value });
             }
         }
+        Ok(())
+    }
+
+    /// §6: the method analogue of [`Self::emit_default_slots`] — evaluate a
+    /// class's methods' non-literal parameter defaults ONCE at the class's
+    /// module-init position (CPython def-time once-evaluation), storing each
+    /// shared object into its synthetic global slot. Keyed by the SYNTHETIC
+    /// method name (`Counter.__init__`), matching the slot-collection pass.
+    fn emit_class_default_slots(
+        &mut self,
+        cdef: &StmtClassDef,
+        slots: &DefaultSlotMap,
+    ) -> Result<()> {
+        for stmt in &cdef.body {
+            let Stmt::FunctionDef(m) = stmt else { continue };
+            let synthetic = format!(
+                "{}.{}{}",
+                cdef.name.as_str(),
+                m.name.as_str(),
+                method_synthetic_suffix(m)
+            );
+            let fname = self.intern(&synthetic);
+            let margs = m.args.as_ref();
+            for awd in margs
+                .posonlyargs
+                .iter()
+                .chain(margs.args.iter())
+                .chain(margs.kwonlyargs.iter())
+            {
+                let Some(default_expr) = &awd.default else {
+                    continue;
+                };
+                let pname = self.intern(awd.def.arg.as_str());
+                if let Some(&var_id) = slots.get(&(fname, pname)) {
+                    let value = self.lower_expr(default_expr)?;
+                    self.push_stmt(HirStmt::GlobalSet { var_id, value });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply a class's decorators (§5) at module-init, over the class-id int —
+    /// for their side effects (a decorator that runs for effect — increments a
+    /// counter, appends a marker — and returns the class). The class name stays
+    /// bound to its class id via the static `class_map`, so `C(...)` still
+    /// constructs; a decorator that returns a *different* class, or stores the
+    /// class as a value, is out of scope (classes aren't first-class values yet)
+    /// — the chain's result is evaluated for effect and discarded.
+    fn emit_class_decorators(&mut self, cdef: &StmtClassDef) -> Result<()> {
+        if cdef.decorator_list.is_empty() {
+            return Ok(());
+        }
+        let span = to_span(cdef.range());
+        let Some((class_id, _)) = self.ctx.class_map.get(cdef.name.as_str()).copied() else {
+            return Err(parse_error(
+                "internal: decorated class missing from class_map",
+                span,
+            ));
+        };
+        // The "class value" passed to the decorator is the class-id int (the same
+        // convention as a `@classmethod`'s `cls` and `object.__new__(cls)`).
+        let mut v = self.alloc(HirExprKind::IntLit(class_id.0 as i64), SemTy::Int, span);
+        // Innermost decorator first (CPython applies bottom-up).
+        for deco in cdef.decorator_list.iter().rev() {
+            v = self.apply_decorator(deco, v, span)?;
+        }
+        self.push_stmt(HirStmt::Expr(v));
         Ok(())
     }
 
@@ -10209,9 +10363,10 @@ fn lower_class(
     shared: &mut Shared,
 ) -> Result<HirClass> {
     let span = to_span(cdef.range());
-    if !cdef.decorator_list.is_empty() {
-        return Err(parse_error("class decorators are out of scope", span));
-    }
+    // Class decorators (§5) do NOT change the class definition itself — they are
+    // applied at module-init (`emit_class_decorators`) over the class-id int, for
+    // their side effects; the class name stays bound to its class id via the
+    // static `class_map`. So lowering the class body here ignores them.
     if !cdef.keywords.is_empty() {
         return Err(parse_error(
             "class keyword arguments (e.g. `metaclass=`) are out of scope",
@@ -10279,9 +10434,12 @@ fn lower_class(
         aliases: ctx.aliases,
         alias_vars: ctx.alias_vars,
         stdlib: ctx.stdlib,
-        // Methods reject non-literal defaults (mutable/computed defaults are a
-        // top-level-function-only feature).
-        default_slots: None,
+        // Methods resolve a non-literal default (`__init__(self, x=[])`, §6) to
+        // its synthetic global slot via the inherited map (def-time once-eval,
+        // CPython shared-mutable-default aliasing); a literal default still folds
+        // to a `Const`. A nested def inside a method re-clones with `None` (a
+        // process-global slot can't hold a per-closure default).
+        default_slots: ctx.default_slots,
     };
 
     let name = interner.intern(cdef.name.as_str());
@@ -10320,6 +10478,19 @@ fn lower_class(
         match stmt {
             Stmt::FunctionDef(m) => {
                 let method_name = interner.intern(m.name.as_str());
+                // `__new__` (§3): the allocator hook. Lowered like a
+                // `@staticmethod` (`FirstParam::Plain`) — its first param `cls`
+                // is a real int (the class-id, per the `def __new__(cls: int)`
+                // convention), NOT a `self` instance. Stored in `static_methods`
+                // so `lower_construct` finds it and calls it (passing the
+                // class-id int) instead of emitting `MakeInstance`. The runtime
+                // allocation happens inside via `object.__new__(cls)`.
+                if m.name.as_str() == "__new__" && m.decorator_list.is_empty() {
+                    let (fid, _) =
+                        lower_method(interner, shared, m, "", FirstParam::Plain, None)?;
+                    static_methods.push((method_name, fid));
+                    continue;
+                }
                 match classify_method_decorator(m)? {
                     MethodDecor::Instance => {
                         let (fid, _) = lower_method(
@@ -10498,6 +10669,19 @@ enum MethodDecor {
     Setter(String),
 }
 
+/// The synthetic lowered-name suffix for a method, mirroring `lower_class`'s
+/// `lower_method` calls: a `@property` getter is `.get`, an `@x.setter` is
+/// `.set`, everything else (instance / `@staticmethod` / `@classmethod` /
+/// `__new__`) has no suffix. Used to key mutable-default slots (§6) to the same
+/// synthetic name `resolve_param_default` sees.
+fn method_synthetic_suffix(m: &StmtFunctionDef) -> &'static str {
+    match classify_method_decorator(m) {
+        Ok(MethodDecor::Property) => ".get",
+        Ok(MethodDecor::Setter(_)) => ".set",
+        _ => "",
+    }
+}
+
 /// Classify a method's (at most one) decorator. Bare instance methods carry none.
 fn classify_method_decorator(m: &StmtFunctionDef) -> Result<MethodDecor> {
     let span = to_span(m.range());
@@ -10508,6 +10692,14 @@ fn classify_method_decorator(m: &StmtFunctionDef) -> Result<MethodDecor> {
                 "staticmethod" => Ok(MethodDecor::Static),
                 "classmethod" => Ok(MethodDecor::Class),
                 "property" => Ok(MethodDecor::Property),
+                // `@abstractmethod` is a runtime no-op here: the file only ever
+                // instantiates *concrete* subclasses, and with no `ABCMeta`
+                // metaclass (out of scope) even CPython permits instantiation —
+                // so lowering an `@abstractmethod` method exactly as an ordinary
+                // instance method is byte-exact. (Stacked
+                // `@classmethod`+`@abstractmethod` stays rejected below — a
+                // future strip-then-classify follow-up.)
+                "abstractmethod" => Ok(MethodDecor::Instance),
                 other => Err(parse_error(
                     format!("unsupported decorator @{other} (general decorators are Phase 6)"),
                     span,

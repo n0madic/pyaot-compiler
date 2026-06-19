@@ -663,6 +663,13 @@ const PHASE_CORPUS: &[&str] = &[
     // now calls through the single arity-generic indirect ABI instead of
     // rejecting. Byte-matches CPython end-to-end.
     "test_decorator_factory.py",
+    // §5 — class decorators: a side-effecting decorator that returns the class
+    // unchanged + the parameterized factory form + stacking. The "class value"
+    // is the class-id int (the `@classmethod`/`object.__new__` convention); the
+    // class name stays bound to its id via the static `class_map`, so `C(...)`
+    // still constructs. Class-replacing / class-as-stored-value decorators stay
+    // out of scope (classes aren't first-class values).
+    "test_class_decorators.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

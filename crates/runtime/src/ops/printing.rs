@@ -371,7 +371,18 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Tuple => print_tuple_repr(obj),
             TypeTagKind::Dict => print_dict_repr(obj),
             TypeTagKind::Set => print_set_repr(obj),
-            TypeTagKind::Instance => print!("{}", crate::instance::instance_default_repr(obj)),
+            TypeTagKind::Instance => {
+                // CPython's `print(instance)` renders `str(instance)`: dispatch
+                // the user `__str__` (falling back to `__repr__`) via the dunder
+                // registry. A `Dyn`/`Union` instance reaches here — the static
+                // class path is devirtualized at lowering; without this it would
+                // show only the default object repr (e.g. a value from a
+                // `Union[T, NotImplementedT]` dunder return, §4).
+                match crate::ops::try_str_dunder(obj) {
+                    Some(str_obj) if !str_obj.is_null() => rt_print_str_obj(str_obj),
+                    _ => print!("{}", crate::instance::instance_default_repr(obj)),
+                }
+            }
             TypeTagKind::Iterator => print!("<iterator>"),
             TypeTagKind::Cell => print!("<cell>"),
             // For these types, use type_name() from core-defs (single source of truth)

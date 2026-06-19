@@ -87,11 +87,14 @@ pub extern "C" fn rt_register_class_field_count(class_id: u8, field_count: i64) 
 }
 
 /// Create a new instance using only class_id (looks up field_count from registry).
-/// This implements `object.__new__(cls)` — allocates an instance without calling __init__.
+/// This implements `object.__new__(cls)` — allocates an instance without calling
+/// __init__. `class_id` arrives as an untagged i64 (the `cls`-as-int value);
+/// the result heap pointer is a tagged `Value` (GC-rooted by the caller).
 #[no_mangle]
-pub extern "C" fn rt_object_new(class_id: u8) -> *mut crate::object::Obj {
-    let field_count = unsafe { (*CLASS_REGISTRY.0.get())[class_id as usize].field_count as i64 };
-    crate::instance::rt_make_instance(class_id, field_count)
+pub extern "C" fn rt_object_new(class_id: i64) -> *mut crate::object::Obj {
+    let cid = class_id as u8;
+    let field_count = unsafe { (*CLASS_REGISTRY.0.get())[cid as usize].field_count as i64 };
+    crate::instance::rt_make_instance(cid, field_count)
 }
 
 /// Register __del__ function pointer for a class
@@ -557,6 +560,31 @@ pub extern "C" fn rt_getattr_name(
                     "object has no attribute (by-name lookup failed)"
                 );
             }
+        }
+    }
+}
+
+/// Read field `name_hash` of a (dynamically-typed) instance by name, returning
+/// `default` instead of raising when the object is not an instance or has no
+/// such field — the 3-arg `getattr(obj, name, default)` form (§5). Mirrors
+/// [`rt_getattr_name`] but is total (never raises).
+#[no_mangle]
+pub extern "C" fn rt_getattr_name_or_default(
+    obj: pyaot_core_defs::Value,
+    name_hash: i64,
+    default: pyaot_core_defs::Value,
+) -> pyaot_core_defs::Value {
+    unsafe {
+        let ptr = obj.0 as *mut u8;
+        match resolve_field_slot(ptr, name_hash) {
+            Ok((slot, _)) => {
+                let raw = crate::instance::rt_instance_get_field(
+                    ptr as *mut crate::object::Obj,
+                    slot as i64,
+                );
+                pyaot_core_defs::Value(raw as u64)
+            }
+            Err(()) => default,
         }
     }
 }

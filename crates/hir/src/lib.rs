@@ -301,6 +301,20 @@ pub enum HirExprKind {
     FloatLit(f64),
     BoolLit(bool),
     NoneLit,
+    /// The `NotImplemented` singleton (§4a) — the dunder-fallback control-flow
+    /// signal. Mirrors [`Self::NoneLit`]: typed [`SemTy::NotImplementedT`] (→
+    /// always `Repr::Tagged`), lowered to `rt_not_implemented_singleton()`. The
+    /// runtime's forward→reflected→NotImplemented→TypeError protocol consumes
+    /// it dynamically (a dunder body `return NotImplemented` produces the real
+    /// singleton).
+    NotImplementedLit,
+    /// `object.__new__(cls)` (§3) — allocate a bare instance of the class whose
+    /// id is `cls` (a `cls`-as-int value). Lowers to `rt_object_new(cls as i8)`;
+    /// the result is a heap instance ptr typed `Dyn` (`Tagged`). Only ever
+    /// appears inside a user `__new__` body.
+    ObjectNew {
+        cls: Idx<HirExpr>,
+    },
     /// The `Value::UNBOUND` sentinel — the value a `del name`/`del obj.attr`
     /// stores into the unbound slot. Lowers to `Const::Unbound`. Typed as
     /// `SemTy::Never` (it is not a real value), so it contributes nothing to any
@@ -473,6 +487,19 @@ pub enum HirExprKind {
     IsSubclass {
         sub: ClassId,
         sup: ClassId,
+    },
+    /// `getattr(value, "name"[, default])` (§5) → `Dyn`. Distinct from the
+    /// 2-arg [`Self::Attribute`] desugar: it carries the explicit `getattr`
+    /// fallback semantics so lowering can route a provably-absent field on a
+    /// concrete receiver to a runtime probe instead of a compile error.
+    /// Lowering keeps the static fast path when the attr is provably present
+    /// (field/property/class-attr); otherwise it routes to
+    /// `rt_getattr_name`/`rt_getattr_name_or_default` (`default = None`/`Some`).
+    /// The `name` is a string literal (dynamic names stay out of scope).
+    GetAttrByName {
+        value: Idx<HirExpr>,
+        name: InternedString,
+        default: Option<Idx<HirExpr>>,
     },
     /// `value is None` (Phase 8D) → `Bool`, via `rt_is_none` — the identity test
     /// that recognizes both the immediate `None` tag and a heap `None` object

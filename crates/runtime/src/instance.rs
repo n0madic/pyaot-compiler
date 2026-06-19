@@ -262,6 +262,50 @@ pub extern "C" fn rt_isinstance_class_inherited_abi(obj: Value, target_class_id:
     rt_isinstance_class_inherited(obj.unwrap_ptr(), target_class_id)
 }
 
+/// True iff `obj` is a heap pointer whose type tag is `tag` (null- and
+/// alignment-checked, like `rt_isinstance_class_inherited`). Immediates
+/// (`int`/`bool`/`None`) are never heap pointers, so they return `false`.
+fn heap_tag_is(obj: Value, tag: TypeTagKind) -> bool {
+    if !obj.is_ptr() {
+        return false;
+    }
+    let ptr: *mut Obj = obj.unwrap_ptr();
+    if ptr.is_null() || !(ptr as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
+        return false;
+    }
+    unsafe { (*ptr).type_tag() == tag }
+}
+
+/// `isinstance(obj, T)` against a builtin type `T` (by KIND) for a gradual
+/// (`Dyn`/`Union`) value, inspecting the runtime tag. `kind` is a
+/// [`pyaot_core_defs::isinstance_kind`] code. Used when the verdict cannot be
+/// folded statically (e.g. a dunder param typed `Dyn`); a statically-typed
+/// receiver still folds at lowering. Matches by Python `type` KIND: `bool ⊂
+/// int` (a `bool` value satisfies `isinstance(x, int)`), big integers are
+/// `int`, container element types are ignored.
+#[no_mangle]
+pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
+    use pyaot_core_defs::isinstance_kind as k;
+    let verdict = match kind {
+        k::INT => {
+            obj.is_int()
+                || obj.is_bool()
+                || heap_tag_is(obj, TypeTagKind::Int)
+                || heap_tag_is(obj, TypeTagKind::BigInt)
+        }
+        k::BOOL => obj.is_bool() || heap_tag_is(obj, TypeTagKind::Bool),
+        k::FLOAT => heap_tag_is(obj, TypeTagKind::Float),
+        k::STR => heap_tag_is(obj, TypeTagKind::Str),
+        k::BYTES => heap_tag_is(obj, TypeTagKind::Bytes),
+        k::LIST => heap_tag_is(obj, TypeTagKind::List),
+        k::DICT => heap_tag_is(obj, TypeTagKind::Dict),
+        k::SET => heap_tag_is(obj, TypeTagKind::Set),
+        k::TUPLE => heap_tag_is(obj, TypeTagKind::Tuple),
+        _ => false,
+    };
+    verdict as i8
+}
+
 /// Check if child_vtable is a subclass of parent_vtable
 /// Returns: 1 (true) or 0 (false)
 #[no_mangle]

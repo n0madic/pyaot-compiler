@@ -1719,23 +1719,23 @@ assert bool(ConvNum(0)) == False, "__bool__: bool(ConvNum(0))"
 print("Conversion dunders (__int__, __float__, __bool__): PASS")
 
 # ===== SECTION: Bitwise dunders =====
-class Flags:
+class BitFlags:
     value: int
     def __init__(self, value: int):
         self.value = value
-    def __and__(self, other: Flags) -> Flags:
-        return Flags(self.value & other.value)
-    def __or__(self, other: Flags) -> Flags:
-        return Flags(self.value | other.value)
-    def __xor__(self, other: Flags) -> Flags:
-        return Flags(self.value ^ other.value)
-    def __lshift__(self, other: Flags) -> Flags:
-        return Flags(self.value << other.value)
-    def __rshift__(self, other: Flags) -> Flags:
-        return Flags(self.value >> other.value)
+    def __and__(self, other: BitFlags) -> BitFlags:
+        return BitFlags(self.value & other.value)
+    def __or__(self, other: BitFlags) -> BitFlags:
+        return BitFlags(self.value | other.value)
+    def __xor__(self, other: BitFlags) -> BitFlags:
+        return BitFlags(self.value ^ other.value)
+    def __lshift__(self, other: BitFlags) -> BitFlags:
+        return BitFlags(self.value << other.value)
+    def __rshift__(self, other: BitFlags) -> BitFlags:
+        return BitFlags(self.value >> other.value)
 
-fl1 = Flags(12)   # 0b1100
-fl2 = Flags(10)   # 0b1010
+fl1 = BitFlags(12)   # 0b1100
+fl2 = BitFlags(10)   # 0b1010
 
 br = fl1 & fl2
 assert br.value == 8, f"& failed: {br.value}"  # 0b1000
@@ -1746,10 +1746,10 @@ assert br.value == 14, f"| failed: {br.value}"  # 0b1110
 br = fl1 ^ fl2
 assert br.value == 6, f"^ failed: {br.value}"  # 0b0110
 
-br = fl1 << Flags(2)
+br = fl1 << BitFlags(2)
 assert br.value == 48, f"<< failed: {br.value}"  # 0b110000
 
-br = fl1 >> Flags(2)
+br = fl1 >> BitFlags(2)
 assert br.value == 3, f">> failed: {br.value}"  # 0b11
 
 print("Bitwise dunders (__and__, __or__, __xor__, __lshift__, __rshift__): PASS")

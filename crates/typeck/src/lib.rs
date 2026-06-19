@@ -860,17 +860,24 @@ fn check_repr_boundaries(
         // `Tagged → Raw(F64)`/typed-`Heap` coercion the verifier accepts would
         // otherwise mis-read a mismatched value (PITFALLS A2).
         for (_idx, expr) in func.exprs.iter() {
-            let (params, args) = match &expr.kind {
+            // `allow_coerce` enables the CHECKED numeric coercion (`Dyn → float`,
+            // via `rt_unbox_float`) at the param boundary. It is on ONLY for
+            // CONSTRUCTOR args (`Cls(args)` / `Cls[T](args)`), whose lowering
+            // (`lower_construct`) emits the checked unbox — so a numeric-tower
+            // class fed a gradual field value (`NumTower(self.x + other.x)` with
+            // a `Dyn`-demoted `x`, §6) type-checks. Other call kinds keep the
+            // strict deferred posture (their lowering has no checked seam yet).
+            let (params, args, allow_coerce) = match &expr.kind {
                 HirExprKind::Call { callee, args } => {
                     let direct = match func.exprs[*callee].kind {
                         HirExprKind::Name(SymbolRef::Resolved(id)) => match resolve.symbol(id) {
                             Symbol::Function(fid) => {
-                                Some((&module.functions[fid.index()].params[..], args))
+                                Some((&module.functions[fid.index()].params[..], args, false))
                             }
                             // `Cls(args)` → `__init__(self, args…)`: skip `self`.
                             Symbol::Class(cid) => {
                                 match init_params(classes, module, interner, cid) {
-                                    Some(p) => Some((&p[1.min(p.len())..], args)),
+                                    Some(p) => Some((&p[1.min(p.len())..], args, true)),
                                     None => continue,
                                 }
                             }
@@ -888,7 +895,7 @@ fn check_repr_boundaries(
                         // guarded against the signature's param reprs (the
                         // poly(3) seam, extended to closures).
                         None => {
-                            check_indirect_call(func, *callee)?;
+                            check_indirect_call(func, *callee, classes, interner)?;
                             continue;
                         }
                     }
@@ -929,14 +936,14 @@ fn check_repr_boundaries(
                                 }
                             }
                         }
-                        (p, args)
+                        (p, args, false)
                     }
                     None => continue,
                 },
                 // `Cls[T](args)` → `__init__(self, args…)`: skip `self`.
                 HirExprKind::GenericConstruct { class_id, args, .. } => {
                     match init_params(classes, module, interner, *class_id) {
-                        Some(p) => (&p[1.min(p.len())..], args),
+                        Some(p) => (&p[1.min(p.len())..], args, true),
                         None => continue,
                     }
                 }
@@ -953,14 +960,22 @@ fn check_repr_boundaries(
             };
             for (arg, param) in args.iter().zip(params) {
                 if let Some(kind) = reinterpret_kind(&param.ty) {
+                    // Constructor args take the checked numeric coercion
+                    // (`lower_construct` emits `rt_unbox_float`/`rt_unbox_bool`),
+                    // but ONLY for a genuinely-gradual `Dyn` value — a `Dyn`
+                    // field/expr that is numeric at runtime (§6 `NumTower(self.x +
+                    // other.x)`). A statically-`Int`/`Bool` arg into a `float`
+                    // slot stays STRICT (rejected): admitting it would
+                    // silently `int→float` at construction, an observable
+                    // repr-print divergence. Other call kinds stay deferred (§8).
+                    let eff = allow_coerce && func.exprs[*arg].ty == SemTy::Dyn;
                     check_reinterpret(
                         &func.exprs[*arg],
                         &param.ty,
                         kind,
                         "passed to",
                         classes,
-                        // Param-pass: deferred (§8).
-                        false,
+                        eff,
                     )?;
                 }
             }
@@ -1068,15 +1083,37 @@ fn check_call_runtime_args(
 /// time (with the Phase-1 checked unbox). A statically-known **non-callable**
 /// (e.g. `x: int = 5; x()`) is still rejected loudly; a `Dyn` callee that turns
 /// out non-callable raises `TypeError` at run time (the Phase-C guard).
-fn check_indirect_call(func: &HirFunction, callee: Idx<HirExpr>) -> Result<()> {
+fn check_indirect_call(
+    func: &HirFunction,
+    callee: Idx<HirExpr>,
+    classes: &ClassTable,
+    interner: &StringInterner,
+) -> Result<()> {
     let cexpr = &func.exprs[callee];
     match &cexpr.ty {
         SemTy::Callable(_) | SemTy::Dyn | SemTy::Never => Ok(()),
+        // A class instance with a `__call__` dunder is callable (§6).
+        ty if class_call_fid(ty, classes, interner).is_some() => Ok(()),
         other => Err(CompilerError::type_error(
             format!("`{}` object is not callable", type_name(other)),
             cexpr.span,
         )),
     }
+}
+
+/// The `__call__` dunder `FuncId` of a class instance type, if it defines one
+/// (§6 — `obj(args)` ≡ `obj.__call__(args)`). `None` for non-class types.
+fn class_call_fid(
+    ty: &SemTy,
+    classes: &ClassTable,
+    interner: &StringInterner,
+) -> Option<pyaot_utils::FuncId> {
+    let cid = class_of(ty, classes)?;
+    let info = classes.get(cid)?;
+    info.methods
+        .iter()
+        .find(|m| interner.resolve(m.name) == "__call__")
+        .map(|m| m.func_id)
 }
 
 /// The `__init__` parameter list for class `cid`, or `None` if it defines none.
@@ -1410,14 +1447,32 @@ impl FuncState {
         // parameter annotation, a `name: T` annotation, or a synthetic local the
         // frontend deliberately typed (e.g. `__name__: str`, chained-compare
         // results). Plain `x = ...` locals are `Dyn` and get inferred.
-        let authoritative: Vec<bool> = func.locals.iter().map(|l| l.ty != SemTy::Dyn).collect();
+        //
+        // An UNANNOTATED parameter (locals `0..n_params`) is a gradual INPUT, not
+        // an unconstrained local: it is pinned to `Dyn`, not seeded `Never`.
+        // Seeding it `Never` would let the optimistic join-identity misfire — a
+        // body expr `param * 2.0` solves `Never * Float = Float`, wrongly typing
+        // a gradual product as concrete `float` (and `[xi*s for xi in param]`
+        // becomes `list[float]`, so `elem.attr` fails — §6 `_rmsnorm`). As `Dyn`
+        // the product is `Dyn`, the read stays a gradual by-name lookup, and the
+        // runtime dispatches the real dunder. (Param inference from call sites
+        // stays deferred; this only stops the unsound `Never` optimism.)
+        let n_params = func.params.len();
+        let authoritative: Vec<bool> = func
+            .locals
+            .iter()
+            .enumerate()
+            .map(|(i, l)| l.ty != SemTy::Dyn || i < n_params)
+            .collect();
         let local_bottom: Vec<SemTy> = func
             .locals
             .iter()
             .enumerate()
             .map(|(i, l)| {
-                if authoritative[i] {
+                if l.ty != SemTy::Dyn {
                     l.ty.clone()
+                } else if i < n_params {
+                    SemTy::Dyn
                 } else {
                     SemTy::Never
                 }
@@ -1757,6 +1812,10 @@ impl<'a> Sweeper<'a> {
             HirExprKind::FloatLit(_) => SemTy::Float,
             HirExprKind::BoolLit(_) => SemTy::Bool,
             HirExprKind::NoneLit => SemTy::NoneTy,
+            HirExprKind::NotImplementedLit => SemTy::NotImplementedT,
+            // `object.__new__(cls)` yields a bare heap instance, typed `Dyn`
+            // (the caller `__new__` body coerces it to the annotated class).
+            HirExprKind::ObjectNew { .. } => SemTy::Dyn,
             // The `del` UNBOUND sentinel is bottom: it is not a real value, so
             // `join(t, Never) = t` keeps a `del`'d slot's type the join of its
             // real writes, and `check_reinterpret` admits a `Never` write into
@@ -1890,6 +1949,9 @@ impl<'a> Sweeper<'a> {
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
             HirExprKind::HasAttr { .. } | HirExprKind::IsSubclass { .. } => SemTy::Bool,
+            // `getattr` is a gradual by-name read — `Dyn`, like the 2-arg
+            // `Attribute` read on a `Dyn` receiver.
+            HirExprKind::GetAttrByName { .. } => SemTy::Dyn,
             HirExprKind::IsNone { .. } => SemTy::Bool,
             HirExprKind::Is { .. } => SemTy::Bool,
             // A stdlib runtime call types as its descriptor's declared return
@@ -2486,9 +2548,21 @@ impl<'a> Sweeper<'a> {
                 }
             }
             // Python 3 true division always yields `float` for numeric operands
-            // (`7 / 2 == 3.5`).
+            // (`7 / 2 == 3.5`). A `Never` (an unresolved operand — e.g. an
+            // unannotated `__rtruediv__`/`__truediv__` param mid-fixpoint) or a
+            // `Dyn` operand is gradual and numeric at runtime in a valid program,
+            // so as long as ONE side is numeric the result is `float`. This
+            // mirrors how `+`/`-`/`*` (`l.join(r)`) already type `Float op Never`
+            // → `Float` (join's `Never`-identity): without the same anchoring
+            // here, `NumTower(self.x / other)` solves to `Never`, materializes to
+            // the frontend `Dyn` fallback, and is wrongly rejected at the `float`
+            // constructor slot (§6). Two unresolved/gradual operands stay
+            // `Never`/`Dyn`; two non-numerics → `Dyn` (a runtime `TypeError`).
             BinOp::Div => {
-                if is_numeric(&l) && is_numeric(&r) {
+                let gradual = |t: &SemTy| matches!(t, SemTy::Never | SemTy::Dyn);
+                if (is_numeric(&l) && (is_numeric(&r) || gradual(&r)))
+                    || (gradual(&l) && is_numeric(&r))
+                {
                     SemTy::Float
                 } else if l == SemTy::Never || r == SemTy::Never {
                     SemTy::Never
@@ -2543,7 +2617,11 @@ impl<'a> Sweeper<'a> {
         match self.ety(callee) {
             SemTy::Callable(sig) => sig.ret.clone(),
             SemTy::Never => SemTy::Never,
-            _ => SemTy::Dyn,
+            // A class instance with `__call__` (§6) → that dunder's return type.
+            ref ty => match class_call_fid(ty, self.classes, self.interner) {
+                Some(fid) => self.callee_ret_ty(fid),
+                None => SemTy::Dyn,
+            },
         }
     }
 
@@ -2556,9 +2634,14 @@ impl<'a> Sweeper<'a> {
             K::Float => SemTy::Float,
             K::Bool => SemTy::Bool,
             K::Str | K::Repr | K::Chr | K::Ascii => SemTy::Str,
-            // `abs` preserves the numeric kind of its argument.
+            // `abs` preserves the numeric kind of its argument; a user class
+            // with `__abs__` yields that dunder's return type (§6 — `abs(
+            // UnaryNum(-5))`).
             K::Abs => match args.first().map(|a| self.ety(*a)) {
                 Some(SemTy::Float) => SemTy::Float,
+                Some(ref t) if class_of(t, self.classes).is_some() => self
+                    .class_dunder_ret(t, "__abs__")
+                    .unwrap_or(SemTy::Dyn),
                 _ => SemTy::Int,
             },
             K::Type => SemTy::Dyn,
