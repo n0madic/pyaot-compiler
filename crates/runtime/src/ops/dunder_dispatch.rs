@@ -334,18 +334,19 @@ pub unsafe fn try_format_dunder(obj: *mut Obj, spec: *mut Obj) -> Option<*mut Ob
 /// `__lt__` at lowering time, but `sorted`/`list.sort` compare elements in
 /// the runtime.
 ///
-/// **Calling convention:** unlike the arithmetic dunders (which return a
-/// tagged `Value`), a comparison dunder `__lt__ -> bool` returns a **raw
-/// `i8`** (0/1) — the registry stores the method's native ABI, and a
-/// `bool`-typed return is not boxed. So this dispatches through an
-/// `i8`-returning fn pointer, not the `Value`-returning [`DunderFn`].
+/// **Calling convention:** like every dunder in `DUNDER_FUNC_REGISTRY`, a
+/// comparison dunder `__lt__ -> bool` returns a **tagged `Value`**, not a raw
+/// `i8` — even a `bool`-typed return is boxed (a tagged bool has low byte
+/// `BOOL_TAG`=`0b011` for `False`, `0b1011` for `True`, both non-zero, so a raw
+/// `i8 != 0` read would be unconditionally truthy → always `Less`). So the
+/// truthiness of each call is read through [`rt_is_truthy`], exactly as
+/// [`try_bool_dunder`] reads `__bool__`/`__len__`.
 ///
 /// # Safety
 /// `a` and `b` must be valid object pointers; this fn re-checks the
 /// `Instance` type tag on both.
 pub unsafe fn try_instance_lt_ordering(a: *mut Obj, b: *mut Obj) -> Option<std::cmp::Ordering> {
     use std::cmp::Ordering;
-    type LtFn = unsafe extern "C" fn(*mut Obj, Value) -> i8;
 
     if !is_instance(a) || !is_instance(b) {
         return None;
@@ -355,15 +356,15 @@ pub unsafe fn try_instance_lt_ordering(a: *mut Obj, b: *mut Obj) -> Option<std::
     if lt_a.is_null() {
         return None;
     }
-    let fa: LtFn = std::mem::transmute(lt_a);
-    if fa(a, Value(b as u64)) != 0 {
+    let fa: DunderFn = std::mem::transmute(lt_a);
+    if crate::ops::rt_is_truthy(fa(a, Value(b as u64)).0 as *mut Obj) != 0 {
         return Some(Ordering::Less);
     }
     let class_b = (*(b as *const InstanceObj)).class_id;
     let lt_b = lookup_dunder_func(class_b, FNV_LT);
     if !lt_b.is_null() {
-        let fb: LtFn = std::mem::transmute(lt_b);
-        if fb(b, Value(a as u64)) != 0 {
+        let fb: DunderFn = std::mem::transmute(lt_b);
+        if crate::ops::rt_is_truthy(fb(b, Value(a as u64)).0 as *mut Obj) != 0 {
             return Some(Ordering::Greater);
         }
     }

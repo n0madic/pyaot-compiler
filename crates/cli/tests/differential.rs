@@ -688,6 +688,22 @@ const PHASE_CORPUS: &[&str] = &[
     // inherited `__next__` (reuses the base thunk), empty / break-early, and a
     // non-`StopIteration` raise propagating out.
     "p42_iter_protocol.py",
+    // Heterogeneous-numeric tuple iteration: `for x in (1.5, 1)` must not infer
+    // the element type as `float` via the numeric tower. The runtime tuple holds
+    // each element tagged (boxed float AND tagged int) and the iterator yields
+    // Tagged, so a `Raw(F64)` element type raw-unboxes the tagged int as a
+    // FloatObj pointer (SIGSEGV). `iter_elem_ty` now routes the tuple-element
+    // fold through the Raw-uniformity guard — mixed numeric tuples iterate as
+    // Tagged, homogeneous ones stay precise. (Autograd-accumulation regression.)
+    "p43_hetero_tuple_iter.py",
+    // The full class-feature corpus (3749 lines), now byte-exact 95/95 end-to-
+    // end. Caps the OOP/dispatch cluster above: `__init__`/`__slots__`,
+    // inheritance + C3 MRO, dunders (arithmetic/compare/`__lt__` sort ordering,
+    // `__bool__`/`__len__`, `__index__`, reflected), the lazy iterator protocol,
+    // heterogeneous-tuple iteration, gradual `Dyn`-receiver dispatch, default
+    // `object` repr, and `sorted`/`list.sort`/`min`/`max` over instances via
+    // `__lt__`. The standing regression guard for class semantics.
+    "test_classes.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

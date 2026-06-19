@@ -2785,9 +2785,16 @@ fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
         return e.clone();
     }
     if let Some(elems) = t.tuple_elems() {
-        return elems
+        // Iterating a fixed-arity tuple yields one runtime-tagged element at a
+        // time, so the element type is a representation-deciding join and must
+        // pass the Raw-uniformity guard. Without it a heterogeneous numeric
+        // tuple like `(1.5, 1)` joins to `float` (Raw(F64)) via the numeric
+        // tower, and the iterator's tagged `int` element gets raw-unboxed as an
+        // f64 — a SIGSEGV at the unbox (PITFALLS A2).
+        let joined = elems
             .iter()
             .fold(SemTy::Never, |acc, x| acc.join(x, classes));
+        return raw_uniform(joined, elems);
     }
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
