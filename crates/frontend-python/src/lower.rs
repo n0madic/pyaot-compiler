@@ -2689,27 +2689,40 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_annassign(&mut self, a: &rustpython_parser::ast::StmtAnnAssign) -> Result<()> {
-        let span = to_span(a.range());
         // `X: TypeAlias = T` (PEP 613) is a compile-time alias binding (collected
         // in the module pre-scan into `type_aliases`), NOT a value assignment: the
         // RHS `T` is a type, not a runtime value, so do not lower it (PLAN §3 C).
         if matches!(a.annotation.as_ref(), Expr::Name(n) if n.id.as_str() == "TypeAlias") {
             return Ok(());
         }
-        let ty = annotation_to_semty(a.annotation.as_ref(), self.ctx);
-        let Expr::Name(n) = a.target.as_ref() else {
-            return Err(parse_error(
-                "annotated assignment target must be a name",
-                span,
-            ));
-        };
-        let name = self.intern(n.id.as_str());
-        let place = self.resolve_write_place(name, ty);
-        if let Some(value) = &a.value {
-            let v = self.lower_expr(value.as_ref())?;
-            self.write_place(place, v);
+        match a.target.as_ref() {
+            Expr::Name(n) => {
+                let ty = annotation_to_semty(a.annotation.as_ref(), self.ctx);
+                let name = self.intern(n.id.as_str());
+                let place = self.resolve_write_place(name, ty);
+                if let Some(value) = &a.value {
+                    let v = self.lower_expr(value.as_ref())?;
+                    self.write_place(place, v);
+                }
+                Ok(())
+            }
+            // `self.x: T = v` (and any `obj.attr: T = v` / `d[k]: T = v`): the
+            // annotation on an attribute/subscript target is decorative at the
+            // statement level — only the underlying store is emitted here (the
+            // same `SetAttr`/`SetItem` as the unannotated form). A `self.<name>:
+            // T` field-type contract is collected separately by
+            // `scan_self_field_annotations` (consumed in `lower_class` ahead of
+            // method lowering, so the field type is known before `typeck`). A bare
+            // declaration with no value (`self.x: T`) is a no-op store, exactly as
+            // in CPython.
+            target => {
+                if let Some(value) = &a.value {
+                    let v = self.lower_expr(value.as_ref())?;
+                    self.assign_to_target(target, v)?;
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     /// Look up or allocate a named binding. A new (non-celled) name takes a
@@ -11279,6 +11292,31 @@ fn lower_class(
         }
     }
 
+    // Honor in-method instance-field annotations as field-type contracts: a
+    // `self.<name>: T = v` (or a bare `self.<name>: T`) inside any instance method
+    // declares the field's type exactly like a class-level `name: T`. CPython does
+    // not record these in `__annotations__`, but this compiler treats a typed slot
+    // annotation as a contract (e.g. the §8 numeric-tower int→float field store
+    // needs the field type known before `typeck`/lowering). Class-level
+    // annotations were collected above and WIN on a name clash; among methods the
+    // first occurrence wins (`scan_self_field_annotations` skips already-present
+    // names). Only `self`-receiver methods are scanned — a `@staticmethod`/
+    // `classmethod` (`cls`/other first param, incl. `__new__`) has no instance
+    // fields — mirroring `discover_fields`'s self-write scan.
+    for stmt in &cdef.body {
+        let Stmt::FunctionDef(m) = stmt else { continue };
+        let first_param = m
+            .args
+            .posonlyargs
+            .first()
+            .or_else(|| m.args.args.first())
+            .map(|awd| awd.def.arg.as_str());
+        if first_param != Some("self") {
+            continue;
+        }
+        scan_self_field_annotations(&m.body, &cctx, interner, &mut field_annotations);
+    }
+
     Ok(HirClass {
         name,
         qualname,
@@ -11293,6 +11331,70 @@ fn lower_class(
         type_params,
         is_protocol,
     })
+}
+
+/// Collect `self.<name>: T` field-type annotations from a method body into
+/// `out` (PLAN §8 follow-up — in-method field declarations). Recurses into nested
+/// blocks (a field may be annotated inside an `if`/`for`/`with`/`try`), since the
+/// annotation is a declaration regardless of control flow. A name already present
+/// (a class-level annotation, or an earlier method's) is left untouched, so
+/// class-level declarations stay authoritative and the first method wins. `Dyn`
+/// annotations are skipped (they add no contract — the field-discovery scan in
+/// `semantics` would infer the same or better from the writes).
+fn scan_self_field_annotations(
+    body: &[Stmt],
+    cctx: &AnnCtx,
+    interner: &mut StringInterner,
+    out: &mut Vec<(InternedString, SemTy)>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::AnnAssign(a) => {
+                // `self.<name>: T` — a single-dot attribute on the `self` receiver.
+                let Expr::Attribute(attr) = a.target.as_ref() else {
+                    continue;
+                };
+                let Expr::Name(recv) = attr.value.as_ref() else {
+                    continue;
+                };
+                if recv.id.as_str() != "self" {
+                    continue;
+                }
+                let ty = annotation_to_semty(a.annotation.as_ref(), cctx);
+                if ty == SemTy::Dyn {
+                    continue;
+                }
+                let fname = interner.intern(attr.attr.as_str());
+                if !out.iter().any(|(n, _)| *n == fname) {
+                    out.push((fname, ty));
+                }
+            }
+            // Recurse into nested blocks (a `self.x: T` may be guarded).
+            Stmt::If(s) => {
+                scan_self_field_annotations(&s.body, cctx, interner, out);
+                scan_self_field_annotations(&s.orelse, cctx, interner, out);
+            }
+            Stmt::For(s) => {
+                scan_self_field_annotations(&s.body, cctx, interner, out);
+                scan_self_field_annotations(&s.orelse, cctx, interner, out);
+            }
+            Stmt::While(s) => {
+                scan_self_field_annotations(&s.body, cctx, interner, out);
+                scan_self_field_annotations(&s.orelse, cctx, interner, out);
+            }
+            Stmt::With(s) => scan_self_field_annotations(&s.body, cctx, interner, out),
+            Stmt::Try(s) => {
+                scan_self_field_annotations(&s.body, cctx, interner, out);
+                for h in &s.handlers {
+                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    scan_self_field_annotations(&h.body, cctx, interner, out);
+                }
+                scan_self_field_annotations(&s.orelse, cctx, interner, out);
+                scan_self_field_annotations(&s.finalbody, cctx, interner, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The name of a PEP 695 type parameter (`T`, `*Ts`, `**P`). Only the simple

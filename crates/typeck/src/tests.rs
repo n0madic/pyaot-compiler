@@ -476,6 +476,62 @@ fn class_attribute_read_takes_field_type() {
 }
 
 #[test]
+fn in_method_field_annotation_is_a_type_contract() {
+    // `self.x: float = v` (v an int param) inside a method declares a `float`
+    // FIELD — the in-method annotation is honored as a field-type contract,
+    // exactly like a class-level `x: float` (PLAN §8 follow-up). A read of the
+    // field is then `float`, NOT the `int` best-effort type of the written value;
+    // this distinguishes the contract (the implemented level 2) from a merely
+    // decorative annotation (level 1, which would leave the field `int`). The
+    // int→float store itself is the §8 SetField numeric-tower seam.
+    let src = "\
+class Box:
+    def __init__(self, v: int) -> None:
+        self.x: float = v
+
+    def get(self) -> float:
+        return self.x
+
+
+b = Box(5)
+val = b.x
+print(val)
+print(b.get())
+";
+    let (m, i) = typed(src);
+    assert_eq!(
+        local_ty(main_fn(&m), &i, "val"),
+        SemTy::Float,
+        "in-method `self.x: float` must type the field as a float contract"
+    );
+}
+
+#[test]
+fn bare_in_method_field_annotation_declares_field_type() {
+    // A bare `self.x: float` (no value) is a no-op store in CPython, but here it
+    // still DECLARES the field type — the field is read back as `float` even
+    // though the only write is an int. Proves the no-value branch of the
+    // in-method annotation scan registers the contract.
+    let src = "\
+class Box:
+    def __init__(self, v: int) -> None:
+        self.x: float
+        self.x = v
+
+    def get(self) -> float:
+        return self.x
+
+
+b = Box(5)
+val = b.x
+print(val)
+print(b.get())
+";
+    let (m, i) = typed(src);
+    assert_eq!(local_ty(main_fn(&m), &i, "val"), SemTy::Float);
+}
+
+#[test]
 fn class_typed_return_annotation_resolves() {
     // `def make() -> Widget` resolves the class-name annotation to `Class`.
     let src = "\

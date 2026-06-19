@@ -706,6 +706,15 @@ const PHASE_CORPUS: &[&str] = &[
     // results. Includes the bignum->float arm (2**62) and an int->float-global
     // feeding a float-param free function. Sibling of p16 (return / local seams).
     "p44_numeric_tower_seams.py",
+    // In-method instance-field annotations as field-type contracts (PLAN §8
+    // follow-up): `self.<name>: T = v` (and the bare `self.<name>: T`) inside a
+    // method declares the field's type like a class-level `name: T` — a frontend
+    // pre-scan collects them into the class's field annotations before typeck. A
+    // `float` field fed an int routes through the §8 SetField box. Covers
+    // __init__ + non-__init__ + nested-block annotations, the no-value
+    // declaration form, a float-field→float-param interaction, and the bignum
+    // arm. Divergence-safe (`==` + float-forced prints), sibling of p44.
+    "p45_in_method_field_annot.py",
     // The full class-feature corpus (3749 lines), now byte-exact 95/95 end-to-
     // end. Caps the OOP/dispatch cluster above: `__init__`/`__slots__`,
     // inheritance + C3 MRO, dunders (arithmetic/compare/`__lt__` sort ordering,
