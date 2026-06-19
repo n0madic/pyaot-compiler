@@ -137,9 +137,42 @@ def user_methods():
     print("user methods on Dyn: ok")
 
 
+# ===== Scalar methods + sort(reverse=) on a `Dyn` receiver =====
+def scalar_methods():
+    box = {}
+
+    # tuple.index / .count on a `Dyn` tuple.
+    box["t"] = (10, 20, 30, 20)
+    box["pad"] = {}  # keep the dict's value type `Dyn`
+    assert box["t"].index(20) == 1
+    assert box["t"].count(20) == 2
+
+    # int methods on a `Dyn` int (immediate fixnum, bool, and heap bignum).
+    box["n"] = 255
+    assert box["n"].bit_length() == 8
+    assert box["n"].bit_count() == 8
+    assert box["n"].conjugate() == 255
+    assert box["n"].__index__() == 255
+    box["b"] = True
+    assert box["b"].bit_length() == 1
+    box["big"] = 2 ** 70
+    assert box["big"].bit_length() == 71
+
+    # list.sort(reverse=) on a `Dyn` list (the keyword the container branch honors;
+    # `sort(key=)` is handled upstream by the type-blind frontend desugar).
+    box["lst"] = [1, 3, 2, 5, 4]
+    box["lst"].sort(reverse=True)
+    assert box["lst"] == [5, 4, 3, 2, 1]
+    box["lst"].sort(reverse=False)
+    assert box["lst"] == [1, 2, 3, 4, 5]
+
+    print("scalar methods on Dyn: ok")
+
+
 def main():
     container_methods()
     user_methods()
+    scalar_methods()
     print("test_gradual_methods passed!")
 
 

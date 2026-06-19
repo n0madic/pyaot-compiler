@@ -53,6 +53,11 @@ const H_APPENDLEFT: u64 = fnv1a(b"appendleft");
 const H_POPLEFT: u64 = fnv1a(b"popleft");
 const H_EXTENDLEFT: u64 = fnv1a(b"extendleft");
 const H_ROTATE: u64 = fnv1a(b"rotate");
+// int / bool
+const H_BIT_LENGTH: u64 = fnv1a(b"bit_length");
+const H_BIT_COUNT: u64 = fnv1a(b"bit_count");
+const H_CONJUGATE: u64 = fnv1a(b"conjugate");
+const H_DUNDER_INDEX: u64 = fnv1a(b"__index__");
 
 /// The uniform method-thunk ABI: `(self, __args__, __kwargs__) -> Value`. Fixed
 /// regardless of the method's source arity / parameter reprs, so a
@@ -119,8 +124,15 @@ pub extern "C" fn rt_obj_method(
     args_tuple: Value,
     kwargs: Value,
 ) -> Value {
+    let h = name_hash as u64;
+    let at = args_tuple.0 as *mut Obj;
+    // An immediate int/bool receiver (`(5).bit_length()`, `True.bit_count()`):
+    // dispatch by Value BEFORE the pointer guard (an immediate is not a ptr).
+    if recv.is_int() || recv.is_bool() {
+        return unsafe { int_method(recv, h, at) };
+    }
     let recv_ptr = recv.0 as *mut Obj;
-    // An immediate (int/bool/None) or a null pointer has no dispatchable method.
+    // A null pointer / `None` has no dispatchable method.
     if !recv.is_ptr() || recv_ptr.is_null() {
         let tname = match recv.primitive_type() {
             Some(t) => t.type_name(),
@@ -128,24 +140,70 @@ pub extern "C" fn rt_obj_method(
         };
         unsafe { raise_no_attr(tname) }
     }
-    let h = name_hash as u64;
-    let at = args_tuple.0 as *mut Obj;
     unsafe {
         let tag = (*recv_ptr).type_tag();
         match tag {
-            TypeTagKind::List => list_method(recv_ptr, h, at, tag),
+            TypeTagKind::List => list_method(recv_ptr, h, at, kwargs, tag),
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 dict_method(recv_ptr, h, at, tag)
             }
             TypeTagKind::Set => set_method(recv_ptr, h, at, tag),
             TypeTagKind::Deque => deque_method(recv_ptr, h, at, tag),
+            TypeTagKind::Tuple => tuple_method(recv_ptr, h, at, tag),
+            // A heap bignum int (`rt_int_*` are bignum-aware and take the Value).
+            TypeTagKind::BigInt => int_method(recv, h, at),
             TypeTagKind::Instance => instance_method(recv, name_hash, args_tuple, kwargs),
             other => raise_no_attr(type_name(other)),
         }
     }
 }
 
-unsafe fn list_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> Value {
+/// `tuple` value-comparing queries on a `Dyn` receiver (§9 sibling). `index`
+/// raises `ValueError` on a miss (CPython); `count` returns 0.
+unsafe fn tuple_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> Value {
+    let n = argc(at);
+    match h {
+        H_INDEX if n == 1 => Value::from_int(crate::tuple::rt_tuple_index(recv, bits(arg(at, 0)))),
+        H_COUNT if n == 1 => Value::from_int(crate::tuple::rt_tuple_count(recv, bits(arg(at, 0)))),
+        _ => raise_no_attr(type_name(tag)),
+    }
+}
+
+/// `int` / `bool` methods on a `Dyn` receiver (§9): `bit_length`/`bit_count`
+/// (bignum-aware counts), `conjugate`/`__index__` (the int value itself; a bool
+/// widens to int). `recv` is the tagged int Value (fixnum, bool, or heap
+/// bignum) — the `rt_int_*` helpers accept all three.
+unsafe fn int_method(recv: Value, h: u64, at: *mut Obj) -> Value {
+    let n = argc(at);
+    match h {
+        H_BIT_LENGTH if n == 0 => Value::from_int(crate::math_ops::rt_int_bit_length(recv)),
+        H_BIT_COUNT if n == 0 => Value::from_int(crate::math_ops::rt_int_bit_count(recv)),
+        H_CONJUGATE if n == 0 => crate::math_ops::rt_int_index(recv),
+        H_DUNDER_INDEX if n == 0 => crate::math_ops::rt_int_index(recv),
+        _ => raise_no_attr("int"),
+    }
+}
+
+/// Read a boolean keyword argument from the `kwargs` dict (the null sentinel or
+/// a `dict[str, Tagged]`). Absent / null ⇒ `false`. Used by the `Dyn`-receiver
+/// `list.sort(reverse=…)` form, whose keyword the container branch must honor.
+unsafe fn kwarg_truthy(kwargs: Value, key: &[u8]) -> bool {
+    if !kwargs.is_ptr() {
+        return false;
+    }
+    let d = kwargs.0 as *mut Obj;
+    if d.is_null() {
+        return false;
+    }
+    let key_obj = crate::string::rt_make_str(key.as_ptr(), key.len());
+    let v = crate::dict::rt_dict_get(d, key_obj);
+    if v.is_null() {
+        return false;
+    }
+    crate::ops::rt_is_truthy(v) != 0
+}
+
+unsafe fn list_method(recv: *mut Obj, h: u64, at: *mut Obj, kwargs: Value, tag: TypeTagKind) -> Value {
     let n = argc(at);
     match h {
         H_APPEND if n == 1 => {
@@ -180,9 +238,11 @@ unsafe fn list_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) ->
         H_INDEX if n == 1 => Value::from_int(crate::list::rt_list_index(recv, bits(arg(at, 0)))),
         H_COUNT if n == 1 => Value::from_int(crate::list::rt_list_count(recv, bits(arg(at, 0)))),
         H_SORT if n == 0 => {
-            // No-key form (the common case); `sort(key=…)` on a `Dyn` receiver
-            // is a documented follow-up (the key rides `kwargs`).
-            crate::list::rt_list_sort(recv, 0);
+            // No-key form. `key=` on a `Dyn` receiver is already handled upstream
+            // by the frontend `sort` desugar (type-blind `ListSortByKeys`); only
+            // a `reverse=`-only call reaches here, so honor that keyword.
+            let reverse = kwarg_truthy(kwargs, b"reverse") as i8;
+            crate::list::rt_list_sort(recv, reverse);
             Value::NONE
         }
         _ => raise_no_attr(type_name(tag)),
