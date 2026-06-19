@@ -157,6 +157,14 @@ const PHASE_CORPUS: &[&str] = &[
     "test_stdlib_re.py",
     "test_stdlib_json.py",
     "test_file_io_core.py",
+    // §14 — full file I/O suite (binary mode round-trips, `r+`/`w+`/`a+`, file
+    // iteration, StringIO/BytesIO). Its one blocker was the non-UTF-8 `bytes`
+    // literal `b"\x00\x01\x02\xff"`: byte literals shared the UTF-8 `String`
+    // interner, so `b"\xff"` errored at lower time. The interner now stores raw
+    // byte blobs (`intern_bytes`/`resolve_bytes`), so non-UTF-8 literals round-trip
+    // intact (runtime was already byte-clean: `rt_make_bytes` = raw memcpy). The
+    // output is deterministic (fixed /tmp paths, self-cleaning) → byte-diffable.
+    "test_file_io.py",
     // Phase 8D — os / os.path (submodule-chain folding + variadic join), the
     // `os.environ` dict attr, subprocess.run (CompletedProcess fields;
     // self-checking — subprocess stdout is bytes in CPython, str here), and

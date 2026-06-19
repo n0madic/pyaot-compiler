@@ -1208,8 +1208,10 @@ impl<'a> FnLower<'a> {
             HirExprKind::DictLit { pairs } => self.lower_dict_lit(idx, &pairs.clone()),
             HirExprKind::BytesLit(id) => {
                 let id = *id;
+                // Read back as RAW bytes — a `bytes` literal may not be valid UTF-8
+                // (`b"\xff"`), so `resolve(id).as_bytes()` would panic in the interner.
                 self.str_pool
-                    .insert(id, self.interner.resolve(id).as_bytes().to_vec());
+                    .insert(id, self.interner.resolve_bytes(id).to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Bytes));
                 self.emit(MirInst::Const {
                     dst,
@@ -2941,8 +2943,10 @@ impl<'a> FnLower<'a> {
                 (dst, Repr::Heap(HeapShape::Str))
             }
             A::Bytes(s) => {
+                // RAW bytes (a non-UTF-8 `b"\xff"` class-attr default would panic
+                // through `resolve(...).as_bytes()`).
                 self.str_pool
-                    .insert(*s, self.interner.resolve(*s).as_bytes().to_vec());
+                    .insert(*s, self.interner.resolve_bytes(*s).to_vec());
                 let dst = self.alloc_temp(Repr::Heap(HeapShape::Bytes));
                 self.emit(MirInst::Const {
                     dst,

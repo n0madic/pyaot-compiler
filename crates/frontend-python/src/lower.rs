@@ -751,7 +751,7 @@ impl<'a> ProgramLowerer<'a> {
                 .chain(dargs.kwonlyargs.iter())
             {
                 let Some(e) = &awd.default else { continue };
-                if try_literal_default(&mut *self.interner, e)?.is_none() {
+                if try_literal_default(&mut *self.interner, e).is_none() {
                     let pname = self.interner.intern(awd.def.arg.as_str());
                     default_slots.entry((fname, pname)).or_insert_with(|| {
                         let id = self.next_global;
@@ -9165,11 +9165,13 @@ impl<'a> FnLowerer<'a> {
             Constant::Bool(b) => (HirExprKind::BoolLit(*b), SemTy::Bool),
             Constant::None => (HirExprKind::NoneLit, SemTy::NoneTy),
             Constant::Bytes(b) => {
-                // The bytes are interned through the string table (codegen reads
-                // them back as raw bytes). Non-UTF-8 byte literals are out of scope.
-                let s = std::str::from_utf8(b)
-                    .map_err(|_| parse_error("non-UTF-8 bytes literals are out of scope", span))?;
-                (HirExprKind::BytesLit(self.intern(s)), SemTy::Bytes)
+                // Interned as raw bytes (the interner stores byte blobs, not just
+                // UTF-8 `String`s), so non-UTF-8 literals like `b"\xff"` round-trip
+                // intact; lowering reads them back via `resolve_bytes`.
+                (
+                    HirExprKind::BytesLit(self.interner.intern_bytes(b)),
+                    SemTy::Bytes,
+                )
             }
             _ => {
                 return Err(parse_error(
@@ -10527,59 +10529,54 @@ fn classify_method_decorator(m: &StmtFunctionDef) -> Result<MethodDecor> {
 
 /// The single literal accept-set, shared by class attributes (`class_attr_init`)
 /// and parameter defaults (the allocation pass + `resolve_param_default`).
-/// `Ok(Some(init))` = a recognized constant literal; `Ok(None)` = a valid but
+/// `Some(init)` = a recognized constant literal; `None` = a valid but
 /// non-literal expression (e.g. `[]`, `5 + 5` — a mutable/computed default
-/// candidate); `Err` = a malformed literal (non-UTF-8 bytes).
-fn try_literal_default(
-    interner: &mut StringInterner,
-    value: &Expr,
-) -> Result<Option<ClassAttrInit>> {
-    let span = to_span(value.range());
+/// candidate). Every literal kind here is accepted (`bytes` literals intern as
+/// raw byte blobs, so even non-UTF-8 `b"\xff"` is a recognized literal).
+fn try_literal_default(interner: &mut StringInterner, value: &Expr) -> Option<ClassAttrInit> {
     // Fold a unary +/- over a numeric literal first.
     if let Expr::UnaryOp(u) = value {
         if matches!(u.op, PyUnaryOp::USub | PyUnaryOp::UAdd) {
             if let Expr::Constant(c) = u.operand.as_ref() {
                 let neg = matches!(u.op, PyUnaryOp::USub);
-                return Ok(match &c.value {
+                return match &c.value {
                     Constant::Int(b) => Some(int_attr_init(interner, &b.to_string(), neg)),
                     Constant::Float(f) => Some(ClassAttrInit::Float(if neg { -*f } else { *f })),
                     // `-x`, `+obj`, … → non-literal (computed-default candidate).
                     _ => None,
-                });
+                };
             }
             // `-(expr)` → non-literal.
-            return Ok(None);
+            return None;
         }
     }
     match value {
-        Expr::Constant(c) => Ok(match &c.value {
+        Expr::Constant(c) => match &c.value {
             Constant::Int(b) => Some(int_attr_init(interner, &b.to_string(), false)),
             Constant::Float(f) => Some(ClassAttrInit::Float(*f)),
             Constant::Bool(b) => Some(ClassAttrInit::Bool(*b)),
             Constant::Str(s) => Some(ClassAttrInit::Str(interner.intern(s))),
             Constant::None => Some(ClassAttrInit::None),
-            Constant::Bytes(b) => {
-                let s = std::str::from_utf8(b)
-                    .map_err(|_| parse_error("non-UTF-8 bytes literal is out of scope", span))?;
-                Some(ClassAttrInit::Bytes(interner.intern(s)))
-            }
+            // Raw bytes (the interner stores byte blobs), so a non-UTF-8 class
+            // attribute default `b"\xff"` round-trips intact.
+            Constant::Bytes(b) => Some(ClassAttrInit::Bytes(interner.intern_bytes(b))),
             // Complex / ellipsis / tuple constant → non-literal here.
             _ => None,
-        }),
+        },
         // The empty tuple `()` — accepted only as a parameter default (Phase 8E,
         // e.g. `children=()`); materialized as a fresh empty tuple at each call
         // site. A non-empty tuple default stays out of scope.
-        Expr::Tuple(t) if t.elts.is_empty() => Ok(Some(ClassAttrInit::EmptyTuple)),
+        Expr::Tuple(t) if t.elts.is_empty() => Some(ClassAttrInit::EmptyTuple),
         // Any other expression is non-literal (a slot candidate for a top-level
         // parameter default; rejected as a class-attribute initializer).
-        _ => Ok(None),
+        _ => None,
     }
 }
 
 /// Lower a class-attribute initializer; only constant literals are supported (5D).
 fn class_attr_init(interner: &mut StringInterner, value: &Expr) -> Result<ClassAttrInit> {
     let span = to_span(value.range());
-    match try_literal_default(interner, value)? {
+    match try_literal_default(interner, value) {
         Some(init) => Ok(init),
         None => Err(parse_error(
             "class-attribute initializers must be constant literals (Phase 5D)",
@@ -10602,7 +10599,7 @@ fn resolve_param_default(
     value: &Expr,
 ) -> Result<ParamDefault> {
     let span = to_span(value.range());
-    match try_literal_default(interner, value)? {
+    match try_literal_default(interner, value) {
         Some(init) => Ok(ParamDefault::Const(init)),
         None => {
             if let Some(slots) = ctx.default_slots {
