@@ -341,6 +341,16 @@ pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
                 TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
                 TypeTagKind::None => HASH_NONE,
+                // A class instance hashes via its `__hash__` dunder (CPython:
+                // `hash(obj)` = `type(obj).__hash__(obj)`); a class without one
+                // is unhashable. The dunder result is already a boxed int Value,
+                // so return it directly (it may be a bignum — never re-box).
+                TypeTagKind::Instance => {
+                    if let Some(h) = crate::ops::try_hash_dunder(obj) {
+                        return h;
+                    }
+                    raise_type_error("unhashable type")
+                }
                 _ => raise_type_error("unhashable type"),
             }
         }

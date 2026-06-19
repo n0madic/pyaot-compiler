@@ -2504,13 +2504,43 @@ impl<'a> FnLowerer<'a> {
             }
             // `base.attr op= value` — evaluate `base` once, then read/modify/write.
             Expr::Attribute(attr) => {
+                let name = self.intern(attr.attr.as_str());
+                // A bare-`Name` base (a local, parameter, class name, or module)
+                // has NO side effects, so evaluate it twice (read + write) rather
+                // than binding it to a temp. The temp path lowers the base as a
+                // VALUE — which rejects a class name (`ClassName.attr op= v`:
+                // `Symbol::Class` is not a value, the L72 `Tracker.total += 1`
+                // blocker). Embedding the `Name` in `Attribute`/`SetAttr` instead
+                // routes a class-name base through the class-attribute path
+                // (`GetClassAttr`/`SetClassAttr`), exactly as the plain
+                // `ClassName.attr` read / `ClassName.attr = v` write already do.
+                if matches!(attr.value.as_ref(), Expr::Name(_)) {
+                    let read_base = self.lower_expr(attr.value.as_ref())?;
+                    let cur = self.alloc(
+                        HirExprKind::Attribute {
+                            value: read_base,
+                            name,
+                        },
+                        SemTy::Dyn,
+                        span,
+                    );
+                    let r = self.lower_expr(a.value.as_ref())?;
+                    let combined =
+                        self.alloc(HirExprKind::BinOp { op, l: cur, r }, SemTy::Dyn, span);
+                    let write_base = self.lower_expr(attr.value.as_ref())?;
+                    self.push_stmt(HirStmt::SetAttr {
+                        base: write_base,
+                        name,
+                        value: combined,
+                    });
+                    return Ok(());
+                }
                 let base_e = self.lower_expr(attr.value.as_ref())?;
                 let base_tmp = self.fresh_local(SemTy::Dyn);
                 self.push_stmt(HirStmt::Assign {
                     target: base_tmp,
                     value: base_e,
                 });
-                let name = self.intern(attr.attr.as_str());
                 let read_base = self.local_ref(base_tmp, span);
                 let cur = self.alloc(
                     HirExprKind::Attribute {

@@ -54,6 +54,7 @@ pub(super) const FNV_REPR: u64 = fnv1a(b"__repr__");
 pub(super) const FNV_STR: u64 = fnv1a(b"__str__");
 pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
+pub(super) const FNV_HASH: u64 = fnv1a(b"__hash__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
 /// called as `(self_obj, other_value) -> Value`. The `Value` return slot
@@ -168,6 +169,17 @@ pub(super) unsafe fn try_class_unary_dunder(a: *mut Obj, dunder_hash: u64) -> Op
 /// Instance type tag before calling).
 pub unsafe fn try_int_dunder(obj: *mut Obj) -> Option<*mut Obj> {
     try_class_unary_dunder(obj, FNV_INT)
+}
+
+/// Dispatch `__hash__` for `hash(obj)` when `obj` is a class instance. Returns
+/// the boxed dunder result (a tagged int `Value` as `*mut Obj`); `None` when the
+/// instance has no `__hash__` (the caller then raises `TypeError: unhashable
+/// type`, matching CPython for a class that suppresses hashing).
+///
+/// # Safety
+/// See [`try_int_dunder`].
+pub unsafe fn try_hash_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_HASH)
 }
 
 /// Dispatch `__float__` for `float(obj)` when `obj` is a class instance.
