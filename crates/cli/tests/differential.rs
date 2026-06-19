@@ -704,6 +704,15 @@ const PHASE_CORPUS: &[&str] = &[
     // `object` repr, and `sorted`/`list.sort`/`min`/`max` over instances via
     // `__lt__`. The standing regression guard for class semantics.
     "test_classes.py",
+    // Generics + type system (PLAN §3 + §12). Monomorphization (already working:
+    // generic free functions, PEP 695 `def f[V]` / `class C[K]`, `Generic[T]`,
+    // TypeVar constraints/bounds, `Literal[...]`) plus the §3 frontend/Protocol
+    // plumbing: `...` stub bodies, `type X = T` / `X: TypeAlias = T` aliases,
+    // `@runtime_checkable Protocol` (erased to `Dyn`, gradual `rt_obj_method`
+    // dispatch), subscripted instance annotations (`IntWrapper[int]`), and
+    // structural `isinstance(obj, P)` via `rt_obj_has_method`.
+    "test_generics.py",
+    "test_types_system.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

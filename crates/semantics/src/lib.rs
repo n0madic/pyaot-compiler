@@ -405,6 +405,7 @@ pub fn collect_classes(
             num_vtable_slots,
             type_params: c.type_params.clone(),
             exception_base,
+            is_protocol: c.is_protocol,
         });
     }
 

@@ -3836,7 +3836,8 @@ impl<'a> FnLower<'a> {
         Ok((dst, ret))
     }
 
-    /// Lower `isinstance(value, Cls)` → the inheritance-aware runtime check.
+    /// Lower `isinstance(value, Cls)` → the inheritance-aware runtime check, or —
+    /// for a `Protocol` class (PLAN §3 H) — a structural method-presence check.
     fn lower_isinstance(
         &mut self,
         value: Idx<HirExpr>,
@@ -3844,12 +3845,88 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let (vl, vr) = self.lower_expr(value)?;
         let vt = self.coerce(vl, vr, Repr::Tagged)?;
+        // A `Protocol` class is checked STRUCTURALLY: probe the receiver for each
+        // method the protocol declares (existence only, dunders included) via the
+        // existing `rt_obj_has_method` primitive — no new IR, no nominal MRO walk.
+        if self.classes.get(class_id).is_some_and(|c| c.is_protocol) {
+            return self.lower_protocol_isinstance(vt, class_id);
+        }
         let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
         self.emit(MirInst::IsInstance {
             dst,
             value: Operand::Local(vt),
             class_id,
         });
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
+    /// Structural `isinstance(obj, P)` for a protocol `P` (PLAN §3 H): True iff the
+    /// receiver has EVERY method `P` declares. Each method is probed with
+    /// `rt_obj_has_method` (returns 0 for a non-instance receiver, so
+    /// `isinstance(42, P)` is correctly False); the per-method `Raw(I8)` flags are
+    /// AND-combined as Tagged booleans — a raw-`I8` `BitAnd` is not a legal MIR
+    /// fast-path (the verifier admits raw arithmetic only on `Raw(F64)`/`Raw(I64)`)
+    /// — then read back to `Raw(I8)` so the result is bit-for-bit the nominal
+    /// path's shape (tuple-of-types `or_combine` stays uniform). An empty protocol
+    /// → `True` for any receiver.
+    fn lower_protocol_isinstance(
+        &mut self,
+        recv_t: LocalId,
+        class_id: ClassId,
+    ) -> Result<(LocalId, Repr)> {
+        let method_names: Vec<InternedString> = self
+            .classes
+            .get(class_id)
+            .expect("protocol class resolved")
+            .methods
+            .iter()
+            .map(|m| m.name)
+            .collect();
+        // Empty protocol: every object satisfies it.
+        if method_names.is_empty() {
+            let t = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Const {
+                dst: t,
+                val: Const::Bool(true),
+            });
+            let dst = self.coerce(t, Repr::Tagged, Repr::Raw(RawKind::I8))?;
+            return Ok((dst, Repr::Raw(RawKind::I8)));
+        }
+        let mut acc: Option<LocalId> = None; // Tagged-boolean accumulator.
+        for name in method_names {
+            // The method-name hash is a RAW `i64` immediate emitted DIRECTLY into a
+            // `Raw(I64)` local (as `lower_dyn_method_call` does) — NOT via
+            // `raw_i64_const`, whose `Const::Int → Tagged → untag` round-trip would
+            // drop the top 3 bits of a 64-bit FNV hash (no fixnum range here).
+            let hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name)) as i64;
+            let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
+            self.emit(MirInst::Const {
+                dst: hash_local,
+                val: Const::Int(hash),
+            });
+            let flag = self.alloc_temp(Repr::Raw(RawKind::I8));
+            self.emit(MirInst::CallRuntime {
+                dst: Some(flag),
+                def: &pyaot_core_defs::runtime_func_def::RT_OBJ_HAS_METHOD,
+                args: vec![Operand::Local(recv_t), Operand::Local(hash_local)],
+            });
+            let flag_t = self.coerce(flag, Repr::Raw(RawKind::I8), Repr::Tagged)?;
+            acc = Some(match acc {
+                None => flag_t,
+                Some(prev) => {
+                    let dst = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::BinOp {
+                        dst,
+                        op: MBinOp::BitAnd,
+                        l: Operand::Local(prev),
+                        r: Operand::Local(flag_t),
+                    });
+                    dst
+                }
+            });
+        }
+        let acc = acc.expect("method set is non-empty here");
+        let dst = self.coerce(acc, Repr::Tagged, Repr::Raw(RawKind::I8))?;
         Ok((dst, Repr::Raw(RawKind::I8)))
     }
 

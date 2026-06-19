@@ -1575,6 +1575,11 @@ pub struct HirClass {
     pub field_annotations: Vec<(InternedString, SemTy)>,
     /// Declared type parameters (`class Stack[T]` / `Generic[T]`), Phase 5E.
     pub type_params: Vec<InternedString>,
+    /// `class C(Protocol)` / `class C(Protocol[T])` — a structural-typing marker
+    /// (PLAN §3). A protocol contributes no runtime base; its instances are never
+    /// constructed. Protocol-typed slots erase to `Dyn` (Tagged baseline) and
+    /// `isinstance(obj, P)` is a structural method-presence check.
+    pub is_protocol: bool,
 }
 
 /// A `@property`: a getter and an optional `@x.setter` (Phase 5D).
@@ -1686,6 +1691,10 @@ pub struct ClassInfo {
     /// `class MyError(ValueError)` → `Some(ValueError)`, inherited through user
     /// parents. `None` for ordinary (non-exception) classes.
     pub exception_base: Option<BuiltinExceptionKind>,
+    /// `class C(Protocol)` — a structural-typing marker (PLAN §3). Drives the
+    /// structural `isinstance(obj, P)` lowering (method-presence probe) instead
+    /// of the nominal MRO check.
+    pub is_protocol: bool,
 }
 
 /// A resolved `@property` (Phase 5D).

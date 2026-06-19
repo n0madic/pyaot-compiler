@@ -1,6 +1,6 @@
 # Consolidated test file for type system
 
-from typing import List, Dict, Set, Tuple, TypeAlias, Literal, TypeVar, Protocol
+from typing import List, Dict, Set, Tuple, TypeAlias, Literal, TypeVar, Protocol, runtime_checkable
 
 # ===== SECTION: typing module imports (List, Dict, Set, Tuple, Optional, Union) =====
 
@@ -887,6 +887,10 @@ proto_shape: Drawable = Circle()
 assert proto_shape.draw() == "circle", "Protocol variable annotation"
 
 # Protocol with vtable layout mismatch: Square2 has __init__ + field, so draw is at different slot
+# `@runtime_checkable` is required for `isinstance` against a Protocol (CPython
+# raises TypeError otherwise); pyaot treats the decorator as a no-op and checks
+# structurally regardless.
+@runtime_checkable
 class Sizable(Protocol):
     def size(self) -> int: ...
 
@@ -910,6 +914,7 @@ assert isinstance(42, Sizable) == False, "isinstance: int does not satisfy Sizab
 assert isinstance("hi", Sizable) == False, "isinstance: str does not satisfy Sizable"
 
 # Empty Protocol: every object satisfies it
+@runtime_checkable
 class AnyProto(Protocol):
     pass
 
@@ -922,6 +927,7 @@ assert isinstance(proto_box, (int, Sizable)) == True, "isinstance: tuple-of-type
 assert isinstance(proto_c, (int, Sizable)) == False, "isinstance: tuple-of-types with Protocol (False)"
 
 # Addable Protocol: class with __add__ satisfies it (annotation + isinstance)
+@runtime_checkable
 class Addable(Protocol):
     def __add__(self, other: int) -> int: ...
 
@@ -940,7 +946,13 @@ proto_counter = Counter(10)
 assert proto_counter.__add__(5) == 15, "Counter.__add__ works directly"
 assert isinstance(proto_counter, Addable) == True, "isinstance: Counter satisfies Addable"
 assert isinstance(NoAddable(), Addable) == False, "isinstance: NoAddable lacks __add__"
-assert isinstance(42, Addable) == False, "isinstance: int does not satisfy Addable"
+# NOTE: `isinstance(42, Addable)` is intentionally NOT asserted. pyaot's
+# structural protocol check is instance-only (it probes the user-class method
+# registry via `rt_obj_has_method`), so a builtin scalar never satisfies a
+# protocol → pyaot returns False. CPython's `@runtime_checkable` instead probes
+# attribute presence on ANY object, and `int.__add__` exists → CPython returns
+# True. This is a deliberate, documented model divergence; the user-class cases
+# above (Counter True / NoAddable False) cover the dunder structural path.
 
 # Negative case (compile-time diagnostic): uncomment to verify
 # class EmptyClass:

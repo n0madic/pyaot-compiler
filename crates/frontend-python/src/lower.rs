@@ -115,6 +115,15 @@ pub(crate) struct AnnCtx<'a> {
     /// as `Option` (not relied-on key absence) so a method/nested function that
     /// shares a top-level function's name cannot wrongly pick up its slot.
     default_slots: Option<&'a DefaultSlotMap>,
+    /// Module type aliases (PLAN §3 B/C): `type X = T` (PEP 695) and `X:
+    /// TypeAlias = T` (PEP 613) → the alias name resolves to its body `SemTy` in
+    /// annotation position (consulted by `named_annotation`).
+    type_aliases: &'a HashMap<String, SemTy>,
+    /// Class ids of `Protocol` classes (PLAN §3 G): a protocol-typed slot/param
+    /// erases to `Dyn` (Tagged baseline) so method dispatch rides the gradual
+    /// `rt_obj_method` path. Consulted by `named_annotation` /
+    /// `annotation_subscript` after a class id is resolved.
+    proto_ids: &'a HashSet<ClassId>,
 }
 
 /// Per-module stdlib bindings (Phase 8B), collected during the import scan.
@@ -666,6 +675,9 @@ impl<'a> ProgramLowerer<'a> {
         let mut class_map: ClassNameMap = HashMap::new();
         let mut class_ids: Vec<ClassId> = Vec::with_capacity(classdefs.len());
         let mut own_classes: Vec<(String, ClassId, InternedString)> = Vec::new();
+        // Class ids of `Protocol` classes (PLAN §3 G): a protocol-typed annotation
+        // erases to `Dyn`, and `isinstance(obj, P)` is a structural check.
+        let mut proto_ids: HashSet<ClassId> = HashSet::new();
         for cdef in &classdefs {
             if self.next_class_id > u8::MAX as u32 {
                 return Err(parse_error(
@@ -681,6 +693,9 @@ impl<'a> ProgramLowerer<'a> {
             class_ids.push(class_id);
             own_classes.push((cdef.name.as_str().to_string(), class_id, iname));
             self.class_ns.insert(class_id, my_ns);
+            if class_def_is_protocol(cdef) {
+                proto_ids.insert(class_id);
+            }
         }
 
         // Module-level type variables (Phase 5E).
@@ -750,6 +765,55 @@ impl<'a> ProgramLowerer<'a> {
         }
         // Restore the namespace for this module's own function reservations.
         self.shared.current_ns = my_ns;
+
+        // ── Module type aliases (PLAN §3 B/C). `type X = T` (PEP 695) and `X:
+        // TypeAlias = T` (PEP 613) register `name → body SemTy`; the body resolves
+        // through a bootstrap annotation context (class_map + module type vars are
+        // known; alias-to-alias references and the `[V]` params of PEP 695 aliases
+        // are out of scope — the corpus bodies use only builtin/Union types). The
+        // alias names then resolve to their bodies in `named_annotation`. ──
+        let mut type_aliases: HashMap<String, SemTy> = HashMap::new();
+        {
+            let empty_defs0: TopDefMap = HashMap::new();
+            let empty_aliases0: HashMap<String, SemTy> = HashMap::new();
+            let alias_ctx = AnnCtx {
+                class_map: &col.class_map,
+                type_vars: &module_type_vars,
+                top_defs: &empty_defs0,
+                promoted: &col.promoted,
+                decorated: &decorated_names,
+                aliases: &col.aliases,
+                alias_vars: &col.alias_vars,
+                stdlib: &col.stdlib,
+                default_slots: None,
+                type_aliases: &empty_aliases0,
+                proto_ids: &proto_ids,
+            };
+            for &stmt in &top {
+                match stmt {
+                    Stmt::TypeAlias(ta) => {
+                        if let Expr::Name(n) = ta.name.as_ref() {
+                            let sty = annotation_to_semty(ta.value.as_ref(), &alias_ctx);
+                            type_aliases.insert(n.id.as_str().to_string(), sty);
+                        }
+                    }
+                    // PEP 613: `X: TypeAlias = T`.
+                    Stmt::AnnAssign(a) => {
+                        if let (Expr::Name(tgt), Expr::Name(ann)) =
+                            (a.target.as_ref(), a.annotation.as_ref())
+                        {
+                            if ann.id.as_str() == "TypeAlias" {
+                                if let Some(val) = &a.value {
+                                    let sty = annotation_to_semty(val.as_ref(), &alias_ctx);
+                                    type_aliases.insert(tgt.id.as_str().to_string(), sty);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         // ── Mutable/computed parameter-default slots (allocated ONCE, before the
         // pre-context). For each top-level NON-generator `def`, a parameter whose
@@ -831,6 +895,8 @@ impl<'a> ProgramLowerer<'a> {
             stdlib: &col.stdlib,
             // Top-level defs resolve their non-literal defaults to slots.
             default_slots: Some(&default_slots),
+            type_aliases: &type_aliases,
+            proto_ids: &proto_ids,
         };
         let mut top_defs: TopDefMap = HashMap::new();
         for def in &defs {
@@ -873,6 +939,8 @@ impl<'a> ProgramLowerer<'a> {
             alias_vars: &col.alias_vars,
             stdlib: &col.stdlib,
             default_slots: None,
+            type_aliases: &type_aliases,
+            proto_ids: &proto_ids,
         };
         let defs_ctx = AnnCtx {
             default_slots: Some(&default_slots),
@@ -2120,6 +2188,10 @@ impl<'a> FnLowerer<'a> {
             // consumed by `freevars` / the module pre-scan; nothing to emit.
             Stmt::Global(_) | Stmt::Nonlocal(_) => Ok(false),
             Stmt::Delete(d) => self.lower_delete(d),
+            // A PEP 695 `type X = T` alias is a compile-time annotation binding
+            // (collected in the module pre-scan into `type_aliases`); it emits no
+            // runtime code (PLAN §3 B).
+            Stmt::TypeAlias(_) => Ok(false),
             other => Err(parse_error(
                 "unsupported statement for this milestone",
                 to_span(other.range()),
@@ -2618,6 +2690,12 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_annassign(&mut self, a: &rustpython_parser::ast::StmtAnnAssign) -> Result<()> {
         let span = to_span(a.range());
+        // `X: TypeAlias = T` (PEP 613) is a compile-time alias binding (collected
+        // in the module pre-scan into `type_aliases`), NOT a value assignment: the
+        // RHS `T` is a type, not a runtime value, so do not lower it (PLAN §3 C).
+        if matches!(a.annotation.as_ref(), Expr::Name(n) if n.id.as_str() == "TypeAlias") {
+            return Ok(());
+        }
         let ty = annotation_to_semty(a.annotation.as_ref(), self.ctx);
         let Expr::Name(n) = a.target.as_ref() else {
             return Err(parse_error(
@@ -7838,6 +7916,12 @@ impl<'a> FnLowerer<'a> {
         let mut v = self.alloc(HirExprKind::IntLit(class_id.0 as i64), SemTy::Int, span);
         // Innermost decorator first (CPython applies bottom-up).
         for deco in cdef.decorator_list.iter().rev() {
+            // `@runtime_checkable` (typing) is a no-op marker on a `Protocol` — it
+            // only enables `isinstance` against the protocol, which this compiler
+            // supports structurally regardless. Emit no runtime call (PLAN §3, F).
+            if matches!(deco, Expr::Name(n) if n.id.as_str() == "runtime_checkable") {
+                continue;
+            }
             v = self.apply_decorator(deco, v, span)?;
         }
         self.push_stmt(HirStmt::Expr(v));
@@ -9408,6 +9492,11 @@ impl<'a> FnLowerer<'a> {
             Constant::Float(f) => (HirExprKind::FloatLit(*f), SemTy::Float),
             Constant::Bool(b) => (HirExprKind::BoolLit(*b), SemTy::Bool),
             Constant::None => (HirExprKind::NoneLit, SemTy::NoneTy),
+            // `...` (Ellipsis) appears as a Protocol/stub method body (`def m(self)
+            // -> int: ...`, PLAN §3). The stub never runs (a protocol receiver is
+            // `Dyn`, so calls route through `rt_obj_method`), so lower it to a
+            // gradual no-op value — the surrounding expr-statement discards it.
+            Constant::Ellipsis => (HirExprKind::NoneLit, SemTy::Dyn),
             Constant::Bytes(b) => {
                 // Interned as raw bytes (the interner stores byte blobs, not just
                 // UTF-8 `String`s), so non-UTF-8 literals like `b"\xff"` round-trip
@@ -10000,8 +10089,22 @@ fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
             if let Some(id) = ctx.type_vars.get(other) {
                 return SemTy::Var(*id);
             }
+            // A module type alias (`type X = T` / `X: TypeAlias = T`, PLAN §3 B/C)
+            // resolves to its body. Checked before `class_map` so an alias name
+            // never collides with a class; aliases never shadow a type var above.
+            if let Some(sty) = ctx.type_aliases.get(other) {
+                return sty.clone();
+            }
             // A user-defined class name annotates an instance of that class.
             if let Some((class_id, name)) = ctx.class_map.get(other) {
+                // A `Protocol` annotation (PLAN §3 G) erases to `Dyn` (Tagged
+                // baseline): method dispatch rides the gradual `rt_obj_method`
+                // path, never a per-protocol ABI. `isinstance` resolves the
+                // protocol class by NAME (independent of this), so structural
+                // checks still see the protocol's class id.
+                if ctx.proto_ids.contains(class_id) {
+                    return SemTy::Dyn;
+                }
                 return SemTy::Class {
                     class_id: *class_id,
                     name: *name,
@@ -10058,7 +10161,10 @@ fn annotation_subscript(base: &Expr, slice: &Expr, ctx: &AnnCtx) -> SemTy {
         // dict param (Phase 6C ABI).
         "Callable" => callable_annotation(slice, ctx),
         // A user generic class annotation `Stack[int]` → `Generic{base, [int]}` (5E).
+        // A subscripted `Protocol[T]` annotation (PLAN §3 G) erases to `Dyn` like
+        // the bare-name protocol case in `named_annotation`.
         other => match ctx.class_map.get(other) {
+            Some((class_id, _)) if ctx.proto_ids.contains(class_id) => SemTy::Dyn,
             Some((class_id, _)) => SemTy::Generic {
                 base: *class_id,
                 args: subscript_type_args(slice, ctx),
@@ -10900,10 +11006,19 @@ fn lower_class(
     }
 
     // Base classes: bare names (`class Dog(Animal)`); `Generic[T]` / `Protocol[T]`
-    // contribute type params (not a runtime base).
+    // contribute type params (not a runtime base). A bare `Protocol` / `Generic`
+    // base is a typing marker — not a runtime base — so it is NOT pushed to
+    // `base_names` (which would make `semantics` reject it as "unknown base
+    // class"); `Protocol` additionally flags the class as a structural protocol.
     let mut base_names = Vec::new();
+    let mut is_protocol = false;
     for base in &cdef.bases {
         match base {
+            Expr::Name(n) if matches!(n.id.as_str(), "Protocol" | "Generic") => {
+                if n.id.as_str() == "Protocol" {
+                    is_protocol = true;
+                }
+            }
             Expr::Name(n) => base_names.push(interner.intern(n.id.as_str())),
             // `Generic[T]` / `Generic[T1, T2]` → record the type params.
             Expr::Subscript(s) => {
@@ -10914,6 +11029,9 @@ fn lower_class(
                     ));
                 };
                 if matches!(b.id.as_str(), "Generic" | "Protocol") {
+                    if b.id.as_str() == "Protocol" {
+                        is_protocol = true;
+                    }
                     for tp in subscript_type_param_names(s.slice.as_ref()) {
                         if !type_param_names.contains(&tp) {
                             type_params.push(interner.intern(&tp));
@@ -10956,6 +11074,8 @@ fn lower_class(
         // to a `Const`. A nested def inside a method re-clones with `None` (a
         // process-global slot can't hold a per-closure default).
         default_slots: ctx.default_slots,
+        type_aliases: ctx.type_aliases,
+        proto_ids: ctx.proto_ids,
     };
 
     let name = interner.intern(cdef.name.as_str());
@@ -11145,6 +11265,10 @@ fn lower_class(
             // A docstring (a bare string-constant expression) is ignored.
             Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Str(_))) =>
                 {}
+            // A bare `...` (Ellipsis) class body — a Protocol's `class P(Protocol):
+            // ...` stub (PLAN §3) — is a no-op like `pass`.
+            Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Ellipsis)) =>
+                {}
             Stmt::Pass(_) => {}
             other => {
                 return Err(parse_error(
@@ -11167,6 +11291,7 @@ fn lower_class(
         class_attrs,
         field_annotations,
         type_params,
+        is_protocol,
     })
 }
 
@@ -11179,6 +11304,18 @@ fn type_param_name(tp: &rustpython_parser::ast::TypeParam) -> String {
         TypeParam::ParamSpec(t) => t.name.as_str().to_string(),
         TypeParam::TypeVarTuple(t) => t.name.as_str().to_string(),
     }
+}
+
+/// True iff a class declares a `Protocol` base — bare (`class P(Protocol)`) or
+/// subscripted (`class P(Protocol[T])`) — i.e. a structural-typing protocol
+/// (PLAN §3). Mirrors the `is_protocol` detection in `lower_class`'s base loop,
+/// but runs in the pre-lowering class scan (to seed `proto_ids`).
+fn class_def_is_protocol(cdef: &StmtClassDef) -> bool {
+    cdef.bases.iter().any(|base| match base {
+        Expr::Name(n) => n.id.as_str() == "Protocol",
+        Expr::Subscript(s) => matches!(s.value.as_ref(), Expr::Name(b) if b.id.as_str() == "Protocol"),
+        _ => false,
+    })
 }
 
 /// The type-parameter names in a `Generic[...]` subscript slice.

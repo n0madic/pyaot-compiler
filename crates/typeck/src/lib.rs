@@ -1193,6 +1193,20 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
     }
 }
 
+/// True iff `value` and `target` denote the SAME user class (PLAN §3 D). A
+/// nominal `Class{C}` and a generic `Generic{C, args}` share one physical repr
+/// (`Heap(Class(C))` — type args are erased to a single layout), so storing a
+/// `IntWrapper(77)` (`Class{IntWrapper}`) into an `IntWrapper[int]`
+/// (`Generic{IntWrapper}`) slot is bit-identical and sound. Scoped strictly to
+/// user classes (a resolvable `ClassInfo`) — builtin-container covariance is
+/// governed separately by `is_subtype_of`.
+fn same_user_class(value: &SemTy, target: &SemTy, classes: &ClassTable) -> bool {
+    match (class_of(value, classes), class_of(target, classes)) {
+        (Some(a), Some(b)) => a == b && classes.get(a).is_some(),
+        _ => false,
+    }
+}
+
 /// A tuple VALUE is representation-safe to store into a tuple SLOT when every
 /// element index the slot reads back unboxes exactly as the value boxed it —
 /// i.e. per-index element `Repr` equality. A fixed-arity `tuple[T, …]` and a
@@ -1290,7 +1304,9 @@ fn check_reinterpret(
             value.ty == SemTy::Never
                 || value.ty.is_subtype_of(target, classes)
                 || (kind == ReinterpretKind::Gradual
-                    && (value.ty == SemTy::Dyn || tuple_store_repr_safe(&value.ty, target)))
+                    && (value.ty == SemTy::Dyn
+                        || tuple_store_repr_safe(&value.ty, target)
+                        || same_user_class(&value.ty, target, classes)))
         }
     };
     if ok {
