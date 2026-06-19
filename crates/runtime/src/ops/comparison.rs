@@ -13,6 +13,25 @@ pub(super) fn type_name(tag: TypeTagKind) -> &'static str {
     tag.type_name()
 }
 
+/// The Python type name of a NON-pointer immediate `Value` (`int`/`bool`/`None`).
+/// Used by the gradual builtin-op guards below: when a `Dyn` receiver carries an
+/// immediate instead of a heap container, `unwrap_ptr` would fabricate a garbage
+/// address that the tag dispatch then dereferences (SIGSEGV), so these ops raise
+/// the matching CPython `TypeError` ("`int` has no len()" / "not iterable" /
+/// "not subscriptable") on an immediate receiver first.
+#[inline]
+fn immediate_type_name(v: Value) -> &'static str {
+    if v.is_bool() {
+        "bool"
+    } else if v.is_int() {
+        "int"
+    } else if v.is_none() {
+        "NoneType"
+    } else {
+        "object"
+    }
+}
+
 /// Compare two heap objects for equality with runtime type dispatch
 /// Returns 1 if equal, 0 if not equal
 /// Used for Union types where the actual type is determined at runtime
@@ -506,6 +525,19 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
 #[export_name = "rt_any_getitem"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
+    // Immediate-receiver guard (a gradual `<dyn>[i]` where the receiver is an
+    // immediate): `unwrap_ptr` on an `int`/`bool`/`None` would fabricate a
+    // garbage pointer that `rt_any_getitem` dereferences (SIGSEGV). CPython:
+    // `42[0]` → "'int' object is not subscriptable".
+    if !obj.is_ptr() {
+        unsafe {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "'{}' object is not subscriptable",
+                immediate_type_name(obj)
+            );
+        }
+    }
     Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
 }
 
@@ -630,6 +662,20 @@ pub fn rt_obj_len(obj: *mut Obj) -> i64 {
 #[export_name = "rt_obj_len"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_len_abi(obj: Value) -> i64 {
+    // A gradual (`Dyn`) receiver may carry an immediate (`int`/`bool`/`None`),
+    // which is not a heap pointer — `unwrap_ptr` would fabricate a garbage
+    // address that `rt_obj_len`'s tag dispatch dereferences (SIGSEGV). An
+    // immediate has no `__len__`, so raise `TypeError` like CPython instead of
+    // crashing (`len(42)` → "object of type 'int' has no len()").
+    if !obj.is_ptr() {
+        unsafe {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "object of type '{}' has no len()",
+                immediate_type_name(obj)
+            );
+        }
+    }
     rt_obj_len(obj.unwrap_ptr())
 }
 
@@ -691,6 +737,21 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
 }
 #[export_name = "rt_obj_contains"]
 pub extern "C" fn rt_obj_contains_abi(container: Value, elem: Value) -> i8 {
+    // Immediate-receiver guard (a gradual `x in <dyn>` where the container is an
+    // immediate): `rt_obj_contains` already raises for non-iterable HEAP tags,
+    // but the immediate must be caught before the blind `unwrap_ptr` deref.
+    // CPython: `5 in 42` → "argument of type 'int' is not iterable". `elem` is
+    // never dereferenced (the comparators reconstruct its `Value` from the bits),
+    // so only the container needs the check.
+    if !container.is_ptr() {
+        unsafe {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "argument of type '{}' is not iterable",
+                immediate_type_name(container)
+            );
+        }
+    }
     rt_obj_contains(container.unwrap_ptr(), elem.unwrap_ptr())
 }
 
@@ -1014,4 +1075,35 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
 #[export_name = "rt_is_truthy"]
 pub extern "C" fn rt_is_truthy_abi(obj: Value) -> i8 {
     rt_is_truthy(obj.unwrap_ptr())
+}
+
+#[cfg(test)]
+mod immediate_guard_tests {
+    //! The gradual-builtin immediate-receiver guards (`len`/`in`/subscript).
+    //!
+    //! Only the `immediate_type_name` decision helper is unit-tested: a guard's
+    //! reject path calls `raise_exc!` → `std::process::exit(1)` when no handler
+    //! protects the frame (an uncaught runtime exception), which would kill the
+    //! test process — it cannot be caught by `#[should_panic]`. The reject AND
+    //! accept paths are covered end-to-end by the differential gate
+    //! (`corpus/p48_gradual_builtin_immediate.py`): `len`/`in`/`[i]` on an
+    //! immediate `Dyn` receiver raise `TypeError` on both pyaot and CPython.
+
+    use super::immediate_type_name;
+    use pyaot_core_defs::Value;
+
+    #[test]
+    fn immediate_type_name_matches_python() {
+        // The names that feed the "object of type '{}' has no len()" /
+        // "argument of type '{}' is not iterable" / "'{}' object is not
+        // subscriptable" messages — must match CPython's `type(x).__name__`.
+        assert_eq!(immediate_type_name(Value::from_int(0)), "int");
+        assert_eq!(immediate_type_name(Value::from_int(-99)), "int");
+        assert_eq!(immediate_type_name(Value::TRUE), "bool");
+        assert_eq!(immediate_type_name(Value::FALSE), "bool");
+        assert_eq!(immediate_type_name(Value::NONE), "NoneType");
+        // A `bool` must report "bool", never "int" (tag order matters: `bool` is
+        // a distinct tag, not an `int` subtype at the Value level).
+        assert!(!Value::TRUE.is_int());
+    }
 }

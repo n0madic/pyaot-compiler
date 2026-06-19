@@ -741,6 +741,16 @@ const PHASE_CORPUS: &[&str] = &[
     // at `.name`) — identical fixed-string stdout. Container error paths are
     // likewise caught broadly. The `Dyn` source is an unannotated passthrough.
     "p47_heap_readback_guard.py",
+    // Gradual builtin op on an IMMEDIATE receiver — `TypeError`, not SIGSEGV.
+    // `len(x)` / `e in x` / `x[i]` tag-dispatch through `rt_obj_len` /
+    // `rt_obj_contains` / `rt_any_getitem`; when a gradual `Dyn` `x` carries an
+    // immediate (`int`/`bool`/`None`, not a heap pointer) the ABI used to
+    // blind-`unwrap_ptr` it and dereference garbage. Each now guards the
+    // immediate receiver and raises the matching CPython `TypeError`. Distinct
+    // from the §1 coercion seams (p46/p47): here the value is consumed in place,
+    // not crossed into a typed slot. Both runtimes raise `TypeError`, so a plain
+    // `except TypeError` matches byte-for-byte.
+    "p48_gradual_builtin_immediate.py",
     // The full class-feature corpus (3749 lines), now byte-exact 95/95 end-to-
     // end. Caps the OOP/dispatch cluster above: `__init__`/`__slots__`,
     // inheritance + C3 MRO, dunders (arithmetic/compare/`__lt__` sort ordering,
