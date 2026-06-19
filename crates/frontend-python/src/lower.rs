@@ -183,6 +183,17 @@ pub(crate) struct Shared {
     /// Instance-field names a `del obj.attr` unbinds, accumulated across the
     /// whole program. Flows into [`HirModule::deletable_fields`].
     deletable_fields: HashSet<InternedString>,
+    /// Method names invoked as a method call (`x.NAME(...)`) anywhere in a
+    /// module body, accumulated before that module's classes are lowered
+    /// (gradual-completeness method dispatch, Phase B). An instance method whose
+    /// name is in this set gets a uniform thunk — the over-approximate gate
+    /// (the frontend runs pre-typeck, so "called on a `Dyn` receiver" is not yet
+    /// knowable; method-call syntax is the soundest available proxy).
+    dyn_method_names: HashSet<InternedString>,
+    /// `method_FuncId → uniform_thunk_FuncId` built during class lowering;
+    /// flows into [`HirModule::method_uniform_thunks`] for the codegen
+    /// `rt_register_method_uniform` registrations (Phase B).
+    method_uniform_thunks: HashMap<FuncId, FuncId>,
 }
 
 impl Shared {
@@ -197,6 +208,8 @@ impl Shared {
             line_map: LineMap::new(""),
             deletable_globals: HashMap::new(),
             deletable_fields: HashSet::new(),
+            dyn_method_names: HashSet::new(),
+            method_uniform_thunks: HashMap::new(),
         }
     }
 
@@ -331,6 +344,7 @@ impl<'a> ProgramLowerer<'a> {
         let generators = self.shared.generators.clone();
         let deletable_globals = self.shared.deletable_globals.clone();
         let deletable_fields = self.shared.deletable_fields.clone();
+        let method_uniform_thunks = self.shared.method_uniform_thunks.clone();
         let functions = self.shared.finish();
         let module = HirModule {
             functions,
@@ -340,6 +354,7 @@ impl<'a> ProgramLowerer<'a> {
             global_annotations: self.global_annotations,
             deletable_globals,
             deletable_fields,
+            method_uniform_thunks,
         };
         let namespaces = NamespaceTable {
             func_ns,
@@ -923,6 +938,7 @@ impl<'a> ProgramLowerer<'a> {
                 kwonly: vec![],
                 varargs: false,
                 kwargs: false,
+                kw_bindable: false,
             };
             let thunk_fid =
                 build_uniform_thunk(&mut *self.interner, &module_ctx, &mut self.shared, &target)?;
@@ -1004,6 +1020,20 @@ impl<'a> ProgramLowerer<'a> {
             }
             let main_fn = main.finish(HirTerminator::Return(None));
             self.shared.fill(init_fid, main_fn);
+        }
+
+        // Gradual-completeness method dispatch (Phase B): collect every
+        // method-call name `x.NAME(...)` in this module body so `lower_class`
+        // builds a uniform thunk for each instance method actually invoked as a
+        // method (the over-approximate `Dyn`-receiver gate). Accumulated into
+        // the program-global set before this module's classes are lowered.
+        {
+            let mut names: HashSet<String> = HashSet::new();
+            collect_method_call_names(&body, &mut names);
+            for n in names {
+                let id = self.interner.intern(&n);
+                self.shared.dyn_method_names.insert(id);
+            }
         }
 
         // Classes (own). `defs_ctx` carries the mutable-default slot map so a
@@ -6203,6 +6233,7 @@ impl<'a> FnLowerer<'a> {
                 kwonly,
                 varargs: f.varargs,
                 kwargs: f.kwargs,
+                kw_bindable: false,
             }
         };
         build_uniform_thunk(self.interner, self.ctx, self.shared, &target)
@@ -8948,7 +8979,13 @@ impl<'a> FnLowerer<'a> {
             value: n_expr,
         });
         let max = if target.varargs { None } else { Some(n_fixed) };
-        self.emit_argcount_check(n_local, req, max, fname, span);
+        // A method thunk binds fixed params from `__kwargs__` too, so a keyword
+        // may legitimately fill a "required" slot (`obj.m(other=5)`); drop the
+        // positional lower-bound guard there (a truly-missing required param
+        // still raises at its per-param `__kwargs__` read). The upper-bound (too
+        // many positional) guard stays. Value-call thunks keep the strict guard.
+        let min = if target.kw_bindable { 0 } else { req };
+        self.emit_argcount_check(n_local, min, max, fname, span);
 
         // Materialize a real keyword dict ONLY when `F` consumes keywords
         // (keyword-only or `**kwargs`). The indirect call site passes the null
@@ -8957,7 +8994,7 @@ impl<'a> FnLowerer<'a> {
         // null `other` is a no-op), so a null `__kwargs__` yields a fresh EMPTY
         // dict and a real keyword dict is copied in — kwonly `dict.get` /
         // `**kwargs` forwarding then never dereferences the null sentinel.
-        let kwargs_dict = if !target.kwonly.is_empty() || target.kwargs {
+        let kwargs_dict = if !target.kwonly.is_empty() || target.kwargs || target.kw_bindable {
             let kd = self.fresh_local(SemTy::dict_of(SemTy::Str, SemTy::Dyn));
             let fresh = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
             self.push_stmt(HirStmt::Assign {
@@ -8987,7 +9024,22 @@ impl<'a> FnLowerer<'a> {
             out.push(self.local_ref(LocalId::new(0), span));
         }
         for (i, p) in target.fixed.iter().enumerate() {
-            let raw = if i < req {
+            let raw = if target.kw_bindable {
+                // A method's fixed param may be passed positionally OR by keyword
+                // (`obj.m(a, scale=2)`): bind `__args__[i]` when present, else
+                // `__kwargs__[name]` (with the param's default, or raising on a
+                // truly-missing required param). `bind_from_kw_dict` reads the
+                // already-materialized keyword dict by name.
+                let pinfo = ParamInfo {
+                    name: p.name,
+                    ty: p.ty.clone(),
+                    default: p.default.clone(),
+                };
+                let kw_or_default = self
+                    .bind_from_kw_dict(kwargs_dict, &pinfo, span)
+                    .expect("kw_bindable materializes the keyword dict");
+                self.emit_spread_default(args_t, n_local, i, kw_or_default, span)
+            } else if i < req {
                 let base = self.local_ref(args_t, span);
                 let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
                 self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
@@ -9502,6 +9554,13 @@ struct UniformTarget {
     kwonly: Vec<ThunkParam>,
     varargs: bool,
     kwargs: bool,
+    /// Bind *fixed* (positional-or-keyword) params from `__kwargs__` too, not
+    /// just positionally — true for **method** thunks (gradual-completeness
+    /// dispatch, Phase B), where a `Dyn`-receiver call may pass a positional-or-
+    /// keyword param by keyword (`obj.m(a, scale=2)`). False for value-call
+    /// thunks (closures), whose call sites pass the null `__kwargs__` sentinel
+    /// (keywords out of scope), keeping that hot path allocation-free.
+    kw_bindable: bool,
 }
 
 impl UniformTarget {
@@ -9515,6 +9574,7 @@ impl UniformTarget {
             kwonly: info.kwonly.iter().map(ThunkParam::from_param_info).collect(),
             varargs: info.varargs.is_some(),
             kwargs: info.kwargs.is_some(),
+            kw_bindable: false,
         }
     }
 }
@@ -10355,6 +10415,321 @@ fn parse_params(
 /// Lower a `class` definition: lower each method into `functions` (recording its
 /// `FuncId`) and collect base names + class-level field annotations. The resolved
 /// layout (MRO, slots, inherited members) is computed later in `semantics`.
+/// Collect every method-call name `x.NAME(...)` reachable in `body`, recursing
+/// into all nested function / method / class bodies. The Phase-B gate for
+/// gradual-completeness method dispatch: an instance method whose name appears
+/// here gets a uniform thunk so `rt_obj_method` can invoke it on a `Dyn`
+/// receiver. Over-approximate by design — the frontend runs pre-typeck, so
+/// whether a given receiver is `Dyn` is not yet known; method-call *syntax* is
+/// the soundest available proxy, and building an unused thunk is harmless.
+fn collect_method_call_names(body: &[Stmt], out: &mut HashSet<String>) {
+    for s in body {
+        collect_calls_stmt(s, out);
+    }
+}
+
+fn collect_calls_stmt(s: &Stmt, out: &mut HashSet<String>) {
+    let e = |x: &Expr, out: &mut HashSet<String>| collect_calls_expr(x, out);
+    match s {
+        Stmt::Expr(x) => e(&x.value, out),
+        Stmt::Assign(a) => {
+            e(&a.value, out);
+            for t in &a.targets {
+                e(t, out);
+            }
+        }
+        Stmt::AugAssign(a) => {
+            e(&a.value, out);
+            e(&a.target, out);
+        }
+        Stmt::AnnAssign(a) => {
+            if let Some(v) = &a.value {
+                e(v, out);
+            }
+            e(&a.target, out);
+        }
+        Stmt::If(s) => {
+            e(&s.test, out);
+            collect_calls_body(&s.body, out);
+            collect_calls_body(&s.orelse, out);
+        }
+        Stmt::While(s) => {
+            e(&s.test, out);
+            collect_calls_body(&s.body, out);
+            collect_calls_body(&s.orelse, out);
+        }
+        Stmt::For(s) => {
+            e(&s.iter, out);
+            e(&s.target, out);
+            collect_calls_body(&s.body, out);
+            collect_calls_body(&s.orelse, out);
+        }
+        Stmt::Assert(s) => {
+            e(&s.test, out);
+            if let Some(m) = &s.msg {
+                e(m, out);
+            }
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                e(v, out);
+            }
+        }
+        // Descend into nested defs / methods (where `self.m()` calls live), plus
+        // decorators and parameter defaults (this-scope expressions).
+        Stmt::FunctionDef(d) => {
+            for deco in &d.decorator_list {
+                e(deco, out);
+            }
+            for awd in d
+                .args
+                .posonlyargs
+                .iter()
+                .chain(&d.args.args)
+                .chain(&d.args.kwonlyargs)
+            {
+                if let Some(dflt) = &awd.default {
+                    e(dflt, out);
+                }
+            }
+            collect_calls_body(&d.body, out);
+        }
+        Stmt::ClassDef(c) => {
+            for deco in &c.decorator_list {
+                e(deco, out);
+            }
+            for b in &c.bases {
+                e(b, out);
+            }
+            collect_calls_body(&c.body, out);
+        }
+        Stmt::Try(t) => {
+            collect_calls_body(&t.body, out);
+            for h in &t.handlers {
+                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                if let Some(ty) = &h.type_ {
+                    e(ty, out);
+                }
+                collect_calls_body(&h.body, out);
+            }
+            collect_calls_body(&t.orelse, out);
+            collect_calls_body(&t.finalbody, out);
+        }
+        Stmt::Raise(r) => {
+            if let Some(x) = &r.exc {
+                e(x, out);
+            }
+            if let Some(c) = &r.cause {
+                e(c, out);
+            }
+        }
+        Stmt::With(w) => {
+            for item in &w.items {
+                e(&item.context_expr, out);
+                if let Some(t) = &item.optional_vars {
+                    e(t, out);
+                }
+            }
+            collect_calls_body(&w.body, out);
+        }
+        Stmt::Match(m) => {
+            e(&m.subject, out);
+            for case in &m.cases {
+                if let Some(g) = &case.guard {
+                    e(g, out);
+                }
+                collect_calls_body(&case.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_calls_body(body: &[Stmt], out: &mut HashSet<String>) {
+    for s in body {
+        collect_calls_stmt(s, out);
+    }
+}
+
+fn collect_calls_expr(x: &Expr, out: &mut HashSet<String>) {
+    match x {
+        Expr::Call(c) => {
+            // `x.NAME(...)` → record `NAME` (the method-call gate).
+            if let Expr::Attribute(a) = c.func.as_ref() {
+                out.insert(a.attr.as_str().to_string());
+            }
+            collect_calls_expr(&c.func, out);
+            for a in &c.args {
+                collect_calls_expr(a, out);
+            }
+            for k in &c.keywords {
+                collect_calls_expr(&k.value, out);
+            }
+        }
+        Expr::Attribute(a) => collect_calls_expr(&a.value, out),
+        Expr::UnaryOp(u) => collect_calls_expr(&u.operand, out),
+        Expr::BinOp(b) => {
+            collect_calls_expr(&b.left, out);
+            collect_calls_expr(&b.right, out);
+        }
+        Expr::BoolOp(b) => {
+            for v in &b.values {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::Compare(c) => {
+            collect_calls_expr(&c.left, out);
+            for v in &c.comparators {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::IfExp(t) => {
+            collect_calls_expr(&t.test, out);
+            collect_calls_expr(&t.body, out);
+            collect_calls_expr(&t.orelse, out);
+        }
+        Expr::Subscript(s) => {
+            collect_calls_expr(&s.value, out);
+            collect_calls_expr(&s.slice, out);
+        }
+        Expr::List(l) => {
+            for v in &l.elts {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::Tuple(t) => {
+            for v in &t.elts {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::Set(s) => {
+            for v in &s.elts {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::Dict(d) => {
+            for k in d.keys.iter().flatten() {
+                collect_calls_expr(k, out);
+            }
+            for v in &d.values {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::Starred(s) => collect_calls_expr(&s.value, out),
+        Expr::Slice(s) => {
+            for part in [&s.lower, &s.upper, &s.step].into_iter().flatten() {
+                collect_calls_expr(part, out);
+            }
+        }
+        Expr::ListComp(c) => {
+            collect_calls_comp(&c.generators, out);
+            collect_calls_expr(&c.elt, out);
+        }
+        Expr::SetComp(c) => {
+            collect_calls_comp(&c.generators, out);
+            collect_calls_expr(&c.elt, out);
+        }
+        Expr::GeneratorExp(g) => {
+            collect_calls_comp(&g.generators, out);
+            collect_calls_expr(&g.elt, out);
+        }
+        Expr::DictComp(c) => {
+            collect_calls_comp(&c.generators, out);
+            collect_calls_expr(&c.key, out);
+            collect_calls_expr(&c.value, out);
+        }
+        Expr::Lambda(l) => {
+            for awd in l
+                .args
+                .posonlyargs
+                .iter()
+                .chain(&l.args.args)
+                .chain(&l.args.kwonlyargs)
+            {
+                if let Some(dflt) = &awd.default {
+                    collect_calls_expr(dflt, out);
+                }
+            }
+            collect_calls_expr(&l.body, out);
+        }
+        Expr::Yield(y) => {
+            if let Some(v) = &y.value {
+                collect_calls_expr(v, out);
+            }
+        }
+        Expr::YieldFrom(y) => collect_calls_expr(&y.value, out),
+        Expr::NamedExpr(n) => {
+            collect_calls_expr(&n.value, out);
+            collect_calls_expr(&n.target, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_calls_comp(generators: &[Comprehension], out: &mut HashSet<String>) {
+    for g in generators {
+        collect_calls_expr(&g.iter, out);
+        collect_calls_expr(&g.target, out);
+        for c in &g.ifs {
+            collect_calls_expr(c, out);
+        }
+    }
+}
+
+/// Build the per-method **uniform thunk** `M.m.<uniform>(self, __args__,
+/// __kwargs__) → Value` (gradual-completeness method dispatch, Phase B) — the
+/// method analogue of [`FnLowerer::uniform_thunk_over_nested`]. `self` is
+/// forwarded as the method's leading positional (`pass_env = true`); the
+/// non-`self` params bind from `__args__` at run time (defaults, `*args`, the
+/// checked float/bool unbox) exactly as a value call, then ONE direct call is
+/// made to the native method (its synthetic name resolves to its `FuncId`, so
+/// an inherited override resolves correctly). Returns the thunk's `FuncId`.
+///
+/// The fixed/keyword-only split is read straight off the method's AST arg
+/// counts (NOT re-parsed), so no parameter default is re-resolved — re-running
+/// `parse_params` would duplicate a mutable default's synthetic global slot.
+fn build_method_uniform_thunk(
+    interner: &mut StringInterner,
+    ctx: &AnnCtx,
+    shared: &mut Shared,
+    args: &rustpython_parser::ast::Arguments,
+    method_fid: FuncId,
+) -> Result<FuncId> {
+    // Non-`self` positional params, then keyword-only params. An instance method
+    // always has `self` as its first positional, so the subtraction is safe.
+    let n_positional = args.posonlyargs.len() + args.args.len();
+    let n_fixed = n_positional.saturating_sub(1);
+    let n_kwonly = args.kwonlyargs.len();
+    let target = {
+        let f = shared.funcs[method_fid.index()]
+            .as_ref()
+            .expect("method is filled before its uniform thunk is built");
+        // params: [self, fixed.., kwonly.., *args?, **kwargs?] — skip self (1).
+        let base = 1;
+        let fixed = f.params[base..base + n_fixed]
+            .iter()
+            .map(ThunkParam::from_hir_param)
+            .collect();
+        let kwonly = f.params[base + n_fixed..base + n_fixed + n_kwonly]
+            .iter()
+            .map(ThunkParam::from_hir_param)
+            .collect();
+        UniformTarget {
+            name: f.name,
+            ret: f.ret_ty.clone(),
+            pass_env: true,
+            fixed,
+            kwonly,
+            varargs: f.varargs,
+            kwargs: f.kwargs,
+            // Method dispatch may pass a positional-or-keyword param by keyword
+            // (`obj.m(a, scale=2)`), so bind fixed params from `__kwargs__` too.
+            kw_bindable: true,
+        }
+    };
+    build_uniform_thunk(interner, ctx, shared, &target)
+}
+
 fn lower_class(
     interner: &mut StringInterner,
     ctx: &AnnCtx,
@@ -10502,6 +10877,16 @@ fn lower_class(
                             Some(class_id),
                         )?;
                         methods.push((method_name, fid));
+                        // Gradual completeness (Phase B): if this method's name is
+                        // ever invoked as a method call, build its uniform thunk so
+                        // `rt_obj_method` can dispatch it on a `Dyn` receiver. Keyed
+                        // by the method's own FuncId — an inherited `ClassInfo.methods`
+                        // entry reuses it, so the subclass registers this same thunk.
+                        if shared.dyn_method_names.contains(&method_name) {
+                            let thunk =
+                                build_method_uniform_thunk(interner, &cctx, shared, &m.args, fid)?;
+                            shared.method_uniform_thunks.insert(fid, thunk);
+                        }
                     }
                     MethodDecor::Static => {
                         let (fid, _) =

@@ -17,7 +17,7 @@ use pyaot_core_defs::Value;
 /// Compute FNV-1a hash at compile time. Must match
 /// `pyaot_utils::fnv1a_hash` so runtime lookup matches compiler-registered
 /// `METHOD_NAME_REGISTRY` entries.
-const fn fnv1a(s: &[u8]) -> u64 {
+pub(crate) const fn fnv1a(s: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     let mut i = 0;
     while i < s.len() {

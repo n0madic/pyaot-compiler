@@ -111,7 +111,12 @@ pub fn lower(
     }
     // The codegen-facing class registration data (`__pyaot_classinit`). Qualname
     // bytes go into the string pool so codegen can build the `StrObj`.
-    let mir_classes = build_mir_classes(classes, interner, &mut str_pool);
+    let mir_classes = build_mir_classes(
+        classes,
+        interner,
+        &mut str_pool,
+        &module.method_uniform_thunks,
+    );
     Ok(MirProgram {
         funcs,
         entry: module.main,
@@ -129,6 +134,7 @@ fn build_mir_classes(
     classes: &ClassTable,
     interner: &StringInterner,
     str_pool: &mut StrPool,
+    method_uniform_thunks: &std::collections::HashMap<FuncId, FuncId>,
 ) -> Vec<MirClass> {
     let mut out = Vec::new();
     for info in classes.iter() {
@@ -143,11 +149,20 @@ fn build_mir_classes(
         // a stable slot across the class and its subclasses.
         let mut vtable = vec![None; info.num_vtable_slots];
         let mut method_names = Vec::with_capacity(info.methods.len());
+        let mut method_uniforms = Vec::new();
         let mut dunders = Vec::new();
         for m in &info.methods {
             vtable[m.slot] = Some(m.func_id);
             let name = interner.resolve(m.name);
             method_names.push((pyaot_utils::fnv1a_hash(name), m.slot));
+            // Gradual-completeness method dispatch (Phase B): if this method (own
+            // or inherited — keyed by its resolved FuncId) has a uniform thunk,
+            // register it under THIS class id so `rt_obj_method` can invoke it on
+            // a `Dyn` receiver. An inherited method's `func_id` is the base's, so
+            // the base's thunk resolves; an override has its own thunk.
+            if let Some(&thunk) = method_uniform_thunks.get(&m.func_id) {
+                method_uniforms.push((pyaot_utils::fnv1a_hash(name), thunk));
+            }
             // Register every dunder (own or inherited) under THIS class id so the
             // runtime's registry-dispatched ops (`rt_obj_add`/`rt_obj_neg`/the
             // default-repr path/…) resolve for instances of this exact class (5C).
@@ -194,6 +209,7 @@ fn build_mir_classes(
             method_names,
             field_names,
             dunders,
+            method_uniforms,
             class_attr_inits,
         });
     }
@@ -3254,6 +3270,17 @@ impl<'a> FnLower<'a> {
             ));
         }
         let recv_ty = self.func.exprs[recv].ty.clone();
+        // Gradual completeness: a `Dyn`/`Union` receiver has no statically-known
+        // shape, so dispatch the method at run time by the receiver's tag via
+        // the unified `rt_obj_method` (the CPython `type(obj).method` model —
+        // container methods AND user methods alike). Placed BEFORE the
+        // `class_of` check (which is `None` for `Dyn`/`Union`) and the container
+        // path (which rejects a tagless receiver, `lib.rs` "method calls require
+        // a statically-known …"). The result rides the tagged baseline; the
+        // consuming seam recovers precision via the Phase-1 checked unbox.
+        if matches!(recv_ty, SemTy::Dyn | SemTy::Union(_)) {
+            return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
+        }
         // Class receiver: a `@staticmethod`/`@classmethod` called on an instance,
         // else an instance method (devirtualized unless overridden below — D7).
         if let Some(cid) = class_of(&recv_ty, self.classes) {
@@ -3339,6 +3366,106 @@ impl<'a> FnLower<'a> {
                 )
             })?;
         self.lower_container_method_call(call_idx, recv, cm, args, kwargs)
+    }
+
+    /// Lower `recv.method(args, kwargs)` for a `Dyn`/`Union` receiver to the
+    /// unified runtime dispatcher [`RT_OBJ_METHOD`]: the receiver coerced to
+    /// `Tagged`, the FNV-1a method-name hash as a RAW `i64` immediate, the
+    /// positional args packed into a `tuple[Tagged]` (the exact tuple-build of
+    /// [`Self::lower_indirect_call`]), and the keywords as a `dict[str, Tagged]`
+    /// or the null sentinel. The runtime decides by the receiver's tag —
+    /// container methods route to the typed `rt_*` family, an instance to its
+    /// uniform thunk. Result is the tagged baseline (`Dyn`, GC-rooted).
+    fn lower_dyn_method_call(
+        &mut self,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
+        _span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        // Receiver → Tagged.
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
+
+        // Method-name hash: a RAW `i64` immediate (like `GetFieldNamed`).
+        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
+        let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
+        self.emit(MirInst::Const {
+            dst: hash_local,
+            val: Const::Int(name_hash as i64),
+        });
+
+        // Pack the positional args into a `tuple[Tagged]` (the uniform-call shape).
+        let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
+        let size = self.raw_i64_const(args.len() as i64);
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
+        let tup = tup.expect("TupleNew produces a tuple");
+        for (i, a) in args.iter().enumerate() {
+            let (al, ar) = self.lower_expr(*a)?;
+            let pos = self.raw_i64_const(i as i64);
+            self.emit_container(
+                ContainerOp::TupleSet,
+                vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (al, ar)],
+                None,
+            )?;
+        }
+        let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
+
+        // Keywords → a `dict[str, Tagged]`, or the null `__kwargs__` sentinel on
+        // the common (no-keyword) path (no allocation; the dispatcher reads it
+        // only for a user method with keyword params).
+        let kwargs_op = if kwargs.is_empty() {
+            let k = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Const {
+                dst: k,
+                val: Const::NullPtr,
+            });
+            k
+        } else {
+            let dict_repr =
+                Repr::Heap(HeapShape::Dict(Box::new(Repr::Tagged), Box::new(Repr::Tagged)));
+            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+            for (kname, kexpr) in kwargs {
+                self.str_pool
+                    .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
+                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                self.emit(MirInst::Const {
+                    dst: key,
+                    val: Const::Str(*kname),
+                });
+                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+                let (vl, vr) = self.lower_expr(*kexpr)?;
+                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+                self.emit_container(
+                    ContainerOp::DictSet,
+                    vec![
+                        (d, dict_repr.clone()),
+                        (key_t, Repr::Tagged),
+                        (val_t, Repr::Tagged),
+                    ],
+                    None,
+                )?;
+            }
+            self.coerce(d, dict_repr, Repr::Tagged)?
+        };
+
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallRuntime {
+            dst: Some(dst),
+            def: &pyaot_core_defs::runtime_func_def::RT_OBJ_METHOD,
+            args: vec![
+                Operand::Local(recv_t),
+                Operand::Local(hash_local),
+                Operand::Local(args_tuple),
+                Operand::Local(kwargs_op),
+            ],
+        });
+        Ok((dst, Repr::Tagged))
     }
 
     /// Devirtualized class-method call: `Call(method_FuncId, [recv, args…])`.

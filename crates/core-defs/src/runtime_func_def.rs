@@ -559,6 +559,28 @@ pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef =
 /// of legitimate non-empty containers when the compile-time element type
 /// collapsed to `Any`.
 pub static RT_OBJ_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_obj_len");
+/// rt_obj_method(recv: Value, name_hash: i64, args_tuple: Value, kwargs: Value)
+/// -> Value — the gradual-completeness method dispatcher for a `Dyn`/`Union`
+/// receiver (the method analogue of `rt_obj_len`/`rt_any_getitem`). Decides by
+/// the receiver's runtime tag exactly as CPython resolves `type(obj).method`:
+/// a container receiver routes to the typed `rt_list_*`/`rt_dict_*`/`rt_set_*`
+/// family; an `Instance` routes through its per-method uniform thunk
+/// (`METHOD_UNIFORM_REGISTRY`); anything else raises `AttributeError`. The
+/// positional args ride a `tuple[Tagged]` (arg 2), keywords a dict or the null
+/// sentinel (arg 3); `name_hash` is the RAW FNV-1a method-name hash.
+pub static RT_OBJ_METHOD: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_obj_method",
+    &[PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    &[
+        MirSemantic::Tagged,
+        MirSemantic::Raw,
+        MirSemantic::Tagged,
+        MirSemantic::Tagged,
+    ],
+    Some(MirSemantic::Tagged),
+);
 
 // ===== Set operations =====
 
@@ -1671,6 +1693,15 @@ pub static RT_OBJ_HAS_METHOD: RuntimeFuncDef =
 /// user-defined dunders when an operand is a class instance.
 pub static RT_REGISTER_DUNDER_FUNC: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_dunder_func", &[PI64, PI64, PI64]);
+/// rt_register_method_uniform(class_id: i64, name_hash: i64, thunk_ptr: i64) -> void
+/// Registers a class method's **uniform thunk** pointer
+/// (`M.<uniform>(self, __args__, __kwargs__) -> Value`) so the runtime's
+/// `rt_obj_method` dispatcher can invoke an arbitrary user method on a `Dyn`
+/// receiver. An inherited method registers the base's thunk under the subclass
+/// id too. The exact sibling of `rt_register_dunder_func` (a fixed-ABI fn ptr
+/// keyed by `(class_id, name_hash)`).
+pub static RT_REGISTER_METHOD_UNIFORM: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_method_uniform", &[PI64, PI64, PI64]);
 
 // ===== Struct_time field access =====
 

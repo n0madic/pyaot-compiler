@@ -222,6 +222,8 @@ struct RuntimeFns {
     isinstance_inherited: FuncId,
     // ── dunders (Phase 5C) ──
     register_dunder_func: FuncId,
+    // ── gradual-completeness method dispatch (Phase B) ──
+    register_method_uniform: FuncId,
     // ── class attributes (Phase 5D) ──
     class_attr_get_ptr: FuncId,
     class_attr_set_ptr: FuncId,
@@ -456,6 +458,7 @@ impl RuntimeFns {
             vtable_lookup_by_name: d("rt_vtable_lookup_by_name", &[ti, ti], &[ti])?,
             isinstance_inherited: d("rt_isinstance_class_inherited", &[ti, ti], &[t8])?,
             register_dunder_func: d("rt_register_dunder_func", &[ti, ti, ti], &[])?,
+            register_method_uniform: d("rt_register_method_uniform", &[ti, ti, ti], &[])?,
             // Class attributes by (class_id: u8, attr_idx: u32) → tagged Value.
             class_attr_get_ptr: d("rt_class_attr_get_ptr", &[t8, t32], &[ti])?,
             class_attr_set_ptr: d("rt_class_attr_set_ptr", &[t8, t32, ti], &[])?,
@@ -998,6 +1001,19 @@ fn emit_classinit(
                 let addr = builder.ins().func_addr(_ptr_ty, fref);
                 let rdf = module.declare_func_in_func(rt.register_dunder_func, builder.func);
                 builder.ins().call(rdf, &[cidd, hashv, addr]);
+            }
+
+            // Uniform method-thunk registrations (gradual-completeness method
+            // dispatch, Phase B): the thunk's fixed-ABI function address keyed by
+            // (class_id, method_name_hash), so `rt_obj_method` can invoke this
+            // method on a `Dyn` receiver. Same shape as the dunder loop.
+            for (name_hash, thunk_fid) in &c.method_uniforms {
+                let cidm = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
+                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
+                let addr = builder.ins().func_addr(_ptr_ty, fref);
+                let rmu = module.declare_func_in_func(rt.register_method_uniform, builder.func);
+                builder.ins().call(rmu, &[cidm, hashv, addr]);
             }
 
             // Class-attribute initializers (Phase 5D): materialize each literal and

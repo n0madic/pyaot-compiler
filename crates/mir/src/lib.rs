@@ -100,6 +100,12 @@ pub struct MirClass {
     pub field_names: Vec<(u64, usize)>,
     /// `(dunder_name_hash, FuncId)` for `rt_register_dunder_func` (Phase 5C).
     pub dunders: Vec<(u64, FuncId)>,
+    /// `(method_name_hash, thunk_FuncId)` for `rt_register_method_uniform`
+    /// (gradual-completeness method dispatch, Phase B): the per-method uniform
+    /// thunk that `rt_obj_method` invokes for a `Dyn` receiver. Includes
+    /// inherited methods (registered under this subclass id, resolving the
+    /// base's thunk) — the same shape as `method_names`.
+    pub method_uniforms: Vec<(u64, FuncId)>,
     /// `(attr_idx, const)` class-attribute initializers — codegen materializes each
     /// and stores it via `rt_class_attr_set_ptr` in `__pyaot_classinit` (Phase 5D).
     pub class_attr_inits: Vec<(u32, Const)>,

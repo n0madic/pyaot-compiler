@@ -670,6 +670,15 @@ const PHASE_CORPUS: &[&str] = &[
     // still constructs. Class-replacing / class-as-stored-value decorators stay
     // out of scope (classes aren't first-class values).
     "test_class_decorators.py",
+    // Gradual-completeness method dispatch — a `Dyn`/`Union`-typed receiver
+    // calls methods at run time via the unified `rt_obj_method` (the CPython
+    // `type(obj).method` model): container methods (`.append`/`.get`/`.add`/…
+    // on a heterogeneous dict's `Dyn` values) route to the typed `rt_*` family
+    // (Phase A); user methods on a genuinely-`Dyn` instance (a heterogeneous
+    // list's elements) route through each method's uniform thunk, incl.
+    // inherited (self coerces C→B), overridden, default + keyword args (Phase
+    // B). Inference precision stays a pure performance lever (Invariant 2).
+    "test_gradual_methods.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

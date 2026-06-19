@@ -89,6 +89,15 @@ pub struct HirModule {
     /// (kind=Attr). Fields are stored as uniform tagged slots, so the guard runs
     /// on the tagged value before any unbox — no representation change needed.
     pub deletable_fields: HashSet<InternedString>,
+    /// Per-instance-method **uniform thunk** FuncIds: `method_FuncId →
+    /// thunk_FuncId` (gradual-completeness method dispatch, Phase B). The
+    /// frontend builds a thunk `M.m.<uniform>(self, __args__, __kwargs__) →
+    /// Value` for each instance method whose name is invoked as a method call
+    /// somewhere, so `rt_obj_method` can dispatch an arbitrary user method on a
+    /// `Dyn` receiver. Keyed by the method's OWN `FuncId`, so an inherited
+    /// method (whose `ClassInfo.methods` entry reuses the base's FuncId)
+    /// resolves the base's thunk — lowering registers it under the subclass id.
+    pub method_uniform_thunks: HashMap<FuncId, FuncId>,
 }
 
 impl HirModule {

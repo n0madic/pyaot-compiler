@@ -700,3 +700,100 @@ pub(crate) unsafe fn lookup_dunder_func(class_id: u8, name_hash: u64) -> *const 
     }
     std::ptr::null()
 }
+
+// ==================== Method Uniform-Thunk Registry ====================
+// Maps (class_id, method_name_hash) → the method's uniform-thunk fn ptr
+// (`M.<uniform>(self, __args__, __kwargs__) -> Value`, the fixed arity-generic
+// ABI). Distinct from METHOD_NAME_REGISTRY (vtable-slot Protocol dispatch,
+// whose ptr is the method's *native* ABI) and DUNDER_FUNC_REGISTRY (binary-op
+// dunders): this exists so `rt_obj_method` can call an ARBITRARY user method
+// on a `Dyn` receiver soundly — the thunk ABI is fixed, so a transmute-and-call
+// is well-typed regardless of the method's source arity/param reprs. An
+// inherited method registers the base's thunk under the subclass id too (the
+// thunk coerces `self` C→B parent-first internally), so `(C, m)` resolves.
+// Phase B of gradual-completeness method dispatch.
+
+const MAX_METHOD_UNIFORMS_PER_CLASS: usize = 64;
+
+#[derive(Copy, Clone)]
+struct MethodUniformEntry {
+    name_hash: u64,
+    thunk_ptr: VtablePtr,
+}
+
+#[derive(Copy, Clone)]
+struct MethodUniformTable {
+    entries: [MethodUniformEntry; MAX_METHOD_UNIFORMS_PER_CLASS],
+    count: usize,
+}
+
+impl MethodUniformTable {
+    const fn new() -> Self {
+        Self {
+            entries: [MethodUniformEntry {
+                name_hash: 0,
+                thunk_ptr: VtablePtr::null(),
+            }; MAX_METHOD_UNIFORMS_PER_CLASS],
+            count: 0,
+        }
+    }
+}
+
+static METHOD_UNIFORM_REGISTRY: RegistryStorage<MethodUniformTable, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new({
+        const EMPTY: MethodUniformTable = MethodUniformTable::new();
+        [EMPTY; MAX_CLASSES]
+    }));
+
+/// Register a method's uniform-thunk pointer for `(class_id, name_hash)`.
+/// Called during class init for every method whose name is invoked on a `Dyn`
+/// receiver somewhere in the program (the frontend pre-pass gates this).
+#[no_mangle]
+pub extern "C" fn rt_register_method_uniform(class_id: i64, name_hash: i64, thunk_ptr: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_method_uniform: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
+    unsafe {
+        let registry = &mut *METHOD_UNIFORM_REGISTRY.0.get();
+        let table = &mut registry[class_id as usize];
+        // Idempotent on `(class_id, name_hash)`: an override re-registers the
+        // subclass's own thunk over any inherited entry (registration order is
+        // base-then-derived in codegen, but guard anyway).
+        for i in 0..table.count {
+            if table.entries[i].name_hash == name_hash as u64 {
+                table.entries[i].thunk_ptr = VtablePtr(thunk_ptr as *const u8);
+                return;
+            }
+        }
+        if table.count >= MAX_METHOD_UNIFORMS_PER_CLASS {
+            eprintln!(
+                "WARNING: class {} exceeds maximum uniform method thunks per class ({}), method with hash {} dropped",
+                class_id, MAX_METHOD_UNIFORMS_PER_CLASS, name_hash
+            );
+            return;
+        }
+        table.entries[table.count] = MethodUniformEntry {
+            name_hash: name_hash as u64,
+            thunk_ptr: VtablePtr(thunk_ptr as *const u8),
+        };
+        table.count += 1;
+    }
+}
+
+/// Look up a method's uniform-thunk pointer by class id + name hash. Returns
+/// null when the class registers no thunk for that method name (the dispatcher
+/// then raises `AttributeError`). Used by `rt_obj_method`'s Instance branch.
+pub(crate) unsafe fn lookup_method_uniform(class_id: u8, name_hash: u64) -> *const u8 {
+    let registry = &*METHOD_UNIFORM_REGISTRY.0.get();
+    let table = &registry[class_id as usize];
+    for i in 0..table.count {
+        if table.entries[i].name_hash == name_hash {
+            return table.entries[i].thunk_ptr.0;
+        }
+    }
+    std::ptr::null()
+}

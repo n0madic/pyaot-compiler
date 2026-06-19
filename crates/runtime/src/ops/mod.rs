@@ -3,6 +3,7 @@
 mod arithmetic;
 mod comparison;
 mod dunder_dispatch;
+mod method_dispatch;
 mod printing;
 
 // Re-export all public functions
@@ -22,6 +23,8 @@ pub use comparison::{
     rt_any_delitem, rt_any_getitem, rt_check_bound, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp,
     rt_obj_contains, rt_obj_eq,
 };
+
+pub use method_dispatch::rt_obj_method;
 
 pub use printing::{
     rt_flush_stdout, rt_print_bool_value, rt_print_float_value, rt_print_int_value,
