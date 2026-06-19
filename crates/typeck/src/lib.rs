@@ -802,9 +802,14 @@ fn check_repr_boundaries(
                                     kind,
                                     "assigned to global",
                                     classes,
-                                    // Globals are tagged slots that unbox on
-                                    // READ; numeric coercion deferred (§8).
-                                    false,
+                                    // Numeric tower (PLAN §8): an int/bool/gradual
+                                    // value into a `float` global coerces at the
+                                    // store — lowering's `box_float_for_slot` emits
+                                    // a checked `Tagged → Raw(F64)` unbox then
+                                    // re-boxes it (`BoxFloat`), so the tagged slot
+                                    // holds a genuine `FloatObj` and the unchecked
+                                    // `GlobalGet` read stays sound (A2).
+                                    true,
                                 )?;
                             }
                         }
@@ -823,10 +828,16 @@ fn check_repr_boundaries(
                                             kind,
                                             "assigned to field",
                                             classes,
-                                            // Float fields are tagged slots that
-                                            // unbox on READ; numeric coercion
-                                            // deferred (§8).
-                                            false,
+                                            // Numeric tower (PLAN §8): an
+                                            // int/bool/gradual value into a
+                                            // `float` field coerces at the store —
+                                            // lowering's `box_float_for_slot`
+                                            // boxes a genuine `FloatObj`, so the
+                                            // field's unchecked `UnboxFloat` read
+                                            // stays sound (A2). The `Dyn`-receiver
+                                            // `SetFieldNamed` arm has no static
+                                            // slot type and stays plain Tagged.
+                                            true,
                                         )?;
                                     }
                                 }
@@ -860,19 +871,24 @@ fn check_repr_boundaries(
         // `Tagged → Raw(F64)`/typed-`Heap` coercion the verifier accepts would
         // otherwise mis-read a mismatched value (PITFALLS A2).
         for (_idx, expr) in func.exprs.iter() {
-            // `allow_coerce` enables the CHECKED numeric coercion (`Dyn → float`,
-            // via `rt_unbox_float`) at the param boundary. It is on ONLY for
-            // CONSTRUCTOR args (`Cls(args)` / `Cls[T](args)`), whose lowering
-            // (`lower_construct`) emits the checked unbox — so a numeric-tower
-            // class fed a gradual field value (`NumTower(self.x + other.x)` with
-            // a `Dyn`-demoted `x`, §6) type-checks. Other call kinds keep the
-            // strict deferred posture (their lowering has no checked seam yet).
+            // `allow_coerce` enables the CHECKED numeric coercion at the param
+            // boundary (the numeric tower, PLAN §8): an `int`/`bool`/`Dyn` value
+            // into a `float` slot, and a gradual `Dyn` into a `bool` slot. It is
+            // on for every direct call kind whose lowering routes args through
+            // `coerce_value` — free functions, methods, constructors (`Cls(args)`
+            // / `Cls[T](args)`), and `super()`/virtual dispatch (all funnel
+            // through `build_call_operands` / the free-fn / `lower_construct`
+            // seams). The actual admission filter lives in `check_reinterpret`
+            // (`target == Float && value ∈ {Int, Bool, Dyn}`, or the Dyn-only
+            // bool seam), so flipping this on cannot over-admit a non-numeric
+            // mismatch — only the int/bool→float and Dyn→bool coercions lowering
+            // now emits as a checked `rt_unbox_float`/`rt_unbox_bool`.
             let (params, args, allow_coerce) = match &expr.kind {
                 HirExprKind::Call { callee, args } => {
                     let direct = match func.exprs[*callee].kind {
                         HirExprKind::Name(SymbolRef::Resolved(id)) => match resolve.symbol(id) {
                             Symbol::Function(fid) => {
-                                Some((&module.functions[fid.index()].params[..], args, false))
+                                Some((&module.functions[fid.index()].params[..], args, true))
                             }
                             // `Cls(args)` → `__init__(self, args…)`: skip `self`.
                             Symbol::Class(cid) => {
@@ -929,14 +945,17 @@ fn check_repr_boundaries(
                                         kind,
                                         "passed to",
                                         classes,
-                                        // Param-pass has no per-arg coerce site
-                                        // for every call kind; deferred (§8).
-                                        false,
+                                        // Numeric tower (PLAN §8): a keyword arg
+                                        // into a `float`/`bool` param coerces at
+                                        // its slot in `build_call_operands` (the
+                                        // `Kw` source routes through
+                                        // `coerce_value`).
+                                        true,
                                     )?;
                                 }
                             }
                         }
-                        (p, args, false)
+                        (p, args, true)
                     }
                     None => continue,
                 },
@@ -960,15 +979,15 @@ fn check_repr_boundaries(
             };
             for (arg, param) in args.iter().zip(params) {
                 if let Some(kind) = reinterpret_kind(&param.ty) {
-                    // Constructor args take the checked numeric coercion
-                    // (`lower_construct` emits `rt_unbox_float`/`rt_unbox_bool`),
-                    // but ONLY for a genuinely-gradual `Dyn` value — a `Dyn`
-                    // field/expr that is numeric at runtime (§6 `NumTower(self.x +
-                    // other.x)`). A statically-`Int`/`Bool` arg into a `float`
-                    // slot stays STRICT (rejected): admitting it would
-                    // silently `int→float` at construction, an observable
-                    // repr-print divergence. Other call kinds stay deferred (§8).
-                    let eff = allow_coerce && func.exprs[*arg].ty == SemTy::Dyn;
+                    // Numeric tower (PLAN §8): a positional arg into a
+                    // `float`/`bool` param takes the checked coercion lowering
+                    // now emits at every direct-call seam (`coerce_value` →
+                    // `rt_unbox_float`/`rt_unbox_bool`). `allow_coerce` is on for
+                    // each such call kind; the `check_reinterpret` filter admits
+                    // only `Int`/`Bool`/`Dyn → Float` and the Dyn-only `→ Bool`
+                    // seam, so a static `Int → bool` (a `3 == True` divergence)
+                    // is still rejected by the bool arm's separate Dyn gate.
+                    let eff = allow_coerce;
                     check_reinterpret(
                         &func.exprs[*arg],
                         &param.ty,
@@ -1267,12 +1286,15 @@ fn check_reinterpret(
     // is observable only via repr-print). The acceptance lives ONLY here, in the
     // repr-contract check — never in `is_subtype_of`, which is covariant for
     // generics (`int <: float` there would unsoundly admit `list[int] <:
-    // list[float]`, whose float reads would misread tagged ints). It is gated to
-    // the return / annotated-local-assign seams via `allow_numeric_coerce`;
-    // param / global / field slots stay strict (see Deferred in PLAN §8). The
-    // coercion lands at the store as a CHECKED `Tagged → Raw(F64)` unbox
-    // (`rt_unbox_float`), which covers int→f64, bool→f64 and gradual Dyn→f64
-    // uniformly and raises `TypeError` on a non-numeric tag.
+    // list[float]`, whose float reads would misread tagged ints). It is enabled
+    // via `allow_numeric_coerce` at every seam whose lowering emits the checked
+    // coercion: the return terminator, the annotated-`float` local assign, the
+    // param boundary (free-fn / method / ctor / `super()` / virtual), and the
+    // `float` global / field stores (PLAN §8 — all closed). The coercion lands at
+    // the store as a CHECKED `Tagged → Raw(F64)` unbox (`rt_unbox_float`), which
+    // covers int→f64, bool→f64 and gradual Dyn→f64 uniformly and raises
+    // `TypeError` on a non-numeric tag; the global/field stores additionally
+    // re-box the f64 to a `FloatObj` so the tagged slot's unchecked read is sound.
     if allow_numeric_coerce
         && *target == SemTy::Float
         && matches!(value.ty, SemTy::Int | SemTy::Bool | SemTy::Dyn)

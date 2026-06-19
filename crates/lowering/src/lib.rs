@@ -105,6 +105,7 @@ pub fn lower(
             classes,
             &module.deletable_globals,
             &module.deletable_fields,
+            &module.global_annotations,
             ret_repr,
         );
         funcs.push(fl.lower()?);
@@ -263,6 +264,10 @@ struct FnLower<'a> {
     /// Instance-field names a `del obj.attr` unbinds (by name). A field read of
     /// one of these is wrapped in `rt_check_bound` (kind=Attr → AttributeError).
     deletable_fields: &'a std::collections::HashSet<InternedString>,
+    /// Annotated module-global slot types (`var_id → SemTy`). A `GlobalSet` into a
+    /// `float`-annotated slot routes through `box_float_for_slot` so an int/bool
+    /// value lands as a genuine `FloatObj` (the numeric tower, PLAN §8).
+    global_annotations: &'a HashMap<u32, SemTy>,
     /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
     ret_repr: Repr,
     locals: Vec<LocalDecl>,
@@ -298,6 +303,7 @@ impl<'a> FnLower<'a> {
         classes: &'a ClassTable,
         deletable_globals: &'a HashMap<u32, InternedString>,
         deletable_fields: &'a std::collections::HashSet<InternedString>,
+        global_annotations: &'a HashMap<u32, SemTy>,
         ret_repr: Repr,
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
@@ -318,6 +324,7 @@ impl<'a> FnLower<'a> {
             classes,
             deletable_globals,
             deletable_fields,
+            global_annotations,
             ret_repr,
             locals,
             blocks: Vec::new(),
@@ -500,6 +507,35 @@ impl<'a> FnLower<'a> {
         Ok(dst)
     }
 
+    /// Coerce `src` (`from`, static type `val_ty`) into a *tagged* slot — a module
+    /// global or an instance field — whose reader unboxes by the slot's annotated
+    /// type `slot_ty`. The result is always `Tagged`.
+    ///
+    /// When the slot is `float` and the value is an `int`/`bool`/gradual (the
+    /// numeric tower, PLAN §8), a bare `coerce(src, Tagged)` would store a tagged
+    /// fixnum that the slot's unchecked `UnboxFloat` read later misreads as an f64
+    /// (PITFALLS A2). So first coerce to a genuine f64 (the CHECKED `Tagged →
+    /// Raw(F64)` unbox via `coerce_value`/`rt_unbox_float`, with a bignum arm),
+    /// then re-box it (`Raw(F64) → Tagged` = `BoxFloat` → a real `FloatObj`),
+    /// keeping the slot's read sound (A2). A statically-`float` value (or any
+    /// non-float slot) takes the plain tag. Both the checked unbox and `BoxFloat`
+    /// are `may_allocate`, and the boxed `FloatObj` is consumed by the immediately
+    /// following `GlobalSet`/`SetField` store with no intervening allocation (B5).
+    fn box_float_for_slot(
+        &mut self,
+        src: LocalId,
+        from: Repr,
+        val_ty: &SemTy,
+        slot_ty: &SemTy,
+    ) -> Result<LocalId> {
+        if *slot_ty == SemTy::Float && matches!(val_ty, SemTy::Int | SemTy::Bool | SemTy::Dyn) {
+            let f64r = Repr::Raw(RawKind::F64);
+            let f = self.coerce_value(src, from, val_ty, f64r.clone())?;
+            return self.coerce(f, f64r, Repr::Tagged);
+        }
+        self.coerce(src, from, Repr::Tagged)
+    }
+
     /// Supply an already-lowered operand as a sound `Raw(I64)`, or `None`.
     ///
     /// It qualifies if it already lowered to `Raw(I64)` (a range-proven cursor),
@@ -617,8 +653,16 @@ impl<'a> FnLower<'a> {
                 Ok(())
             }
             HirStmt::GlobalSet { var_id, value } => {
+                // A `float`-annotated global is a tagged slot read back via an
+                // unchecked `UnboxFloat`, so an int/bool/gradual value must be
+                // coerced to a real `FloatObj` at the store (numeric tower, §8).
+                let vty = self.func.exprs[*value].ty.clone();
+                let slot_ty = self.global_annotations.get(var_id).cloned();
                 let (vl, vr) = self.lower_expr(*value)?;
-                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                let vt = match &slot_ty {
+                    Some(st) => self.box_float_for_slot(vl, vr, &vty, st)?,
+                    None => self.coerce(vl, vr, Repr::Tagged)?,
+                };
                 self.emit(MirInst::GlobalSet {
                     var_id: *var_id,
                     value: Operand::Local(vt),
@@ -2813,8 +2857,8 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         let bt = self.func.exprs[value].ty.clone();
         let concrete_cid = class_of(&bt, self.classes);
-        let present = concrete_cid.map_or(false, |cid| {
-            self.classes.get(cid).map_or(false, |i| {
+        let present = concrete_cid.is_some_and(|cid| {
+            self.classes.get(cid).is_some_and(|i| {
                 i.field_slot(name).is_some()
                     || i.property(name).is_some()
                     || i.class_attr(name).is_some()
@@ -2977,10 +3021,22 @@ impl<'a> FnLower<'a> {
             });
             return Ok(());
         }
+        // (e) Static instance-field write. A `float`-typed field is a tagged slot
+        // read back via an unchecked `UnboxFloat`, so an int/bool/gradual value
+        // coerces to a real `FloatObj` at the store (numeric tower, §8). The slot
+        // type comes from the receiver's class (`bt` is a concrete class here —
+        // the `Dyn`/`Union` receivers were handled by the (d) arm above).
         let slot = self.field_slot(base, name)?;
+        let field_ty = class_of(&bt, self.classes)
+            .and_then(|cid| self.classes.get(cid))
+            .and_then(|info| info.field_ty(name).cloned());
+        let vty = self.func.exprs[value].ty.clone();
         let (bl, _br) = self.lower_expr(base)?;
         let (vl, vr) = self.lower_expr(value)?;
-        let vt = self.coerce(vl, vr, Repr::Tagged)?;
+        let vt = match &field_ty {
+            Some(fty) => self.box_float_for_slot(vl, vr, &vty, fty)?,
+            None => self.coerce(vl, vr, Repr::Tagged)?,
+        };
         self.emit(MirInst::SetField {
             base: Operand::Local(bl),
             slot,
@@ -3122,8 +3178,12 @@ impl<'a> FnLower<'a> {
         for (i, prepr) in params.iter().enumerate().skip(1) {
             let arg_idx = i - 1;
             let at = if arg_idx < args.len() {
+                // Forward args through the CHECKED coerce so a `float`/`bool`
+                // `__new__` param fed an int/bool/gradual value is unboxed
+                // soundly (numeric tower, §8), matching `lower_construct`.
+                let aty = self.func.exprs[args[arg_idx]].ty.clone();
                 let (al, ar) = self.lower_expr(args[arg_idx])?;
-                self.coerce(al, ar, prepr.clone())?
+                self.coerce_value(al, ar, &aty, prepr.clone())?
             } else if let Some(def) = &defaults[i] {
                 let (dl, dr) = self.materialize_default(def)?;
                 self.coerce(dl, dr, prepr.clone())?
@@ -3565,29 +3625,47 @@ impl<'a> FnLower<'a> {
         // Evaluate positionals then keyword values in CALL-SITE order before
         // assembling slots (kwarg values are frontend-staged local refs, but
         // keeping the lowering order written-shaped costs nothing).
+        // Carry each call-site value's static `SemTy` alongside its lowered
+        // `(loc, repr)` so the slot fill can pick the CHECKED numeric coercion
+        // (`coerce_value`) when an int/bool/gradual arg lands in a `float`/`bool`
+        // param (the numeric tower, PLAN §8) — covering instance / static /
+        // classmethod / `super()` / virtual / `__call__` dispatch (all funnel
+        // here). Default / `*args` / `**kwargs` slots carry no call-site expr; a
+        // `Dyn` placeholder is correct either way (`coerce_value` round-trips it).
         let mut pos_vals = Vec::with_capacity(args.len());
+        let mut pos_tys = Vec::with_capacity(args.len());
         for a in args {
+            pos_tys.push(self.func.exprs[*a].ty.clone());
             pos_vals.push(self.lower_expr(*a)?);
         }
         let mut kw_vals = Vec::with_capacity(kwargs.len());
+        let mut kw_tys = Vec::with_capacity(kwargs.len());
         for (_, e) in kwargs {
+            kw_tys.push(self.func.exprs[*e].ty.clone());
             kw_vals.push(self.lower_expr(*e)?);
         }
         let mut argvals = Vec::with_capacity(params.len() - first);
         for (i, src) in m.slots.iter().enumerate() {
             let prepr = params[first + i].clone();
-            let (vl, vr) = match src {
-                pyaot_hir::SlotSource::Pos(p) => pos_vals[*p].clone(),
-                pyaot_hir::SlotSource::Kw(k) => kw_vals[*k].clone(),
+            let (vl, vr, ty) = match src {
+                pyaot_hir::SlotSource::Pos(p) => {
+                    let (l, r) = pos_vals[*p].clone();
+                    (l, r, pos_tys[*p].clone())
+                }
+                pyaot_hir::SlotSource::Kw(k) => {
+                    let (l, r) = kw_vals[*k].clone();
+                    (l, r, kw_tys[*k].clone())
+                }
                 pyaot_hir::SlotSource::Default => {
                     let def = defaults[first + i]
                         .as_ref()
                         .expect("match_keywords picked Default only for defaulted params")
                         .clone();
-                    self.materialize_default(&def)?
+                    let (l, r) = self.materialize_default(&def)?;
+                    (l, r, SemTy::Dyn)
                 }
             };
-            argvals.push(Operand::Local(self.coerce(vl, vr, prepr)?));
+            argvals.push(Operand::Local(self.coerce_value(vl, vr, &ty, prepr)?));
         }
         if varargs {
             let tup_repr = params[first + fixed].clone();
@@ -3971,7 +4049,19 @@ impl<'a> FnLower<'a> {
         let ret = self.sigs[fid.index()].ret.clone();
         let mut argvals = Vec::with_capacity(args.len());
         for ((loc, repr), prepr) in args.into_iter().zip(&params) {
-            argvals.push(Operand::Local(self.coerce(loc, repr, prepr.clone())?));
+            // Defensive numeric-tower hardening (§8): operator/property-setter
+            // dunders reach here with `(loc, repr)` but no per-arg `SemTy`, so a
+            // `float`/`bool`-typed dunder param fed a tagged int would do a wild
+            // unchecked `UnboxFloat` (latent SEGV — no typeck guards this path).
+            // Routing through `coerce_value` with `Dyn` makes a `Raw(F64)`/
+            // `Raw(I8)`/`Raw(I64)` param take the CHECKED unbox (defined
+            // TypeError / correct int→f64); a non-raw param stays a plain coerce.
+            argvals.push(Operand::Local(self.coerce_value(
+                loc,
+                repr,
+                &SemTy::Dyn,
+                prepr.clone(),
+            )?));
         }
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::Call {
@@ -5542,8 +5632,13 @@ impl<'a> FnLower<'a> {
                 }
                 let mut argvals = Vec::with_capacity(args.len());
                 for (a, prepr) in args.iter().zip(params) {
+                    // A free-fn arg into a `float`/`bool` param takes the CHECKED
+                    // coercion for an int/bool/gradual value (numeric tower, §8 —
+                    // `coerce_value` → `rt_unbox_float`/`rt_unbox_bool`); a
+                    // statically-matching value stays a plain unchecked coerce.
+                    let aty = self.func.exprs[*a].ty.clone();
                     let (al, ar) = self.lower_expr(*a)?;
-                    let at = self.coerce(al, ar, prepr)?;
+                    let at = self.coerce_value(al, ar, &aty, prepr)?;
                     argvals.push(Operand::Local(at));
                 }
                 let dst = self.alloc_temp(ret.clone());

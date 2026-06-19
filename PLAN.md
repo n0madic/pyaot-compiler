@@ -8,26 +8,18 @@ release-safe pre-codegen MIR verifier; the uniform value-call convention + its
 `devirt` recovery pass). That completed phase log lives in git history (commits +
 each crate's `lib.rs` doc) and the auto-memory.
 
-What remains is **breadth**: the differential gate is green on its allowlist, but
-**7** aspirational `corpus/test_*.py` files still exercise valid Python 3 the
-compiler does not yet accept. None of the gaps below widen the "Out of scope"
-list — they are subset breadth, not new dynamism.
+**The breadth goal is met: every aspirational `corpus/test_*.py` is now lifted
+onto the differential gate** (`test_classes`, `test_collections`,
+`test_dead_code_warnings`, `test_file_io`, `test_generics`, `test_types_system` —
+all diff clean vs CPython in debug + release). The closures (§3, §5, §7, §10–§12,
+§14) are recorded in git history + auto-memory and removed from the backlog.
 
-## What still fails (the gate allowlist is everything *not* here)
-
-Each row is the **first** error `pyaot` hits on that file (the parser/typeck stops
-at the first gap, so a file usually hides more behind the one shown). Verified two
-ways: `python3` accepts the construct, `pyaot` does not. The "§" links the
-[remaining backlog](#remaining-backlog) item that closes it.
-
-| `corpus/test_*.py` | First blocker (pyaot diagnostic) | What's needed to lift it | § |
-|---|---|---|---|
-| `test_classes.py` | `getattr() default is out of scope` (3-arg `getattr(o,"x",-1)`) | 3-arg `getattr` default; then `@abstractmethod` / method + class decorators / `object.__new__` / `NotImplemented` | §5, §11 |
-| `test_collections.py` | `undefined name 'set'` (`defaultdict(set)` — a type used as a factory value) | `defaultdict(factory)` + `dd[k]=v`; `deque` mutators; `OrderedDict` | §10 |
-| `test_dead_code_warnings.py` | `isinstance() … requires a statically-typed value` | `isinstance(x, T)` on a gradual/`Any` receiver — a runtime tag query + flow narrowing | §7 |
-| `test_file_io.py` | `non-UTF-8 bytes literals are out of scope` | non-UTF-8 `bytes` literals (`b"\xff"`, any byte ≥ `\x80`) | §14 |
-| `test_generics.py` | `unsupported statement` (`type IntPair[V] = …`) | PEP 695 `type` aliases (incl. generic); subscripted instance annotation `Box[int]`; `Protocol` | §3, §12 |
-| `test_types_system.py` | `unsupported statement` (`type IntSet = set[int]`) | PEP 695 `type` aliases; `X: TypeAlias = T`; `Protocol` | §3, §12 |
+What remains is **deferred precision**, not breadth: a few documented method
+scope-limits that **block no corpus file** (every one is on the safe Tagged
+baseline today). None of them widen the "Out of scope" list. (The numeric-tower
+int→float seams — §8 — are now closed: every `float` slot, including parameters,
+globals, and fields, coerces an int/bool/gradual value through the checked
+`rt_unbox_float` path. See git history + auto-memory.)
 
 `test_stdlib_urllib.py` is **not** a feature gap — it exercises the live
 `urlopen`/`urlretrieve` network paths and runs (self-checking) only under
@@ -101,13 +93,11 @@ rationale in **[PITFALLS.md](PITFALLS.md)** — Part A.
 
 ### Where the work lands
 
-Syntax/semantic gaps (§3, §7–8, §11–12, §14) are front-half work —
-`frontend-python` (parse/desugar), `typeck` (constraints), and `lowering` —
-gated by Principle 9 and the verifier. Builtin **functions** (§5) and **methods**
-on builtin/stdlib types (§9–10) follow the declarative two-file pattern of
-Principle 8 (`stdlib-defs` descriptor + `runtime` `rt_*`), unless they need true
-HOF/representation handling. Keep every gradual/raw seam on the checked-coerce
-path (PITFALLS A2/A3).
+The remaining work is declarative breadth: additional builtin **functions** and
+**methods** on builtin/stdlib types (§9 scope-limits, and the stdlib-breadth layer
+below) follow the declarative two-file pattern of Principle 8 (`stdlib-defs`
+descriptor + `runtime` `rt_*`), unless they need true HOF/representation handling.
+Keep every gradual/raw seam on the checked-coerce path (PITFALLS A2/A3).
 
 ### Reference material — use these, don't re-derive
 
@@ -116,111 +106,35 @@ path (PITFALLS A2/A3).
   workarounds (`test_exceptions.py` `exc_type: int` hack, `test_match.py`,
   `test_stdlib_sys.py`) — the `corpus/` versions are authoritative.
 - **`crates/types/src/dunders.rs`** — the dunder classification tables
-  (`DunderKind`, `dunder_kind`, `canonical_dunder_name`, `reflected_name`).
-  Every backlog item touching operators or dunders (§9 methods, §11 dunder
-  results) consumes this table instead of hardcoding name lists. The old
-  `polymorphic_other_type` helper was deliberately **not** ported (its blind
-  `Self`-injection into the `other` Union was the microgpt `loss=NaN` root cause —
-  type `other` in the solver instead).
-- **Runtime registries already in the fork.** `vtable.rs` method registry +
-  `ops/dunder_dispatch.rs` (FNV-1a name-hash probes) — §12 `Protocol` builds on
-  these; no new registry mechanism.
+  (`DunderKind`, `dunder_kind`, `canonical_dunder_name`, `reflected_name`). Any
+  work touching operators or dunders consumes this table instead of hardcoding
+  name lists. The old `polymorphic_other_type` helper was deliberately **not**
+  ported (its blind `Self`-injection into the `other` Union was the microgpt
+  `loss=NaN` root cause — type `other` in the solver instead).
+- **Runtime registries already in the fork.** `vtable.rs` method registry
+  (incl. `rt_obj_has_method` for structural `Protocol` isinstance) +
+  `ops/dunder_dispatch.rs` (FNV-1a name-hash probes) — reuse these; no new
+  registry mechanism.
 - **Builtin-signature reference.** The old repo's `crates/stdlib-defs/`
   (`../python-compiler-rust`) is the kwargs/signature catalogue to consult when
-  authoring §5/§9 descriptors — read-only reference, not a code source.
+  authoring §9 descriptors / the stdlib-breadth layer — read-only reference, not a
+  code source.
 
 ---
 
 ## Remaining backlog
 
 Only the *open* items remain below; everything completed has been removed (it
-lives in git history + auto-memory). Section numbers are kept stable so the
-`test_*.py` table and the PITFALLS notes still reference them.
+lives in git history + auto-memory). **None of these block a corpus file** — they
+are deferred precision/seam notes, all safe on the Tagged baseline today. Section
+numbers are kept stable so the PITFALLS notes still reference them.
 
-### 3. Statements
-- **PEP 695 `type X = T`** (and generic `type X[V] = T`) — `type IntPair = tuple[int, int]`.
-  Blocks `test_generics.py`, `test_types_system.py`.
-- **`X: TypeAlias = T`** (PEP 613) — RHS type currently rejected as a value.
-- **`...` (Ellipsis) as a statement / stub body** — `def f() -> int: ...` (Protocol stubs).
-
-### 5. Builtins
-- **3-arg `getattr(o, "x", default)`** — the literal-name 2-arg form is done; the
-  default arg is rejected (`getattr() default is out of scope`). Blocks
-  `test_classes.py`. (Dynamic `getattr(o, name_var)` stays out of scope.)
-- **`object` / `object.__new__(cls)`** and **`NotImplemented`** — part of the
-  class-OOP cluster `test_classes.py` needs (gated by `@abstractmethod`, §11).
-
-### 7. `isinstance`
-- **Gradual / `Any` receiver** — `isinstance(any_value, str)`. Currently a loud
-  error ("a runtime type query on a gradual value is out of scope"). Blocks
-  `test_dead_code_warnings.py`. Decide: support via a runtime `ObjHeader.type_tag`
-  query + flow-sensitive narrowing in `solve`, or keep out-of-scope and document.
-  (Tuple-of-types and concrete/container-target `isinstance` are already done.)
-
-### 8. Numeric tower (int↔float) — remaining seams
-The `-> float` return seam and the annotated-`float`-LOCAL seam are done (checked
-`Tagged → Raw(F64)` unbox via `coerce_value`/`rt_unbox_float`). Still rejected:
-- **`float` GLOBAL / FIELD slots** — a cross-function `x: float` global, `self.v:
-  float`. These are physically *tagged* slots that unbox on READ via an *unchecked*
-  `UnboxFloat` (stores coerce to plain `Tagged`), so accepting an int there would
-  later misread (PITFALLS A2). Needs a store-side coerce-to-float-then-box so the
-  slot holds a genuine `FloatObj` — a separate, larger change.
-- **Passing int/bool to a `float` PARAMETER** (free-fn / method / ctor / dunder).
-  The method/ctor/dunder arg seams pass `(loc, repr)` without a per-arg `SemTy`, so
-  `needs_check` can't be evaluated without threading types through. Kept rejecting
-  to avoid an accept-then-SEGV.
-
-### 9. Methods on builtin types — remaining
-- **DONE — `dict.fromkeys` / `dict |`,`|=` / set `|`,`&`,`-`,`^`** (lifted
-  `test_collections_dict_set_bytes.py`). `d.fromkeys(keys[, v])` is an
-  instance-form dict method routed to `rt_dict_fromkeys` (receiver discarded);
-  the **class form** `dict.fromkeys(...)` stays out of scope. `dict | dict` →
-  `ContainerOp::DictMerge` (`rt_dict_merge`, PEP 584). The set algebra
-  **operators** `|`/`&`/`-`/`^` were a *hidden* blocker — never gated, they
-  lowered to numeric `rt_obj_bitor`/… and TypeError'd at runtime — now routed
-  through `try_container_binop` to the existing `Set*` ops. **`|=`/augmented
-  in-place is now correct** for `dict`/`set`: the frontend maps `|=` to a new
-  `BinOp::IOr`, and `rt_obj_ior` mutates in place + returns the same object (so
-  the `x = x | y` rebind preserves aliases); numeric `|=` delegates to
-  `rt_obj_bitor`. Other augmented container ops (`&=`/`-=`/`^=`) stay the rebind
-  desugar (untested, unchanged). Pre-existing bonus fixes that were blocking the
-  same file: `bytes(n)` zero-fill + `bytes(str[, enc])` constructors (new
-  `BytesZero`/`BytesFromStr` ops over the existing runtime makers; lowering had
-  routed every `bytes(...)` to `rt_make_bytes_from_list` → SEGV on a non-list arg).
-- Documented scope limits on the shipped str/bytes batches (unprobed, not
-  blocking): predicates are ASCII-only, `replace` has no `count`, `find`/`index`
-  take no `start`/`end`, `encode`/`decode` ignore the encoding.
-
-### 10. `collections` module — remaining
-- **`defaultdict`** — a type passed as the factory (`defaultdict(int)`,
-  `defaultdict(set)`) and subscript-store `dd[k]=v`. Blocks `test_collections.py`.
-  (Special-case the builtin factories `int`/`list`/`dict`/`set` → zero-value
-  thunks plus user functions — don't grow first-class type objects.)
-- **`deque`** — all mutating/query methods (`append`/`appendleft`/`pop`/`popleft`/
-  `rotate`/…), item assignment `dq[i]=v`, and the bounded-deque `maxlen` argument
-  (`deque(it, n)`). Construction-from-iterable (`deque([1,2,3])`), read, repr, and
-  iteration (`for`/`list`/`sum`/`",".join` — through the generic `rt_iter_deque`
-  seam) now work; `del dq[i]` is wired but unexercisable until mutation lands.
-- **`OrderedDict`** — `move_to_end`, `popitem`.
-
-### 11. Classes / OOP (all open)
-- **`@abstractmethod`** and general method decorators.
-- **Class decorators** — any `@deco` on a class (incl. `@runtime_checkable`).
-- **`object` / `object.__new__(cls)`** and **`NotImplemented`** (see §5).
-- **`abs()` on a user class** — the `__abs__` result is not statically typed, so a
-  later `.attr` on it fails.
-
-These together block `test_classes.py`.
-
-### 12. Typing / generics — remaining
-- **Subscripted instance annotation** — `b: Box[int] = …` (the `Generic[T]` base
-  parses; the `Name[T]` *annotation use* fails). Blocks `test_generics.py`.
-- **`Protocol` base class** — `unknown base class Protocol` (structural subtyping
-  unsupported); also subscripted **`Protocol[T]`**. (Multi-iterable `zip` is done.)
-
-### 14. Literals
-- **Non-UTF-8 bytes literals** — any byte ≥ `\x80`, e.g. `b"\xff"` (blocks
-  `test_file_io.py`; ASCII and `\x00`–`\x7f` already work).
+### 9. Methods on builtin types — documented scope limits
+Shipped str/bytes batches carry deliberate scope limits (unprobed, not blocking):
+predicates are ASCII-only, `replace` has no `count`, `find`/`index` take no
+`start`/`end`, `encode`/`decode` ignore the encoding. The class form
+`dict.fromkeys(...)` stays out of scope (the instance form is done). Augmented
+container ops other than `|=` (`&=`/`-=`/`^=`) stay the rebind desugar (untested).
 
 ### 1. Calls & arguments — residual
 - **Heap-arg seam** (`list`/`str` param of a genuinely-`Dyn` callee) keeps the
@@ -232,41 +146,11 @@ These together block `test_classes.py`.
 
 Each construct below works in the previous compiler; these notes record where it
 got it *wrong first*. Only the traps for **open** items remain (the rest moved to
-git history with their fixes).
-
-- **§7 `isinstance` (gradual receiver).** Accepting the syntax is the small half;
-  the value is flow-sensitive narrowing in `solve`, and retrofitting narrowing
-  late was a documented multi-pass cascade in the previous compiler — wire
-  narrowing in *together with* the syntax. For the gradual receiver:
-  `ObjHeader.type_tag` makes the runtime query one load — support it rather than
-  carving an out-of-scope hole.
-- **§8 numeric tower.** `int` is Tagged (fixnum-or-bignum) and `float` is
-  `Raw(F64)`, so int→float at a slot is a real `legalize` coercion with a bignum
-  arm (precision loss above 2⁵³ matches CPython's `float(int)`) — never a noop. On
-  the typeck side make `int ⊔ float = float` a deliberate lattice rule; the
-  previous compiler repeatedly leaked these joins to `Any` instead. (The remaining
-  seams are GLOBAL/FIELD slots and `float` PARAMETERS — see §8.)
-- **§10 `deque`.** Its method names collide with `list` (`append`, `pop`, …); in
-  the previous compiler that leaked wrong element-type constraints into the solver
-  for look-alike receivers. Key §9–§11 method constraints by receiver `SemTy`,
-  never by method name alone.
-- **§10 `defaultdict(int)`.** A type used as a value. Don't grow first-class type
-  objects for this — special-case the builtin factories
-  (`int`/`list`/`dict`/`set` → zero-value thunks) plus user functions.
-- **§11 method/class decorators.** The root of the previous compiler's
-  per-function-ABI saga: `@property` getters with primitive returns got
-  return-ABI-flipped, then needed flags and side-tables to track it. The
-  immunizing rule: a function whose identity escapes through *any* decorator is
-  address-taken ⇒ uniform Tagged ABI, decided in `typeck`, no per-function
-  exceptions. (The uniform value-call convention already realizes this for value
-  calls — keep class/method decorators on the same single ABI.)
-- **§11 `abs()` / dunder results.** Two lessons: dunder return types must enter the
-  solver as ordinary constraints (post-hoc threading caused a bound-result SEGV in
-  the previous compiler), and the `other` param of a binary dunder must not get
-  `Self` blindly injected into its Union (the microgpt `loss=NaN` root cause).
-- **§14 non-UTF-8 bytes.** Keep `bytes` permanently out of the string
-  interner/`StrObj`; one shared pool entry holding a byte ≥ `\x80` breaks the
-  codepoint invariant behind `char_len`.
+git history with their fixes). No open backlog item currently carries a dedicated
+trap note — the §8 numeric-tower trap retired with its fix (int→float at a slot is
+a real `legalize` coercion with a bignum arm, never a noop; the contract lives in
+`check_reinterpret` / `coerce_value` / `box_float_for_slot` and the corpus probes
+`p16`/`p44`).
 
 ---
 

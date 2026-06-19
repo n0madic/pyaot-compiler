@@ -696,6 +696,16 @@ const PHASE_CORPUS: &[&str] = &[
     // fold through the Raw-uniformity guard — mixed numeric tuples iterate as
     // Tagged, homogeneous ones stay precise. (Autograd-accumulation regression.)
     "p43_hetero_tuple_iter.py",
+    // Numeric tower int->float at the remaining slot seams (PLAN §8, closed): a
+    // `float` PARAMETER (free-fn / method positional + keyword / constructor), a
+    // `float` GLOBAL, and a `float` FIELD written from an int/bool. The param
+    // seam takes lowering's checked `coerce_value` (`rt_unbox_float`); the
+    // global/field seams take `box_float_for_slot` (checked unbox then `BoxFloat`
+    // to a genuine `FloatObj`, keeping the slot's unchecked read sound, A2).
+    // Divergence-safe: asserts via `==` (3 == 3.0) and prints only float-forced
+    // results. Includes the bignum->float arm (2**62) and an int->float-global
+    // feeding a float-param free function. Sibling of p16 (return / local seams).
+    "p44_numeric_tower_seams.py",
     // The full class-feature corpus (3749 lines), now byte-exact 95/95 end-to-
     // end. Caps the OOP/dispatch cluster above: `__init__`/`__slots__`,
     // inheritance + C3 MRO, dunders (arithmetic/compare/`__lt__` sort ordering,
@@ -713,6 +723,11 @@ const PHASE_CORPUS: &[&str] = &[
     // structural `isinstance(obj, P)` via `rt_obj_has_method`.
     "test_generics.py",
     "test_types_system.py",
+    // §7 — `isinstance` on a gradual / `Any` receiver with flow-sensitive
+    // narrowing: `def f(data: Any)` then `if isinstance(data, str): len(data)`
+    // (the runtime tag query + branch narrowing), plus the always-True/always-False
+    // statically-typed cases. The dead-code-warning regression guard.
+    "test_dead_code_warnings.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

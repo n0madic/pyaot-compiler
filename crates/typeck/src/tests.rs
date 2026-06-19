@@ -167,13 +167,38 @@ fn annotation_is_authoritative() {
 // ── unboxed-slot boundary checks (reject-don't-crash, PITFALLS A2) ──
 
 #[test]
-fn rejects_int_into_float_parameter() {
-    // `poly(3)` for `def poly(a: float)` must be a loud type error, NOT an
-    // accept-then-SIGSEGV (an annotated float param is unboxed to Raw(F64)).
-    let src = "def poly(a: float) -> float:\n    return a + 1.0\n\n\nprint(poly(3))\n";
+fn accepts_int_into_float_parameter() {
+    // §8 numeric tower (param seam closed): `poly(3)` for `def poly(a: float)` is
+    // a real (checked) coercion at the param boundary — lowering's `coerce_value`
+    // emits `rt_unbox_float` (int→f64, bignum arm), so the `Raw(F64)` param holds
+    // a genuine f64. CPython keeps the raw int; pyaot coerces (annotation-as-
+    // contract, observable only via repr-print). A `bool` arg coerces the same way.
+    assert!(
+        try_infer("def poly(a: float) -> float:\n    return a + 1.0\n\n\nprint(poly(3))\n").is_ok(),
+        "int into a float parameter is a checked coercion (§8)"
+    );
+    assert!(
+        try_infer("def poly(a: float) -> float:\n    return a + 1.0\n\n\nprint(poly(True))\n")
+            .is_ok(),
+        "bool into a float parameter is a checked coercion (§8)"
+    );
+}
+
+#[test]
+fn rejects_int_into_bool_parameter() {
+    // §8 numeric tower is asymmetric: the bool seam stays Dyn-ONLY. A statically
+    // `int` arg into a `bool` param must stay REJECTED — a contract-coerced
+    // `bool(3)` is `True`, but `3 == True` is `False`, so silently `int→bool`
+    // would diverge from CPython *observably* (not just via repr-print, unlike
+    // int→float). The `eff = allow_coerce` widening must not over-admit this.
+    let src = "def flag(a: bool) -> bool:\n    return a\n\n\nprint(flag(3))\n";
     assert!(
         try_infer(src).is_err(),
-        "int into a float parameter must be rejected"
+        "static int into a bool parameter must stay rejected (bool seam is Dyn-only)"
+    );
+    // A matching `bool` arg still compiles.
+    assert!(
+        try_infer("def flag(a: bool) -> bool:\n    return a\n\n\nprint(flag(True))\n").is_ok()
     );
 }
 
@@ -211,18 +236,23 @@ fn accepts_int_returned_as_float() {
 }
 
 #[test]
-fn rejects_int_into_deferred_float_slots() {
-    // §8 leaves the int→float numeric tower REJECTED at the param / global /
-    // field seams (the deferred sub-items): those are tagged slots read via an
-    // unchecked unbox (a global/field), or lack a per-arg `SemTy` coerce site (a
-    // param), so accepting an int would later misread (PITFALLS A2). A genuine
-    // cross-function `float` GLOBAL — `x` is read inside `f`, so it lowers to a
-    // tagged `GlobalSet` slot, not a `Raw(F64)` `__main__` local:
+fn accepts_int_into_float_global_and_field() {
+    // §8 numeric tower (global / field seams closed): a `float` global / field is
+    // a tagged slot read back via an unchecked `UnboxFloat`, so lowering's
+    // `box_float_for_slot` coerces the int to a genuine f64 then re-boxes it to a
+    // `FloatObj` at the store — the slot's read stays sound (A2). A genuine
+    // cross-function `float` GLOBAL (`x` is read inside `f`, so it lowers to a
+    // tagged `GlobalSet` slot, not a `Raw(F64)` `__main__` local):
     assert!(try_infer(
         "x: float = 5\ndef f() -> float:\n    return x + 1.0\n\n\nprint(f())\n"
     )
-    .is_err());
-    // (A `float` PARAMETER stays rejected too — see `rejects_int_into_float_parameter`.)
+    .is_ok());
+    // A `float` FIELD written from an int (here via a `float` ctor param, the
+    // store-side box):
+    assert!(try_infer(
+        "class C:\n    def __init__(self, v: float):\n        self.v = v\n\n\nprint(C(5).v + 0.5)\n"
+    )
+    .is_ok());
 }
 
 // ── typed-heap boundary checks (Phase 4: `TaggedToHeap` is reinterpret-by-type
@@ -594,16 +624,25 @@ fn generic_instance_type_is_generic() {
 // ── reinterpret-boundary on call forms (Phase 5 review fix #1) ──
 
 #[test]
-fn rejects_int_into_float_method_arg() {
-    // `C().scaled(3)` must be rejected loudly (the int→float method-param coerce is
-    // an UnboxFloat the verifier would otherwise accept → SIGSEGV at runtime).
+fn accepts_int_into_float_method_arg() {
+    // §8 numeric tower (method-param seam closed): `C().scaled(3)` is a checked
+    // int→float coercion at the method param (lowering's `build_call_operands`
+    // routes the `Pos`/`Kw` slot through `coerce_value` → `rt_unbox_float`).
     let src = "\
 class C:
     def scaled(self, a: float) -> float:
         return a * 2.0
 print(C().scaled(3))
 ";
-    assert!(try_infer(src).is_err());
+    assert!(try_infer(src).is_ok());
+    // A keyword arg into the same `float` param coerces identically.
+    let kw = "\
+class C:
+    def scaled(self, a: float) -> float:
+        return a * 2.0
+print(C().scaled(a=3))
+";
+    assert!(try_infer(kw).is_ok());
     // The matching-type call still type-checks.
     let ok = "\
 class C:
@@ -615,7 +654,11 @@ print(C().scaled(3.0))
 }
 
 #[test]
-fn rejects_int_into_float_super_and_static_args() {
+fn accepts_int_into_float_super_and_static_args() {
+    // §8 numeric tower (every direct-call seam closed): int→float coercion is now
+    // a checked unbox at the param boundary, uniform across super() / static /
+    // generic construction (all funnel through `build_call_operands` /
+    // `lower_construct`).
     // super() arg into a float param.
     let sup = "\
 class A:
@@ -626,7 +669,7 @@ class B(A):
         super().__init__(3)
 print(B(1.0).a)
 ";
-    assert!(try_infer(sup).is_err());
+    assert!(try_infer(sup).is_ok());
     // @staticmethod arg into a float param.
     let st = "\
 class C:
@@ -635,7 +678,7 @@ class C:
         return a
 print(C.f(3))
 ";
-    assert!(try_infer(st).is_err());
+    assert!(try_infer(st).is_ok());
     // generic-construction arg into a float param.
     let gen = "\
 from typing import TypeVar, Generic
@@ -647,7 +690,7 @@ class P(Generic[T]):
 p = P[int](1, 2)
 print(p.scale)
 ";
-    assert!(try_infer(gen).is_err());
+    assert!(try_infer(gen).is_ok());
 }
 
 // ── closures / callables (Phase 6) ──
