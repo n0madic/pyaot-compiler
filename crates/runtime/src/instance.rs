@@ -306,6 +306,91 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
     verdict as i8
 }
 
+/// The Python `type_name` of a runtime `Value`, for guard error messages.
+/// Immediates (`int`/`bool`/`None`) report their immediate kind; a heap pointer
+/// reports its tag's `type_name` (a null pointer reports `NoneType`).
+fn value_type_name(v: Value) -> &'static str {
+    if v.is_int() {
+        return "int";
+    }
+    if v.is_bool() {
+        return "bool";
+    }
+    if v.is_none() {
+        return "NoneType";
+    }
+    let obj: *mut Obj = v.unwrap_ptr_or_null();
+    if obj.is_null() {
+        return "NoneType";
+    }
+    unsafe { (*obj).type_tag().type_name() }
+}
+
+/// PLAN §1 — the gradual builtin-container shape guard (the `Heap` analogue of
+/// `rt_unbox_float`). When a genuinely-`Dyn` value flows into a typed
+/// `str`/`bytes`/`list`/`dict`/`set`/`tuple` parameter / return / slot, lowering
+/// routes it through this CHECKED coercion: if the runtime tag matches `kind` (a
+/// [`pyaot_core_defs::isinstance_kind`] code) the same tagged `Value` is
+/// returned untouched; otherwise a `TypeError` is raised AT THE BOUNDARY instead
+/// of a deferred SIGSEGV at the first container op. `dict` is family-aware
+/// (`Dict`/`DefaultDict`/`Counter` share one layout); the rest are subtype-free
+/// singletons (user classes cannot subclass builtins). An unrecognised `kind`
+/// passes through unchanged — defensive only; lowering never emits a checked
+/// heap coerce for a guard-less shape (PITFALLS B18).
+#[export_name = "rt_check_heap_kind"]
+pub extern "C" fn rt_check_heap_kind_abi(value: Value, kind: i64) -> Value {
+    use pyaot_core_defs::isinstance_kind as k;
+    let (ok, expected) = match kind {
+        k::STR => (heap_tag_is(value, TypeTagKind::Str), "str"),
+        k::BYTES => (heap_tag_is(value, TypeTagKind::Bytes), "bytes"),
+        k::LIST => (heap_tag_is(value, TypeTagKind::List), "list"),
+        k::SET => (heap_tag_is(value, TypeTagKind::Set), "set"),
+        k::TUPLE => (heap_tag_is(value, TypeTagKind::Tuple), "tuple"),
+        k::DICT => (
+            heap_tag_is(value, TypeTagKind::Dict)
+                || heap_tag_is(value, TypeTagKind::DefaultDict)
+                || heap_tag_is(value, TypeTagKind::Counter),
+            "dict",
+        ),
+        // No guard for this kind — pass through (should be unreachable).
+        _ => return value,
+    };
+    if ok {
+        return value;
+    }
+    unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "expected {}, got {}",
+            expected,
+            value_type_name(value)
+        );
+    }
+}
+
+/// PLAN §1 — the gradual user-class instance shape guard (subclass-aware sibling
+/// of `rt_check_heap_kind`). A genuinely-`Dyn` value flowing into a typed
+/// class-instance parameter / return / slot is routed here: it must be a heap
+/// `Instance` whose class is `class_id` OR a subclass of it
+/// (`rt_class_inherits_from`), so a `Dog` legitimately passes an `Animal` param.
+/// On a match the same tagged `Value` is returned untouched; otherwise a
+/// `TypeError` is raised at the boundary.
+#[export_name = "rt_check_instance"]
+pub extern "C" fn rt_check_instance_abi(value: Value, class_id: i64) -> Value {
+    if rt_isinstance_class_inherited_abi(value, class_id) != 0 {
+        return value;
+    }
+    let expected = lookup_class_qualname(class_id as u8).unwrap_or_else(|| "object".to_string());
+    unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "expected {}, got {}",
+            expected,
+            value_type_name(value)
+        );
+    }
+}
+
 /// Check if child_vtable is a subclass of parent_vtable
 /// Returns: 1 (true) or 0 (false)
 #[no_mangle]
@@ -375,4 +460,121 @@ pub(crate) unsafe fn instance_default_repr(obj: *mut Obj) -> String {
         }
     }
     format!("<object at {:p}>", obj)
+}
+
+#[cfg(test)]
+mod plan1_guard_tests {
+    //! PLAN §1 — the gradual heap-arg shape guards (`rt_check_heap_kind` /
+    //! `rt_check_instance`).
+    //!
+    //! Only the ACCEPT paths and the reject DECISION predicates are exercised
+    //! here: a guard's reject path calls `raise_exc!` → `std::process::exit(1)`
+    //! when no handler protects the frame (an uncaught runtime exception), which
+    //! cannot be caught by `#[should_panic]` (it is an unwind/exit, not a Rust
+    //! panic). The heap-kind reject path is covered end-to-end by the
+    //! differential gate (`corpus/p46_heap_arg_guard.py` — a `Dyn` int into a
+    //! `list` param → `TypeError`); the class reject path, which diverges from
+    //! CPython (it raises `AttributeError` at `.name`, not `TypeError`), is
+    //! pinned here by its decision predicate instead.
+
+    use super::*;
+    use crate::{counter, dict, gc, list, set};
+    use pyaot_core_defs::isinstance_kind as k;
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn value_type_name_reports_python_names() {
+        let _g = lock();
+        gc::init();
+        assert_eq!(value_type_name(Value::from_int(7)), "int");
+        assert_eq!(value_type_name(Value::TRUE), "bool");
+        assert_eq!(value_type_name(Value::NONE), "NoneType");
+        let lst = Value::from_ptr(list::rt_make_list(2));
+        assert_eq!(value_type_name(lst), "list");
+    }
+
+    #[test]
+    fn check_heap_kind_accepts_matching_shape() {
+        let _g = lock();
+        gc::init();
+        // Root the containers so GC-stress mode cannot sweep them across the
+        // sequence of allocations below.
+        let lst = list::rt_make_list(2);
+        let st = set::rt_make_set(2);
+        let dct = dict::rt_make_dict(2);
+        let ctr = counter::rt_make_counter_empty();
+        let mut roots: [*mut Obj; 4] = [lst, st, dct, ctr];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 4,
+            roots: roots.as_mut_ptr(),
+        };
+        unsafe { gc::gc_push(&mut frame) };
+
+        let lst_v = Value::from_ptr(roots[0]);
+        assert_eq!(rt_check_heap_kind_abi(lst_v, k::LIST), lst_v);
+        let set_v = Value::from_ptr(roots[1]);
+        assert_eq!(rt_check_heap_kind_abi(set_v, k::SET), set_v);
+        // `dict` is family-aware: a plain Dict AND a Counter (shared layout)
+        // both satisfy the DICT guard.
+        let dct_v = Value::from_ptr(roots[2]);
+        assert_eq!(rt_check_heap_kind_abi(dct_v, k::DICT), dct_v);
+        let ctr_v = Value::from_ptr(roots[3]);
+        assert_eq!(rt_check_heap_kind_abi(ctr_v, k::DICT), ctr_v);
+
+        gc::gc_pop();
+    }
+
+    #[test]
+    fn check_heap_kind_decision_rejects_wrong_shape() {
+        let _g = lock();
+        gc::init();
+        // The predicate that drives the raise: an `int` is not a `list`, so the
+        // guard WOULD raise `TypeError("expected list, got int")`.
+        let int_v = Value::from_int(42);
+        assert!(!heap_tag_is(int_v, TypeTagKind::List));
+        assert!(!heap_tag_is(int_v, TypeTagKind::Dict));
+        assert_eq!(value_type_name(int_v), "int");
+    }
+
+    #[test]
+    fn check_instance_accepts_self_and_subclass() {
+        let _g = lock();
+        gc::init();
+        // Animal(201) is a base class; Dog(200) inherits from it.
+        const ANIMAL: u8 = 201;
+        const DOG: u8 = 200;
+        const UNRELATED: i64 = 202;
+        crate::vtable::rt_register_class(ANIMAL, 255 /* NO_PARENT */);
+        crate::vtable::rt_register_class(DOG, ANIMAL);
+
+        let dog = rt_make_instance(DOG, 1);
+        let mut roots: [*mut Obj; 1] = [dog];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        unsafe { gc::gc_push(&mut frame) };
+        let dog_v = Value::from_ptr(roots[0]);
+
+        // A Dog passes its own class and its Animal base (subclass-aware).
+        assert_eq!(rt_check_instance_abi(dog_v, DOG as i64), dog_v);
+        assert_eq!(rt_check_instance_abi(dog_v, ANIMAL as i64), dog_v);
+
+        // The reject decisions (would raise): a Dog is not an UNRELATED class,
+        // and a non-instance immediate is not any class.
+        assert_eq!(rt_isinstance_class_inherited_abi(dog_v, UNRELATED), 0);
+        assert_eq!(
+            rt_isinstance_class_inherited_abi(Value::from_int(1), ANIMAL as i64),
+            0
+        );
+
+        gc::gc_pop();
+    }
 }

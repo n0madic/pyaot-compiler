@@ -462,16 +462,25 @@ impl<'a> FnLower<'a> {
     /// Coerce `src` (`from`, static type `ty`) into a fresh local of `want`,
     /// returning it.
     ///
-    /// When `want` is a `Raw(F64)`/`Raw(I64)` register slot and the value is not
-    /// statically that type, the conversion is a *real* one (an int/bool/gradual
-    /// value into a `float` slot — the numeric tower, PLAN §8; or a gradual value
-    /// into a stdlib raw-ABI param — Phase 8H, D3), so it takes the CHECKED unbox:
-    /// box to `Tagged` then `CoerceInst::new_checked`, whose codegen calls
-    /// `rt_unbox_float` / `rt_unbox_int` (TypeError on a non-numeric tag,
-    /// bignum→f64 round-to-nearest) instead of reinterpreting bits. A statically
-    /// proven value keeps the plain unchecked `coerce`. This is the single seam
-    /// for `Tagged → Raw` checked coercion (used by runtime-arg passing, the
-    /// return terminator, and `float`-local assignment).
+    /// When `want` is a `Raw(F64)`/`Raw(I64)`/`Raw(I8)` register slot and the
+    /// value is not statically that type, the conversion is a *real* one (an
+    /// int/bool/gradual value into a `float` slot — the numeric tower, PLAN §8;
+    /// or a gradual value into a stdlib raw-ABI param — Phase 8H, D3), so it
+    /// takes the CHECKED unbox: box to `Tagged` then `CoerceInst::new_checked`,
+    /// whose codegen calls `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`
+    /// (TypeError on a wrong tag, bignum→f64 round-to-nearest) instead of
+    /// reinterpreting bits.
+    ///
+    /// Likewise (PLAN §1), when `want` is a guard-backed `Heap(shape)` and the
+    /// value is genuinely `Dyn`/`Union` (a gradual heap seam), it takes a CHECKED
+    /// `Tagged → Heap(shape)` coercion whose codegen calls `rt_check_heap_kind` /
+    /// `rt_check_instance` (TypeError at the boundary on a wrong shape) instead
+    /// of the unchecked bit-identical `TaggedToHeap` reinterpret that would crash
+    /// later at a container op.
+    ///
+    /// A statically proven value keeps the plain unchecked `coerce`. This is the
+    /// single seam for checked coercion (used by runtime-arg passing, the return
+    /// terminator, and `float`-local assignment).
     fn coerce_value(
         &mut self,
         src: LocalId,
@@ -486,6 +495,19 @@ impl<'a> FnLower<'a> {
             // (`rt_unbox_bool`, the third member of the checked family) — a
             // statically-proven `bool` keeps the plain `UntagBool`.
             Repr::Raw(RawKind::I8) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
+            // PLAN §1: a genuinely-`Dyn` value flowing into a typed `Heap` slot
+            // (builtin container / class instance) takes a CHECKED `Tagged →
+            // Heap(shape)` coercion — `rt_check_heap_kind` / `rt_check_instance`
+            // raise `TypeError` at the boundary instead of crashing later at the
+            // first container op. Gated on `dyn_check().is_some()` (the
+            // guard-less `BigInt`/`RuntimeObj`/`Iterator` shapes keep the
+            // unchecked `TaggedToHeap` reinterpret). A statically-proven Heap
+            // value (`from` already `Heap`) keeps the plain unchecked path.
+            Repr::Heap(shape) => {
+                matches!(ty, SemTy::Dyn | SemTy::Union(_))
+                    && from == Repr::Tagged
+                    && shape.dyn_check().is_some()
+            }
             _ => false,
         };
         if !needs_check {
@@ -493,8 +515,9 @@ impl<'a> FnLower<'a> {
         }
         let tagged = self.coerce(src, from, Repr::Tagged)?;
         let dst = self.alloc_temp(want.clone());
-        // `needs_check` only fires for Raw(F64)/Raw(I64) targets, exactly
-        // `new_checked`'s domain — the `None` arm is unreachable by
+        // `needs_check` fires only for the guard-backed checked shapes — the Raw
+        // unbox targets (F64/I64/I8) and the guarded `Heap` shapes — exactly
+        // `new_checked`'s domain, so the `None` arm is unreachable by
         // construction, but a loud internal error beats an `unwrap`.
         let inst = CoerceInst::new_checked(dst, Operand::Local(tagged), Repr::Tagged, want.clone())
             .ok_or_else(|| {
@@ -580,17 +603,32 @@ impl<'a> FnLower<'a> {
             HirStmt::Assign { target, value } => {
                 let (vloc, vrepr) = self.lower_expr(*value)?;
                 let target_repr = self.local_repr(*target);
-                if matches!(target_repr, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8)) {
-                    // A gradual value into an annotated `: float`/`: bool` local is
-                    // a real (checked) coercion, not a bit reinterpret. Float is the
-                    // numeric tower (PLAN §8: int/bool/gradual → f64); bool is the
-                    // Dyn→`Raw(I8)` checked unbox (`rt_unbox_bool`). Route through
-                    // the shared helper (which only emits the checked unbox for a
+                let ty = self.func.exprs[*value].ty.clone();
+                // A gradual value into an annotated `: float`/`: bool` local is a
+                // real (checked) coercion, not a bit reinterpret. Float is the
+                // numeric tower (PLAN §8: int/bool/gradual → f64); bool is the
+                // Dyn→`Raw(I8)` checked unbox (`rt_unbox_bool`).
+                let raw_checked =
+                    matches!(target_repr, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8));
+                // PLAN §1 read-back seam: a genuinely-`Dyn` value (a `Dyn` global
+                // / field / element read as `Tagged`) assigned into an annotated
+                // guard-backed `Heap` local (`list`/`str`/`dict`/…/class instance)
+                // takes the CHECKED `Tagged → Heap(shape)` coercion
+                // (`rt_check_heap_kind`/`rt_check_instance`) instead of the
+                // unchecked `TaggedToHeap` trust — the store analogue of the call/
+                // return seams. Gated on a genuinely gradual source (`vrepr ==
+                // Tagged`, `ty` gradual) so statically-typed `Heap` assignments —
+                // including subclass class→class casts that need `coerce_into`'s
+                // tagged-baseline reroute — keep the unchecked path untouched.
+                let heap_checked = vrepr == Repr::Tagged
+                    && matches!(ty, SemTy::Dyn | SemTy::Union(_))
+                    && matches!(&target_repr, Repr::Heap(s) if s.dyn_check().is_some());
+                if raw_checked || heap_checked {
+                    // The shared helper only emits the runtime guard for a
                     // genuinely gradual source — a statically-proven value stays a
-                    // Noop), then store into the existing slot (a same-repr copy).
-                    let ty = self.func.exprs[*value].ty.clone();
-                    let f = self.coerce_value(vloc, vrepr, &ty, target_repr.clone())?;
-                    self.coerce_into(*target, f, target_repr.clone(), target_repr)?;
+                    // Noop — then we store into the existing slot (a same-repr copy).
+                    let v = self.coerce_value(vloc, vrepr, &ty, target_repr.clone())?;
+                    self.coerce_into(*target, v, target_repr.clone(), target_repr)?;
                 } else {
                     self.coerce_into(*target, vloc, vrepr, target_repr)?;
                 }

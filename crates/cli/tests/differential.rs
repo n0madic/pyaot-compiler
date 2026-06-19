@@ -715,6 +715,32 @@ const PHASE_CORPUS: &[&str] = &[
     // declaration form, a float-field→float-param interaction, and the bignum
     // arm. Divergence-safe (`==` + float-forced prints), sibling of p44.
     "p45_in_method_field_annot.py",
+    // Gradual heap-arg shape guard (PLAN §1, the last backlog item): a
+    // genuinely-`Dyn` value flowing into a typed `Heap` parameter (builtin
+    // container `str`/`list`/`dict`/`set`/`tuple`, or a user-class instance)
+    // takes a CHECKED `Tagged -> Heap(shape)` coercion — `rt_check_heap_kind` /
+    // `rt_check_instance` raise `TypeError` at the boundary instead of crashing
+    // later at a container op (the `Heap` analogue of §8's `rt_unbox_float`).
+    // The `Dyn` source is an unannotated passthrough (genuine `Dyn`, not a
+    // Union). Correct path: a `Dyn` that IS the shape passes (asserted via
+    // `len`/`.name`). Error path: a `Dyn` int -> `TypeError`, caught and printed
+    // as a fixed string — divergence-safe (pyaot raises at the call guard,
+    // CPython at the body's `len(int)`; identical stdout, no prior side effect).
+    // Class instances cover the subclass-aware CORRECT path (`Dog` into an
+    // `Animal` param); the class reject path diverges (CPython `AttributeError`,
+    // not `TypeError`) so it is pinned by a runtime unit test instead.
+    "p46_heap_arg_guard.py",
+    // PLAN §1 follow-up — the two originally-deferred seams, now closed:
+    // (1) the READ-BACK seam — a genuinely-`Dyn` value (a `Dyn` global / field /
+    // value read as `Tagged`) assigned into an annotated guard-backed `Heap`
+    // LOCAL (`x: list = <dyn>`) takes the same CHECKED `Tagged → Heap(shape)`
+    // coercion at the store, so a wrong shape raises `TypeError` at the guard
+    // instead of crashing at a later typed op (`.append` / typed `x[i]`); and
+    // (2) the CLASS-REJECT path made differential-testable by catching both
+    // `TypeError` (pyaot, at `rt_check_instance`) and `AttributeError` (CPython,
+    // at `.name`) — identical fixed-string stdout. Container error paths are
+    // likewise caught broadly. The `Dyn` source is an unannotated passthrough.
+    "p47_heap_readback_guard.py",
     // The full class-feature corpus (3749 lines), now byte-exact 95/95 end-to-
     // end. Caps the OOP/dispatch cluster above: `__init__`/`__slots__`,
     // inheritance + C3 MRO, dunders (arithmetic/compare/`__lt__` sort ordering,

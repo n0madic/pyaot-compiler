@@ -485,20 +485,26 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // Pair-legality is unreachable via `CoerceInst::new`/`new_checked`
             // — kept as defense-in-depth against in-crate construction.
             if c.checked {
-                // A checked (runtime-validated) unbox is legal ONLY for the three
-                // raw-ABI boundary shapes (Phase 8H, D3; Phase 1 of the
-                // test_functions.py lift). These three shapes (`Tagged→Raw(F64)`,
-                // `Tagged→Raw(I64)`, `Tagged→Raw(I8)`) are the only checked
-                // admissions because each has a matching runtime guard that raises
-                // `TypeError` instead of SEGV (`rt_unbox_float` / `rt_unbox_int` /
-                // `rt_unbox_bool`, `runtime/src/boxing.rs`). Never widen this set
-                // without adding the matching `rt_*` guard first — doing so reopens
-                // the Phase 8B–8F gradual-seam SEGV family. See PITFALLS B18.
+                // A checked (runtime-validated) coercion is legal ONLY for the
+                // guard-backed gradual seams (mirrors `CoerceInst::new_checked`):
+                //  - the three raw-ABI unbox shapes `Tagged→Raw(F64|I64|I8)`
+                //    (Phase 8H, D3) backed by `rt_unbox_float`/`rt_unbox_int`/
+                //    `rt_unbox_bool`;
+                //  - a `Tagged→Heap(shape)` shape guard for any `shape` whose
+                //    `dyn_check` is `Some` (PLAN §1) backed by
+                //    `rt_check_heap_kind`/`rt_check_instance`.
+                // Each has a matching runtime guard that raises `TypeError`
+                // instead of SEGV. Never widen this set without adding the
+                // matching `rt_*` guard first — doing so reopens the Phase 8B–8F
+                // gradual-seam SEGV family. See PITFALLS B18.
                 let legal = c.from == Repr::Tagged
-                    && matches!(
-                        c.to,
-                        Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8)
-                    );
+                    && match &c.to {
+                        Repr::Raw(RawKind::F64)
+                        | Repr::Raw(RawKind::I64)
+                        | Repr::Raw(RawKind::I8) => true,
+                        Repr::Heap(shape) => shape.dyn_check().is_some(),
+                        _ => false,
+                    };
                 if !legal {
                     return Err(VerifyError::IllegalCoercion {
                         from: c.from.clone(),
@@ -1318,15 +1324,24 @@ mod tests {
     }
 
     #[test]
-    fn checked_coerce_legal_only_for_raw_unbox_shapes() {
-        // Phase 8H, D3 + Phase 1 lift: `checked: true` is legal for the three
-        // unbox shapes (Tagged, Raw(F64)) / (Tagged, Raw(I64)) / (Tagged,
-        // Raw(I8)) — each backed by a raising `rt_unbox_*` guard — and nothing
-        // else (B18).
+    fn checked_coerce_legal_only_for_guard_backed_shapes() {
+        // Phase 8H, D3 + Phase 1 lift + PLAN §1: `checked: true` is legal for the
+        // three Raw unbox shapes (Tagged, Raw(F64)) / (Tagged, Raw(I64)) /
+        // (Tagged, Raw(I8)) — each backed by a raising `rt_unbox_*` guard — AND
+        // for any `Tagged → Heap(shape)` whose `dyn_check` is `Some` (the
+        // `rt_check_heap_kind`/`rt_check_instance` guards) — and nothing else
+        // (B18).
         for to in [
             Repr::Raw(RawKind::F64),
             Repr::Raw(RawKind::I64),
             Repr::Raw(RawKind::I8),
+            Repr::Heap(HeapShape::Str),
+            Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))),
+            Repr::Heap(HeapShape::Dict(
+                Box::new(Repr::Tagged),
+                Box::new(Repr::Tagged),
+            )),
+            Repr::Heap(HeapShape::Class(pyaot_utils::ClassId::new(3))),
         ] {
             let ok = single_block(
                 vec![Repr::Tagged, to.clone()],
@@ -1357,6 +1372,23 @@ mod tests {
         );
         assert!(matches!(
             verify(&bad, &[]),
+            Err(VerifyError::IllegalCoercion { .. })
+        ));
+        // A guard-LESS Heap shape (`BigInt` has no `dyn_check`) is rejected even
+        // though it is a `Heap` target — only guard-backed shapes are checked.
+        let bad_heap = single_block(
+            vec![Repr::Tagged, Repr::Heap(HeapShape::BigInt)],
+            vec![MirInst::Coerce(CoerceInst {
+                dst: LocalId::new(1),
+                src: Operand::Local(LocalId::new(0)),
+                from: Repr::Tagged,
+                to: Repr::Heap(HeapShape::BigInt),
+                checked: true,
+            })],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(
+            verify(&bad_heap, &[]),
             Err(VerifyError::IllegalCoercion { .. })
         ));
     }

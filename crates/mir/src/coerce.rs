@@ -40,25 +40,34 @@ impl CoerceInst {
         })
     }
 
-    /// A CHECKED (runtime-validated) unbox at a stdlib raw-ABI boundary
-    /// (Phase 8H, D3) — `Some` iff `from` is `Tagged` and `to` is `Raw(F64)`,
-    /// `Raw(I64)`, or `Raw(I8)` (the `rt_unbox_float` / `rt_unbox_int` /
-    /// `rt_unbox_bool` shapes).
+    /// A CHECKED (runtime-validated) coercion across a gradual seam — `Some`
+    /// iff `from` is `Tagged` and `to` is one of the guard-backed shapes:
     ///
-    /// These three shapes (`Tagged→Raw(F64)`, `Tagged→Raw(I64)`,
-    /// `Tagged→Raw(I8)`) are the only checked admissions because each has a
-    /// matching runtime guard that raises `TypeError` instead of SEGV
-    /// (`rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`,
-    /// `runtime/src/boxing.rs`). Never widen this set without adding the matching
-    /// `rt_*` guard first — doing so reopens the Phase 8B–8F gradual-seam SEGV
-    /// family (a wrong-shape `Value` blind-cast to a typed heap pointer in a
-    /// frozen `rt_*`). See PITFALLS B18.
+    /// - **Raw unbox** (Phase 8H, D3): `Raw(F64)` / `Raw(I64)` / `Raw(I8)` —
+    ///   `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool` (`runtime/src/boxing.rs`).
+    /// - **Heap shape guard** (PLAN §1): `Heap(shape)` for any `shape` whose
+    ///   [`HeapShape::dyn_check`] is `Some` (builtin containers + class
+    ///   instances) — `rt_check_heap_kind` / `rt_check_instance`
+    ///   (`runtime/src/instance.rs`). The rare guard-less shapes
+    ///   (`BigInt`/`RuntimeObj`/`Iterator`) keep the unchecked `TaggedToHeap`
+    ///   reinterpret (`new`).
+    ///
+    /// Each admitted shape has a matching runtime guard that raises `TypeError`
+    /// instead of SEGV when a wrong-shape `Value` arrives. Never widen this set
+    /// without adding the matching `rt_*` guard first — doing so reopens the
+    /// Phase 8B–8F gradual-seam SEGV family (a wrong-shape `Value` blind-cast to
+    /// a typed register/heap pointer in a frozen `rt_*`). See PITFALLS B18.
     pub fn new_checked(dst: LocalId, src: Operand, from: Repr, to: Repr) -> Option<Self> {
         let legal = from == Repr::Tagged
-            && matches!(
-                to,
-                Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8)
-            );
+            && match &to {
+                Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8) => true,
+                // PLAN §1: a gradual `Tagged → Heap(shape)` coercion is checked
+                // iff the shape has a matching raising guard — exactly the
+                // shapes `dyn_check` returns `Some` for. B18: never admit a
+                // guard-less Heap shape (it would reopen the blind-cast SEGV).
+                Repr::Heap(shape) => shape.dyn_check().is_some(),
+                _ => false,
+            };
         if !legal {
             return None;
         }
@@ -141,7 +150,8 @@ mod tests {
     }
 
     #[test]
-    fn checked_admits_only_the_three_unbox_shapes() {
+    fn checked_admits_only_guard_backed_shapes() {
+        // The three Raw unbox shapes, each backed by `rt_unbox_*`.
         assert!(
             CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::F64))
                 .is_some_and(|c| c.checked())
@@ -155,6 +165,33 @@ mod tests {
             CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8))
                 .is_some_and(|c| c.checked())
         );
+        // PLAN §1: guard-backed Heap shapes (builtin containers + class
+        // instances) are now also admissible — `rt_check_heap_kind` /
+        // `rt_check_instance`.
+        for shape in [
+            HeapShape::Str,
+            HeapShape::Bytes,
+            HeapShape::List(Box::new(Repr::Tagged)),
+            HeapShape::Dict(Box::new(Repr::Tagged), Box::new(Repr::Tagged)),
+            HeapShape::Set(Box::new(Repr::Tagged)),
+            HeapShape::Tuple(vec![Repr::Tagged]),
+            HeapShape::TupleVar(Box::new(Repr::Tagged)),
+            HeapShape::Class(pyaot_utils::ClassId::new(3)),
+        ] {
+            assert!(
+                CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Heap(shape.clone()))
+                    .is_some_and(|c| c.checked()),
+                "checked Tagged -> Heap({shape:?}) must be admissible"
+            );
+        }
+        // A guard-LESS Heap shape (no `dyn_check`) stays unchecked-only (B18).
+        assert!(CoerceInst::new_checked(
+            l(1),
+            op(0),
+            Repr::Tagged,
+            Repr::Heap(HeapShape::BigInt)
+        )
+        .is_none());
         // Wrong source is unrepresentable.
         assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Tagged).is_none());
         assert!(CoerceInst::new_checked(

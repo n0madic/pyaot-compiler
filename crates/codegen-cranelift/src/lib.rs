@@ -41,7 +41,7 @@ use pyaot_mir::{
     classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp,
     LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
-use pyaot_types::{RawKind, Repr};
+use pyaot_types::{HeapCheck, RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
 
 const FLOAT_VALUE_OFFSET: i32 = pyaot_core_defs::layout::FLOAT_OBJ_VALUE_OFFSET;
@@ -69,6 +69,10 @@ struct RuntimeFns {
     unbox_float_checked: FuncId,
     unbox_int_checked: FuncId,
     unbox_bool_checked: FuncId,
+    /// PLAN §1 gradual heap-arg shape guards (raise `TypeError` on a wrong-shape
+    /// `Dyn` value at the boundary instead of a deferred container-op crash).
+    check_heap_kind: FuncId,
+    check_instance: FuncId,
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
@@ -295,6 +299,11 @@ impl RuntimeFns {
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
             unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
             unbox_bool_checked: d("rt_unbox_bool", &[ti], &[t8])?,
+            // PLAN §1: `(value, kind|class_id) -> value` — return the same tagged
+            // value on a match, raise `TypeError` otherwise. NOT in
+            // `never_raises`, so the TypeError edge auto-wires the handler.
+            check_heap_kind: d("rt_check_heap_kind", &[ti, ti], &[ti])?,
+            check_instance: d("rt_check_instance", &[ti, ti], &[ti])?,
             // Raw i64 arithmetic (Phase 3c): used only on range-proven cursors.
             // These RAISE OverflowError on i64 overflow (unlike CPython's bignum
             // promotion), so they are correct only where overflow provably cannot
@@ -2394,14 +2403,35 @@ impl FnGen<'_, '_> {
         to: &Repr,
         checked: bool,
     ) -> Result<()> {
-        // A checked unbox (Phase 8H, D3) validates the tag at runtime —
-        // `rt_unbox_float` / `rt_unbox_int` raise TypeError on mismatch.
+        // A checked coercion validates the tag at runtime — the Raw unbox shapes
+        // (`rt_unbox_float`/`rt_unbox_int`/`rt_unbox_bool`, Phase 8H D3) and the
+        // gradual Heap shape guards (`rt_check_heap_kind`/`rt_check_instance`,
+        // PLAN §1) all raise `TypeError` on a wrong-shape value instead of SEGV.
         if checked {
             let s = self.use_operand(src);
             let v = match to {
                 Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I8) => self.call(self.rt.unbox_bool_checked, &[s]).unwrap(),
+                // PLAN §1: a guarded `Tagged → Heap(shape)` coercion calls the
+                // shape's raising guard and returns the same tagged value on a
+                // match. The `dyn_check` is `Some` by construction — lowering
+                // only emits a checked heap coerce for a guarded shape (B18).
+                Repr::Heap(shape) => match shape.dyn_check() {
+                    Some(HeapCheck::Kind(code)) => {
+                        let kind = self.builder.ins().iconst(types::I64, code as i64);
+                        self.call(self.rt.check_heap_kind, &[s, kind]).unwrap()
+                    }
+                    Some(HeapCheck::Class(cid)) => {
+                        let class_id = self.builder.ins().iconst(types::I64, cid.0 as i64);
+                        self.call(self.rt.check_instance, &[s, class_id]).unwrap()
+                    }
+                    None => {
+                        return Err(cg_error(format!(
+                            "illegal checked coercion to guard-less Heap {shape:?}"
+                        )))
+                    }
+                },
                 other => return Err(cg_error(format!("illegal checked coercion to {other:?}"))),
             };
             self.def_local(dst, v);

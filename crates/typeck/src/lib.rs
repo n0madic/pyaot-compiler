@@ -693,11 +693,18 @@ enum ReinterpretKind {
     /// a gradual `Dyn` value is unsafe: rejected unless a proven subtype.
     Strict,
     /// `TaggedToHeap` (`Heap(_)`): re-types a tagged value as a heap pointer of the
-    /// assumed shape. Bit-identical, so a wrong value does not misread immediately —
-    /// it crashes *later* at a container op (CPython would `TypeError` there). A
-    /// concrete non-matching type (`int` into a `list[int]` slot) is still rejected
-    /// loudly; a gradual `Dyn` value is admitted (a future runtime guard, exactly as
-    /// uniform-tagged iteration elements legitimately produce `Dyn → Heap` bindings).
+    /// assumed shape. Bit-identical, so a wrong value does not misread immediately.
+    /// A concrete non-matching type (`int` into a `list[int]` slot) is rejected
+    /// loudly here; a gradual `Dyn` value is admitted, exactly as uniform-tagged
+    /// iteration elements legitimately produce `Dyn → Heap` bindings. At a
+    /// call/arg/return seam OR an annotated-local read-back (`x: list =
+    /// <dyn global/field/value>`) that admitted `Dyn → Heap` is no longer a blind
+    /// cast: lowering emits a CHECKED coercion (PLAN §1) that calls a raising
+    /// runtime guard (`rt_check_heap_kind` / `rt_check_instance`) so a wrong-shape
+    /// gradual value becomes a clean `TypeError` at the boundary instead of
+    /// crashing later at a container op. (A direct field/global STORE of a `Dyn`
+    /// value is still governed by its store-side rule — `box_float_for_slot` for
+    /// numeric slots, the unchecked tagged store otherwise.)
     Gradual,
     /// `Repr::Closure(sig)` (Phase 6A): the slot's signature IS the indirect-call
     /// ABI, so a stored callable must match it at the *representation* level

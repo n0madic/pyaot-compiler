@@ -56,6 +56,54 @@ pub enum HeapShape {
     Iterator(Box<Repr>),
 }
 
+/// The runtime shape-guard a gradual `Tagged → Heap(shape)` coercion needs to
+/// stay safe (PLAN §1): when a genuinely-`Dyn` value flows into a typed heap
+/// slot, lowering emits a CHECKED coercion that calls one of these guards
+/// (`rt_check_heap_kind` / `rt_check_instance`) to raise `TypeError` at the
+/// boundary instead of crashing later at the first container op. This is the
+/// `Heap` analogue of the `Raw` checked-unbox family (`rt_unbox_float`/…).
+/// See PITFALLS B18: a checked `Heap` coercion is admissible ONLY for the
+/// shapes with a matching raising guard — exactly the set
+/// [`HeapShape::dyn_check`] returns `Some` for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeapCheck {
+    /// A builtin-container tag check — `code` is a
+    /// [`pyaot_core_defs::isinstance_kind`] code (`str`/`bytes`/`list`/`dict`/
+    /// `set`/`tuple`). The `dict` code is family-aware at the runtime
+    /// (`Dict`/`DefaultDict`/`Counter` share one layout); the rest are
+    /// subtype-free singletons (user classes cannot subclass builtins), so an
+    /// exact-tag check is regression-safe.
+    Kind(u8),
+    /// A user-class instance check — subclass-aware (`rt_class_inherits_from`),
+    /// so a `Dog` value passes an `Animal` param.
+    Class(ClassId),
+}
+
+impl HeapShape {
+    /// The runtime guard a gradual `Tagged → Heap(self)` coercion must call, or
+    /// `None` for the rare shapes that keep the unchecked reinterpret
+    /// (`BigInt`/`RuntimeObj`/`Iterator` — no isinstance code and no nominal
+    /// class to check against).
+    ///
+    /// This single mapping is the source of truth consumed by `mir`'s checked
+    /// admission ([`crate`]-external `CoerceInst::new_checked`), `lowering`'s
+    /// needs-check gate (`coerce_value`), and `codegen`'s guard dispatch
+    /// (`lower_coerce`) — no logic is duplicated across the three crates.
+    pub fn dyn_check(&self) -> Option<HeapCheck> {
+        use pyaot_core_defs::isinstance_kind as k;
+        match self {
+            HeapShape::Str => Some(HeapCheck::Kind(k::STR as u8)),
+            HeapShape::Bytes => Some(HeapCheck::Kind(k::BYTES as u8)),
+            HeapShape::List(_) => Some(HeapCheck::Kind(k::LIST as u8)),
+            HeapShape::Dict(..) => Some(HeapCheck::Kind(k::DICT as u8)),
+            HeapShape::Set(_) => Some(HeapCheck::Kind(k::SET as u8)),
+            HeapShape::Tuple(_) | HeapShape::TupleVar(_) => Some(HeapCheck::Kind(k::TUPLE as u8)),
+            HeapShape::Class(cid) => Some(HeapCheck::Class(*cid)),
+            HeapShape::BigInt | HeapShape::RuntimeObj(_) | HeapShape::Iterator(_) => None,
+        }
+    }
+}
+
 /// A function-pointer signature at the representation level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigRepr {
