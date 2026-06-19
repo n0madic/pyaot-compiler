@@ -613,6 +613,21 @@ const PHASE_CORPUS: &[&str] = &[
     // hash-randomized set print to `sorted()`. Byte-matches CPython end-to-end
     // (debug + release).
     "test_collections_dict_set_bytes.py",
+    // `collections` §10 — `defaultdict`, `deque` mutation/subscript, and
+    // `OrderedDict`. Pure front-half WIRING over the pre-existing, byte-clean
+    // runtime (`defaultdict.rs`, `deque.rs`, `rt_dict_move_to_end`,
+    // `rt_dict_popitem_ordered`). A `defaultdict` is a new built-in generic base
+    // (`BUILTIN_DEFAULTDICT_CLASS_ID`) whose repr is honestly `Heap(Dict(K, V))`,
+    // so `dict_kv()` treats it as a dict everywhere (store, del, `.get`/`.keys`/
+    // `.values`, `==`, iter) with zero new arms; the ONE divergence — the
+    // auto-inserting subscript-read — is keyed on `is_defaultdict` before the
+    // generic dict-read path. The factory Name (`int`/`list`/…) maps to a raw tag
+    // (never lowered as a value — the old `undefined name 'set'` bug) that both
+    // the frontend and typeck decode to the typed `V`. `deque` grows `dq[i]` /
+    // `dq[i] = v` / `del dq[i]`, `maxlen` construction, and the `in` ring walk;
+    // `OrderedDict.move_to_end`/`popitem(last)` extend the dict method surface.
+    // Byte-matches CPython end-to-end (debug + release).
+    "test_collections.py",
     // Verified-clean lifts (compile + runtime-diff MATCH at ~0 code): PEP 563
     // `from __future__ import annotations` (string-form annotations ignored at
     // runtime), a GC smoke test, the generator surface, and print() formatting/

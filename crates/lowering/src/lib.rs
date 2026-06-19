@@ -792,6 +792,29 @@ impl<'a> FnLower<'a> {
             )?;
             return Ok(());
         }
+        // deque item assignment (§10): `dq[i] = v` — O(1) ring-buffer write
+        // (negative indices + bounds checks inside `rt_deque_set`). The index is a
+        // RAW i64, the value Tagged. `sub_kind` would classify a deque as `Generic`
+        // and reject the assignment, so handle it before that dispatch.
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::Deque) {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let idx = self.coerce_to_i64(il, ir)?;
+            let (vl, vr) = self.lower_expr(value)?;
+            let val = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit(MirInst::CallRuntime {
+                dst: None,
+                def: &rf::RT_DEQUE_SET,
+                args: vec![
+                    Operand::Local(recv),
+                    Operand::Local(idx),
+                    Operand::Local(val),
+                ],
+            });
+            return Ok(());
+        }
         let kind = sub_kind(
             &self.func.exprs[base].ty,
             &repr_of(&self.func.exprs[base].ty),
@@ -3752,6 +3775,43 @@ impl<'a> FnLower<'a> {
             });
             return self.normalize_container_result(dst, Repr::Tagged);
         }
+        // defaultdict subscript (§10): `dd[key]` AUTO-CREATES the factory default
+        // on a MISSING key (defaultdict's defining divergence — no KeyError), then
+        // inserts and returns it. Keyed on the defaultdict base BEFORE the generic
+        // dict-read path below (a `defaultdict_of` matches `dict_kv()`, so `sub_kind`
+        // would otherwise route it to `rt_dict_get` = KeyError). The key rides
+        // Tagged (like dict/Counter get).
+        if bt.is_defaultdict() {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let key = self.coerce(il, ir, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &rf::RT_DEFAULT_DICT_GET,
+                args: vec![Operand::Local(recv), Operand::Local(key)],
+            });
+            return self.normalize_container_result(dst, Repr::Tagged);
+        }
+        // deque subscript (§10): `dq[i]` — O(1) ring-buffer access (negative
+        // indices and bounds checks handled inside `rt_deque_get`). The index is a
+        // RAW i64 (like list get/set); the result is a tagged element.
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::Deque) {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let idx = self.coerce_to_i64(il, ir)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &rf::RT_DEQUE_GET,
+                args: vec![Operand::Local(recv), Operand::Local(idx)],
+            });
+            return self.normalize_container_result(dst, Repr::Tagged);
+        }
         let kind = sub_kind(
             &self.func.exprs[base].ty,
             &repr_of(&self.func.exprs[base].ty),
@@ -4137,6 +4197,43 @@ impl<'a> FnLower<'a> {
                 // d.popitem()` unpacks through the gradual seam.
                 M::Popitem if argn == 0 => {
                     self.method_scalar(ContainerOp::DictPopitem, recv_arg, vec![])
+                }
+                // `popitem(last)` (OrderedDict, §10) — `last` truthy → LIFO (end),
+                // falsy → FIFO (front). The flag rides a RAW i64 (UntagInt on a
+                // tagged bool yields 0/1 since INT_SHIFT == BOOL_SHIFT). Tagged
+                // result so `k, v = od.popitem(last)` unpacks through the gradual
+                // seam, exactly like the 0-arg form above.
+                M::Popitem if argn == 1 => {
+                    let recv = self.coerce(recv_arg.0, recv_arg.1.clone(), Repr::Tagged)?;
+                    let last = self.coerce_to_i64(a[0].0, a[0].1.clone())?;
+                    let dst = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::CallRuntime {
+                        dst: Some(dst),
+                        def: &pyaot_core_defs::runtime_func_def::RT_DICT_POPITEM_ORDERED,
+                        args: vec![Operand::Local(recv), Operand::Local(last)],
+                    });
+                    self.normalize_container_result(dst, Repr::Tagged)
+                }
+                // `move_to_end(key, last=True)` (OrderedDict, §10) — move an
+                // existing key to either end; mutates in place, returns None.
+                M::MoveToEnd if argn == 1 || argn == 2 => {
+                    let recv = self.coerce(recv_arg.0, recv_arg.1.clone(), Repr::Tagged)?;
+                    let key = self.coerce(a[0].0, a[0].1.clone(), Repr::Tagged)?;
+                    let last = if argn == 2 {
+                        self.coerce_to_i64(a[1].0, a[1].1.clone())?
+                    } else {
+                        self.raw_i64_const(1)
+                    };
+                    self.emit(MirInst::CallRuntime {
+                        dst: None,
+                        def: &pyaot_core_defs::runtime_func_def::RT_DICT_MOVE_TO_END,
+                        args: vec![
+                            Operand::Local(recv),
+                            Operand::Local(key),
+                            Operand::Local(last),
+                        ],
+                    });
+                    self.none_value()
                 }
                 // `d.fromkeys(keys[, value])` — the receiver (already lowered
                 // above for its side effects) is discarded; `rt_dict_fromkeys`

@@ -9,8 +9,8 @@ use pyaot_core_defs::{BuiltinExceptionKind, TypeTagKind};
 use pyaot_utils::{ClassId, InternedString};
 
 use crate::builtin_classes::{
-    BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
-    BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
+    BUILTIN_DEFAULTDICT_CLASS_ID, BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID,
+    BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
 };
 
 /// A callable signature at the semantic level.
@@ -144,6 +144,35 @@ impl SemTy {
             args: vec![elem],
         }
     }
+    /// `collections.defaultdict[K, V]`. Physically a `DictObj`
+    /// (`repr_of` → `Heap(Dict(K, V))`); the only behavioral divergence from a
+    /// plain dict is the subscript-read (auto-insert the factory default on a
+    /// miss). `dict_kv()` matches this base so every dict-keyed site treats it
+    /// as a dict; the read divergence is keyed on [`SemTy::is_defaultdict`].
+    pub fn defaultdict_of(k: SemTy, v: SemTy) -> SemTy {
+        SemTy::Generic {
+            base: BUILTIN_DEFAULTDICT_CLASS_ID,
+            args: vec![k, v],
+        }
+    }
+    /// The value `SemTy` a `defaultdict(...)` factory tag denotes (the runtime
+    /// `FACTORY_*` constants in `runtime/src/defaultdict.rs`). This is the single
+    /// source of truth shared by the frontend (which maps a factory Name → tag)
+    /// and typeck (which recovers `V` from the tag literal the construction call
+    /// carries, since the descriptor's return `TypeSpec` cannot encode a per-call
+    /// value type). An unknown / absent (`-1`) tag is gradual `Dyn`.
+    pub fn defaultdict_value_ty(tag: i64) -> SemTy {
+        match tag {
+            0 => SemTy::Int,
+            1 => SemTy::Float,
+            2 => SemTy::Str,
+            3 => SemTy::Bool,
+            4 => SemTy::list_of(SemTy::Dyn),
+            5 => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
+            6 => SemTy::set_of(SemTy::Dyn),
+            _ => SemTy::Dyn,
+        }
+    }
 
     /// `Optional[T]` sugar (`Union[T, None]`).
     pub fn optional(t: SemTy) -> SemTy {
@@ -162,13 +191,27 @@ impl SemTy {
             _ => None,
         }
     }
+    /// The `(K, V)` of a `dict[K, V]` OR a `defaultdict[K, V]` — both share the
+    /// `DictObj` layout, so every dict-keyed site (store, del, `.get`/`.keys`/
+    /// `.values`, subscript typing, iter) transparently treats a defaultdict as
+    /// a dict. The defaultdict-only subscript-read divergence is gated separately
+    /// by [`SemTy::is_defaultdict`], checked *before* the generic dict-read path.
     pub fn dict_kv(&self) -> Option<(&SemTy, &SemTy)> {
         match self {
-            SemTy::Generic { base, args } if *base == BUILTIN_DICT_CLASS_ID && args.len() == 2 => {
+            SemTy::Generic { base, args }
+                if (*base == BUILTIN_DICT_CLASS_ID || *base == BUILTIN_DEFAULTDICT_CLASS_ID)
+                    && args.len() == 2 =>
+            {
                 Some((&args[0], &args[1]))
             }
             _ => None,
         }
+    }
+    /// True iff this is a `defaultdict[K, V]` base — the one site where a
+    /// defaultdict diverges from a plain dict (the auto-inserting subscript-read)
+    /// keys off this, never off a method name (the §10 trap).
+    pub fn is_defaultdict(&self) -> bool {
+        matches!(self, SemTy::Generic { base, .. } if *base == BUILTIN_DEFAULTDICT_CLASS_ID)
     }
     pub fn set_elem(&self) -> Option<&SemTy> {
         match self {

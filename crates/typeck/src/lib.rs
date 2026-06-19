@@ -1627,6 +1627,12 @@ impl FuncState {
             SemTy::list_of(join_slot(&elems))
         } else if is_set {
             SemTy::set_of(join_slot(&elems))
+        } else if base.is_defaultdict() {
+            // A defaultdict shares the dict `(K, V)` accessor but must keep its own
+            // base through the re-solve — otherwise the auto-inserting subscript-read
+            // divergence (keyed on `is_defaultdict`) is lost and `dd[k]` would route
+            // to the plain `rt_dict_get` (KeyError) path.
+            SemTy::defaultdict_of(join_slot(&keys), join_slot(&dvals))
         } else {
             SemTy::dict_of(join_slot(&keys), join_slot(&dvals))
         }
@@ -1890,6 +1896,28 @@ impl<'a> Sweeper<'a> {
             // `TypeSpec` (Phase 8B); arg/param compatibility is enforced in
             // `check_repr_boundaries` (the contract seam, like calls).
             HirExprKind::CallRuntime { target, args, .. } => {
+                // defaultdict construction (§10): the descriptor's return
+                // `TypeSpec` is `Any` (it cannot carry a per-call value type), so
+                // recover `defaultdict_of(Dyn, V)` from the factory-tag literal the
+                // frontend emitted as arg 1 — the single source of truth for the
+                // tag → value-type mapping is `SemTy::defaultdict_value_ty`.
+                if let pyaot_hir::RuntimeCallTarget::Func(f) = target {
+                    if f.runtime_name == "rt_make_defaultdict" && f.params.len() == 2 {
+                        let tag = args
+                            .get(1)
+                            .copied()
+                            .flatten()
+                            .and_then(|idx| match self.func.exprs[idx].kind {
+                                HirExprKind::IntLit(v) => Some(v),
+                                _ => None,
+                            })
+                            .unwrap_or(-1);
+                        return SemTy::defaultdict_of(
+                            SemTy::Dyn,
+                            SemTy::defaultdict_value_ty(tag),
+                        );
+                    }
+                }
                 let base = target.result_semty();
                 // `open(...)`'s File is text or binary by its (constant) mode
                 // literal — a `b` in the mode string (Phase 8C).
@@ -2605,7 +2633,8 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             M::Keys => SemTy::list_of(k.clone()),
             M::Values => SemTy::list_of(v.clone()),
             M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
-            M::Update | M::Clear => none,
+            // `OrderedDict.move_to_end(...)` mutates in place → `None`.
+            M::Update | M::Clear | M::MoveToEnd => none,
             M::Copy => recv.clone(),
             // `d.fromkeys(keys[, value])` → a fresh dict. The value type is not
             // visible here (no arg types), so type it `dict[Dyn, Dyn]`; an

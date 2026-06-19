@@ -666,6 +666,9 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
                 // Use linear search with value equality
                 rt_list_contains_value(container, elem)
             }
+            // A deque has no `rt_*_contains` of its own; reuse the value-equality
+            // ring walk that backs `deque.count` (membership = count > 0).
+            TypeTagKind::Deque => (crate::deque::rt_deque_count(container, elem) > 0) as i8,
             TypeTagKind::Str => crate::string::rt_str_contains(elem, container),
             TypeTagKind::Tuple => {
                 // Use linear search with value equality

@@ -14,7 +14,7 @@
 
 use crate::boxing::rt_box_float;
 #[allow(unused_imports)]
-use crate::debug_assert_type_tag;
+use crate::debug_assert_dict_family;
 use crate::dict::{
     real_entries_capacity, rt_dict_get, rt_dict_set, CAPACITY_MASK, FACTORY_TAG_SHIFT,
 };
@@ -76,7 +76,9 @@ pub fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(dd, TypeTagKind::Dict, "rt_defaultdict_get");
+        // `dd` is a `DefaultDict` tag (dict-family layout); accept the whole
+        // dict family so the debug seam guard does not panic on it.
+        debug_assert_dict_family!(dd, "rt_defaultdict_get");
         // First try regular dict get — returns null if not found
         let result = rt_dict_get_or_null(dd as *mut DictObj, key);
         if !result.is_null() {

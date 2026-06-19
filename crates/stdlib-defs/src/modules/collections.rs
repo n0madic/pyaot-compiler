@@ -132,6 +132,25 @@ pub static DEFAULTDICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::new("rt_make_defaultdict", &[P_I64], Some(R_I64), false),
 };
 
+/// `defaultdict(factory?)` construction target — the frontend's
+/// `lower_defaultdict_construct` routes here after mapping the factory Name to a
+/// raw tag (it never `lower_expr`s the factory). Both args are RAW i64
+/// (`capacity`, `factory_tag`); the result type is set to `defaultdict_of(Dyn,
+/// V)` at the call site, not derived from this descriptor.
+pub static DEFAULTDICT_MAKE: StdlibFunctionDef = StdlibFunctionDef {
+    name: "defaultdict",
+    runtime_name: "rt_make_defaultdict",
+    params: &[
+        ParamDef::required("capacity", TypeSpec::Int),
+        ParamDef::required("factory_tag", TypeSpec::Int),
+    ],
+    return_type: TypeSpec::Any,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_defaultdict", &[P_I64, P_I64], Some(R_I64), true),
+};
+
 // =============================================================================
 // Counter
 // =============================================================================
@@ -488,6 +507,35 @@ pub static DEQUE_FROM_ITER: StdlibFunctionDef = StdlibFunctionDef {
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_make_deque_from_iter", &[P_I64], Some(R_I64), true),
+};
+
+/// `deque(maxlen=N)` — empty, bounded. The 0-iterable + `maxlen` construction
+/// target; `maxlen` is a RAW i64 (`-1` is the unbounded sentinel).
+pub static DEQUE_MAKE_MAXLEN: StdlibFunctionDef = StdlibFunctionDef {
+    name: "deque",
+    runtime_name: "rt_make_deque",
+    params: &[ParamDef::required("maxlen", TypeSpec::Int)],
+    return_type: TypeSpec::Deque,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_make_deque", &[P_I64], Some(R_I64), true),
+};
+
+/// `deque(iterable, maxlen=N)` — bounded, built from an `iter()`-wrapped
+/// iterable. The iterator is a tagged Value; `maxlen` is a RAW i64.
+pub static DEQUE_FROM_ITER_MAXLEN: StdlibFunctionDef = StdlibFunctionDef {
+    name: "deque",
+    runtime_name: "rt_deque_from_iter",
+    params: &[
+        ParamDef::required("iterator", TypeSpec::Any),
+        ParamDef::required("maxlen", TypeSpec::Int),
+    ],
+    return_type: TypeSpec::Deque,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_deque_from_iter", &[P_I64, P_I64], Some(R_I64), true),
 };
 
 // =============================================================================

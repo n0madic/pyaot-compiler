@@ -1034,6 +1034,10 @@ pub enum ContainerMethod {
     Difference,
     SymmetricDifference,
     Popitem,
+    /// `OrderedDict.move_to_end(key, last=True)` — move an existing key to either
+    /// end. Lowered directly via `rt_dict_move_to_end` (a `void` runtime call, not
+    /// a recv-first `ContainerOp`), like [`ContainerMethod::Fromkeys`].
+    MoveToEnd,
     IsSubset,
     IsSuperset,
     IsDisjoint,
@@ -1076,6 +1080,7 @@ impl ContainerMethod {
             "difference" => ContainerMethod::Difference,
             "symmetric_difference" => ContainerMethod::SymmetricDifference,
             "popitem" => ContainerMethod::Popitem,
+            "move_to_end" => ContainerMethod::MoveToEnd,
             "issubset" => ContainerMethod::IsSubset,
             "issuperset" => ContainerMethod::IsSuperset,
             "isdisjoint" => ContainerMethod::IsDisjoint,

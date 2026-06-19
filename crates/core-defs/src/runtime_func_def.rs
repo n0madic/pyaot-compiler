@@ -621,8 +621,17 @@ pub static RT_DICT_SET_DEFAULT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt
 pub static RT_DICT_FROM_KEYS: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_dict_fromkeys");
 /// rt_dict_merge(a: *mut Obj, b: *mut Obj) -> *mut Obj
 pub static RT_DICT_MERGE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_dict_merge");
-/// rt_make_defaultdict(default_factory: *mut Obj, initial: *mut Obj) -> *mut Obj
-pub static RT_MAKE_DEFAULT_DICT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_make_defaultdict");
+/// rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj — both args
+/// are RAW i64 (the dict capacity and the packed factory tag), the result a
+/// tagged `DictObj` (`TypeTagKind::DefaultDict`).
+pub static RT_MAKE_DEFAULT_DICT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_make_defaultdict",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Raw, MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
 /// rt_defaultdict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj
 pub static RT_DEFAULT_DICT_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_defaultdict_get");
 /// rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj
@@ -709,7 +718,15 @@ pub static RT_LIST_FROM_DICT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_lis
 pub static RT_LIST_FROM_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_deque");
 /// rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj
 /// O(1) ring-buffer access; negative indices and bounds checks handled inside.
-pub static RT_DEQUE_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_deque_get");
+/// The deque is a tagged Value; the index is a RAW i64 (like list get/set).
+pub static RT_DEQUE_GET: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_deque_get",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
 /// rt_deque_set(deque: *mut Obj, index: i64, value: i64) -> void
 /// Element assignment `dq[i] = v`; negative indices and bounds checks inside.
 pub static RT_DEQUE_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_deque_set", &[PI64, PI64, PI64]);
@@ -731,6 +748,31 @@ pub static RT_LIST_DELETE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
 /// `del d[k]`; raises KeyError (with the key's repr) when the key is absent.
 /// Both the dict and the key are tagged Values.
 pub static RT_DICT_DELETE: RuntimeFuncDef = RuntimeFuncDef::void("rt_dict_delete", &[PI64, PI64]);
+/// rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) -> void
+/// `OrderedDict.move_to_end(key, last)`; the dict and key are tagged Values, the
+/// `last` flag a RAW i64 (1 → move to end, 0 → move to front). Raises KeyError
+/// when the key is absent.
+pub static RT_DICT_MOVE_TO_END: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_dict_move_to_end",
+    &[PI64, PI64, PI64],
+    None,
+    false,
+    &[MirSemantic::Tagged, MirSemantic::Tagged, MirSemantic::Raw],
+    None,
+);
+/// rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj
+/// `OrderedDict.popitem(last)` — pop and return a `(key, value)` 2-tuple. The
+/// dict is a tagged Value, `last` a RAW i64 (1 → LIFO/end, 0 → FIFO/front).
+/// LIFO-identical to plain `dict.popitem()` when `last == 1`. Raises KeyError
+/// on an empty dict.
+pub static RT_DICT_POPITEM_ORDERED: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_dict_popitem_ordered",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
 /// rt_any_delitem(container: *mut Obj, index: i64) -> void
 /// Runtime-dispatched `del container[index]` for a statically-unknown base
 /// (deque, gradual `Dyn`). Mirrors `rt_any_getitem`: the index is a RAW i64

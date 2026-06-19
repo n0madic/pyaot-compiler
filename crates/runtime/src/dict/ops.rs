@@ -134,7 +134,10 @@ pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_get");
+        // `rt_dict_get` is reached for a `DefaultDict` via `rt_defaultdict_get`'s
+        // no-factory fallback and `.get()` (`rt_dict_get_default`), so accept the
+        // whole dict family at this shared seam.
+        debug_assert_dict_family!(dict, "rt_dict_get");
         let dict_obj = dict as *mut DictObj;
         let hash = hash_hashable_obj(key);
         let entry_idx = lookup_entry(dict_obj, key, hash);
@@ -271,7 +274,9 @@ pub fn rt_dict_delete(dict: *mut Obj, key: *mut Obj) {
         return;
     }
     unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_delete");
+        // `del dd[k]` on a defaultdict reaches here (it shares the dict layout);
+        // accept the whole dict family at this shared seam.
+        debug_assert_dict_family!(dict, "rt_dict_delete");
         let dict_obj = dict as *mut DictObj;
         let hash = hash_hashable_obj(key);
         let cap = (*dict_obj).indices_capacity;

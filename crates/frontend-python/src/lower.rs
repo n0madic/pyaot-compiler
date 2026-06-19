@@ -5757,58 +5757,156 @@ impl<'a> FnLowerer<'a> {
     /// `collections.deque(...)` construction (§10) — a pure-frontend intercept
     /// (mirroring [`Self::lower_counter_construct`]) that picks the runtime symbol
     /// by arity and types the result `RuntimeObject(Deque)`:
-    ///   * `deque()`           → `rt_make_deque_empty()`.
-    ///   * `deque(iterable)`   → `rt_make_deque_from_iter(iter(iterable))`; the
-    ///     iterable is wrapped in `iter()` so the runtime drives a proper iterator
-    ///     (any iterable — list/tuple/set/dict/deque/generator — through one seam).
+    ///   * `deque()`                 → `rt_make_deque_empty()`.
+    ///   * `deque(maxlen=N)`         → `rt_make_deque(N)` (empty, bounded).
+    ///   * `deque(iterable)`         → `rt_make_deque_from_iter(iter(iterable))`.
+    ///   * `deque(iterable, N)` /
+    ///     `deque(iterable, maxlen=N)`→ `rt_deque_from_iter(iter(iterable), N)`.
     ///
-    /// `deque(iterable, maxlen)` (a bounded deque) is out of scope: the front-half
-    /// does not yet expose the raw `maxlen` arg, so the construction ABI omits it
-    /// (the runtime entries hardcode `maxlen = -1`, unlimited).
+    /// The iterable is wrapped in `iter()` so the runtime drives a proper iterator
+    /// (any iterable — list/tuple/set/dict/deque/generator — through one seam).
+    /// `maxlen` may be a keyword or the second positional; `-1` is unbounded.
     fn lower_deque_construct(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
-        reject_call_extras(c, span, "deque()")?;
-        let dty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque);
-        match c.args.len() {
-            0 => Ok(self.alloc(
-                HirExprKind::CallRuntime {
-                    target: pyaot_hir::RuntimeCallTarget::Func(
-                        &pyaot_stdlib_defs::modules::collections::DEQUE_EMPTY,
-                    ),
-                    args: vec![],
-                    provided: 0,
-                },
-                dty,
+        use pyaot_stdlib_defs::modules::collections as coll;
+        if has_starred_arg(c) {
+            return Err(parse_error(
+                "`*args` spreading is not supported for deque()",
                 span,
-            )),
-            1 => {
-                let iterable = self.lower_expr(&c.args[0])?;
-                // Wrap in `iter()` so `rt_deque_from_iter` (which drives
-                // `rt_iter_next`) receives a real iterator, not a raw container.
-                let it = self.alloc(
-                    HirExprKind::ContainerExpr {
-                        op: ContainerOp::Iter,
-                        args: vec![iterable],
-                    },
-                    SemTy::Dyn,
-                    span,
-                );
-                Ok(self.alloc(
-                    HirExprKind::CallRuntime {
-                        target: pyaot_hir::RuntimeCallTarget::Func(
-                            &pyaot_stdlib_defs::modules::collections::DEQUE_FROM_ITER,
-                        ),
-                        args: vec![Some(it)],
-                        provided: 1,
-                    },
-                    dty,
-                    span,
+            ));
+        }
+        let dty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque);
+
+        // `maxlen` may come as a keyword (`deque(maxlen=N)`); other keywords and
+        // `**kwargs` are rejected.
+        let mut maxlen_kw: Option<&Expr> = None;
+        for kw in &c.keywords {
+            match kw.arg.as_ref().map(|i| i.as_str()) {
+                Some("maxlen") => maxlen_kw = Some(&kw.value),
+                Some(other) => {
+                    return Err(parse_error(
+                        format!("deque() got an unexpected keyword argument '{other}'"),
+                        span,
+                    ))
+                }
+                None => return Err(parse_error("deque() does not support **kwargs", span)),
+            }
+        }
+        if c.args.len() > 2 {
+            return Err(parse_error("deque() takes at most 2 arguments", span));
+        }
+        let maxlen_pos = c.args.get(1);
+        if maxlen_kw.is_some() && maxlen_pos.is_some() {
+            return Err(parse_error(
+                "deque() got multiple values for argument 'maxlen'",
+                span,
+            ));
+        }
+        let maxlen_expr = maxlen_kw.or(maxlen_pos);
+        let iterable = c.args.first();
+
+        let alloc_call = |this: &mut Self,
+                          target: &'static pyaot_stdlib_defs::StdlibFunctionDef,
+                          args: Vec<Option<Idx<HirExpr>>>| {
+            let provided = args.len() as u32;
+            this.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(target),
+                    args,
+                    provided,
+                },
+                dty.clone(),
+                span,
+            )
+        };
+
+        match (iterable, maxlen_expr) {
+            (None, None) => Ok(alloc_call(self, &coll::DEQUE_EMPTY, vec![])),
+            (None, Some(ml)) => {
+                let ml = self.lower_expr(ml)?;
+                Ok(alloc_call(self, &coll::DEQUE_MAKE_MAXLEN, vec![Some(ml)]))
+            }
+            (Some(it_expr), None) => {
+                let it = self.lower_deque_iterable(it_expr, span)?;
+                Ok(alloc_call(self, &coll::DEQUE_FROM_ITER, vec![Some(it)]))
+            }
+            (Some(it_expr), Some(ml)) => {
+                let it = self.lower_deque_iterable(it_expr, span)?;
+                let ml = self.lower_expr(ml)?;
+                Ok(alloc_call(
+                    self,
+                    &coll::DEQUE_FROM_ITER_MAXLEN,
+                    vec![Some(it), Some(ml)],
                 ))
             }
-            _ => Err(parse_error(
-                "deque(iterable, maxlen) — the bounded-deque `maxlen` argument is out of scope",
-                span,
-            )),
         }
+    }
+
+    /// Lower a deque-construction iterable and wrap it in `iter()` so
+    /// `rt_(make_)deque_from_iter` (which drives `rt_iter_next`) receives a real
+    /// iterator, not a raw container.
+    fn lower_deque_iterable(&mut self, iterable: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        let lowered = self.lower_expr(iterable)?;
+        Ok(self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Iter,
+                args: vec![lowered],
+            },
+            SemTy::Dyn,
+            span,
+        ))
+    }
+
+    /// `collections.defaultdict(...)` construction (§10) — a pure-frontend
+    /// intercept that maps the factory argument to a raw tag WITHOUT lowering it
+    /// as a value (a bare type Name like `set` has no binding, so `lower_expr`
+    /// would fail with "undefined name 'set'"). The result is typed
+    /// `defaultdict_of(Dyn, V)` where `V` is the factory's value type, so a
+    /// typed-`V` read (`dd_list["k"].append(...)`) dispatches the right method on
+    /// the genuinely-boxed value (`Tagged → Heap(List)` is a proof-trusted no-op).
+    ///   * `defaultdict()`        → factory tag −1 (a plain dict; `KeyError` on a
+    ///     missing read).
+    ///   * `defaultdict(int|float|str|bool|list|dict|set)` → the matching tag.
+    fn lower_defaultdict_construct(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
+        reject_call_extras(c, span, "defaultdict()")?;
+        let (tag, value_ty) = match c.args.len() {
+            0 => (-1_i64, SemTy::Dyn),
+            1 => match &c.args[0] {
+                Expr::Name(n) => defaultdict_factory(n.id.as_str()).ok_or_else(|| {
+                    parse_error(
+                        format!(
+                            "defaultdict(...) factory must be one of \
+                             int/float/str/bool/list/dict/set, got `{}`",
+                            n.id.as_str()
+                        ),
+                        span,
+                    )
+                })?,
+                _ => {
+                    return Err(parse_error(
+                        "defaultdict(...) factory must be a bare type name \
+                         (int/float/str/bool/list/dict/set)",
+                        span,
+                    ))
+                }
+            },
+            _ => return Err(parse_error("defaultdict() takes at most 1 argument", span)),
+        };
+        // Capacity 0 = runtime default size; the factory tag rides the second raw
+        // arg (both materialize directly into raw i64 slots).
+        let cap = self.alloc(HirExprKind::IntLit(0), SemTy::Int, span);
+        let tag_lit = self.alloc(HirExprKind::IntLit(tag), SemTy::Int, span);
+        let dty = SemTy::defaultdict_of(SemTy::Dyn, value_ty);
+        Ok(self.alloc(
+            HirExprKind::CallRuntime {
+                target: pyaot_hir::RuntimeCallTarget::Func(
+                    &pyaot_stdlib_defs::modules::collections::DEFAULTDICT_MAKE,
+                ),
+                args: vec![Some(cap), Some(tag_lit)],
+                provided: 2,
+            },
+            dty,
+            span,
+        ))
     }
 
     /// Emit the innermost comprehension element action (push / insert).
@@ -6659,6 +6757,9 @@ impl<'a> FnLowerer<'a> {
                     if is_deque_def(def) {
                         return self.lower_deque_construct(c, span);
                     }
+                    if is_defaultdict_def(def) {
+                        return self.lower_defaultdict_construct(c, span);
+                    }
                     return self.lower_stdlib_call(def, c, span);
                 }
             }
@@ -6686,6 +6787,10 @@ impl<'a> FnLowerer<'a> {
                     // `collections.deque(...)` (qualified) — same as the bare form.
                     if is_deque_def(def) {
                         return self.lower_deque_construct(c, span);
+                    }
+                    // `collections.defaultdict(...)` (qualified) — same as bare.
+                    if is_defaultdict_def(def) {
+                        return self.lower_defaultdict_construct(c, span);
                     }
                     return self.lower_stdlib_call(def, c, span);
                 }
@@ -9420,6 +9525,35 @@ fn is_counter_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
 /// symbol and type the result `RuntimeObject(Deque)`.
 fn is_deque_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
     def.runtime_name == "rt_make_deque"
+}
+
+/// `collections.defaultdict` — recognized by the `DEFAULTDICT_NEW` import
+/// binding's sentinel runtime name. The frontend intercepts construction (see
+/// [`Lowerer::lower_defaultdict_construct`]) so the factory argument (`int`,
+/// `list`, …) is mapped to a raw tag instead of being lowered as a value (which
+/// would fail with `undefined name 'set'` for a bare type Name).
+fn is_defaultdict_def(def: &pyaot_stdlib_defs::StdlibFunctionDef) -> bool {
+    def.runtime_name == "rt_make_defaultdict"
+}
+
+/// Map a `defaultdict(...)` factory type name to its `(runtime tag, value SemTy)`.
+/// The tag is the runtime `FACTORY_*` constant packed into the `DictObj` header
+/// (`defaultdict.rs`); the value SemTy types the auto-inserted default so a
+/// typed-`V` read dispatches the right method (`list` → `list.append`, …).
+/// Returns `None` for anything outside the supported builtin factories (§10 keeps
+/// to the concrete builtins — no first-class type objects).
+fn defaultdict_factory(name: &str) -> Option<(i64, SemTy)> {
+    let tag = match name {
+        "int" => 0,
+        "float" => 1,
+        "str" => 2,
+        "bool" => 3,
+        "list" => 4,
+        "dict" => 5,
+        "set" => 6,
+        _ => return None,
+    };
+    Some((tag, SemTy::defaultdict_value_ty(tag)))
 }
 
 fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result<()> {

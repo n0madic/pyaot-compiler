@@ -10,8 +10,8 @@ use pyaot_core_defs::TypeTagKind;
 use pyaot_utils::ClassId;
 
 use crate::builtin_classes::{
-    BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
-    BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
+    BUILTIN_DEFAULTDICT_CLASS_ID, BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID,
+    BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
 };
 use crate::sem::{SemTy, Sig};
 
@@ -152,7 +152,10 @@ fn repr_of_generic(base: ClassId, args: &[SemTy]) -> Repr {
     let elem = |i: usize| Box::new(args.get(i).map(repr_of).unwrap_or(Repr::Tagged));
     if base == BUILTIN_LIST_CLASS_ID {
         Repr::Heap(HeapShape::List(elem(0)))
-    } else if base == BUILTIN_DICT_CLASS_ID {
+    } else if base == BUILTIN_DICT_CLASS_ID || base == BUILTIN_DEFAULTDICT_CLASS_ID {
+        // A defaultdict IS a `DictObj` — its repr is honestly `Heap(Dict(K, V))`,
+        // so every dict-keyed op (store, del, view) is repr-identical (PITFALLS
+        // A1/A2: the Tagged baseline stays correct; this is just the dict shape).
         Repr::Heap(HeapShape::Dict(elem(0), elem(1)))
     } else if base == BUILTIN_SET_CLASS_ID {
         Repr::Heap(HeapShape::Set(elem(0)))
