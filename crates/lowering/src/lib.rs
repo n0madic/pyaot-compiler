@@ -116,6 +116,7 @@ pub fn lower(
         interner,
         &mut str_pool,
         &module.method_uniform_thunks,
+        &module.iternext_thunks,
     );
     Ok(MirProgram {
         funcs,
@@ -135,6 +136,7 @@ fn build_mir_classes(
     interner: &StringInterner,
     str_pool: &mut StrPool,
     method_uniform_thunks: &std::collections::HashMap<FuncId, FuncId>,
+    iternext_thunks: &std::collections::HashMap<FuncId, FuncId>,
 ) -> Vec<MirClass> {
     let mut out = Vec::new();
     for info in classes.iter() {
@@ -198,6 +200,15 @@ fn build_mir_classes(
             .iter()
             .map(|a| (a.attr_idx, class_attr_const(&a.init, interner, str_pool)))
             .collect();
+        // Lazy user-class iterator protocol: if this class defines (own or
+        // inherited) `__next__`, resolve its `<iternext>` thunk by the method's
+        // FuncId. An inherited `__next__` reuses the base's FuncId, so it
+        // resolves the base's thunk and registers it under this subclass id.
+        let iternext_thunk = info
+            .methods
+            .iter()
+            .find(|m| interner.resolve(m.name) == "__next__")
+            .and_then(|m| iternext_thunks.get(&m.func_id).copied());
         out.push(MirClass {
             class_id: info.class_id,
             name: info.name,
@@ -211,6 +222,7 @@ fn build_mir_classes(
             dunders,
             method_uniforms,
             class_attr_inits,
+            iternext_thunk,
         });
     }
     // Deterministic order (the table is a HashMap) so codegen output is stable.
@@ -4195,6 +4207,23 @@ impl<'a> FnLower<'a> {
         );
         let (bl, br) = self.lower_expr(base)?;
         let (il, ir) = self.lower_expr(index)?;
+        // A class index with `__index__` (`lst[IndexObj(2)]`): dispatch it to the
+        // integer index BEFORE the sequence getter coerces to `Raw(I64)` — an
+        // unbox of the instance pointer would be garbage (SEGV). CPython calls
+        // `__index__` for SEQUENCE subscripts only; a mapping key is used as-is
+        // (rides Tagged), so gate on the sequence kinds.
+        let (il, ir) = if matches!(
+            kind,
+            SubKind::List | SubKind::Tuple | SubKind::Bytes | SubKind::Str
+        ) {
+            let index_ty = self.func.exprs[index].ty.clone();
+            match self.concrete_dunder(&index_ty, "__index__") {
+                Some(fid) => self.emit_dunder_call(fid, vec![(il, ir)])?,
+                None => (il, ir),
+            }
+        } else {
+            (il, ir)
+        };
         let op = match kind {
             SubKind::List => ContainerOp::ListGet,
             SubKind::Dict => ContainerOp::DictGet,

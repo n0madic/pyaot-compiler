@@ -1702,6 +1702,15 @@ pub static RT_REGISTER_DUNDER_FUNC: RuntimeFuncDef =
 /// keyed by `(class_id, name_hash)`).
 pub static RT_REGISTER_METHOD_UNIFORM: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_method_uniform", &[PI64, PI64, PI64]);
+/// rt_register_iternext(class_id: i64, thunk_ptr: i64) -> void
+/// Registers a class's compiled `<iternext>` thunk pointer
+/// (`Cls.<iternext>(self) -> Value`, returning the `__next__()` result or
+/// `Value::UNBOUND` when `__next__` raised `StopIteration`) so the runtime's
+/// `iter_next_instance` can drive a user-class iterator. Flat `class_id → ptr`
+/// (no name hash): a class has at most one iterator protocol. An inherited
+/// `__next__` registers the base's thunk under the subclass id too.
+pub static RT_REGISTER_ITERNEXT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_iternext", &[PI64, PI64]);
 
 // ===== Struct_time field access =====
 

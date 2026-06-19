@@ -98,6 +98,16 @@ pub struct HirModule {
     /// method (whose `ClassInfo.methods` entry reuses the base's FuncId)
     /// resolves the base's thunk — lowering registers it under the subclass id.
     pub method_uniform_thunks: HashMap<FuncId, FuncId>,
+    /// Per-class **iternext thunk** FuncIds: `next_method_FuncId →
+    /// iternext_thunk_FuncId` (lazy user-class iterator protocol). The frontend
+    /// builds a thunk `Cls.<iternext>(self) → Value` ≡ `try: return
+    /// self.__next__() except StopIteration: return UNBOUND` for each class with
+    /// an own `__next__`, so the runtime's `iter_next_instance` can drive
+    /// `for x in instance` / `iter()` / `next()`. Keyed by the `__next__`
+    /// method's OWN `FuncId`, so an inherited `__next__` (whose `ClassInfo`
+    /// entry reuses the base's FuncId) resolves the base's thunk — lowering
+    /// registers it under the subclass id.
+    pub iternext_thunks: HashMap<FuncId, FuncId>,
 }
 
 impl HirModule {

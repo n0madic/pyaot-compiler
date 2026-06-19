@@ -70,6 +70,15 @@ static COPY_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
 static DEEPCOPY_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
 
+/// Registry for the per-class compiled `<iternext>` thunk (lazy user-class
+/// iterator protocol). Flat `class_id → thunk ptr`: the thunk's ABI is
+/// `unsafe extern "C" fn(*mut Obj /*iterator instance*/) -> Value`, returning
+/// the `__next__()` result, or `Value::UNBOUND` when `__next__` raised
+/// `StopIteration` (the thunk's `try/except` catches it in compiled code).
+/// `iter_next_instance` looks this up by the iterator's class id.
+static INSTANCE_ITERNEXT_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
+
 /// Register a class with its parent
 #[no_mangle]
 pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
@@ -137,6 +146,32 @@ pub extern "C" fn rt_register_deepcopy_func(class_id: u8, func_ptr: *const u8) {
 #[inline]
 pub fn get_deepcopy_func(class_id: u8) -> *const u8 {
     unsafe { (*DEEPCOPY_FUNC_REGISTRY.0.get())[class_id as usize].0 }
+}
+
+/// Register the compiled `<iternext>` thunk for a class (lazy user-class
+/// iterator protocol). Called from `__pyaot_classinit` for every class whose
+/// `__next__` resolves; an inherited `__next__` registers the base's thunk
+/// under the subclass id too.
+#[no_mangle]
+pub extern "C" fn rt_register_iternext(class_id: i64, thunk_ptr: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_iternext: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
+    unsafe {
+        (*INSTANCE_ITERNEXT_REGISTRY.0.get())[class_id as usize] = VtablePtr(thunk_ptr as *const u8);
+    }
+}
+
+/// Look up the `<iternext>` thunk pointer for a class id. Returns null when the
+/// class registers no thunk (the iterator-`next` arm then raises
+/// `TypeError: not an iterator`).
+#[inline]
+pub(crate) fn lookup_iternext(class_id: u8) -> *const u8 {
+    unsafe { (*INSTANCE_ITERNEXT_REGISTRY.0.get())[class_id as usize].0 }
 }
 
 /// Register a vtable for a class

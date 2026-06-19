@@ -55,6 +55,19 @@ pub(super) const FNV_STR: u64 = fnv1a(b"__str__");
 pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
 pub(super) const FNV_HASH: u64 = fnv1a(b"__hash__");
+pub(super) const FNV_ITER: u64 = fnv1a(b"__iter__");
+pub(super) const FNV_BOOL: u64 = fnv1a(b"__bool__");
+pub(super) const FNV_LEN: u64 = fnv1a(b"__len__");
+pub(super) const FNV_AND: u64 = fnv1a(b"__and__");
+pub(super) const FNV_RAND: u64 = fnv1a(b"__rand__");
+pub(super) const FNV_OR: u64 = fnv1a(b"__or__");
+pub(super) const FNV_ROR: u64 = fnv1a(b"__ror__");
+pub(super) const FNV_XOR: u64 = fnv1a(b"__xor__");
+pub(super) const FNV_RXOR: u64 = fnv1a(b"__rxor__");
+pub(super) const FNV_LSHIFT: u64 = fnv1a(b"__lshift__");
+pub(super) const FNV_RLSHIFT: u64 = fnv1a(b"__rlshift__");
+pub(super) const FNV_RSHIFT: u64 = fnv1a(b"__rshift__");
+pub(super) const FNV_RRSHIFT: u64 = fnv1a(b"__rrshift__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
 /// called as `(self_obj, other_value) -> Value`. The `Value` return slot
@@ -108,6 +121,26 @@ pub(super) unsafe fn try_class_dunder(
 ) -> Option<*mut Obj> {
     let va = Value(a as u64);
     let vb = Value(b as u64);
+
+    // CPython §3.3.8 subclass-first reflected rule: if both operands are
+    // instances and `type(b)` is a PROPER subclass of `type(a)` whose reflected
+    // method is OVERRIDDEN (differs from `a`'s reflected slot), try
+    // `b.__rop__(a)` BEFORE `a.__op__(b)` — the derived class handles the op.
+    if is_instance(a) && is_instance(b) {
+        let class_a = (*(a as *const InstanceObj)).class_id;
+        let class_b = (*(b as *const InstanceObj)).class_id;
+        if class_a != class_b && crate::vtable::rt_class_inherits_from(class_b, class_a) != 0 {
+            let refl_b = lookup_dunder_func(class_b, reflected_hash);
+            let refl_a = lookup_dunder_func(class_a, reflected_hash);
+            if !refl_b.is_null() && refl_b != refl_a {
+                let f: DunderFn = std::mem::transmute(refl_b);
+                let result = f(b, va);
+                if !is_not_implemented(result) {
+                    return Some(result.0 as *mut Obj);
+                }
+            }
+        }
+    }
 
     // Forward: a.__op__(b)
     if is_instance(a) {
@@ -169,6 +202,50 @@ pub(super) unsafe fn try_class_unary_dunder(a: *mut Obj, dunder_hash: u64) -> Op
 /// Instance type tag before calling).
 pub unsafe fn try_int_dunder(obj: *mut Obj) -> Option<*mut Obj> {
     try_class_unary_dunder(obj, FNV_INT)
+}
+
+/// Dispatch `iter(obj)` / `for x in obj` for a class instance via its
+/// `__iter__` dunder (lazy user-class iterator protocol). Returns the boxed
+/// `__iter__()` result (typically the iterator instance, or `self` for a
+/// self-iterator); `None` when the instance defines no `__iter__` (the caller
+/// then raises `TypeError: object is not iterable`).
+///
+/// # Safety
+/// `obj` must be a valid object pointer; this fn re-checks the `Instance` tag.
+pub unsafe fn try_iter_dunder(obj: *mut Obj) -> Option<*mut Obj> {
+    try_class_unary_dunder(obj, FNV_ITER)
+}
+
+/// Evaluate truthiness of a class instance per CPython's protocol: `__bool__`
+/// if defined (returns bool), else `__len__() != 0` if defined, else `True`.
+/// Returns `None` when the instance defines neither dunder (the caller defaults
+/// to truthy). Used by `rt_is_truthy`'s Instance arm so `bool(inst)` / `if inst`
+/// / `not inst` honour a user `__bool__`/`__len__`.
+///
+/// Both dunders return through the Tagged baseline (the registered dunder
+/// pointer's return ABI is a tagged `Value` — the "dunder-return-Tagged" policy,
+/// the same ABI `try_int_dunder` reads for `__int__`): `__bool__ -> bool` boxes
+/// to a tagged bool, `__len__ -> int` to a tagged int. `rt_is_truthy` then
+/// interprets the tagged result correctly (the bool directly, the int as
+/// `!= 0`).
+///
+/// # Safety
+/// `obj` must be a valid object pointer; this fn re-checks the `Instance` tag.
+pub(super) unsafe fn try_bool_dunder(obj: *mut Obj) -> Option<bool> {
+    if !is_instance(obj) {
+        return None;
+    }
+    let class_id = (*(obj as *const InstanceObj)).class_id;
+    type DunderFn = unsafe extern "C" fn(*mut Obj) -> Value;
+    // CPython priority: `__bool__` first, then `__len__() != 0`.
+    for &hash in &[FNV_BOOL, FNV_LEN] {
+        let func_ptr = lookup_dunder_func(class_id, hash);
+        if !func_ptr.is_null() {
+            let f: DunderFn = std::mem::transmute(func_ptr);
+            return Some(crate::ops::rt_is_truthy(f(obj).0 as *mut Obj) != 0);
+        }
+    }
+    None
 }
 
 /// Dispatch `__hash__` for `hash(obj)` when `obj` is a class instance. Returns

@@ -48,6 +48,33 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
             return result;
         }
 
+        // A raw user-class instance passed directly to next() (a self-iterator
+        // with __next__, e.g. `next(countup)` without an intervening iter()).
+        // Dispatch its compiled <iternext> thunk; the IteratorObj-wrapped case
+        // (for-loops / iter();next()) is handled by the IteratorKind::Instance
+        // match arm below. The for-loop no-exc path never reaches here — it
+        // always iter()-wraps the instance first (rt_iter_value_dyn).
+        if (*iter_obj).header.type_tag == TypeTagKind::Instance {
+            return match call_iternext_thunk(iter_obj) {
+                None => {
+                    if raise_on_exhausted {
+                        raise_exc!(
+                            exceptions::ExceptionType::TypeError,
+                            "object is not an iterator"
+                        );
+                    }
+                    EXHAUSTED_SENTINEL
+                }
+                Some(v) if v.is_unbound() => {
+                    if raise_on_exhausted {
+                        raise_exc!(exceptions::ExceptionType::StopIteration, "");
+                    }
+                    EXHAUSTED_SENTINEL
+                }
+                Some(v) => v.0 as *mut Obj,
+            };
+        }
+
         let iter = iter_obj as *mut IteratorObj;
 
         if (*iter).exhausted {
@@ -127,7 +154,65 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
             IteratorKind::MapTagged => iter_next_map_tagged(iter_obj, raise_on_exhausted),
 
             IteratorKind::FilterTagged => iter_next_filter_tagged(iter_obj, raise_on_exhausted),
+
+            IteratorKind::Instance => iter_next_instance(iter, raise_on_exhausted),
         }
+    }
+}
+
+/// Invoke a user-class iterator instance's compiled `<iternext>` thunk (lazy
+/// user-class iterator protocol). Returns the thunk's `Value` — the
+/// `__next__()` result, or `Value::UNBOUND` when `__next__` raised
+/// `StopIteration` (the thunk's `try/except` caught it in compiled code).
+/// Returns `None` when the class registered no thunk (its class has no
+/// `__next__`, so the instance is not an iterator).
+///
+/// `inst` must be a valid `InstanceObj`. The thunk call may allocate (the
+/// user's `__next__` builds its result) and may unwind (a non-`StopIteration`
+/// raise propagates through this fn); this fn allocates no Rust heap before the
+/// call, so an unwind leaks nothing (PITFALLS B2).
+unsafe fn call_iternext_thunk(inst: *mut Obj) -> Option<Value> {
+    use crate::object::InstanceObj;
+    let class_id = (*(inst as *const InstanceObj)).class_id;
+    let thunk = crate::vtable::lookup_iternext(class_id);
+    if thunk.is_null() {
+        return None;
+    }
+    type IterNextFn = unsafe extern "C" fn(*mut Obj) -> Value;
+    let f: IterNextFn = std::mem::transmute(thunk);
+    Some(f(inst))
+}
+
+/// Next for a user-class iterator (`IteratorKind::Instance`): call the source
+/// instance's `<iternext>` thunk and translate the `Value::UNBOUND` sentinel
+/// (the thunk's StopIteration→sentinel) into the runtime's `exhausted`-flag
+/// protocol — set `exhausted` and raise/return per `raise_on_exhausted`.
+unsafe fn iter_next_instance(
+    iter: *mut crate::object::IteratorObj,
+    raise_on_exhausted: bool,
+) -> *mut Obj {
+    let inst = (*iter).source;
+    match call_iternext_thunk(inst) {
+        // `__iter__` returned a non-iterator instance (no `__next__`) — CPython
+        // raises TypeError when `iter()` returns such an object. The wrap has
+        // already happened, so surface it on the first `next()`.
+        None => {
+            if raise_on_exhausted {
+                raise_exc!(
+                    exceptions::ExceptionType::TypeError,
+                    "iter() returned non-iterator"
+                );
+            }
+            EXHAUSTED_SENTINEL
+        }
+        Some(v) if v.is_unbound() => {
+            (*iter).exhausted = true;
+            if raise_on_exhausted {
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
+            }
+            EXHAUSTED_SENTINEL
+        }
+        Some(v) => v.0 as *mut Obj,
     }
 }
 

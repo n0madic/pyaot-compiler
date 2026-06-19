@@ -194,6 +194,11 @@ pub(crate) struct Shared {
     /// flows into [`HirModule::method_uniform_thunks`] for the codegen
     /// `rt_register_method_uniform` registrations (Phase B).
     method_uniform_thunks: HashMap<FuncId, FuncId>,
+    /// `next_method_FuncId → iternext_thunk_FuncId` built during class lowering
+    /// for each class with an own `__next__`; flows into
+    /// [`HirModule::iternext_thunks`] for the codegen `rt_register_iternext`
+    /// registrations (lazy user-class iterator protocol).
+    iternext_thunks: HashMap<FuncId, FuncId>,
 }
 
 impl Shared {
@@ -210,6 +215,7 @@ impl Shared {
             deletable_fields: HashSet::new(),
             dyn_method_names: HashSet::new(),
             method_uniform_thunks: HashMap::new(),
+            iternext_thunks: HashMap::new(),
         }
     }
 
@@ -345,6 +351,7 @@ impl<'a> ProgramLowerer<'a> {
         let deletable_globals = self.shared.deletable_globals.clone();
         let deletable_fields = self.shared.deletable_fields.clone();
         let method_uniform_thunks = self.shared.method_uniform_thunks.clone();
+        let iternext_thunks = self.shared.iternext_thunks.clone();
         let functions = self.shared.finish();
         let module = HirModule {
             functions,
@@ -355,6 +362,7 @@ impl<'a> ProgramLowerer<'a> {
             deletable_globals,
             deletable_fields,
             method_uniform_thunks,
+            iternext_thunks,
         };
         let namespaces = NamespaceTable {
             func_ns,
@@ -10760,6 +10768,109 @@ fn build_method_uniform_thunk(
     build_uniform_thunk(interner, ctx, shared, &target)
 }
 
+/// Build the per-class **iternext thunk** `Cls.<iternext>(self: Cls) → Value`
+/// (lazy user-class iterator protocol) ≡
+///   `try: return self.__next__() except StopIteration: return UNBOUND`.
+///
+/// The runtime's `iter_next_instance` calls this to drive `for x in instance` /
+/// `iter()` / `next()`: it translates a raised `StopIteration` into the
+/// `Value::UNBOUND` sentinel (the runtime's `exhausted`-flag protocol). The
+/// synthetic `try/except StopIteration` is real HIR, so codegen routes
+/// `self.__next__()` (a PROTECTED call under `cur_handler`) through its
+/// `CallConv::Tail` trampolines exactly like a `with`/`try` body — PITFALLS
+/// B3/B17 hold for free (the same path the corpus already pins). `self` is
+/// typed `Class{cid}` so `self.__next__()` devirtualizes precisely; inheritance
+/// reuses the base's thunk (keyed by the base's `__next__` FuncId). Returns the
+/// thunk's `FuncId`. Modeled on [`FnLowerer::lower_try_except`] + the `with`
+/// dunder-`MethodCall` desugar.
+fn build_iternext_thunk(
+    interner: &mut StringInterner,
+    ctx: &AnnCtx,
+    shared: &mut Shared,
+    class_id: ClassId,
+    class_name: InternedString,
+) -> Result<FuncId> {
+    let span = Span::dummy();
+    let fid = shared.reserve();
+    let base = interner.resolve(class_name).to_string();
+    let tname = interner.intern(&format!("{base}.<iternext>"));
+    let mut fl = FnLowerer::new(interner, ctx, shared, tname, &base, SemTy::Dyn, Some(class_id));
+    let self_name = fl.intern("self");
+    let class_ty = SemTy::Class {
+        class_id,
+        name: class_name,
+    };
+    fl.add_param(self_name, class_ty);
+    let self_lid = LocalId::new(0);
+
+    let next_name = fl.intern("__next__");
+    let try_b = fl.new_block();
+    let h_test = fl.new_block();
+    fl.seal(HirTerminator::Jump(try_b));
+
+    // ── try: result = self.__next__(); return result ── (protected call) ──
+    fl.switch(try_b);
+    let outer = fl.cur_handler; // None
+    fl.cur_handler = Some(h_test);
+    let self_ref = fl.local_ref(self_lid, span);
+    let call = fl.alloc(
+        HirExprKind::MethodCall {
+            recv: self_ref,
+            method_name: next_name,
+            args: vec![],
+            kwargs: vec![],
+        },
+        SemTy::Dyn,
+        span,
+    );
+    let result = fl.fresh_local(SemTy::Dyn);
+    fl.push_stmt(HirStmt::Assign {
+        target: result,
+        value: call,
+    });
+    // Leave the protected region (the return runs under the OUTER handler), then
+    // return the `__next__()` result — the boxed Tagged value the runtime reads.
+    fl.exit_protected(outer);
+    let rref = fl.local_ref(result, span);
+    fl.seal(HirTerminator::Return(Some(rref)));
+    fl.cur_handler = outer;
+
+    // ── handler chain (under the OUTER handler): StopIteration → UNBOUND ──
+    fl.switch(h_test);
+    let tag = pyaot_core_defs::BuiltinExceptionKind::StopIteration.tag();
+    let q = fl.alloc(
+        HirExprKind::ExcQuery(ExcQuery::MatchesBuiltin(tag)),
+        SemTy::Bool,
+        span,
+    );
+    let body_b = fl.new_block();
+    let nomatch_b = fl.new_block();
+    fl.seal(HirTerminator::Branch {
+        cond: q,
+        then: body_b,
+        else_: nomatch_b,
+    });
+
+    // matched StopIteration: park + clear the exception, return the sentinel.
+    fl.switch(body_b);
+    fl.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+    fl.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+    // `Value::UNBOUND` (a distinct tagged immediate, GC-ignored); only
+    // `iter_next_instance` reads it via `is_unbound()`. Typed `Dyn` (NOT `Never`)
+    // so the thunk's return join stays clean.
+    let unbound = fl.alloc(HirExprKind::Unbound, SemTy::Dyn, span);
+    fl.seal(HirTerminator::Return(Some(unbound)));
+
+    // any other exception: propagate outward unchanged.
+    fl.switch(nomatch_b);
+    fl.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+    fl.seal(HirTerminator::Unreachable);
+
+    let f = fl.finish(HirTerminator::Return(None));
+    shared.fill(fid, f);
+    Ok(fid)
+}
+
 fn lower_class(
     interner: &mut StringInterner,
     ctx: &AnnCtx,
@@ -10916,6 +11027,17 @@ fn lower_class(
                             let thunk =
                                 build_method_uniform_thunk(interner, &cctx, shared, &m.args, fid)?;
                             shared.method_uniform_thunks.insert(fid, thunk);
+                        }
+                        // Lazy user-class iterator protocol: a class with an own
+                        // `__next__` gets an `<iternext>` thunk so the runtime can
+                        // drive `for x in inst` / `iter()` / `next()`. Keyed by
+                        // `__next__`'s own FuncId — an inherited `__next__`
+                        // (ClassInfo entry reuses the base's FuncId) resolves the
+                        // base's thunk in `build_mir_classes`.
+                        if m.name.as_str() == "__next__" {
+                            let thunk =
+                                build_iternext_thunk(interner, &cctx, shared, class_id, name)?;
+                            shared.iternext_thunks.insert(fid, thunk);
                         }
                     }
                     MethodDecor::Static => {

@@ -414,6 +414,48 @@ pub extern "C" fn rt_iter_generator_abi(gen: Value) -> Value {
     Value::from_ptr(rt_iter_generator(gen.unwrap_ptr()))
 }
 
+/// Create an iterator for a user-class instance whose class defines
+/// `__iter__`/`__next__` (lazy user-class iterator protocol). `source` is the
+/// iterator instance — the `__iter__()` result: `self` for a self-iterator, or
+/// a separate iterator object. `IterNext` dispatches to the class's compiled
+/// `<iternext>` thunk via `INSTANCE_ITERNEXT_REGISTRY`.
+///
+/// `source` is rooted across the `IteratorObj` allocation: the `__iter__()`
+/// result may be a freshly-allocated instance not yet held in any GC-rooted
+/// slot, so a stress-test GC during the alloc below could otherwise free it
+/// (the same self-rooting `rt_iter_dict`/`rt_iter_deque` do for their derived
+/// sources).
+fn rt_iter_instance(source: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    use crate::object::{IteratorKind, IteratorObj};
+
+    let mut roots: [*mut Obj; 1] = [source];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
+    let size = std::mem::size_of::<IteratorObj>();
+    let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    gc_pop();
+
+    unsafe {
+        let iter = obj as *mut IteratorObj;
+        (*iter).kind = IteratorKind::Instance as u8;
+        (*iter).exhausted = false;
+        (*iter).reversed = false;
+        (*iter).source = roots[0];
+        (*iter).index = 0;
+        (*iter).range_stop = 0;
+        (*iter).range_step = 0;
+    }
+
+    obj
+}
+
 /// Create an iterator for a dynamically-typed Value (runtime type dispatch).
 /// Used when the iterable has `Any`/`HeapAny` type at compile time.
 pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
@@ -433,6 +475,43 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
         TypeTagKind::Str => rt_iter_str(obj),
         TypeTagKind::Bytes => rt_iter_bytes(obj),
         TypeTagKind::Iterator | TypeTagKind::Generator => obj,
+        // A user-class instance: `for x in inst` / `iter(inst)` where the class
+        // defines `__iter__`. Dispatch `__iter__()` to obtain the iterator, then
+        // wrap it. The tag-check on the result avoids infinite recursion: a
+        // self-iterator returns its own Instance (first arm), while a built-in
+        // iterable (list / generator / …) recurses through the generic path.
+        TypeTagKind::Instance => unsafe {
+            use crate::gc::{gc_pop, gc_push, ShadowFrame};
+            use crate::ops::try_iter_dunder;
+            match try_iter_dunder(obj) {
+                Some(it) => {
+                    // Root `it` (a possibly-fresh `__iter__()` result) across the
+                    // iterator construction below; both arms gc_alloc.
+                    let mut roots: [*mut Obj; 1] = [it];
+                    let mut frame = ShadowFrame {
+                        prev: std::ptr::null_mut(),
+                        nroots: 1,
+                        roots: roots.as_mut_ptr(),
+                    };
+                    gc_push(&mut frame);
+                    let result = if (*it).header.type_tag == TypeTagKind::Instance {
+                        rt_iter_instance(it)
+                    } else {
+                        rt_iter_value_dyn(it)
+                    };
+                    gc_pop();
+                    result
+                }
+                None => {
+                    use crate::exceptions::ExceptionType;
+                    raise_exc!(
+                        ExceptionType::TypeError,
+                        "'{}' object is not iterable",
+                        type_tag.type_name()
+                    );
+                }
+            }
+        },
         _ => unsafe {
             use crate::exceptions::ExceptionType;
             raise_exc!(

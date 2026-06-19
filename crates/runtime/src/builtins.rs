@@ -9,7 +9,7 @@
 //! Functions that return int/float/bool box their result for uniform handling.
 
 use crate::boxing;
-use crate::object::{BytesObj, FloatObj, Obj, StrObj, TypeTagKind};
+use crate::object::{FloatObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 // =============================================================================
@@ -223,39 +223,10 @@ pub extern "C" fn rt_builtin_float_abi(obj: Value) -> Value {
 /// bool(obj) -> *mut Obj (boxed Bool)
 /// Returns truthiness of any object.
 pub fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
-    // Check tagged primitives first (null = None = falsy).
-    let v = Value(obj as u64);
-    let value = if obj.is_null() || v.is_none() {
-        false // None is falsy
-    } else if v.is_int() {
-        v.unwrap_int() != 0
-    } else if v.is_bool() {
-        v.unwrap_bool()
-    } else {
-        unsafe {
-            match (*obj).type_tag() {
-                TypeTagKind::Float => (*(obj as *mut FloatObj)).value != 0.0,
-                TypeTagKind::Str => {
-                    let str_obj = obj as *mut StrObj;
-                    (*str_obj).len > 0
-                }
-                TypeTagKind::List => crate::list::rt_list_len(obj) > 0,
-                TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj) > 0,
-                TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
-                    crate::dict::rt_dict_len(obj) > 0
-                }
-                TypeTagKind::Set => crate::set::rt_set_len(obj) > 0,
-                TypeTagKind::Bytes => {
-                    let bytes_obj = obj as *mut BytesObj;
-                    (*bytes_obj).len > 0
-                }
-                TypeTagKind::None => false,
-                // All other types (instances, iterators, etc.) are truthy
-                _ => true,
-            }
-        }
-    };
-    // Box the result
+    // `bool(x)` shares ONE truthiness implementation with `if x` / `not x` /
+    // `while x` (`rt_is_truthy`) — so a user `__bool__`/`__len__` is honoured
+    // here too (CPython's truthiness protocol). Box the i8 result.
+    let value = crate::ops::rt_is_truthy(obj) != 0;
     pyaot_core_defs::Value::from_bool(value).0 as *mut crate::object::Obj
 }
 #[export_name = "rt_builtin_bool"]

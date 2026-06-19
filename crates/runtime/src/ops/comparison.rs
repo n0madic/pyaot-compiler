@@ -998,7 +998,15 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
                     0
                 }
             }
-            // All other types (Instance, Iterator, Cell, Generator, Match, File) are truthy
+            // A class instance honours `__bool__` (else `__len__() != 0`, else
+            // truthy) — CPython's truthiness protocol for `bool(x)` / `if x` /
+            // `not x` / `while x` (all lower to `rt_is_truthy`).
+            TypeTagKind::Instance => match super::dunder_dispatch::try_bool_dunder(obj) {
+                Some(true) => 1,
+                Some(false) => 0,
+                None => 1,
+            },
+            // All other types (Iterator, Cell, Generator, Match, File) are truthy
             _ => 1,
         }
     }

@@ -679,6 +679,15 @@ const PHASE_CORPUS: &[&str] = &[
     // inherited (self coerces C→B), overridden, default + keyword args (Phase
     // B). Inference precision stays a pure performance lever (Invariant 2).
     "test_gradual_methods.py",
+    // Lazy user-class iterator protocol — `for x in inst` / `iter()` / `next()`
+    // over a class defining `__iter__`/`__next__`. The for-loop drives a runtime
+    // `IteratorObj{kind=Instance}` whose `IterNext` calls the class's compiled
+    // `<iternext>` thunk (`try: return self.__next__() except StopIteration:
+    // return UNBOUND`), bridging the user iterator's exception protocol to the
+    // runtime's exhausted-flag protocol: self-iterator, separate iterator,
+    // inherited `__next__` (reuses the base thunk), empty / break-early, and a
+    // non-`StopIteration` raise propagating out.
+    "p42_iter_protocol.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

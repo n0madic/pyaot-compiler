@@ -1,9 +1,11 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
 use super::dunder_dispatch::{
-    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_FLOORDIV,
-    FNV_INVERT, FNV_MATMUL, FNV_MOD, FNV_MUL, FNV_NEG, FNV_POS, FNV_POW, FNV_RADD, FNV_RFLOORDIV,
-    FNV_RMATMUL, FNV_RMOD, FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB, FNV_TRUEDIV,
+    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_AND, FNV_FLOORDIV,
+    FNV_INVERT, FNV_LSHIFT, FNV_MATMUL, FNV_MOD, FNV_MUL, FNV_NEG, FNV_OR, FNV_POS, FNV_POW,
+    FNV_RADD, FNV_RAND, FNV_RFLOORDIV, FNV_RLSHIFT, FNV_RMATMUL, FNV_RMOD, FNV_RMUL, FNV_ROR,
+    FNV_RPOW, FNV_RRSHIFT, FNV_RSHIFT, FNV_RSUB, FNV_RTRUEDIV, FNV_RXOR, FNV_SUB, FNV_TRUEDIV,
+    FNV_XOR,
 };
 use crate::exceptions::ExceptionType;
 use crate::object::{Obj, TypeTagKind};
@@ -463,10 +465,20 @@ pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
 // miscompile. A range-proven raw fast path is a future optimization.
 
 macro_rules! bitwise_op {
-    ($name:ident, $abi:ident, $export:literal, $num:ident) => {
+    ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr) => {
         #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub fn $name(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             unsafe {
+                // Class instance operand: route through user-defined bitwise
+                // dunders (`__and__`/`__rand__`, etc.) following CPython's
+                // forward-then-reflected protocol — the same as `rt_obj_add`.
+                // A missing dunder / `NotImplemented` falls through to the
+                // numeric path below (`classify_num` → `None` → TypeError).
+                if either_is_instance(a, b) {
+                    if let Some(result) = try_class_dunder(a, b, $fwd, $refl) {
+                        return result;
+                    }
+                }
                 let va = Value(a as u64);
                 let vb = Value(b as u64);
                 match (
@@ -494,17 +506,42 @@ bitwise_op!(
     rt_obj_bitand,
     rt_obj_bitand_abi,
     "rt_obj_bitand",
-    num_bitand
+    num_bitand,
+    FNV_AND,
+    FNV_RAND
 );
-bitwise_op!(rt_obj_bitor, rt_obj_bitor_abi, "rt_obj_bitor", num_bitor);
+bitwise_op!(
+    rt_obj_bitor,
+    rt_obj_bitor_abi,
+    "rt_obj_bitor",
+    num_bitor,
+    FNV_OR,
+    FNV_ROR
+);
 bitwise_op!(
     rt_obj_bitxor,
     rt_obj_bitxor_abi,
     "rt_obj_bitxor",
-    num_bitxor
+    num_bitxor,
+    FNV_XOR,
+    FNV_RXOR
 );
-bitwise_op!(rt_obj_lshift, rt_obj_lshift_abi, "rt_obj_lshift", num_shl);
-bitwise_op!(rt_obj_rshift, rt_obj_rshift_abi, "rt_obj_rshift", num_shr);
+bitwise_op!(
+    rt_obj_lshift,
+    rt_obj_lshift_abi,
+    "rt_obj_lshift",
+    num_shl,
+    FNV_LSHIFT,
+    FNV_RLSHIFT
+);
+bitwise_op!(
+    rt_obj_rshift,
+    rt_obj_rshift_abi,
+    "rt_obj_rshift",
+    num_shr,
+    FNV_RSHIFT,
+    FNV_RRSHIFT
+);
 
 /// In-place bitwise-or `a |= b`. For the in-place container types — `dict` and
 /// `set` — this mutates `a` in place (PEP 584 `dict.__ior__` / the set

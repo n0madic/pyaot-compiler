@@ -36,6 +36,14 @@ pub enum IteratorKind {
     // lambda callees.
     MapTagged = 15,
     FilterTagged = 16,
+    /// A user-class iterator (`for x in instance` where the instance's class
+    /// defines `__iter__`/`__next__`). `source` is the iterator instance (the
+    /// `__iter__()` result); `IterNext` calls the class's compiled `<iternext>`
+    /// thunk (registered by class id in `INSTANCE_ITERNEXT_REGISTRY`), which
+    /// translates a raised `StopIteration` into the `Value::UNBOUND` sentinel —
+    /// bridging the user iterator's exception protocol to the runtime's
+    /// `exhausted`-flag protocol.
+    Instance = 17,
 }
 
 impl TryFrom<u8> for IteratorKind {
@@ -60,6 +68,7 @@ impl TryFrom<u8> for IteratorKind {
             14 => Ok(IteratorKind::ZipN),
             15 => Ok(IteratorKind::MapTagged),
             16 => Ok(IteratorKind::FilterTagged),
+            17 => Ok(IteratorKind::Instance),
             _ => Err(value),
         }
     }

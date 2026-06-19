@@ -16,7 +16,7 @@ pub use arithmetic::{
 
 pub use dunder_dispatch::{
     try_abs_dunder, try_float_dunder, try_format_dunder, try_hash_dunder, try_instance_lt_ordering,
-    try_int_dunder, try_repr_dunder, try_str_dunder,
+    try_int_dunder, try_iter_dunder, try_repr_dunder, try_str_dunder,
 };
 
 pub use comparison::{

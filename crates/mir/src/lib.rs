@@ -109,6 +109,12 @@ pub struct MirClass {
     /// `(attr_idx, const)` class-attribute initializers — codegen materializes each
     /// and stores it via `rt_class_attr_set_ptr` in `__pyaot_classinit` (Phase 5D).
     pub class_attr_inits: Vec<(u32, Const)>,
+    /// The compiled `<iternext>` thunk for this class's `__next__`, when its
+    /// class defines (own or inherited) `__next__` (lazy user-class iterator
+    /// protocol). Codegen registers it via `rt_register_iternext(class_id, addr)`
+    /// in `__pyaot_classinit`. An inherited `__next__` reuses the base's thunk
+    /// (keyed by the base's `__next__` FuncId). `None` for non-iterator classes.
+    pub iternext_thunk: Option<FuncId>,
 }
 
 /// A function. `locals` is the Repr table; every [`LocalId`] indexes it.

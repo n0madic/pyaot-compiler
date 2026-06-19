@@ -224,6 +224,8 @@ struct RuntimeFns {
     register_dunder_func: FuncId,
     // ── gradual-completeness method dispatch (Phase B) ──
     register_method_uniform: FuncId,
+    // ── lazy user-class iterator protocol ──
+    register_iternext: FuncId,
     // ── class attributes (Phase 5D) ──
     class_attr_get_ptr: FuncId,
     class_attr_set_ptr: FuncId,
@@ -459,6 +461,7 @@ impl RuntimeFns {
             isinstance_inherited: d("rt_isinstance_class_inherited", &[ti, ti], &[t8])?,
             register_dunder_func: d("rt_register_dunder_func", &[ti, ti, ti], &[])?,
             register_method_uniform: d("rt_register_method_uniform", &[ti, ti, ti], &[])?,
+            register_iternext: d("rt_register_iternext", &[ti, ti], &[])?,
             // Class attributes by (class_id: u8, attr_idx: u32) → tagged Value.
             class_attr_get_ptr: d("rt_class_attr_get_ptr", &[t8, t32], &[ti])?,
             class_attr_set_ptr: d("rt_class_attr_set_ptr", &[t8, t32, ti], &[])?,
@@ -1014,6 +1017,19 @@ fn emit_classinit(
                 let addr = builder.ins().func_addr(_ptr_ty, fref);
                 let rmu = module.declare_func_in_func(rt.register_method_uniform, builder.func);
                 builder.ins().call(rmu, &[cidm, hashv, addr]);
+            }
+
+            // Iternext-thunk registration (lazy user-class iterator protocol):
+            // the class's compiled `<iternext>` thunk address, keyed by class
+            // id, so the runtime's `iter_next_instance` drives `for x in inst`
+            // / `iter()` / `next()`. An inherited `__next__` registers the
+            // base's thunk under this subclass id.
+            if let Some(thunk_fid) = &c.iternext_thunk {
+                let cidi = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
+                let addr = builder.ins().func_addr(_ptr_ty, fref);
+                let rit = module.declare_func_in_func(rt.register_iternext, builder.func);
+                builder.ins().call(rit, &[cidi, addr]);
             }
 
             // Class-attribute initializers (Phase 5D): materialize each literal and
