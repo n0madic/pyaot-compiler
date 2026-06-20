@@ -22,13 +22,14 @@ and removed from the backlog.
 
 What remains is **deferred precision**, not breadth, and it **blocks no corpus
 file** (every item is on the safe Tagged baseline today). None of it widens the
-"Out of scope" list. (Two recent closures: the numeric-tower int→float seams —
+"Out of scope" list. (Recent closures: the numeric-tower int→float seams —
 §8 — coerce every `float` slot, including parameters, globals, and fields,
-through the checked `rt_unbox_float` path; and the §9 builtin-method scope-limits
-— `replace` `count`, `find`/`index` `start`/`end`, encoding-honoring
-`encode`/`decode` with the Unicode error hierarchy, `dict.fromkeys` class form,
-in-place `&=`/`-=`/`^=` — are closed with differential parity, corpus p49–p51.
-See git history + auto-memory.)
+through the checked `rt_unbox_float` path; the §9 builtin-method scope-limits
+— `replace` `count`, `find`/`index` `start`/`end`, `dict.fromkeys` class form,
+in-place `&=`/`-=`/`^=` — corpus p49–p51; and the §9 str-codepoint predicates +
+`encode`/`decode` `errors=`/Unicode codecs, now byte-exact via CPython-generated
+Unicode tables (`gen_unicode_tables.py`) and the `string/codec.rs` engine. See
+git history + auto-memory.)
 
 `test_stdlib_urllib.py` is **not** a feature gap — it exercises the live
 `urlopen`/`urlretrieve` network paths and runs (self-checking) only under
@@ -138,17 +139,31 @@ lives in git history + auto-memory). **None of these block a corpus file** — t
 are deferred precision/seam notes, all safe on the Tagged baseline today. Section
 numbers are kept stable so the PITFALLS notes still reference them.
 
-### 9. Methods on builtin types — closed (narrower residuals only)
+### 9. Methods on builtin types — closed (one narrow codec residual)
 The shipped scope-limits are **closed** with differential parity (corpus
-p49–p51): `replace` `count`, `find`/`index`/`rfind`/`rindex` `start`/`end`
-(codepoint bounds, raw i64 slots), encoding-honoring `encode`/`decode`
-(utf-8/ascii/latin-1 + the `Unicode{,En,De}codeError`/`LookupError` hierarchy),
-the `dict.fromkeys(...)` class form, and in-place `&=`/`-=`/`^=` for sets. The
-only residuals left (all safe, none blocking): str predicates use Rust
-`char::is_*`, so `isdigit` diverges from CPython on obscure Numeric_Type
-codepoints (`½`, `Ⅷ`, superscripts) that need Unicode data the std lacks;
-`encode`/`decode` ignore the `errors=` argument and recognize only
-utf-8/ascii/latin-1 (other codecs raise `LookupError`).
+p49–p51 plus the `test_strings`/`test_collections` codec batch): `replace`
+`count`, `find`/`index`/`rfind`/`rindex` `start`/`end` (codepoint bounds, raw i64
+slots), the `dict.fromkeys(...)` class form, and in-place `&=`/`-=`/`^=` for sets.
+
+The two former str residuals are now closed byte-exact with CPython:
+- **str codepoint predicates** (`isdecimal`/`isdigit`/`isnumeric`/`isalpha`/
+  `isalnum`/`isupper`/`islower`/`isspace`) no longer use Rust `char::is_*` — they
+  read a packed-flags table (`runtime/src/string/unicode_char_table.rs`)
+  **generated from the gate's own CPython** (`tools/gen_unicode_tables.py`), so
+  both the property-definition gaps (Numeric_Type `Digit` vs `Numeric`, `isalpha`
+  = category L\* only, …) and rustc-vs-CPython Unicode version skew vanish. A
+  drift-guard test re-derives the table from the live `python3` and byte-compares.
+- **`encode`/`decode`** honor the `errors=` handler (`strict`/`ignore`/`replace`/
+  `backslashreplace`/`xmlcharrefreplace`) — positional or keyword — and add the
+  algorithmic Unicode codecs `utf-16`/`utf-32` (native+BOM, `-le`/`-be`) on top of
+  utf-8/ascii/latin-1, via the shared `runtime/src/string/codec.rs` (3-arg ABI).
+
+The **only** residual left (safe, non-blocking): the mapping-table codecs
+(single-byte `iso-8859-2..16`, `cp125x`, `koi8-*`, `mac-roman`, … and the
+multi-byte `shift_jis`/`gbk`/`big5`) are still unrecognized → `LookupError`.
+That is the **stdlib-breadth** layer (each needs a 256-entry or larger mapping
+table), not a §9 method gap — closeable for the single-byte set by extending
+`gen_unicode_tables.py` if/when a corpus program needs it.
 
 ### 1. Calls & arguments — residual
 - **Heap-arg seam** (`list`/`str` param of a genuinely-`Dyn` callee) keeps the

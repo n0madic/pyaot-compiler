@@ -6,12 +6,13 @@
 mod align;
 pub mod builder;
 mod case;
+mod codec;
 mod core;
 pub mod interning;
 mod modify;
-mod numeric_type_table;
 mod predicates;
 mod search;
+mod unicode_char_table;
 pub mod slice;
 mod split_join;
 mod trim;
@@ -19,10 +20,10 @@ mod trim;
 // Re-export all public functions
 pub use align::{rt_str_center, rt_str_ljust, rt_str_rjust, rt_str_zfill};
 pub use case::{rt_str_capitalize, rt_str_lower, rt_str_swapcase, rt_str_title, rt_str_upper};
-pub(crate) use core::{classify_encoding, count_codepoints, str_alloc_size, Encoding};
+pub use codec::{rt_bytes_decode, rt_str_encode};
+pub(crate) use core::{count_codepoints, str_alloc_size};
 pub use core::{
-    rt_make_str, rt_make_str_impl, rt_str_concat, rt_str_data, rt_str_encode, rt_str_len,
-    rt_str_len_int,
+    rt_make_str, rt_make_str_impl, rt_str_concat, rt_str_data, rt_str_len, rt_str_len_int,
 };
 pub use modify::{rt_str_mul, rt_str_replace};
 pub use predicates::{

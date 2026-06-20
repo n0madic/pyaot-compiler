@@ -589,6 +589,23 @@ assert "1½".isnumeric() == True, "mixed isnumeric failed"
 assert "1½".isdigit() == False, "mixed isdigit failed"
 print("Unicode numeric predicate tests passed")
 
+# Unicode alpha/case predicates — CPython parity beyond Rust's char::is_* (§9).
+# isalpha is category L* only: Nl (Roman numerals) is NOT alpha.
+assert "Ⅷ".isalpha() == False, "roman-8 isalpha failed"
+assert "abⅧ".isalpha() == False, "mixed-roman isalpha failed"
+assert "café".isalpha() == True, "accented isalpha failed"
+# isalnum = isalpha OR any Numeric_Type, so the Roman numeral / fraction qualify.
+assert "Ⅷ".isalnum() == True, "roman-8 isalnum failed"
+assert "½".isalnum() == True, "fraction isalnum failed"
+# Titlecase digraph ǅ (U+01C5) is neither upper nor lower and blocks isupper.
+assert "ǅ".isupper() == False, "titlecase isupper failed"
+assert "ǅ".islower() == False, "titlecase islower failed"
+assert "Aǅ".isupper() == False, "titlecase-in-upper failed"
+# The all-caps / all-lower digraph siblings ARE upper / lower.
+assert "DŽ".isupper() == True, "caps-digraph isupper failed"
+assert "ǆ".islower() == True, "lower-digraph islower failed"
+print("Unicode alpha/case predicate tests passed")
+
 # Test storing predicate results in variables
 result = "test".isalpha()
 assert result == True, "storing isalpha() result failed"
@@ -1117,6 +1134,54 @@ encode_test3: bytes = "hello".encode("utf-8")
 assert encode_test3 == b"hello", "encode utf-8 should work"
 
 print("encode() tests passed")
+
+# ===== SECTION: encode/decode errors= handlers and Unicode codecs (§9) =====
+# errors= on a non-encodable character (é = U+00E9, latin-1 but not ascii).
+assert "café".encode("ascii", "ignore") == b"caf", "encode ignore"
+assert "café".encode("ascii", "replace") == b"caf?", "encode replace"
+assert "café".encode("ascii", "backslashreplace") == b"caf\\xe9", "encode backslashreplace"
+assert "café".encode("ascii", "xmlcharrefreplace") == b"caf&#233;", "encode xmlcharrefreplace"
+# Keyword form of errors= (and encoding=).
+assert "café".encode("ascii", errors="ignore") == b"caf", "encode errors= kwarg"
+assert "café".encode(encoding="latin-1") == b"caf\xe9", "encode encoding= kwarg"
+# decode errors= on an undecodable byte.
+assert b"caf\xe9".decode("ascii", "ignore") == "caf", "decode ignore"
+assert b"caf\xe9".decode("ascii", "replace") == "caf�", "decode replace"
+assert b"caf\xe9".decode("ascii", errors="backslashreplace") == "caf\\xe9", "decode backslashreplace"
+assert b"caf\xe9".decode("latin-1") == "café", "decode latin-1"
+assert b"\xff\xfe".decode("utf-8", "replace") == "��", "decode utf-8 replace"
+# Unicode codecs: explicit byte order (host-independent) and round trips.
+assert "AB".encode("utf-16-le") == b"A\x00B\x00", "utf-16-le encode"
+assert "AB".encode("utf-16-be") == b"\x00A\x00B", "utf-16-be encode"
+assert "A".encode("utf-32-be") == b"\x00\x00\x00A", "utf-32-be encode"
+assert b"\xff\xfeA\x00".decode("utf-16") == "A", "utf-16 LE BOM decode"
+assert b"\xfe\xff\x00A".decode("utf-16") == "A", "utf-16 BE BOM decode"
+_codec_s = "Hello, ☃ мир 𝕏!"
+for _enc in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+    assert _codec_s.encode(_enc).decode(_enc) == _codec_s, "codec round trip"
+# An unrecognized encoding name raises LookupError in both directions.
+try:
+    "x".encode("definitely-not-a-codec")
+    assert False, "unknown encoding should raise"
+except LookupError:
+    pass
+try:
+    b"x".decode("definitely-not-a-codec")
+    assert False, "unknown decoding should raise"
+except LookupError:
+    pass
+# strict (the default) raises on out-of-range data.
+try:
+    "café".encode("ascii")
+    assert False, "ascii encode should raise"
+except UnicodeEncodeError:
+    pass
+try:
+    b"\xff".decode("utf-8")
+    assert False, "utf-8 decode should raise"
+except UnicodeDecodeError:
+    pass
+print("encode/decode errors and codec tests passed")
 
 # ===== SECTION: string module constants =====
 import string

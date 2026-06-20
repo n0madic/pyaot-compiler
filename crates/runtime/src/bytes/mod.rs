@@ -9,7 +9,10 @@ mod transform;
 // Re-export all public functions
 pub use check::{rt_bytes_endswith, rt_bytes_startswith};
 
-pub use convert::{rt_bytes_decode, rt_bytes_fromhex};
+// `rt_bytes_decode` lives in `string::codec` (shares the codec engine with
+// `str.encode`); re-exported here so `bytes::rt_bytes_decode` still resolves.
+pub use crate::string::rt_bytes_decode;
+pub use convert::rt_bytes_fromhex;
 
 pub use core::{
     rt_bytes_concat, rt_bytes_eq, rt_bytes_get, rt_bytes_len, rt_bytes_repeat, rt_bytes_slice,

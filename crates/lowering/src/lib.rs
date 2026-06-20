@@ -2381,9 +2381,9 @@ impl<'a> FnLower<'a> {
                 None,
                 TypeSpec::Tuple(&pyaot_stdlib_defs::types::TYPE_STR),
             )),
-            // `encode([encoding])` → bytes. Encoding is accepted but ignored
-            // (always UTF-8, §9 limit); an absent arg is the null sentinel.
-            "encode" => Some((&rf::RT_STR_ENCODE, &[TaggedArg], 0, None, TypeSpec::Bytes)),
+            // `encode(encoding=, errors=)` is NOT here: it takes keyword args and
+            // a 3-arg ABI, handled by the dedicated codec path in
+            // `lower_method_call` (before the no-keyword gate).
             // `rindex(sub[, start[, end]])` via the shared `rt_str_search` with
             // op_tag 3 (raises ValueError on a miss, like `index`); `start`/`end`
             // ride RAW i64 slots like `find`.
@@ -2518,9 +2518,8 @@ impl<'a> FnLower<'a> {
             // `sep.join(iterable)` → `rt_bytes_join(sep, list)`; materialize the
             // iterable into a list first (like `str.join`).
             "join" => Some((&rf::RT_BYTES_JOIN, &[TaggedArg], 1, None, TypeSpec::Bytes)),
-            // `decode([encoding])` → str; an absent encoding is the null sentinel
-            // (always UTF-8, a documented limit). Folds the former inline case.
-            "decode" => Some((&rf::RT_BYTES_DECODE, &[TaggedArg], 0, None, TypeSpec::Str)),
+            // `decode(encoding=, errors=)` is NOT here: keyword args + 3-arg ABI,
+            // handled by the dedicated codec path in `lower_method_call`.
             _ => None,
         };
         let Some((def, wants, min_args, op_tag, ret_spec)) = plan else {
@@ -2697,6 +2696,79 @@ impl<'a> FnLower<'a> {
                 val: Const::Int(tag),
             });
             ops.push(Operand::Local(t));
+        }
+        self.emit_runtime_call(call_idx, def, ops, ret_spec)
+    }
+
+    /// Lower `str.encode` / `bytes.decode` (§9) through the 3-arg codec ABI
+    /// `rt_str_encode(s, encoding, errors)` / `rt_bytes_decode(b, encoding,
+    /// errors)`. Binds the positional-or-keyword `encoding`/`errors` params into
+    /// their fixed slots; an absent OR explicit `None` arg lowers to the NullPtr
+    /// "use default" sentinel (utf-8 / strict — the runtime tests `is_null()`).
+    /// Unknown keywords, a duplicate positional+keyword binding, or more than two
+    /// positionals are precise diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_codec_method(
+        &mut self,
+        call_idx: Idx<HirExpr>,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        ret_spec: &pyaot_stdlib_defs::TypeSpec,
+        args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        const PARAMS: [&str; 2] = ["encoding", "errors"];
+        let mname = self.interner.resolve(method_name).to_string();
+        let mut slots: [Option<Idx<HirExpr>>; 2] = [None, None];
+        if args.len() > PARAMS.len() {
+            return Err(CompilerError::semantic_error(
+                format!(
+                    "`{mname}()` takes at most {} arguments, got {}",
+                    PARAMS.len(),
+                    args.len()
+                ),
+                span,
+            ));
+        }
+        for (i, a) in args.iter().enumerate() {
+            slots[i] = Some(*a);
+        }
+        for (kname, kexpr) in kwargs {
+            let kn = self.interner.resolve(*kname);
+            let Some(idx) = PARAMS.iter().position(|&p| p == kn) else {
+                return Err(CompilerError::semantic_error(
+                    format!("`{mname}()` got an unexpected keyword argument '{kn}'"),
+                    span,
+                ));
+            };
+            if slots[idx].is_some() {
+                return Err(CompilerError::semantic_error(
+                    format!("`{mname}()` got multiple values for argument '{}'", PARAMS[idx]),
+                    span,
+                ));
+            }
+            slots[idx] = Some(*kexpr);
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let mut ops = vec![Operand::Local(self.coerce(rl, rr, Repr::Tagged)?)];
+        for slot in slots {
+            let op = match slot {
+                Some(a) if !matches!(self.func.exprs[a].kind, HirExprKind::NoneLit) => {
+                    let (al, ar) = self.lower_expr(a)?;
+                    self.coerce(al, ar, Repr::Tagged)?
+                }
+                _ => {
+                    let d = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::Const {
+                        dst: d,
+                        val: Const::NullPtr,
+                    });
+                    d
+                }
+            };
+            ops.push(Operand::Local(op));
         }
         self.emit_runtime_call(call_idx, def, ops, ret_spec)
     }
@@ -3502,6 +3574,32 @@ impl<'a> FnLower<'a> {
                 return self.lower_virtual_call(cid, recv, method_name, args, kwargs, span);
             }
             return self.lower_class_method_call(cid, recv, method_name, args, kwargs, span);
+        }
+        // `str.encode` / `bytes.decode` (§9) accept positional-OR-keyword
+        // `encoding`/`errors` and a 3-arg codec ABI — handle them before the
+        // generic no-keyword gate below (which would otherwise reject `errors=`).
+        let codec = match &recv_ty {
+            SemTy::Str if self.interner.resolve(method_name) == "encode" => Some((
+                &pyaot_core_defs::runtime_func_def::RT_STR_ENCODE,
+                pyaot_stdlib_defs::TypeSpec::Bytes,
+            )),
+            SemTy::Bytes if self.interner.resolve(method_name) == "decode" => Some((
+                &pyaot_core_defs::runtime_func_def::RT_BYTES_DECODE,
+                pyaot_stdlib_defs::TypeSpec::Str,
+            )),
+            _ => None,
+        };
+        if let Some((def, ret_spec)) = codec {
+            return self.lower_codec_method(
+                call_idx,
+                recv,
+                method_name,
+                def,
+                &ret_spec,
+                args,
+                kwargs,
+                span,
+            );
         }
         // Keywords on non-class receivers (Phase 10): only `list.sort` consumes
         // them (`reverse=` / a literal `key=None`; a real `key=` was desugared

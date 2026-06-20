@@ -930,8 +930,8 @@ pub static RT_BYTES_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_by
 /// rt_bytes_slice_step(bytes: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_BYTES_SLICE_STEP: RuntimeFuncDef =
     RuntimeFuncDef::slice_quaternary("rt_bytes_slice_step");
-/// rt_bytes_decode(bytes: *mut Obj, encoding: i64) -> *mut Obj
-pub static RT_BYTES_DECODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_bytes_decode");
+/// rt_bytes_decode(bytes: *mut Obj, encoding: *mut Obj, errors: *mut Obj) -> *mut Obj
+pub static RT_BYTES_DECODE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_bytes_decode");
 /// rt_bytes_startswith(bytes: *mut Obj, prefix: *mut Obj) -> i8
 pub static RT_BYTES_STARTS_WITH: RuntimeFuncDef =
     RuntimeFuncDef::binary_to_i8("rt_bytes_startswith");
@@ -1282,8 +1282,8 @@ pub static RT_STR_RSPLIT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
 );
 /// rt_str_isascii(s: *mut Obj) -> i8
 pub static RT_STR_ISASCII: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isascii");
-/// rt_str_encode(s: *mut Obj, encoding: *mut Obj) -> *mut Obj
-pub static RT_STR_ENCODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_encode");
+/// rt_str_encode(s: *mut Obj, encoding: *mut Obj, errors: *mut Obj) -> *mut Obj
+pub static RT_STR_ENCODE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_encode");
 /// rt_str_replace(s, old, new, count: i64) -> *mut Obj. `count` rides a RAW i64
 /// slot (`-1` = unlimited, §9), so the generic `ptr_ternary` all-Tagged default
 /// is wrong — see `REPLACE_QUATERNARY`.
