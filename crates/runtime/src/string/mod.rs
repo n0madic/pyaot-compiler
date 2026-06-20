@@ -7,6 +7,7 @@ mod align;
 pub mod builder;
 mod case;
 mod codec;
+mod codec_tables;
 mod core;
 pub mod interning;
 mod modify;

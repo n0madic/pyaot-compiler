@@ -1,8 +1,11 @@
 //! Text codecs for `str.encode` / `bytes.decode` (§9).
 //!
-//! Recognized encodings: `utf-8` (default), `ascii`, `latin-1`, and the
-//! algorithmic Unicode codecs `utf-16`/`utf-32` (native-with-BOM, plus explicit
-//! `-le`/`-be`). Everything else raises `LookupError`. The `errors=` handler is
+//! Recognized encodings: `utf-8` (default), `ascii`, `latin-1`, the algorithmic
+//! Unicode codecs `utf-16`/`utf-32` (native-with-BOM, plus explicit `-le`/`-be`),
+//! and the single-byte charmap codecs (`iso-8859-2..16`, `cp125x`, `koi8-*`,
+//! `mac-*`, DOS/IBM code pages, …) driven off the generated [`codec_tables`].
+//! Multi-byte CJK codecs (`shift_jis`/`gbk`/`big5`) are out of scope and raise
+//! `LookupError`, as does any unrecognized name. The `errors=` handler is
 //! honored: `strict` (default, raise), `ignore`, `replace`, `backslashreplace`,
 //! and `xmlcharrefreplace` (encode only). An unknown handler name raises
 //! `LookupError`, but — like CPython — only when an actual coding error triggers
@@ -12,6 +15,9 @@
 //! differential corpus checks the *result* and exception *type*, not the text.
 
 use crate::object::{BytesObj, Obj, StrObj};
+use crate::string::codec_tables::{
+    SINGLE_BYTE_CODEC_NAMES, SINGLE_BYTE_NAMES, SINGLE_BYTE_TABLES, UNDEF,
+};
 use pyaot_core_defs::Value;
 
 /// Byte order for the Unicode multi-byte codecs.
@@ -31,6 +37,8 @@ pub(crate) enum Encoding {
     Latin1,
     Utf16(ByteOrder),
     Utf32(ByteOrder),
+    /// A single-byte charmap codec — index into [`SINGLE_BYTE_TABLES`].
+    SingleByte(usize),
     Unknown,
 }
 
@@ -80,7 +88,18 @@ pub(crate) unsafe fn classify_encoding(enc: *mut Obj) -> Encoding {
         b"utf32" | b"u32" => Encoding::Utf32(ByteOrder::Native),
         b"utf32le" => Encoding::Utf32(ByteOrder::Le),
         b"utf32be" => Encoding::Utf32(ByteOrder::Be),
-        _ => Encoding::Unknown,
+        // Fall back to the generated single-byte charmap table; still Unknown if
+        // unlisted (a multi-byte CJK codec or a genuinely unknown name).
+        other => single_byte_lookup(other),
+    }
+}
+
+/// Resolve a normalized name against the generated single-byte codec table
+/// ([`SINGLE_BYTE_NAMES`] is sorted, so binary-search it).
+fn single_byte_lookup(norm: &[u8]) -> Encoding {
+    match SINGLE_BYTE_NAMES.binary_search_by(|&(n, _)| n.as_bytes().cmp(norm)) {
+        Ok(i) => Encoding::SingleByte(SINGLE_BYTE_NAMES[i].1),
+        Err(_) => Encoding::Unknown,
     }
 }
 
@@ -124,10 +143,26 @@ pub(crate) unsafe fn encode(src: &str, enc: Encoding, handler: ErrorHandler) -> 
         Encoding::Latin1 => encode_narrow(src, 0xFF, "latin-1", 256, handler),
         Encoding::Utf16(order) => encode_utf16(src, order),
         Encoding::Utf32(order) => encode_utf32(src, order),
+        Encoding::SingleByte(idx) => encode_single_byte(src, idx, handler),
         Encoding::Unknown => {
             raise_exc!(crate::exceptions::ExceptionType::LookupError, "unknown encoding")
         }
     }
+}
+
+/// Apply a *non-raising* encode error handler to one unencodable codepoint.
+/// Returns `true` if it substituted (`ignore`/`replace`/`backslashreplace`/
+/// `xmlcharrefreplace`); `false` for `strict`/`Unknown`, where the caller raises
+/// the codec-specific exception.
+fn push_encode_sub(out: &mut Vec<u8>, cp: u32, handler: ErrorHandler) -> bool {
+    match handler {
+        ErrorHandler::Ignore => {}
+        ErrorHandler::Replace => out.push(b'?'),
+        ErrorHandler::BackslashReplace => push_backslash(out, cp),
+        ErrorHandler::XmlCharRefReplace => out.extend_from_slice(format!("&#{cp};").as_bytes()),
+        ErrorHandler::Strict | ErrorHandler::Unknown => return false,
+    }
+    true
 }
 
 /// `ascii`/`latin-1`: one byte per codepoint up to `max`, else the handler.
@@ -139,23 +174,55 @@ unsafe fn encode_narrow(src: &str, max: u32, codec: &str, range: u32, handler: E
             out.push(cp as u8);
             continue;
         }
-        match handler {
-            ErrorHandler::Ignore => {}
-            ErrorHandler::Replace => out.push(b'?'),
-            ErrorHandler::BackslashReplace => push_backslash(&mut out, cp),
-            ErrorHandler::XmlCharRefReplace => {
-                out.extend_from_slice(format!("&#{cp};").as_bytes())
+        if !push_encode_sub(&mut out, cp, handler) {
+            match handler {
+                ErrorHandler::Strict => raise_exc!(
+                    crate::exceptions::ExceptionType::UnicodeEncodeError,
+                    "'{}' codec can't encode character: ordinal not in range({})",
+                    codec,
+                    range
+                ),
+                _ => raise_exc!(
+                    crate::exceptions::ExceptionType::LookupError,
+                    "unknown error handler name"
+                ),
             }
-            ErrorHandler::Strict => raise_exc!(
-                crate::exceptions::ExceptionType::UnicodeEncodeError,
-                "'{}' codec can't encode character: ordinal not in range({})",
-                codec,
-                range
-            ),
-            ErrorHandler::Unknown => raise_exc!(
-                crate::exceptions::ExceptionType::LookupError,
-                "unknown error handler name"
-            ),
+        }
+    }
+    out
+}
+
+/// A single-byte charmap codec: reverse-map each codepoint to its byte via a
+/// linear scan of the 256-entry table (encode is not a hot path). Unmappable
+/// codepoints go through the error handler.
+unsafe fn encode_single_byte(src: &str, idx: usize, handler: ErrorHandler) -> Vec<u8> {
+    let table = &SINGLE_BYTE_TABLES[idx];
+    let codec = SINGLE_BYTE_CODEC_NAMES[idx];
+    let mut out = Vec::with_capacity(src.len());
+    'chars: for ch in src.chars() {
+        let cp = ch as u32;
+        if cp <= 0xFFFF {
+            let target = cp as u16;
+            for (b, &mapped) in table.iter().enumerate() {
+                // Skip UNDEF slots so encoding U+FFFF itself never matches one.
+                if mapped != UNDEF && mapped == target {
+                    out.push(b as u8);
+                    continue 'chars;
+                }
+            }
+        }
+        if !push_encode_sub(&mut out, cp, handler) {
+            match handler {
+                ErrorHandler::Strict => raise_exc!(
+                    crate::exceptions::ExceptionType::UnicodeEncodeError,
+                    "'{}' codec can't encode character: character maps to <undefined>",
+                    codec
+                ),
+                _ => raise_exc!(
+                    crate::exceptions::ExceptionType::LookupError,
+                    "unknown error handler name"
+                ),
+            }
         }
     }
     out
@@ -216,10 +283,30 @@ pub(crate) unsafe fn decode(slice: &[u8], enc: Encoding, handler: ErrorHandler) 
         Encoding::Utf8 => decode_utf8(slice, handler),
         Encoding::Utf16(order) => decode_utf16(slice, order, handler),
         Encoding::Utf32(order) => decode_utf32(slice, order, handler),
+        Encoding::SingleByte(idx) => decode_single_byte(slice, idx, handler),
         Encoding::Unknown => {
             raise_exc!(crate::exceptions::ExceptionType::LookupError, "unknown encoding")
         }
     }
+}
+
+/// A single-byte charmap codec: one byte -> one codepoint via the generated
+/// table. An `UNDEF` slot (a byte the codec leaves unassigned) goes through the
+/// decode error handler.
+unsafe fn decode_single_byte(slice: &[u8], idx: usize, handler: ErrorHandler) -> String {
+    let table = &SINGLE_BYTE_TABLES[idx];
+    let codec = SINGLE_BYTE_CODEC_NAMES[idx];
+    let mut out = String::with_capacity(slice.len());
+    for &b in slice {
+        let cp = table[b as usize];
+        if cp == UNDEF {
+            decode_error(&mut out, &[b], handler, codec);
+        } else {
+            // The generator guarantees every non-UNDEF entry is a BMP scalar value.
+            out.push(char::from_u32(cp as u32).unwrap_or(REPLACEMENT));
+        }
+    }
+    out
 }
 
 /// Apply a decode error handler to one ill-formed byte span. Returns nothing for
@@ -436,4 +523,29 @@ pub extern "C" fn rt_bytes_decode_abi(bytes: Value, encoding: Value, errors: Val
         encoding.unwrap_ptr(),
         errors.unwrap_ptr(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Drift guard: the committed single-byte codec tables must still match the
+    /// system CPython the differential gate compares against. Skips where python3
+    /// is absent. One subprocess, then a byte-compare against the regenerated
+    /// output — same pattern as the Unicode char-table guard.
+    #[test]
+    fn codec_tables_match_system_python() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/gen_codec_tables.py");
+        let Ok(out) = std::process::Command::new("python3").arg(script).output() else {
+            return; // no python3 here — nothing to compare against
+        };
+        if !out.status.success() {
+            return; // present but failed (e.g. too old) — don't fail unrelated builds
+        }
+        let regenerated = String::from_utf8(out.stdout).expect("generator output is utf-8");
+        let committed = include_str!("codec_tables.rs");
+        assert_eq!(
+            regenerated, committed,
+            "codec_tables.rs drifted from system CPython — \
+             rerun tools/gen_codec_tables.py",
+        );
+    }
 }

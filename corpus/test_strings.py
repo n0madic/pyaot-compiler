@@ -1183,6 +1183,50 @@ except UnicodeDecodeError:
     pass
 print("encode/decode errors and codec tests passed")
 
+# ===== SECTION: single-byte mapping codecs (§9) =====
+# Round trips across a representative spread of single-byte charmap codecs.
+_sb_latin2 = "Příliš žluťoučký kůň"          # Czech (Latin-2)
+assert _sb_latin2.encode("iso-8859-2").decode("iso-8859-2") == _sb_latin2, "iso-8859-2 round trip"
+_sb_cyr = "Привет, мир"                       # Russian
+for _enc in ("iso-8859-5", "cp1251", "koi8-r", "cp866", "mac-cyrillic"):
+    assert _sb_cyr.encode(_enc).decode(_enc) == _sb_cyr, "cyrillic round trip"
+_sb_polish = "Zażółć gęślą jaźń"
+assert _sb_polish.encode("cp1250").decode("cp1250") == _sb_polish, "cp1250 round trip"
+assert "Ελληνικά".encode("iso-8859-7").decode("iso-8859-7") == "Ελληνικά", "greek round trip"
+
+# Exact byte mappings (high half differs per codec — pin a few).
+assert "€".encode("cp1252") == b"\x80", "cp1252 euro at 0x80"
+assert "€".encode("iso-8859-15") == b"\xa4", "latin-9 euro at 0xa4"
+assert b"\xc0".decode("iso-8859-5") == "Р", "iso-8859-5 0xc0 -> Cyrillic R"
+assert "ÿ".encode("latin-1") == b"\xff" and b"\xff".decode("mac-roman") == "ˇ", "mac-roman 0xff"
+
+# Aliases resolve like CPython (normalized: lowercase, no -/_/space).
+assert "č".encode("latin2") == "č".encode("iso8859-2"), "latin2 alias == iso8859-2"
+assert "Ж".encode("windows-1251") == "Ж".encode("cp1251"), "windows-1251 alias"
+assert b"\xe6".decode("KOI8-R") == b"\xe6".decode("koi8_r"), "koi8 case-insensitive + alias"
+
+# errors= handlers on an unencodable character (☃ is in none of these).
+assert "ab☃c".encode("iso-8859-2", "ignore") == b"abc", "single-byte encode ignore"
+assert "ab☃c".encode("iso-8859-2", "replace") == b"ab?c", "single-byte encode replace"
+assert "ab☃c".encode("iso-8859-2", errors="backslashreplace") == b"ab\\u2603c", "encode backslashreplace"
+
+# decode of an undefined byte: strict raises, replace substitutes U+FFFD.
+# 0x98 is the one byte cp1251 leaves undefined.
+assert b"a\x98b".decode("cp1251", "replace") == "a�b", "single-byte decode replace"
+assert b"a\x98b".decode("cp1251", "ignore") == "ab", "single-byte decode ignore"
+try:
+    b"\x98".decode("cp1251")
+    assert False, "undefined byte should raise"
+except UnicodeDecodeError:
+    pass
+# strict encode of an unmappable character raises UnicodeEncodeError.
+try:
+    "☃".encode("koi8-r")
+    assert False, "unmappable encode should raise"
+except UnicodeEncodeError:
+    pass
+print("single-byte codec tests passed")
+
 # ===== SECTION: string module constants =====
 import string
 assert string.digits == "0123456789", "string.digits failed"
