@@ -498,7 +498,13 @@ impl<'a> FnLower<'a> {
     ) -> Result<LocalId> {
         let needs_check = match &want {
             Repr::Raw(RawKind::F64) => *ty != SemTy::Float,
-            Repr::Raw(RawKind::I64) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
+            // A `Tagged` int into a raw-i64 slot takes the CHECKED unbox
+            // (`rt_unbox_int`): the value may dynamically be a heap `BigInt`, and an
+            // unchecked `UntagInt` (`sshr 3`) on a bignum pointer is silently
+            // garbage (PITFALLS B16/A6). A range-proven int is already `Raw(I64)`
+            // (`from != Tagged`, a Noop here), so this fires only for an unproven
+            // tagged int or a gradual `Dyn`/`Union` value reaching a raw-i64 param.
+            Repr::Raw(RawKind::I64) => from == Repr::Tagged,
             // A bool slot (`Raw(I8)`) fed a gradual value takes the CHECKED unbox
             // (`rt_unbox_bool`, the third member of the checked family) — a
             // statically-proven `bool` keeps the plain `UntagBool`.
@@ -559,7 +565,12 @@ impl<'a> FnLower<'a> {
         val_ty: &SemTy,
         slot_ty: &SemTy,
     ) -> Result<LocalId> {
-        if *slot_ty == SemTy::Float && matches!(val_ty, SemTy::Int | SemTy::Bool | SemTy::Dyn) {
+        if *slot_ty == SemTy::Float
+            && matches!(
+                val_ty,
+                SemTy::Int | SemTy::Bool | SemTy::Dyn | SemTy::Union(_)
+            )
+        {
             let f64r = Repr::Raw(RawKind::F64);
             let f = self.coerce_value(src, from, val_ty, f64r.clone())?;
             return self.coerce(f, f64r, Repr::Tagged);

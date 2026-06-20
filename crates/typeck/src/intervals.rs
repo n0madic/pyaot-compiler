@@ -220,9 +220,9 @@ impl Interval {
         match (self.as_bounded(), other.as_bounded()) {
             (Some((al, ah)), Some((bl, bh))) => {
                 // Products of |endpoints| <= 2^48 stay <= 2^96, well inside i128.
-                let p = [al * bl, al * bh, ah * bl, ah * bh];
-                let lo = *p.iter().min().unwrap();
-                let hi = *p.iter().max().unwrap();
+                let (p0, p1, p2, p3) = (al * bl, al * bh, ah * bl, ah * bh);
+                let lo = p0.min(p1).min(p2).min(p3);
+                let hi = p0.max(p1).max(p2).max(p3);
                 Interval::range_clamped(lo, hi)
             }
             _ => Interval::Top,
@@ -253,14 +253,14 @@ impl Interval {
         match divisor {
             Interval::Range { lo: rl, hi: rh } if rl >= 1 && rh <= BOUND => {
                 // `div_euclid` == floor division for a positive divisor.
-                let c = [
+                let (c0, c1, c2, c3) = (
                     nl.div_euclid(rl),
                     nl.div_euclid(rh),
                     nh.div_euclid(rl),
                     nh.div_euclid(rh),
-                ];
-                let lo = *c.iter().min().unwrap();
-                let hi = *c.iter().max().unwrap();
+                );
+                let lo = c0.min(c1).min(c2).min(c3);
+                let hi = c0.max(c1).max(c2).max(c3);
                 Interval::range_clamped(lo, hi)
             }
             _ => Interval::Top,

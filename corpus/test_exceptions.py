@@ -2448,4 +2448,69 @@ def _fold_test_multi_except():
 _fold_test_multi_except()
 print("_fold_test_multi_except passed")
 
+
+# ===== SECTION: Out-of-range list subscript raises IndexError =====
+# (was a silent None; folded from test_review_fixes.py).
+
+
+def _rvf_safe_subscript(lst, i):
+    try:
+        return lst[i]
+    except IndexError:
+        return "IndexError"
+
+
+_rvf_nums = [1, 2]
+assert _rvf_safe_subscript(_rvf_nums, 0) == 1
+assert _rvf_safe_subscript(_rvf_nums, 1) == 2
+assert _rvf_safe_subscript(_rvf_nums, 5) == "IndexError"
+assert _rvf_safe_subscript(_rvf_nums, -5) == "IndexError"
+
+
+# ===== SECTION: instance <op> immediate with NotImplemented dunder → TypeError =====
+# When a dunder returns NotImplemented and the RHS is a tagged immediate (non-ptr),
+# the reflected-op fallback must raise TypeError rather than SIGSEGV dereferencing
+# the tagged int (folded from test_review_fixes.py).
+
+
+class _rvf_C:
+    def __add__(self, o):
+        return NotImplemented
+
+    def __sub__(self, o):
+        return NotImplemented
+
+    def __mul__(self, o):
+        return NotImplemented
+
+    def __truediv__(self, o):
+        return NotImplemented
+
+    def __floordiv__(self, o):
+        return NotImplemented
+
+    def __mod__(self, o):
+        return NotImplemented
+
+    def __pow__(self, o):
+        return NotImplemented
+
+
+def _rvf_raises_type_error(fn) -> bool:
+    try:
+        fn(_rvf_C())
+        return False
+    except TypeError:
+        return True
+
+
+assert _rvf_raises_type_error(lambda o: o + 1)
+assert _rvf_raises_type_error(lambda o: o - 1)
+assert _rvf_raises_type_error(lambda o: o * 1)
+assert _rvf_raises_type_error(lambda o: o / 1)
+assert _rvf_raises_type_error(lambda o: o // 1)
+assert _rvf_raises_type_error(lambda o: o % 1)
+assert _rvf_raises_type_error(lambda o: o ** 1)
+
+
 print("All exception tests passed!")

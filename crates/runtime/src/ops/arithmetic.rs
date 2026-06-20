@@ -143,8 +143,8 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for +: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);
@@ -207,8 +207,8 @@ pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for -: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);
@@ -242,8 +242,8 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for *: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va_tagged = Value(a as u64);
@@ -328,8 +328,8 @@ pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for /: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);
@@ -363,8 +363,8 @@ pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for //: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);
@@ -398,8 +398,8 @@ pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for %: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);
@@ -433,8 +433,8 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             raise_exc!(
                 ExceptionType::TypeError,
                 "unsupported operand type(s) for **: '{}' and '{}'",
-                super::comparison::type_name((*a).type_tag()),
-                super::comparison::type_name((*b).type_tag())
+                super::comparison::type_name(tag_of(Value(a as u64), a)),
+                super::comparison::type_name(tag_of(Value(b as u64), b))
             );
         }
         let va = Value(a as u64);

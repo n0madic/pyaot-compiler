@@ -19,7 +19,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
@@ -234,7 +234,8 @@ pub fn collect_classes(
     // C3 linearization → MRO per class (cached so diamonds are computed once).
     let mut mro_cache: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
     for c in &module.classes {
-        c3_linearize(c.class_id, &parents, &mut mro_cache)?;
+        let mut visiting = HashSet::new();
+        c3_linearize(c.class_id, &parents, &mut mro_cache, &mut visiting)?;
     }
 
     // Build each class's resolved info.
@@ -489,15 +490,26 @@ fn c3_linearize(
     cid: ClassId,
     parents: &HashMap<ClassId, Vec<ClassId>>,
     cache: &mut HashMap<ClassId, Vec<ClassId>>,
+    visiting: &mut HashSet<ClassId>,
 ) -> Result<Vec<ClassId>> {
     if let Some(m) = cache.get(&cid) {
         return Ok(m.clone());
+    }
+    // Cycle guard: a base that is still on the recursion stack means the
+    // hierarchy is cyclic (`class A(B)` / `class B(A)`, or `class A(A)`). Without
+    // this the recursion never reaches a cached/base case and overflows the
+    // stack, aborting the compiler — surface a real Python `TypeError` instead.
+    if !visiting.insert(cid) {
+        return Err(CompilerError::semantic_error(
+            "cannot create a consistent method resolution order (MRO): cyclic inheritance",
+            Span::dummy(),
+        ));
     }
     let bases = parents.get(&cid).cloned().unwrap_or_default();
     // L[C] = C + merge(L[B1], …, L[Bn], [B1, …, Bn]).
     let mut seqs: Vec<Vec<ClassId>> = Vec::new();
     for b in &bases {
-        seqs.push(c3_linearize(*b, parents, cache)?);
+        seqs.push(c3_linearize(*b, parents, cache, visiting)?);
     }
     if !bases.is_empty() {
         seqs.push(bases.clone());
@@ -505,6 +517,9 @@ fn c3_linearize(
     let mut result = vec![cid];
     result.extend(c3_merge(seqs, cid)?);
     cache.insert(cid, result.clone());
+    // Off the recursion stack: a sibling sharing a base (diamond) must not read
+    // this as a back-edge (the cache short-circuits revisits anyway).
+    visiting.remove(&cid);
     Ok(result)
 }
 
@@ -670,6 +685,26 @@ class D(B, C):
         assert_eq!(mro_names(&t, &i, "D"), ["D", "B", "C", "A"]);
         assert_eq!(mro_names(&t, &i, "B"), ["B", "A"]);
         assert_eq!(mro_names(&t, &i, "A"), ["A"]);
+    }
+
+    #[test]
+    fn rejects_cyclic_inheritance() {
+        // A mutual cycle (`class A(B)` / `class B(A)`) and a self-cycle both reach
+        // C3 linearization; without the recursion guard they overflow the stack and
+        // abort the compiler. Reject loudly with a real `TypeError`-shaped error.
+        let mutual = "\
+class A(B):
+    pass
+class B(A):
+    pass
+";
+        assert!(try_collect(mutual).is_err());
+
+        let self_cycle = "\
+class A(A):
+    pass
+";
+        assert!(try_collect(self_cycle).is_err());
     }
 
     #[test]

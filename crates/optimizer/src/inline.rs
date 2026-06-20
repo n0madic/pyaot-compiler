@@ -198,6 +198,21 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
     if real_size(f) > max_insts {
         return false;
     }
+    // A `Return(None)` fall-off needs a synthesizable default value stored into the
+    // call's dst. `Never`/`FuncPtr` reprs have no `Tagged`-source coercion and
+    // `Const::None` is `Tagged`-only, so such a callee cannot be inlined without
+    // emitting MIR the verifier rejects (and `emit_default_ret` would panic) —
+    // refuse it; the non-inlined ABI handles it via codegen's raw-register
+    // `default_ret`. An always-diverging `Never` callee with no `Return(None)`
+    // stays inlinable (no default value is ever materialized).
+    if matches!(f.ret, Repr::Never | Repr::FuncPtr(_))
+        && f
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, MirTerminator::Return(None)))
+    {
+        return false;
+    }
     for block in &f.blocks {
         // A callee with its own protected region would need handler-block
         // remapping AND nesting into the call site's handler — refused (the

@@ -229,6 +229,27 @@ fn coerce_to_tup(a0: LocalId, def: &[Option<MirInst>], count: &[u32]) -> Option<
     Some(*src)
 }
 
+/// Trace a `Raw(I64)` constant local back to its literal value through the
+/// `Const::Int → Coerce(Tagged → Raw(I64))` chain that `raw_i64_const` emits in
+/// lowering. Returns `None` if the def isn't that constant shape (so the caller
+/// bails the rewrite rather than trusting an unverified slot order).
+fn raw_i64_const_value(local: LocalId, def: &[Option<MirInst>]) -> Option<i64> {
+    let mut cur = local;
+    for _ in 0..4 {
+        match def[cur.index()].as_ref()? {
+            MirInst::Const {
+                val: Const::Int(n), ..
+            } => return Some(*n),
+            MirInst::Coerce(co) => {
+                let Operand::Local(src) = co.src();
+                cur = *src;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// A `Coerce` that re-types a value without reinterpreting its bits — the
 /// closure ↔ Tagged ↔ heap-pointer family. Box/unbox/tag/untag (which change the
 /// interpreted type) and checked unboxes are excluded.
@@ -401,13 +422,20 @@ fn try_devirt_ci(
         else {
             continue;
         };
-        let [Operand::Local(a0), _pos, val] = &ts[..] else {
+        let [Operand::Local(a0), Operand::Local(pos), val] = &ts[..] else {
             continue;
         };
         // Does this `TupleSet` write OUR tuple (its arg 0 coerces from `tup`)?
         match coerce_to_tup(*a0, def, count) {
             Some(src) if src == tup => {}
             _ => continue, // a different tuple's TupleSet — skip
+        }
+        // The slot index must equal this value's textual position (lowering emits
+        // slot 0, 1, … in order). Validate it instead of trusting the order
+        // silently: a future reorder would otherwise bind args to the wrong F
+        // params with no verifier catch (every recovered value is `Tagged`).
+        if raw_i64_const_value(*pos, def) != Some(vals.len() as i64) {
+            return None;
         }
         // The arg-0 coerce must be single-use (we delete it).
         if reads[a0.index()] != 1 {

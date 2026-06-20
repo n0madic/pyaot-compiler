@@ -643,6 +643,12 @@ fn move_global_tys(
 /// `Float` slot) would be silently unboxed. A still-`Never` contributor (not
 /// yet evaluated this sweep) adds nothing to the join, so it must not
 /// spuriously block the narrowing and force a sticky `Dyn`.
+///
+/// This guards a *top-level* `Raw` repr only; a `Raw` nested inside a `Heap`
+/// container (e.g. `list[float]` = `Heap(List(Raw(F64)))`) is NOT caught here.
+/// Element-slot soundness comes instead from the callers passing the *element*
+/// type directly (where `Float`→`Raw(F64)` is top-level) and, as a backstop, from
+/// `check_repr_boundaries` rejecting any unsound whole-container store.
 fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
     if joined == SemTy::Never {
         return SemTy::Never;

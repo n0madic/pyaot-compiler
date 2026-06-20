@@ -19,9 +19,12 @@ impl From<Span> for DiagnosticSpan {
 
 impl From<DiagnosticSpan> for SourceSpan {
     fn from(span: DiagnosticSpan) -> Self {
+        // `saturating_sub` guards against an inverted span (`end < start`): in
+        // debug the subtraction would panic while *rendering* an error, in release
+        // it would wrap to a near-`u32::MAX` length.
         SourceSpan::new(
             miette::SourceOffset::from(span.0.start as usize),
-            (span.0.end - span.0.start) as usize,
+            span.0.end.saturating_sub(span.0.start) as usize,
         )
     }
 }

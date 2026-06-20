@@ -97,9 +97,10 @@ pub fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
         // Handle negative index
         let idx = if index < 0 { len + index } else { index };
 
-        // Bounds check
+        // Bounds check — a Python subscript (`list[i]`, the `ListGet` op) raises
+        // `IndexError` like CPython, never a null sentinel.
         if idx < 0 || idx >= len {
-            return std::ptr::null_mut();
+            raise_exc!(ExceptionType::IndexError, "list index out of range");
         }
 
         let data = (*list_obj).data;
@@ -165,7 +166,9 @@ pub fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
 
     let v = match unsafe { list_get_value(list, index) } {
         Some(v) => v,
-        None => return 0,
+        // OOB on a typed-element subscript raises `IndexError` like CPython,
+        // mirroring the tagged `rt_list_get` — never a `0` sentinel.
+        None => unsafe { raise_exc!(ExceptionType::IndexError, "list index out of range") },
     };
     unsafe {
         match elem_kind {

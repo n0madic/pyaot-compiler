@@ -83,8 +83,10 @@ const PHASE_CORPUS: &[&str] = &[
     // p49_str_method_args, p50_unicode_predicates, p8h_unicode, p29_format).
     "test_strings.py",
     // ── Exceptions & structural match ──
-    // raise/try/except/finally/custom/with/multi-except (folds p7_raise_tryexcept,
-    // p7_finally, p7_custom_exc, p7_with, multi_except).
+    // raise/try/except/finally/custom/with/multi-except + list out-of-range
+    // IndexError + instance<op>immediate NotImplemented→TypeError (folds
+    // p7_raise_tryexcept, p7_finally, p7_custom_exc, p7_with, multi_except,
+    // test_review_fixes§indexerror+notimpl).
     "test_exceptions.py",
     // Real tracebacks — output-format suite, standalone (line markers + lazy
     // PC−1 resolution); kept print-based since the traceback text IS the output.

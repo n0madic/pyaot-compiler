@@ -286,7 +286,11 @@ mod tests {
         assert_eq!(exception_tag_to_name(27), Some("SyntaxError"));
         assert_eq!(exception_tag_to_name(28), Some("BaseException"));
         assert_eq!(exception_tag_to_name(29), Some("UnboundLocalError"));
-        assert_eq!(exception_tag_to_name(30), None);
+        assert_eq!(exception_tag_to_name(30), Some("LookupError"));
+        assert_eq!(exception_tag_to_name(31), Some("UnicodeError"));
+        assert_eq!(exception_tag_to_name(32), Some("UnicodeEncodeError"));
+        assert_eq!(exception_tag_to_name(33), Some("UnicodeDecodeError"));
+        assert_eq!(exception_tag_to_name(34), None);
         assert_eq!(exception_tag_to_name(255), None);
     }
 

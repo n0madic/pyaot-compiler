@@ -19,14 +19,6 @@ pub struct Linker {
 }
 
 impl Linker {
-    pub fn new(runtime_lib: impl Into<PathBuf>) -> Self {
-        Self {
-            runtime_lib: runtime_lib.into(),
-            debug: false,
-            minimize_size: false,
-        }
-    }
-
     /// Create a new linker with debug flag
     pub fn with_debug(runtime_lib: impl Into<PathBuf>, debug: bool) -> Self {
         Self {
@@ -182,7 +174,7 @@ mod tests {
 
     #[test]
     fn test_linker_creation() {
-        let linker = Linker::new("libruntime.a");
+        let linker = Linker::with_debug("libruntime.a", false);
         assert_eq!(linker.runtime_lib, PathBuf::from("libruntime.a"));
     }
 }
