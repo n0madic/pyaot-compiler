@@ -385,6 +385,19 @@ pub enum HirExprKind {
         args: Idx<HirExpr>,
         kwargs: Option<Idx<HirExpr>>,
     },
+    /// A method call with a `*args` / `**kwargs` spread (`recv.m(*xs, **d)`). Like
+    /// [`Self::CallValue`] for methods: the frontend has already packed the
+    /// positional `args` into a tuple and the keyword `kwargs` into a dict (or
+    /// `None`), so lowering routes straight to the DYNAMIC dispatcher
+    /// (`rt_obj_method`), which needs no static arity. (A plain / keyword-only
+    /// method call keeps the static [`Self::MethodCall`] path and its
+    /// devirtualization.) Always yields the tagged baseline (`Dyn`).
+    MethodCallValue {
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: Idx<HirExpr>,
+        kwargs: Option<Idx<HirExpr>>,
+    },
 
     // ── containers (Phase 4) ──
     /// A list literal `[e0, e1, …]` (possibly empty).
@@ -1426,6 +1439,27 @@ pub enum HirStmt {
     DelItem {
         base: Idx<HirExpr>,
         index: Idx<HirExpr>,
+    },
+    /// Slice write `base[start:end:step] = value`. Each bound is optional (absent
+    /// → the runtime's `i64::MIN`/`i64::MAX`/`1` default, like [`HirExprKind::Slice`]);
+    /// `value` is a fresh list the frontend materialized from the RHS iterable
+    /// (any iterable → list, also breaking `a[1:3] = a` aliasing). Lowering emits
+    /// `rt_list_setslice`; a non-list base raises `TypeError` at runtime.
+    SetSlice {
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
+        value: Idx<HirExpr>,
+    },
+    /// Slice delete `del base[start:end:step]`. Mirrors [`Self::SetSlice`] minus
+    /// the value; lowering emits `rt_list_delslice` (a non-list base raises
+    /// `TypeError` at runtime).
+    DelSlice {
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
     },
     /// Attribute write `base.name = value` (Phase 5). The slot is resolved at
     /// lowering from `base`'s class; the value coerces to the uniform tagged field

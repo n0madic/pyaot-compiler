@@ -3641,8 +3641,47 @@ def test_nested_class_generator_method():
     print("test_nested_class_generator_method passed")
 
 
+def test_method_spread():
+    # Priority 1, Feature C: `*args` / `**kwargs` spread in METHOD calls (routes
+    # through the dynamic dispatcher rt_obj_method — no static arity needed).
+    class _P1Calc:
+        def __init__(self, base: int):
+            self.base = base
+
+        def add3(self, a: int, b: int, c: int) -> int:
+            return self.base + a + b + c
+
+        def greet(self, name: str = "world", punct: str = "!") -> str:
+            return "hi " + name + punct
+
+        def total(self, *args) -> int:
+            t = self.base
+            for v in args:
+                t += v
+            return t
+
+    c = _P1Calc(100)
+    xs = [1, 2, 3]
+    # `*args` spread over a list
+    assert c.add3(*xs) == 106, "method *args"
+    # positional + `*args` + `**kwargs` mixed
+    assert c.add3(1, *[2], **{"c": 3}) == 106, "method mixed spread"
+    # `**kwargs` spread
+    assert c.greet(**{"name": "bob", "punct": "?"}) == "hi bob?", "method **kwargs"
+    # `*args` into defaulted params
+    assert c.greet(*["alice"]) == "hi alice!", "method *args into defaults"
+    # `*args` into a varargs method
+    assert c.total(*[1, 2, 3, 4]) == 110, "method *args into *args"
+    # spread over non-list iterables (range / tuple)
+    assert c.total(*range(1, 5)) == 110, "method *range spread"
+    assert c.total(*(10, 20)) == 130, "method *tuple spread"
+
+    print("test_method_spread passed")
+
+
 test_nested_class()
 test_nested_class_generator_method()
+test_method_spread()
 
 
 print("All function tests passed!")

@@ -274,6 +274,12 @@ type Env = Vec<Interval>;
 /// An interned-expr → interval scratch/record map.
 type ExprIv = HashMap<Idx<HirExpr>, Interval>;
 
+/// A function's cached interval analysis from its most recent in-loop pass:
+/// `(seed, expr_iv, writers)` — the entry seed, the per-expr intervals, and the
+/// per-local writer intervals — reused by the final apply when the converged
+/// seed matches (eliding a redundant second full analysis).
+type AnalysisCache = (Vec<Interval>, ExprIv, HashMap<usize, Vec<Interval>>);
+
 /// One direct call site in a caller: the callee's `FuncId` index and the arg
 /// expressions (in the caller's `exprs` arena), positionally aligned with the
 /// callee's params (the frontend adapts every direct call to exact arity).
@@ -330,8 +336,7 @@ pub(crate) fn narrow_raw_ints(
     // in-loop analysis, reused by the final apply when the converged seed matches
     // (which it does for every converged function) — eliding a redundant second
     // full analysis, e.g. of a large top-level `__main__`.
-    let mut analysis_cache: Vec<Option<(Vec<Interval>, ExprIv, HashMap<usize, Vec<Interval>>)>> =
-        vec![None; n];
+    let mut analysis_cache: Vec<Option<AnalysisCache>> = vec![None; n];
 
     let total: usize = n_params.iter().sum();
     let max_rounds = (total + n)
@@ -1200,6 +1205,30 @@ fn record_stmt_exprs(
         HirStmt::DelItem { base, index } => {
             e(*base, rec);
             e(*index, rec);
+        }
+        HirStmt::SetSlice {
+            base,
+            start,
+            end,
+            step,
+            value,
+        } => {
+            e(*base, rec);
+            for b in [start, end, step].into_iter().flatten() {
+                e(*b, rec);
+            }
+            e(*value, rec);
+        }
+        HirStmt::DelSlice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            e(*base, rec);
+            for b in [start, end, step].into_iter().flatten() {
+                e(*b, rec);
+            }
         }
         HirStmt::SetAttr { base, value, .. } => {
             e(*base, rec);

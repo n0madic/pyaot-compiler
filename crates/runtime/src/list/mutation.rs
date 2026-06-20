@@ -724,3 +724,113 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
 pub extern "C" fn rt_list_slice_assign_abi(list: Value, start: i64, stop: i64, values: Value) {
     rt_list_slice_assign(list.unwrap_ptr(), start, stop, values.unwrap_ptr())
 }
+
+/// `list[start:stop:step] = values` — the slice-assignment form (`values` is the
+/// fresh list the frontend materialized from the RHS iterable). `step == 1`
+/// reuses the contiguous grow/shrink/self-alias body of `rt_list_slice_assign`;
+/// an extended slice (`step != 1`) requires `len(values) == len(slice)`
+/// (ValueError otherwise) and overwrites the selected indices element-wise. A
+/// non-list receiver raises TypeError, matching CPython's `'<type>' object does
+/// not support item assignment`.
+pub fn rt_list_setslice(list: *mut Obj, start: i64, stop: i64, step: i64, values: *mut Obj) {
+    use crate::slice_utils::{collect_step_indices, normalize_slice_indices};
+
+    if list.is_null() {
+        return;
+    }
+    unsafe {
+        if (*list).type_tag() != TypeTagKind::List {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "'{}' object does not support item assignment",
+                (*list).type_tag().type_name()
+            );
+        }
+        // Contiguous slice: reuse the existing grow/shrink path (it re-normalizes
+        // with step=1 and handles the `a[1:3] = a` self-alias case).
+        if step == 1 {
+            rt_list_slice_assign(list, start, stop, values);
+            return;
+        }
+        // Extended slice: the selected indices and the value count must match.
+        let list_obj = list as *mut ListObj;
+        let len = (*list_obj).len as i64;
+        let (s, e) = normalize_slice_indices(start, stop, len, step);
+        let indices = collect_step_indices(s, e, step);
+        let (vdata, vlen) = if values.is_null() {
+            (std::ptr::null::<Value>(), 0usize)
+        } else {
+            let v = values as *mut ListObj;
+            ((*v).data as *const Value, (*v).len)
+        };
+        if indices.len() != vlen {
+            raise_exc!(
+                ExceptionType::ValueError,
+                "attempt to assign sequence of size {} to extended slice of size {}",
+                vlen,
+                indices.len()
+            );
+        }
+        let data = (*list_obj).data;
+        for (k, &i) in indices.iter().enumerate() {
+            *data.add(i) = *vdata.add(k);
+        }
+    }
+}
+#[export_name = "rt_list_setslice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_setslice_abi(list: Value, start: i64, stop: i64, step: i64, values: Value) {
+    let l = unsafe { crate::utils::expect_ptr_or_type_error::<Obj>(list, "list slice assignment") };
+    rt_list_setslice(l, start, stop, step, values.unwrap_ptr())
+}
+
+/// `del list[start:stop:step]` — the slice-deletion form. The selected indices
+/// (contiguous for `step == 1`, strided otherwise) are removed in a single
+/// left-compaction pass, so the relative order of survivors is preserved and no
+/// index shifts mid-removal. A non-list receiver raises TypeError, matching
+/// CPython's `'<type>' object doesn't support item deletion`.
+pub fn rt_list_delslice(list: *mut Obj, start: i64, stop: i64, step: i64) {
+    use crate::slice_utils::{collect_step_indices, normalize_slice_indices};
+    use std::collections::HashSet;
+
+    if list.is_null() {
+        return;
+    }
+    unsafe {
+        if (*list).type_tag() != TypeTagKind::List {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "'{}' object doesn't support item deletion",
+                (*list).type_tag().type_name()
+            );
+        }
+        let list_obj = list as *mut ListObj;
+        let len = (*list_obj).len as i64;
+        let (s, e) = normalize_slice_indices(start, stop, len, step);
+        let indices = collect_step_indices(s, e, step);
+        if indices.is_empty() {
+            return;
+        }
+        let remove: HashSet<usize> = indices.into_iter().collect();
+        let data = (*list_obj).data;
+        let old_len = (*list_obj).len;
+        // Compact survivors to the front, then clear the vacated tail slots.
+        let mut write = 0usize;
+        for read in 0..old_len {
+            if !remove.contains(&read) {
+                *data.add(write) = *data.add(read);
+                write += 1;
+            }
+        }
+        for i in write..old_len {
+            *data.add(i) = Value(0);
+        }
+        (*list_obj).len = write;
+    }
+}
+#[export_name = "rt_list_delslice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_delslice_abi(list: Value, start: i64, stop: i64, step: i64) {
+    let l = unsafe { crate::utils::expect_ptr_or_type_error::<Obj>(list, "list slice deletion") };
+    rt_list_delslice(l, start, stop, step)
+}

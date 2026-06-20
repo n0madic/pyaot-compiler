@@ -248,15 +248,66 @@ impl<'a> FnLowerer<'a> {
         // (Phase 5). `super().method(args)` carries a `Super` receiver resolved at
         // lowering against the enclosing class's MRO. Unknown names are not rejected.
         if let Expr::Attribute(attr) = c.func.as_ref() {
-            if has_starred_arg(c) {
-                return Err(parse_error(
-                    "`*args` spreading is not supported for method calls",
-                    span,
-                ));
-            }
-            if has_doublestar_kwarg(c) {
-                return Err(parse_error(
-                    "`**kwargs` spreading is not supported for method calls",
+            // `recv.m(*xs, **d)` — a `*args` / `**kwargs` spread routes through the
+            // DYNAMIC dispatcher (`rt_obj_method`), which needs no static arity
+            // (unlike free functions, where it must be known at the frontend). The
+            // frontend pre-builds the positional tuple + keyword dict exactly as
+            // `lower_indirect_or_unknown_call` does for a value callee, then emits
+            // `MethodCallValue`. (A plain / keyword-only call keeps the static
+            // `MethodCall` path below — static binding + devirtualization intact.)
+            if has_starred_arg(c) || has_doublestar_kwarg(c) {
+                if is_super_call(attr.value.as_ref()) {
+                    return Err(parse_error(
+                        "`*args`/`**kwargs` spreading is not supported for super() calls",
+                        span,
+                    ));
+                }
+                // Receiver first (its side effects precede every argument's).
+                let recv = self.lower_expr(attr.value.as_ref())?;
+                let method_name = self.intern(attr.attr.as_str());
+                // Positional tuple: a runtime `*seq` spread materializes through
+                // `argv` → `Iter` → `TupleFromIter`; an all-plain (incl. flattened
+                // literal-spread) call builds a fixed tuple literal directly.
+                let (items, has_runtime_spread) = classify_pos_args(c);
+                let args_tuple = if has_runtime_spread {
+                    let argv = self.build_spread_argv(&items, span)?;
+                    let argv_ref = self.local_ref(argv, span);
+                    let it = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::Iter,
+                            args: vec![argv_ref],
+                        },
+                        SemTy::Dyn,
+                        span,
+                    );
+                    self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::TupleFromIter,
+                            args: vec![it],
+                        },
+                        SemTy::tuple_var_of(SemTy::Dyn),
+                        span,
+                    )
+                } else {
+                    let mut elems = Vec::with_capacity(items.len());
+                    for item in &items {
+                        let PosItem::Plain(e) = *item else {
+                            unreachable!("runtime spreads handled above")
+                        };
+                        elems.push(self.lower_expr(e)?);
+                    }
+                    self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
+                };
+                // Keyword dict from named keywords and `**d` forwards (or `None`).
+                let kwargs = self.build_indirect_kwargs(c, span)?;
+                return Ok(self.alloc(
+                    HirExprKind::MethodCallValue {
+                        recv,
+                        method_name,
+                        args: args_tuple,
+                        kwargs,
+                    },
+                    SemTy::Dyn,
                     span,
                 ));
             }

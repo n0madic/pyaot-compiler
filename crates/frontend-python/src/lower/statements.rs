@@ -298,8 +298,46 @@ impl<'a> FnLowerer<'a> {
             }
             Expr::Subscript(s) => {
                 let span = to_span(s.range());
-                if matches!(s.slice.as_ref(), Expr::Slice(_)) {
-                    return Err(parse_error("slice assignment is not yet supported", span));
+                // `a[start:end:step] = rhs` — slice assignment. Lower the base and
+                // the three optional bounds, then wrap the RHS in a FRESH list
+                // (`list(iter(rhs))`): this accepts any iterable AND breaks the
+                // `a[1:3] = a` self-aliasing case (the runtime reads a snapshot).
+                if let Expr::Slice(sl) = s.slice.as_ref() {
+                    let base = self.lower_expr(s.value.as_ref())?;
+                    let lower_opt =
+                        |this: &mut Self, e: &Option<Box<Expr>>| -> Result<Option<Idx<HirExpr>>> {
+                            match e {
+                                Some(x) => Ok(Some(this.lower_expr(x.as_ref())?)),
+                                None => Ok(None),
+                            }
+                        };
+                    let start = lower_opt(self, &sl.lower)?;
+                    let end = lower_opt(self, &sl.upper)?;
+                    let step = lower_opt(self, &sl.step)?;
+                    let it = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::Iter,
+                            args: vec![value],
+                        },
+                        SemTy::Dyn,
+                        span,
+                    );
+                    let values = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::ListFromIter,
+                            args: vec![it],
+                        },
+                        SemTy::list_of(SemTy::Dyn),
+                        span,
+                    );
+                    self.push_stmt(HirStmt::SetSlice {
+                        base,
+                        start,
+                        end,
+                        step,
+                        value: values,
+                    });
+                    return Ok(());
                 }
                 // `os.environ[k] = v` (Phase 8H): a SetItem into the environ
                 // attr would write into a FRESH dict snapshot (the getter
@@ -380,9 +418,28 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn delete_target(&mut self, target: &Expr) -> Result<()> {
         match target {
             Expr::Subscript(s) => {
-                let span = to_span(s.range());
-                if matches!(s.slice.as_ref(), Expr::Slice(_)) {
-                    return Err(parse_error("slice deletion is not supported", span));
+                // `del a[start:end:step]` — slice deletion. Lower the base and the
+                // three optional bounds, then `rt_list_delslice` (a non-list base
+                // raises `TypeError` at runtime, like CPython).
+                if let Expr::Slice(sl) = s.slice.as_ref() {
+                    let base = self.lower_expr(s.value.as_ref())?;
+                    let lower_opt =
+                        |this: &mut Self, e: &Option<Box<Expr>>| -> Result<Option<Idx<HirExpr>>> {
+                            match e {
+                                Some(x) => Ok(Some(this.lower_expr(x.as_ref())?)),
+                                None => Ok(None),
+                            }
+                        };
+                    let start = lower_opt(self, &sl.lower)?;
+                    let end = lower_opt(self, &sl.upper)?;
+                    let step = lower_opt(self, &sl.step)?;
+                    self.push_stmt(HirStmt::DelSlice {
+                        base,
+                        start,
+                        end,
+                        step,
+                    });
+                    return Ok(());
                 }
                 let base = self.lower_expr(s.value.as_ref())?;
                 let index = self.lower_expr(s.slice.as_ref())?;

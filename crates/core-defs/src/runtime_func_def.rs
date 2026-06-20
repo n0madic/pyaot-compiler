@@ -790,6 +790,42 @@ pub static RT_LIST_DELETE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
     &[MirSemantic::Tagged, MirSemantic::Raw],
     None,
 );
+/// rt_list_setslice(list, start, stop, step, values) -> void
+/// `list[start:stop:step] = values`; the list + values are tagged Values, the
+/// bounds RAW i64 (`i64::MIN`/`i64::MAX`/`1` sentinels for an absent
+/// start/stop/step). `step == 1` grows/shrinks the list; an extended slice
+/// (`step != 1`) requires `len(values) == len(slice)` (ValueError otherwise).
+/// A non-list receiver raises TypeError.
+pub static RT_LIST_SETSLICE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_list_setslice",
+    &[PI64, PI64, PI64, PI64, PI64],
+    None,
+    false,
+    &[
+        MirSemantic::Tagged,
+        MirSemantic::Raw,
+        MirSemantic::Raw,
+        MirSemantic::Raw,
+        MirSemantic::Tagged,
+    ],
+    None,
+);
+/// rt_list_delslice(list, start, stop, step) -> void
+/// `del list[start:stop:step]`; the list is a tagged Value, the bounds RAW i64.
+/// A non-list receiver raises TypeError.
+pub static RT_LIST_DELSLICE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_list_delslice",
+    &[PI64, PI64, PI64, PI64],
+    None,
+    false,
+    &[
+        MirSemantic::Tagged,
+        MirSemantic::Raw,
+        MirSemantic::Raw,
+        MirSemantic::Raw,
+    ],
+    None,
+);
 /// rt_dict_delete(dict: *mut Obj, key: *mut Obj) -> void
 /// `del d[k]`; raises KeyError (with the key's repr) when the key is absent.
 /// Both the dict and the key are tagged Values.

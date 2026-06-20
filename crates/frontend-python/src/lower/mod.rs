@@ -13,7 +13,8 @@ use std::collections::{HashMap, HashSet};
 use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
-    ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
+    ExprCall, ExprCompare, ExprDict, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda,
+    ExprListComp,
     ExprNamedExpr, ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator,
     Ranged, Stmt, StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom,
     UnaryOp as PyUnaryOp,

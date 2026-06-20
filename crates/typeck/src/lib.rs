@@ -1880,6 +1880,9 @@ impl<'a> Sweeper<'a> {
             // A pre-packed uniform indirect call always yields the tagged baseline
             // (`Dyn`); the consuming seam recovers precision via the checked unbox.
             HirExprKind::CallValue { .. } => SemTy::Dyn,
+            // A spread method call dispatches dynamically (`rt_obj_method`) and
+            // always yields the tagged baseline (`Dyn`).
+            HirExprKind::MethodCallValue { .. } => SemTy::Dyn,
             // ── containers (Phase 4) ──
             // `sum(iterable[, start])` (Phase 8H, D2). Class elements with
             // `__add__`/`__radd__` take the join of the inferred dunder returns

@@ -2121,4 +2121,88 @@ def _fold_p15_tuple_slice_slot():
 
 _fold_p15_tuple_slice_slot()
 
+
+# ===== Priority 1: starred displays, {**a,**b} merge, slice assign/del =====
+def _fold_p1_displays_slices():
+    # --- Feature A: `*` in list / set / tuple displays ---
+    a = [1, 2, 3]
+    assert [*a, 4, *a] == [1, 2, 3, 4, 1, 2, 3]
+    assert [0, *a] == [0, 1, 2, 3]
+    assert [*range(3), *"ab"] == [0, 1, 2, "a", "b"]
+    # set display spread (order-independent → compare sorted)
+    sset = {*a, *[3, 4, 5]}
+    assert sorted(sset) == [1, 2, 3, 4, 5]
+    # tuple display spread
+    assert (*a, 99) == (1, 2, 3, 99)
+    assert (0, *a, 4) == (0, 1, 2, 3, 4)
+    # starred-tuple as a value
+    x = *a, 0
+    assert x == (1, 2, 3, 0)
+
+    # --- Feature B: `{**a, **b}` dict merge ---
+    d1 = {"x": 1, "y": 2}
+    d2 = {"y": 20, "z": 30}
+    assert {**d1, **d2} == {"x": 1, "y": 20, "z": 30}
+    # later keys (literal + spread) override earlier ones, left-to-right
+    assert {**d1, "w": 99, **d2} == {"x": 1, "y": 20, "w": 99, "z": 30}
+    assert {**d1, "y": 7} == {"x": 1, "y": 7}
+
+    # --- Feature D: slice assignment ---
+    li = [0, 1, 2, 3, 4, 5]
+    li[1:3] = [9, 8]  # equal length
+    assert li == [0, 9, 8, 3, 4, 5]
+    li = [0, 1, 2, 3, 4, 5]
+    li[1:3] = [100]  # shrink
+    assert li == [0, 100, 3, 4, 5]
+    li = [0, 1, 2, 3, 4, 5]
+    li[1:3] = [7, 7, 7]  # grow
+    assert li == [0, 7, 7, 7, 3, 4, 5]
+    li = [0, 1, 2, 3, 4, 5]
+    li[-3:] = [88]  # negative bound
+    assert li == [0, 1, 2, 88]
+    li = [1, 2, 3, 4]
+    li[:] = []  # full clear
+    assert li == []
+    li = [1, 2, 3]
+    li[1:1] = [9, 9]  # insert at empty region
+    assert li == [1, 9, 9, 2, 3]
+    li = [1, 2, 3]
+    li[1:2] = li  # self-alias snapshot
+    assert li == [1, 1, 2, 3, 3]
+    # extended slice (step != 1)
+    li = [0, 1, 2, 3, 4, 5, 6, 7]
+    li[::2] = [10, 20, 30, 40]
+    assert li == [10, 1, 20, 3, 30, 5, 40, 7]
+    li = [0, 1, 2, 3, 4, 5]
+    li[::-1] = [10, 11, 12, 13, 14, 15]  # negative step
+    assert li == [15, 14, 13, 12, 11, 10]
+    # extended-slice size mismatch → ValueError
+    raised = False
+    try:
+        bad = [0, 1, 2, 3]
+        bad[::2] = [1, 2, 3]
+    except ValueError:
+        raised = True
+    assert raised
+
+    # --- Feature D: slice deletion ---
+    li = [0, 1, 2, 3, 4, 5]
+    del li[1:3]
+    assert li == [0, 3, 4, 5]
+    li = [0, 1, 2, 3, 4, 5, 6, 7]
+    del li[::2]  # extended del
+    assert li == [1, 3, 5, 7]
+    li = [0, 1, 2, 3, 4, 5, 6, 7]
+    del li[::-2]  # negative-step del
+    assert li == [0, 2, 4, 6]
+    li = [1, 2, 3]
+    del li[2:1]  # empty slice → no-op
+    assert li == [1, 2, 3]
+    li = [0, 1, 2, 3, 4]
+    del li[:]  # delete all
+    assert li == []
+
+
+_fold_p1_displays_slices()
+
 print("All collections tests passed!")

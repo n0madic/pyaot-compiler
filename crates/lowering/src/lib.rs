@@ -674,6 +674,19 @@ impl<'a> FnLower<'a> {
             }
             HirStmt::SetItem { base, index, value } => self.lower_setitem(*base, *index, *value),
             HirStmt::DelItem { base, index } => self.lower_delitem(*base, *index),
+            HirStmt::SetSlice {
+                base,
+                start,
+                end,
+                step,
+                value,
+            } => self.lower_setslice(*base, *start, *end, *step, *value),
+            HirStmt::DelSlice {
+                base,
+                start,
+                end,
+                step,
+            } => self.lower_delslice(*base, *start, *end, *step),
             HirStmt::SetAttr { base, name, value } => self.lower_setattr(*base, *name, *value),
             HirStmt::ContainerPush { container, value } => {
                 let cont_repr = self.local_repr(*container);
@@ -1056,6 +1069,69 @@ impl<'a> FnLower<'a> {
         Ok(())
     }
 
+    /// Lower `base[start:end:step] = value` → `rt_list_setslice`. The base + the
+    /// pre-materialized list `value` coerce to `Tagged`; the bounds go through the
+    /// same `slice_bound` helper as [`Self::lower_slice`] (an absent bound becomes
+    /// the `i64::MIN`/`i64::MAX`/`1` sentinel). A non-list base raises `TypeError`
+    /// inside the runtime (the receiver may be a gradual `Dyn` / str / tuple).
+    fn lower_setslice(
+        &mut self,
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
+        value: Idx<HirExpr>,
+    ) -> Result<()> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let (bl, br) = self.lower_expr(base)?;
+        let base_op = self.coerce(bl, br, Repr::Tagged)?;
+        let start_op = self.slice_bound(start, i64::MIN)?;
+        let end_op = self.slice_bound(end, i64::MAX)?;
+        let step_op = self.slice_bound(step, 1)?;
+        let (vl, vr) = self.lower_expr(value)?;
+        let value_op = self.coerce(vl, vr, Repr::Tagged)?;
+        self.emit(MirInst::CallRuntime {
+            dst: None,
+            def: &rf::RT_LIST_SETSLICE,
+            args: vec![
+                Operand::Local(base_op),
+                Operand::Local(start_op),
+                Operand::Local(end_op),
+                Operand::Local(step_op),
+                Operand::Local(value_op),
+            ],
+        });
+        Ok(())
+    }
+
+    /// Lower `del base[start:end:step]` → `rt_list_delslice` (mirrors
+    /// [`Self::lower_setslice`] minus the value).
+    fn lower_delslice(
+        &mut self,
+        base: Idx<HirExpr>,
+        start: Option<Idx<HirExpr>>,
+        end: Option<Idx<HirExpr>>,
+        step: Option<Idx<HirExpr>>,
+    ) -> Result<()> {
+        use pyaot_core_defs::runtime_func_def as rf;
+        let (bl, br) = self.lower_expr(base)?;
+        let base_op = self.coerce(bl, br, Repr::Tagged)?;
+        let start_op = self.slice_bound(start, i64::MIN)?;
+        let end_op = self.slice_bound(end, i64::MAX)?;
+        let step_op = self.slice_bound(step, 1)?;
+        self.emit(MirInst::CallRuntime {
+            dst: None,
+            def: &rf::RT_LIST_DELSLICE,
+            args: vec![
+                Operand::Local(base_op),
+                Operand::Local(start_op),
+                Operand::Local(end_op),
+                Operand::Local(step_op),
+            ],
+        });
+        Ok(())
+    }
+
     /// Wrap a tagged `value` read out of a `del`-able slot in the
     /// `rt_check_bound` guard: it returns the value unchanged unless the value
     /// is `Value::UNBOUND`, in which case it raises by `kind` (0 → local /
@@ -1396,6 +1472,12 @@ impl<'a> FnLower<'a> {
                 args,
                 kwargs,
             } => self.lower_method_call(idx, *recv, *method_name, &args.clone(), &kwargs.clone()),
+            HirExprKind::MethodCallValue {
+                recv,
+                method_name,
+                args,
+                kwargs,
+            } => self.lower_method_call_value(*recv, *method_name, *args, *kwargs),
             HirExprKind::Attribute { value, name } => self.lower_attribute(idx, *value, *name),
             HirExprKind::IsInstance { value, class_id } => self.lower_isinstance(*value, *class_id),
             HirExprKind::IsInstanceBuiltin { value, target } => {
@@ -3775,6 +3857,68 @@ impl<'a> FnLower<'a> {
                 Operand::Local(recv_t),
                 Operand::Local(hash_local),
                 Operand::Local(args_tuple),
+                Operand::Local(kwargs_op),
+            ],
+        });
+        Ok((dst, Repr::Tagged))
+    }
+
+    /// Lower a **pre-packed** spread method call ([`HirExprKind::MethodCallValue`]):
+    /// the frontend already built the positional `args` tuple and optional `kwargs`
+    /// dict (a `*seq` / `**dict` spread), so this just coerces the receiver, the
+    /// tuple, and the dict (or the null sentinel) to `Tagged` and emits the unified
+    /// [`RT_OBJ_METHOD`] dispatcher — always dynamic (the receiver's tag selects an
+    /// instance uniform thunk or a typed container `rt_*`). Result is the tagged
+    /// baseline (`Dyn`, GC-rooted). A statically-known receiver loses
+    /// devirtualization here (acceptable — spreads are rare; Tagged is correct).
+    fn lower_method_call_value(
+        &mut self,
+        recv: Idx<HirExpr>,
+        method_name: InternedString,
+        args: Idx<HirExpr>,
+        kwargs: Option<Idx<HirExpr>>,
+    ) -> Result<(LocalId, Repr)> {
+        // Receiver → Tagged.
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
+
+        // Method-name hash: a RAW `i64` immediate (like `lower_dyn_method_call`).
+        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
+        let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
+        self.emit(MirInst::Const {
+            dst: hash_local,
+            val: Const::Int(name_hash as i64),
+        });
+
+        // Positional tuple — already built by the frontend; just coerce to Tagged.
+        let (al, ar) = self.lower_expr(args)?;
+        let args_tagged = self.coerce(al, ar, Repr::Tagged)?;
+
+        // Keywords → the pre-built `dict[str, Tagged]`, or the null `__kwargs__`
+        // sentinel on the no-keyword path (no allocation).
+        let kwargs_op = match kwargs {
+            Some(k) => {
+                let (kl, kr) = self.lower_expr(k)?;
+                self.coerce(kl, kr, Repr::Tagged)?
+            }
+            None => {
+                let n = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Const {
+                    dst: n,
+                    val: Const::NullPtr,
+                });
+                n
+            }
+        };
+
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallRuntime {
+            dst: Some(dst),
+            def: &pyaot_core_defs::runtime_func_def::RT_OBJ_METHOD,
+            args: vec![
+                Operand::Local(recv_t),
+                Operand::Local(hash_local),
+                Operand::Local(args_tagged),
                 Operand::Local(kwargs_op),
             ],
         });

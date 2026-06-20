@@ -1,5 +1,14 @@
 use super::*;
 
+/// Which display syntax a `*`-spread element appears in (`[…]` / `{…}` / `(…)`).
+/// List and Tuple both accumulate into a list first; a tuple is then frozen.
+#[derive(Clone, Copy)]
+enum DisplayKind {
+    List,
+    Set,
+    Tuple,
+}
+
 impl<'a> FnLowerer<'a> {
     // ── expressions ──────────────────────────────────────────────────────────
 
@@ -62,23 +71,37 @@ impl<'a> FnLowerer<'a> {
             Expr::Call(c) => self.lower_call_expr(c, span),
             // ── containers (Phase 4) ──
             Expr::List(l) => {
+                if l.elts.iter().any(|e| matches!(e, Expr::Starred(_))) {
+                    return self.lower_display_with_spread(&l.elts, DisplayKind::List, span);
+                }
                 let elems = self.lower_expr_list(&l.elts)?;
                 Ok(self.alloc(HirExprKind::ListLit { elems }, SemTy::Dyn, span))
             }
             Expr::Tuple(t) => {
+                if t.elts.iter().any(|e| matches!(e, Expr::Starred(_))) {
+                    return self.lower_display_with_spread(&t.elts, DisplayKind::Tuple, span);
+                }
                 let elems = self.lower_expr_list(&t.elts)?;
                 Ok(self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span))
             }
             Expr::Set(s) => {
+                if s.elts.iter().any(|e| matches!(e, Expr::Starred(_))) {
+                    return self.lower_display_with_spread(&s.elts, DisplayKind::Set, span);
+                }
                 let elems = self.lower_expr_list(&s.elts)?;
                 Ok(self.alloc(HirExprKind::SetLit { elems }, SemTy::Dyn, span))
             }
             Expr::Dict(d) => {
+                // `{**a, **b}` dict-merge (a `None` key marks a `**spread`): build
+                // incrementally — insert literal pairs, `DictUpdate` each spread —
+                // so later keys override earlier ones (CPython left-to-right). The
+                // spread-free fast path stays a flat `DictLit`.
+                if d.keys.iter().any(|k| k.is_none()) {
+                    return self.lower_dict_with_spread(d, span);
+                }
                 let mut pairs = Vec::with_capacity(d.values.len());
                 for (k, v) in d.keys.iter().zip(d.values.iter()) {
-                    let Some(k) = k else {
-                        return Err(parse_error("dict unpacking (`**`) is out of scope", span));
-                    };
+                    let k = k.as_ref().expect("spread-free dict has no `None` keys");
                     let kk = self.lower_expr(k)?;
                     let vv = self.lower_expr(v)?;
                     pairs.push((kk, vv));
@@ -191,6 +214,124 @@ impl<'a> FnLowerer<'a> {
         let place = self.resolve_write_place(name, SemTy::Dyn);
         self.write_place(place, value);
         Ok(self.read_place(place, span))
+    }
+
+    /// Lower a display (`[…]` / `{…}` / `(…)`) that contains at least one `*`
+    /// spread element, by the same machinery as a `*`-spread call argv
+    /// ([`Self::build_spread_argv`]): materialize into a fresh container,
+    /// `ContainerPush` each plain element, and iterate each `*seq` spread (the
+    /// iterator protocol — any iterable works) pushing its elements. List/Set
+    /// return the populated local directly; a tuple is built as a list, then
+    /// frozen via `Iter` + `TupleFromIter`.
+    fn lower_display_with_spread(
+        &mut self,
+        elts: &[Expr],
+        kind: DisplayKind,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        let (local, empty) = match kind {
+            DisplayKind::Set => {
+                let l = self.fresh_local(SemTy::set_of(SemTy::Dyn));
+                let e = self.alloc(HirExprKind::SetLit { elems: vec![] }, SemTy::Dyn, span);
+                (l, e)
+            }
+            // List and Tuple both accumulate into a list first.
+            DisplayKind::List | DisplayKind::Tuple => {
+                let l = self.fresh_local(SemTy::list_of(SemTy::Dyn));
+                let e = self.alloc(HirExprKind::ListLit { elems: vec![] }, SemTy::Dyn, span);
+                (l, e)
+            }
+        };
+        self.push_stmt(HirStmt::Assign {
+            target: local,
+            value: empty,
+        });
+        for elt in elts {
+            match elt {
+                Expr::Starred(s) => {
+                    let src = self.lower_expr(s.value.as_ref())?;
+                    let lp = self.begin_iter_loop(src, span)?;
+                    let elem = self.local_ref(lp.elem, span);
+                    self.push_stmt(HirStmt::ContainerPush {
+                        container: local,
+                        value: elem,
+                    });
+                    self.end_iter_loop(lp);
+                }
+                _ => {
+                    let v = self.lower_expr(elt)?;
+                    self.push_stmt(HirStmt::ContainerPush {
+                        container: local,
+                        value: v,
+                    });
+                }
+            }
+        }
+        match kind {
+            DisplayKind::List | DisplayKind::Set => Ok(self.local_ref(local, span)),
+            DisplayKind::Tuple => {
+                let list_ref = self.local_ref(local, span);
+                let it = self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::Iter,
+                        args: vec![list_ref],
+                    },
+                    SemTy::Dyn,
+                    span,
+                );
+                Ok(self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::TupleFromIter,
+                        args: vec![it],
+                    },
+                    SemTy::tuple_var_of(SemTy::Dyn),
+                    span,
+                ))
+            }
+        }
+    }
+
+    /// Lower a dict display containing a `**spread` (`{**a, "k": v, **b}`),
+    /// mirroring [`build_indirect_kwargs`]: start from an empty dict, then walk
+    /// the entries in source order — a literal `key: value` is a
+    /// [`HirStmt::ContainerInsert`], a `**other` spread a `DictUpdate` of
+    /// `other`'s entries. Left-to-right order gives CPython's "later keys win".
+    fn lower_dict_with_spread(&mut self, d: &ExprDict, span: Span) -> Result<Idx<HirExpr>> {
+        let local = self.fresh_local(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn));
+        let empty = self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
+        self.push_stmt(HirStmt::Assign {
+            target: local,
+            value: empty,
+        });
+        for (k, v) in d.keys.iter().zip(d.values.iter()) {
+            match k {
+                // `key: value` → insert a single entry.
+                Some(key) => {
+                    let key = self.lower_expr(key)?;
+                    let value = self.lower_expr(v)?;
+                    self.push_stmt(HirStmt::ContainerInsert {
+                        container: local,
+                        key,
+                        value,
+                    });
+                }
+                // `**other` → merge `other`'s entries (CPython update order).
+                None => {
+                    let other = self.lower_expr(v)?;
+                    let local_ref = self.local_ref(local, span);
+                    let upd = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::DictUpdate,
+                            args: vec![local_ref, other],
+                        },
+                        SemTy::NoneTy,
+                        span,
+                    );
+                    self.push_stmt(HirStmt::Expr(upd));
+                }
+            }
+        }
+        Ok(self.local_ref(local, span))
     }
 
     /// Lower a list of expressions (literal elements).
