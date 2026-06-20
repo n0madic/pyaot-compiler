@@ -145,7 +145,7 @@ pub extern "C" fn rt_obj_method(
         match tag {
             TypeTagKind::List => list_method(recv_ptr, h, at, kwargs, tag),
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
-                dict_method(recv_ptr, h, at, tag)
+                dict_method(recv_ptr, h, at, kwargs, tag)
             }
             TypeTagKind::Set => set_method(recv_ptr, h, at, tag),
             TypeTagKind::Deque => deque_method(recv_ptr, h, at, tag),
@@ -255,7 +255,7 @@ unsafe fn list_method(
     }
 }
 
-unsafe fn dict_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> Value {
+unsafe fn dict_method(recv: *mut Obj, h: u64, at: *mut Obj, kwargs: Value, tag: TypeTagKind) -> Value {
     let n = argc(at);
     match h {
         H_GET if n == 1 => Value(crate::dict::rt_dict_get_default(
@@ -295,6 +295,20 @@ unsafe fn dict_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) ->
         H_KEYS if n == 0 => Value(crate::dict::rt_dict_keys(recv) as u64),
         H_VALUES if n == 0 => Value(crate::dict::rt_dict_values(recv) as u64),
         H_ITEMS if n == 0 => Value(crate::dict::rt_dict_items(recv) as u64),
+        // `dict.update(E, **F)` (plain dict only): merge an optional positional
+        // mapping, then the keyword dict (a string-keyed mapping — CPython treats
+        // `update(**F)` as merging `F`). Counter.update has add-semantics, so its
+        // keyword form is left out (falls through to the positional-only arm /
+        // raise below).
+        H_UPDATE if tag == TypeTagKind::Dict && n <= 1 => {
+            if n == 1 {
+                crate::dict::rt_dict_update(recv, bits(arg(at, 0)));
+            }
+            if kwargs.is_ptr() {
+                crate::dict::rt_dict_update(recv, kwargs.0 as *mut Obj);
+            }
+            Value::NONE
+        }
         H_UPDATE if n == 1 => {
             crate::dict::rt_dict_update(recv, bits(arg(at, 0)));
             Value::NONE

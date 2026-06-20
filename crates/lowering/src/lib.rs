@@ -3683,6 +3683,16 @@ impl<'a> FnLower<'a> {
                 span,
             );
         }
+        // `dict.update(E?, name=val, ...)` — the plain-named-keyword form of
+        // `dict.update` (the `**`-spread form routes through `rt_obj_method`).
+        // Keyword args are a string-keyed mapping merged into the dict. Only a
+        // statically-`dict` receiver (Counter.update has add-semantics).
+        if !kwargs.is_empty()
+            && self.interner.resolve(method_name) == "update"
+            && recv_ty.dict_kv().is_some()
+        {
+            return self.lower_dict_update_kwargs(recv, args, kwargs, span);
+        }
         // Keywords on non-class receivers (Phase 10): only `list.sort` consumes
         // them (`reverse=` / a literal `key=None`; a real `key=` was desugared
         // by the frontend). Every other container / str / file / stdlib-object
@@ -4962,6 +4972,72 @@ impl<'a> FnLower<'a> {
         self.normalize_container_result(dst, ret)
     }
 
+    /// Lower `dict.update(E?, name=val, ...)` — the keyword-argument form of
+    /// `dict.update`. CPython treats `update(**F)` / `update(name=val)` as merging
+    /// the `{name: val}` mapping, applied AFTER an optional positional mapping `E`.
+    /// Reuses `ContainerOp::DictUpdate` (the same primitive the positional form
+    /// and `{**a, **b}` use); returns `None`. Only a statically-`dict` receiver
+    /// reaches here — `Counter.update` has add-semantics and is left out.
+    fn lower_dict_update_kwargs(
+        &mut self,
+        recv: Idx<HirExpr>,
+        args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        if args.len() > 1 {
+            return Err(CompilerError::semantic_error(
+                "update expected at most 1 positional argument".to_string(),
+                span,
+            ));
+        }
+        let (rl, rr) = self.lower_expr(recv)?;
+        let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
+        // Positional mapping first (CPython order: `update(E)` then keywords).
+        if let Some(pos) = args.first() {
+            let (pl, pr) = self.lower_expr(*pos)?;
+            let pos_t = self.coerce(pl, pr, Repr::Tagged)?;
+            self.emit_container(
+                ContainerOp::DictUpdate,
+                vec![(recv_t, Repr::Tagged), (pos_t, Repr::Tagged)],
+                None,
+            )?;
+        }
+        // Build the keyword dict `{name: val, ...}`, then merge it.
+        let dict_repr = Repr::Heap(HeapShape::Dict(
+            Box::new(Repr::Tagged),
+            Box::new(Repr::Tagged),
+        ));
+        let (kd, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+        for (kname, kexpr) in kwargs {
+            self.str_pool
+                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
+            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+            self.emit(MirInst::Const {
+                dst: key,
+                val: Const::Str(*kname),
+            });
+            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let (vl, vr) = self.lower_expr(*kexpr)?;
+            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit_container(
+                ContainerOp::DictSet,
+                vec![
+                    (kd, dict_repr.clone()),
+                    (key_t, Repr::Tagged),
+                    (val_t, Repr::Tagged),
+                ],
+                None,
+            )?;
+        }
+        self.emit_container(
+            ContainerOp::DictUpdate,
+            vec![(recv_t, Repr::Tagged), (kd, dict_repr)],
+            None,
+        )?;
+        self.none_value()
+    }
+
     /// Lower a container method call `recv.method(args)` (Phase 4D), dispatching
     /// the concrete runtime op from the receiver's static type. Args/values are
     /// coerced to `Tagged`; results are normalized from `Tagged`.
@@ -5139,6 +5215,8 @@ impl<'a> FnLower<'a> {
                     )?;
                     self.none_value()
                 }
+                // `d.update()` — a no-op (CPython allows the zero-argument form).
+                M::Update if argn == 0 => self.none_value(),
                 M::Clear if argn == 0 => {
                     self.emit_container(ContainerOp::DictClear, vec![recv_arg], None)?;
                     self.none_value()

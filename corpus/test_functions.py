@@ -3679,9 +3679,57 @@ def test_method_spread():
     print("test_method_spread passed")
 
 
+# Priority 1, Fix A: `*args`/`**kwargs` spread in static/class-method calls by
+# class name (`Cls.smeth(*xs)`). Needs a TOP-LEVEL class (the desugar records
+# top-level class shapes in a pre-pass).
+class _P1Static:
+    @staticmethod
+    def add3(a, b, c):
+        return a + b + c
+
+    @staticmethod
+    def greet(name="world", punct="!"):
+        return "hi " + name + punct
+
+    @staticmethod
+    def total(*args):
+        t = 0
+        for v in args:
+            t += v
+        return t
+
+    @classmethod
+    def make(cls, x, y):
+        return x * y
+
+
+def test_static_method_spread():
+    xs = [1, 2, 3]
+    # staticmethod via class name + `*args`
+    assert _P1Static.add3(*xs) == 6, "staticmethod *args"
+    # positional + `*args` + `**kwargs`
+    assert _P1Static.add3(1, *[2], **{"c": 3}) == 6, "staticmethod mixed spread"
+    # `**kwargs` spread
+    assert _P1Static.greet(**{"name": "bob", "punct": "?"}) == "hi bob?", "staticmethod **kwargs"
+    # `*args` into defaulted params
+    assert _P1Static.greet(*["alice"]) == "hi alice!", "staticmethod *args into defaults"
+    # `*args` into a varargs staticmethod (list / range / tuple)
+    assert _P1Static.total(*[1, 2, 3, 4]) == 10, "staticmethod *args into *args"
+    assert _P1Static.total(*range(1, 5)) == 10, "staticmethod *range"
+    assert _P1Static.total(*(10, 20)) == 30, "staticmethod *tuple"
+    # classmethod via class name + `*args`
+    assert _P1Static.make(*[6, 7]) == 42, "classmethod *args"
+    # non-spread forms still resolve statically (regression guard)
+    assert _P1Static.add3(10, 20, 30) == 60, "staticmethod non-spread"
+    assert _P1Static.make(3, 4) == 12, "classmethod non-spread"
+
+    print("test_static_method_spread passed")
+
+
 test_nested_class()
 test_nested_class_generator_method()
 test_method_spread()
+test_static_method_spread()
 
 
 print("All function tests passed!")

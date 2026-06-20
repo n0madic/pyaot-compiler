@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
-    ExprCall, ExprCompare, ExprDict, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda,
-    ExprListComp,
+    ExprAttribute, ExprCall, ExprCompare, ExprDict, ExprDictComp, ExprGeneratorExp, ExprIfExp,
+    ExprLambda, ExprListComp,
     ExprNamedExpr, ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator,
     Ranged, Stmt, StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom,
     UnaryOp as PyUnaryOp,
@@ -235,6 +235,15 @@ pub(crate) struct Shared {
     /// [`HirModule::iternext_thunks`] for the codegen `rt_register_iternext`
     /// registrations (lazy user-class iterator protocol).
     iternext_thunks: HashMap<FuncId, FuncId>,
+    /// `@staticmethod`/`@classmethod` shapes for the spread-call desugar:
+    /// synthetic name `"Cls.method"` → (`is_classmethod`, raw AST args). Recorded
+    /// in a pre-pass BEFORE bodies are lowered (classes are lowered last), so a
+    /// `Cls.smeth(*args)` call site can build a receiver-less uniform thunk on
+    /// demand (parsed lazily where `ctx` exists) and route through `CallValue` —
+    /// the free-function spread path. `is_classmethod` selects [`FirstParam`]
+    /// (`SkipCls` drops the leading `cls`, mirroring how the method itself was
+    /// lowered). Accumulated across modules; class names are program-unique.
+    static_method_shapes: HashMap<String, (bool, rustpython_parser::ast::Arguments)>,
 }
 
 impl Shared {
@@ -252,6 +261,7 @@ impl Shared {
             dyn_method_names: HashSet::new(),
             method_uniform_thunks: HashMap::new(),
             iternext_thunks: HashMap::new(),
+            static_method_shapes: HashMap::new(),
         }
     }
 

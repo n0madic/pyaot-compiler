@@ -381,6 +381,29 @@ impl<'a> ProgramLowerer<'a> {
             }
         }
 
+        // ── Static/class method shapes (Fix A): record each `@staticmethod` /
+        // `@classmethod` of a top-level class by its synthetic name `"Cls.method"`,
+        // so a later-lowered `Cls.smeth(*args)` spread call can build a
+        // receiver-less uniform thunk on demand (classes are lowered LAST, after
+        // the call sites — Phase B below — so the shape must be known up front).
+        // `is_classmethod` selects the `cls`-dropping parse, mirroring how the
+        // method itself is lowered. ──
+        for cdef in &classdefs {
+            for stmt in &cdef.body {
+                if let Stmt::FunctionDef(m) = stmt {
+                    let is_classmethod = match classify_method_decorator(m) {
+                        Ok(MethodDecor::Static) => false,
+                        Ok(MethodDecor::Class) => true,
+                        _ => continue,
+                    };
+                    let qual = format!("{}.{}", cdef.name.as_str(), m.name.as_str());
+                    self.shared
+                        .static_method_shapes
+                        .insert(qual, (is_classmethod, (*m.args).clone()));
+                }
+            }
+        }
+
         // ── Nested classes (FIX 2). A `class` below module top level (inside a
         // function, another class, or module-level control flow) is registered
         // here, alongside the top-level classes and BEFORE `class_map` is moved

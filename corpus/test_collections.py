@@ -2147,6 +2147,27 @@ def _fold_p1_displays_slices():
     assert {**d1, "w": 99, **d2} == {"x": 1, "y": 20, "w": 99, "z": 30}
     assert {**d1, "y": 7} == {"x": 1, "y": 7}
 
+    # --- dict.update with keyword arguments ---
+    du = {"a": 1}
+    kw = {"b": 2, "c": 3}
+    du.update(**kw)  # `**` spread (via rt_obj_method)
+    assert du == {"a": 1, "b": 2, "c": 3}
+    du = {"x": 0}
+    du.update({"y": 9}, z=7, **{"w": 5})  # positional + named + spread
+    assert du == {"x": 0, "y": 9, "z": 7, "w": 5}
+    du = {"a": 1}
+    du.update(a=10, b=20)  # plain named kwargs (no `**`)
+    assert du == {"a": 10, "b": 20}
+    du = {}
+    du.update({"p": 1}, q=2)  # positional mapping + named
+    assert du == {"p": 1, "q": 2}
+    du = {"k": 1}
+    du.update()  # zero-argument no-op
+    assert du == {"k": 1}
+    du = {}
+    assert du.update(a=1) is None  # returns None
+    assert du == {"a": 1}
+
     # --- Feature D: slice assignment ---
     li = [0, 1, 2, 3, 4, 5]
     li[1:3] = [9, 8]  # equal length

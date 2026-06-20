@@ -259,4 +259,69 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
+    /// `Cls.staticmethod` / `Cls.classmethod` as a callable VALUE (Fix A): build
+    /// (memoized) a **receiver-less** uniform thunk for the recorded static/class
+    /// method shape (`shared.static_method_shapes`, set in a pre-pass since classes
+    /// are lowered last) and wrap it in a captureless `MakeClosure` — the same
+    /// shape `lower_top_fn_value` produces for a free function. The thunk
+    /// dispatches the method BY synthetic name (`"Cls.method"`), which `semantics`
+    /// resolves to the static/class method's `FuncId`, so no `FuncId` is needed
+    /// here. A `@classmethod` parses with `FirstParam::SkipCls` (its `cls` is
+    /// dropped, mirroring the method's own lowering). Returns `None` when `qual`
+    /// is not a recorded static/class method, OR when its parameter shape cannot
+    /// be parsed in this context (e.g. an unresolvable mutable default) — the
+    /// caller then falls back to the dynamic `MethodCallValue` path.
+    pub(super) fn lower_static_method_value(
+        &mut self,
+        qual: &str,
+        span: Span,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        let thunk_key = (self.shared.current_ns, qual.to_string());
+        let fid = match self.shared.thunks.get(&thunk_key) {
+            Some(f) => *f,
+            None => {
+                // Clone the shape out to release the `shared` borrow before the
+                // `&mut shared` thunk build.
+                let Some((is_classmethod, args)) =
+                    self.shared.static_method_shapes.get(qual).cloned()
+                else {
+                    return Ok(None);
+                };
+                let name = self.interner.intern(qual);
+                let first = if is_classmethod {
+                    FirstParam::SkipCls
+                } else {
+                    FirstParam::Plain
+                };
+                // A mutable/computed default this context can't resolve → fall
+                // through to the dynamic path rather than failing the build.
+                let Ok(parsed) = parse_params(self.interner, self.ctx, &args, &first, name) else {
+                    return Ok(None);
+                };
+                let target = UniformTarget {
+                    name,
+                    // typeck re-derives the real return type from the resolved
+                    // callee; the thunk's own return is `Dyn` regardless.
+                    ret: SemTy::Dyn,
+                    pass_env: false,
+                    fixed: parsed.fixed.iter().map(ThunkParam::from_param_info).collect(),
+                    kwonly: parsed.kwonly.iter().map(ThunkParam::from_param_info).collect(),
+                    varargs: parsed.varargs.is_some(),
+                    kwargs: parsed.kwargs.is_some(),
+                    kw_bindable: true,
+                };
+                let fid = build_uniform_thunk(self.interner, self.ctx, self.shared, &target)?;
+                self.shared.thunks.insert(thunk_key, fid);
+                fid
+            }
+        };
+        Ok(Some(self.alloc(
+            HirExprKind::MakeClosure {
+                func: fid,
+                captures: vec![],
+            },
+            SemTy::Dyn,
+            span,
+        )))
+    }
 }

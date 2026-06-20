@@ -262,44 +262,32 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ));
                 }
-                // Receiver first (its side effects precede every argument's).
-                let recv = self.lower_expr(attr.value.as_ref())?;
-                let method_name = self.intern(attr.attr.as_str());
-                // Positional tuple: a runtime `*seq` spread materializes through
-                // `argv` → `Iter` → `TupleFromIter`; an all-plain (incl. flattened
-                // literal-spread) call builds a fixed tuple literal directly.
-                let (items, has_runtime_spread) = classify_pos_args(c);
-                let args_tuple = if has_runtime_spread {
-                    let argv = self.build_spread_argv(&items, span)?;
-                    let argv_ref = self.local_ref(argv, span);
-                    let it = self.alloc(
-                        HirExprKind::ContainerExpr {
-                            op: ContainerOp::Iter,
-                            args: vec![argv_ref],
+                // `Cls.staticmethod(*args)` / `Cls.classmethod(*args)` — a
+                // static/class method called by class name. Its receiver is a
+                // class reference, not an instance, so the dynamic `rt_obj_method`
+                // path can't dispatch it; build a receiver-less uniform thunk and
+                // route through the free-function `CallValue` spread path instead.
+                // Gated on an UNSHADOWED class name with a recorded static/class
+                // method shape; `None` otherwise → fall to the dynamic path.
+                let static_callee = self.try_static_method_callee(attr, span)?;
+                if let Some(callee) = static_callee {
+                    // No receiver to evaluate (a class name has no side effects).
+                    let (args_tuple, kwargs) = self.build_spread_call_payload(c, span)?;
+                    return Ok(self.alloc(
+                        HirExprKind::CallValue {
+                            callee,
+                            args: args_tuple,
+                            kwargs,
                         },
                         SemTy::Dyn,
                         span,
-                    );
-                    self.alloc(
-                        HirExprKind::ContainerExpr {
-                            op: ContainerOp::TupleFromIter,
-                            args: vec![it],
-                        },
-                        SemTy::tuple_var_of(SemTy::Dyn),
-                        span,
-                    )
-                } else {
-                    let mut elems = Vec::with_capacity(items.len());
-                    for item in &items {
-                        let PosItem::Plain(e) = *item else {
-                            unreachable!("runtime spreads handled above")
-                        };
-                        elems.push(self.lower_expr(e)?);
-                    }
-                    self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
-                };
-                // Keyword dict from named keywords and `**d` forwards (or `None`).
-                let kwargs = self.build_indirect_kwargs(c, span)?;
+                    ));
+                }
+                // Instance / container / `Dyn` receiver → dynamic dispatch.
+                // Receiver first (its side effects precede every argument's).
+                let recv = self.lower_expr(attr.value.as_ref())?;
+                let method_name = self.intern(attr.attr.as_str());
+                let (args_tuple, kwargs) = self.build_spread_call_payload(c, span)?;
                 return Ok(self.alloc(
                     HirExprKind::MethodCallValue {
                         recv,
@@ -2096,6 +2084,76 @@ impl<'a> FnLowerer<'a> {
             }
         }
         Ok(Some(self.local_ref(kd, span)))
+    }
+
+    /// Build the positional `tuple` + keyword `dict` shared by the spread
+    /// method/value call paths (Feature C): a runtime `*seq` spread materializes
+    /// through `argv` → `Iter` → `TupleFromIter`; an all-plain (incl. flattened
+    /// literal-spread) call builds a fixed tuple literal; keywords / `**d` forwards
+    /// build the dict (or `None`). Positionals evaluate BEFORE keywords.
+    fn build_spread_call_payload(
+        &mut self,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<(Idx<HirExpr>, Option<Idx<HirExpr>>)> {
+        let (items, has_runtime_spread) = classify_pos_args(c);
+        let args_tuple = if has_runtime_spread {
+            let argv = self.build_spread_argv(&items, span)?;
+            let argv_ref = self.local_ref(argv, span);
+            let it = self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::Iter,
+                    args: vec![argv_ref],
+                },
+                SemTy::Dyn,
+                span,
+            );
+            self.alloc(
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::TupleFromIter,
+                    args: vec![it],
+                },
+                SemTy::tuple_var_of(SemTy::Dyn),
+                span,
+            )
+        } else {
+            let mut elems = Vec::with_capacity(items.len());
+            for item in &items {
+                let PosItem::Plain(e) = *item else {
+                    unreachable!("runtime spreads handled above")
+                };
+                elems.push(self.lower_expr(e)?);
+            }
+            self.alloc(HirExprKind::TupleLit { elems }, SemTy::Dyn, span)
+        };
+        let kwargs = self.build_indirect_kwargs(c, span)?;
+        Ok((args_tuple, kwargs))
+    }
+
+    /// If `attr` is `Cls.method` where `Cls` is an UNSHADOWED class and `method`
+    /// is a recorded `@staticmethod`/`@classmethod`, return its receiver-less
+    /// uniform-thunk closure (the `CallValue` callee for a spread call). `None`
+    /// otherwise — the caller then falls to the dynamic `MethodCallValue` path.
+    fn try_static_method_callee(
+        &mut self,
+        attr: &ExprAttribute,
+        span: Span,
+    ) -> Result<Option<Idx<HirExpr>>> {
+        let Expr::Name(cls) = attr.value.as_ref() else {
+            return Ok(None);
+        };
+        let cls_iname = self.intern(cls.id.as_str());
+        if self.scope.contains_key(&cls_iname)
+            || self.global_read_slot(cls_iname).is_some()
+            || !self.ctx.class_map.contains_key(cls.id.as_str())
+        {
+            return Ok(None);
+        }
+        let qual = format!("{}.{}", cls.id.as_str(), attr.attr.as_str());
+        if !self.shared.static_method_shapes.contains_key(&qual) {
+            return Ok(None);
+        }
+        self.lower_static_method_value(&qual, span)
     }
 
     /// Materialize a constant default value (Phase 6C) as a literal expr.
