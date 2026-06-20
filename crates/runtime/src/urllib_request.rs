@@ -17,7 +17,10 @@ use crate::bytes::rt_make_bytes;
 use crate::dict::{rt_dict_set, rt_make_dict};
 use crate::gc;
 use crate::object::{BytesObj, DictObj, HttpResponseObj, Obj, ObjHeader, RequestObj, TypeTagKind};
-use crate::utils::{is_none_or_null, make_str_from_rust, raise_io_error, str_obj_to_rust_string};
+use crate::utils::{
+    is_none_or_null, make_str_from_rust, raise_io_error, raise_io_error_owned,
+    str_obj_to_rust_string,
+};
 use pyaot_core_defs::Value;
 use std::time::Duration;
 
@@ -305,7 +308,7 @@ unsafe fn data_to_body_slice<'a>(data: *mut Obj, error_prefix: &str) -> Option<&
         return None;
     }
     if (*data).header.type_tag != TypeTagKind::Bytes {
-        raise_io_error(&format!("{}: data must be bytes or None", error_prefix));
+        raise_io_error_owned(format!("{}: data must be bytes or None", error_prefix));
     }
     let bytes_obj = data as *const BytesObj;
     let data_len = (*bytes_obj).len;
@@ -771,7 +774,7 @@ pub fn rt_urlretrieve(
         let body_slice = std::slice::from_raw_parts(data_ptr, data_len);
 
         if let Err(e) = std::fs::write(&filename_str, body_slice) {
-            raise_io_error(&format!(
+            raise_io_error_owned(format!(
                 "urlretrieve: failed to write '{}': {}",
                 filename_str, e
             ));

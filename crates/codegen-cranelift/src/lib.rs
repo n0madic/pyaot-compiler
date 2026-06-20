@@ -64,6 +64,7 @@ struct RuntimeFns {
     init: FuncId,
     shutdown: FuncId,
     make_str: FuncId,
+    make_str_interned: FuncId,
     bigint_from_str: FuncId,
     box_float: FuncId,
     unbox_float_checked: FuncId,
@@ -297,6 +298,11 @@ impl RuntimeFns {
             init: d("rt_init", &[t32, ptr], &[])?,
             shutdown: d("rt_shutdown", &[], &[])?,
             make_str: d("rt_make_str", &[ptr, ti], &[ti])?,
+            // String literals lower through the interning pool so equal literals
+            // are pointer-equal (dict-key fast path, PITFALLS B8). Falls back to
+            // a plain allocation for strings >= 256 bytes; same `(ptr,len)->Value`
+            // ABI as `rt_make_str`.
+            make_str_interned: d("rt_make_str_interned", &[ptr, ti], &[ti])?,
             bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
             box_float: d("rt_box_float", &[tf], &[ti])?,
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
@@ -1124,7 +1130,8 @@ fn materialize_const(
         }
         Const::Str(id) => {
             let (ptr, len) = str_data(module, builder, *id)?;
-            call1(module, builder, rt.make_str, &[ptr, len])
+            // Intern literals so equal strings share one object (PITFALLS B8).
+            call1(module, builder, rt.make_str_interned, &[ptr, len])
         }
         Const::Bytes(id) => {
             let (ptr, len) = str_data(module, builder, *id)?;
@@ -2397,7 +2404,8 @@ impl FnGen<'_, '_> {
             Const::Float(f) => self.builder.ins().f64const(*f),
             Const::Str(id) => {
                 let (ptr, len) = self.str_data(*id)?;
-                self.call(self.rt.make_str, &[ptr, len]).unwrap()
+                // Intern literals so equal strings share one object (PITFALLS B8).
+                self.call(self.rt.make_str_interned, &[ptr, len]).unwrap()
             }
             Const::BigIntStr(id) => {
                 let (ptr, len) = self.str_data(*id)?;

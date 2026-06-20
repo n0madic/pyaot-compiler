@@ -1,0 +1,26 @@
+# Frame pointers are a load-bearing precondition of the table-based unwinder.
+#
+# The runtime's exception unwinder (crates/runtime/src/exceptions/unwind.rs)
+# walks the frame-pointer chain and restores SP/FP from `frame_offset`
+# metadata. This only works if every frame keeps its frame pointer:
+#   - compiled Python code: Cranelift `preserve_frame_pointers=true` (codegen);
+#   - the Rust runtime: frame pointers must not be omitted by the optimizer.
+#
+# On macOS arm64 frame pointers are mandatory by ABI, so the unwinder works
+# without any flag. On Linux the optimizer omits them by default, which
+# silently severs the FP chain mid-walk — a "handler not found" / resume-into-
+# garbage break that only shows up on the exceptional path. Force them on for
+# the Linux targets so the precondition is enforced, not incidental (PITFALLS
+# B17, unwind.rs:20-23).
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-Cforce-frame-pointers=yes"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-Cforce-frame-pointers=yes"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-Cforce-frame-pointers=yes"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-Cforce-frame-pointers=yes"]

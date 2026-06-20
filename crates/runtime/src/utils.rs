@@ -122,6 +122,20 @@ pub unsafe fn raise_io_error(msg: &str) -> ! {
     raise_exc!(ExceptionType::IOError, "{}", msg)
 }
 
+/// Raise an IOError exception, taking ownership of a heap-allocated message.
+///
+/// Prefer this over `raise_io_error(&format!(...))`: the unwind skips Rust
+/// destructors (PITFALLS B2), so a temporary `String` borrowed into
+/// `raise_io_error` would leak. This transfers the `String`'s buffer directly
+/// to the exception object (which frees it on drop) — no leak, no double copy.
+///
+/// # Safety
+/// This function never returns (marked with `!`).
+#[inline(never)]
+pub unsafe fn raise_io_error_owned(msg: String) -> ! {
+    crate::raise_exc_string!(ExceptionType::IOError, msg)
+}
+
 /// Extract a heap pointer from a tagged Value, raising TypeError if the
 /// Value carries a tagged primitive (Int / Bool / None) instead of a heap
 /// pointer.
