@@ -9,7 +9,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use clap::Parser;
 
@@ -126,6 +128,59 @@ impl Cli {
     }
 }
 
+/// `-v/--verbose` stage timer. `step(name)` announces a stage immediately (live
+/// feedback for long stages like Codegen/Linking) and, on the next call, closes
+/// the previous stage's line with its wall-clock duration. `finish()` closes the
+/// last stage and prints the total. A no-op when verbose is off, so the call
+/// sites in `compile` stay unconditional.
+struct StageTimer {
+    enabled: bool,
+    start: Instant,
+    last: Cell<Instant>,
+    open: Cell<bool>,
+}
+
+impl StageTimer {
+    fn new(enabled: bool) -> Self {
+        let now = Instant::now();
+        Self {
+            enabled,
+            start: now,
+            last: Cell::new(now),
+            open: Cell::new(false),
+        }
+    }
+
+    /// Close the currently open stage line (if any) with its duration, then open
+    /// a new one named `name` (printed without a trailing newline so the
+    /// duration can be appended when the stage completes).
+    fn step(&self, name: &str) {
+        if !self.enabled {
+            return;
+        }
+        let now = Instant::now();
+        if self.open.get() {
+            eprintln!("{:.1?}", now.duration_since(self.last.get()));
+        }
+        eprint!("pyaot: {name} ... ");
+        self.last.set(now);
+        self.open.set(true);
+    }
+
+    /// Close the last open stage and print the total elapsed time.
+    fn finish(&self) {
+        if !self.enabled {
+            return;
+        }
+        let now = Instant::now();
+        if self.open.get() {
+            eprintln!("{:.1?}", now.duration_since(self.last.get()));
+            self.open.set(false);
+        }
+        eprintln!("pyaot: total {:.1?}", now.duration_since(self.start));
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -144,13 +199,10 @@ fn main() {
 }
 
 fn compile(cli: &Cli, source: &str) -> Result<()> {
-    // `-v/--verbose`: announce each pipeline stage on stderr. A no-op closure
-    // keeps the discrete steps below unchanged when verbose is off.
-    let step = |msg: &str| {
-        if cli.verbose {
-            eprintln!("pyaot: {msg}");
-        }
-    };
+    // `-v/--verbose`: announce + time each pipeline stage on stderr. A no-op
+    // when verbose is off, so the `timer.step(...)` calls below stay
+    // unconditional.
+    let timer = StageTimer::new(cli.verbose);
 
     let mut interner = StringInterner::new();
 
@@ -164,7 +216,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."))];
     roots.extend(cli.module_path.iter().cloned());
     let mut loader = DirModuleSource { roots };
-    step("Parsing");
+    timer.step("Parsing");
     let program = pyaot_frontend_python::parse_program(
         source,
         &cli.input.display().to_string(),
@@ -173,29 +225,31 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     )?;
     let mut module = program.module;
     let namespaces = program.namespaces;
-    step("Resolving");
+    timer.step("Resolving");
     let resolve = pyaot_semantics::resolve(&mut module, &namespaces, &interner)?;
 
     // ── --emit-hir: dump the resolved HIR and stop (types are still `Dyn`). ──
     if cli.emit_hir {
+        timer.finish();
         println!("{module:#?}");
         return Ok(());
     }
 
-    step("Collecting classes");
+    timer.step("Collecting classes");
     let mut classes = pyaot_semantics::collect_classes(&module, &namespaces, &interner)?;
-    step("Type inference");
+    timer.step("Type inference");
     pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner)?;
 
     // ── --emit-types: dump the HIR after inference (the `ty` fields are now
     // refined — `infer` mutates the HIR in place) and stop. ──
     if cli.emit_types {
+        timer.finish();
         println!("{module:#?}");
         println!("{classes:#?}");
         return Ok(());
     }
 
-    step("Lowering");
+    timer.step("Lowering");
     let mut mir = pyaot_lowering::lower(&module, &resolve, &interner, &classes)?;
 
     // ── verify after lowering (debug): the first MIR is checked before any pass. ──
@@ -209,7 +263,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // ── optimizer: `--opt-level none` is the single conservative switch (empty
     // MIR pipeline + Cranelift opt_level=none). ──
     let opt_level = cli.effective_opt_level();
-    step(&format!("Optimizing (opt-level {opt_level:?})"));
+    timer.step(&format!("Optimizing (opt-level {opt_level:?})"));
     let passes = match opt_level {
         OptLevelArg::None => pyaot_optimizer::PassManager::phase1(),
         OptLevelArg::Speed | OptLevelArg::SpeedAndSize => pyaot_optimizer::PassManager::phase9(),
@@ -221,6 +275,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
 
     // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
     if cli.emit_mir {
+        timer.finish();
         for (i, func) in mir.funcs.iter().enumerate() {
             println!("// ── fn {i} ──");
             println!("{func:#?}");
@@ -245,14 +300,14 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         },
         alias_analysis: !cli.no_alias_analysis,
     };
-    step("Codegen");
+    timer.step("Codegen");
     pyaot_codegen_cranelift::compile(&mir, &object_path, &codegen_opts, &interner)?;
 
-    step("Linking");
+    timer.step("Linking");
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
     linker.link(&object_path, &output, &[])?;
-    step("Done");
+    timer.finish();
 
     // ── --run: execute the freshly linked binary, propagating its exit code. ──
     if cli.run {

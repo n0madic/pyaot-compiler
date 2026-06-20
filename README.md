@@ -52,7 +52,7 @@ Common flags (`pyaot --help` for the full list):
 | `--debug` | Keep debug symbols / DWARF; also defaults `--opt-level` to `none` unless one is given explicitly. |
 | `--module-path <DIR>` | Extra import search directory (repeatable); tried after the entry script's own directory. |
 | `--emit-hir` / `--emit-types` / `--emit-mir` | Dump the resolved HIR / typed HIR / verified MIR to stdout and exit (no codegen). |
-| `-v, --verbose` | Print each pipeline stage to stderr. |
+| `-v, --verbose` | Print each pipeline stage, its duration, and the total to stderr. |
 | `--runtime-lib <PATH>` | Path to `libpyaot_runtime.a` (overrides auto-detection). |
 
 ## Slim runtime (binary size)
