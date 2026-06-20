@@ -21,27 +21,31 @@ use pyaot_frontend_python::ModuleSource;
 use pyaot_mir::MirProgram;
 use pyaot_utils::StringInterner;
 
-/// Resolves `import` targets against the entry script's directory (Phase 8): a
-/// dotted module `a.b.c` is `root/a/b/c.py`, else the package `root/a/b/c/__init__.py`.
+/// Resolves `import` targets against a list of search roots (Phase 8): a dotted
+/// module `a.b.c` is `root/a/b/c.py`, else the package `root/a/b/c/__init__.py`.
+/// Roots are tried in order — `roots[0]` is the entry script's directory,
+/// followed by any `--module-path` directories — and the first match wins.
 struct DirModuleSource {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
 }
 
 impl ModuleSource for DirModuleSource {
     fn load(&mut self, path: &[String]) -> Option<(String, bool)> {
-        let mut base = self.root.clone();
-        for component in path {
-            base.push(component);
-        }
-        let module_file = base.with_extension("py");
-        if module_file.is_file() {
-            return std::fs::read_to_string(&module_file)
-                .ok()
-                .map(|s| (s, false));
-        }
-        let init_file = base.join("__init__.py");
-        if init_file.is_file() {
-            return std::fs::read_to_string(&init_file).ok().map(|s| (s, true));
+        for root in &self.roots {
+            let mut base = root.clone();
+            for component in path {
+                base.push(component);
+            }
+            let module_file = base.with_extension("py");
+            if module_file.is_file() {
+                return std::fs::read_to_string(&module_file)
+                    .ok()
+                    .map(|s| (s, false));
+            }
+            let init_file = base.join("__init__.py");
+            if init_file.is_file() {
+                return std::fs::read_to_string(&init_file).ok().map(|s| (s, true));
+            }
         }
         None
     }
@@ -77,6 +81,24 @@ struct Cli {
     /// arithmetic — that the differential gate cannot distinguish by output).
     #[arg(long = "emit-mir")]
     emit_mir: bool,
+    /// Additional directories to search for imported modules (repeatable).
+    #[arg(long = "module-path", value_name = "DIR")]
+    module_path: Vec<PathBuf>,
+    /// Enable all optimizations (alias for `--opt-level speed`).
+    #[arg(short = 'O', long = "optimize")]
+    optimize: bool,
+    /// Print the resolved HIR to stdout and exit (no typeck/codegen).
+    #[arg(long = "emit-hir")]
+    emit_hir: bool,
+    /// Print the HIR with inferred types to stdout and exit (no codegen).
+    #[arg(long = "emit-types")]
+    emit_types: bool,
+    /// Verbose progress output to stderr.
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
+    /// Run the compiled executable immediately after a successful link.
+    #[arg(long = "run")]
+    run: bool,
 }
 
 /// `--opt-level` values (clap-facing mirror of [`OptLevel`]).
@@ -88,11 +110,15 @@ enum OptLevelArg {
 }
 
 impl Cli {
-    /// Resolve the effective optimization level: explicit `--opt-level` wins;
-    /// otherwise `--debug` means `none` and the default is `speed`.
+    /// Resolve the effective optimization level. Precedence: explicit
+    /// `--opt-level` wins; then `-O/--optimize` forces `speed`; then `--debug`
+    /// means `none`; otherwise the default is `speed`. `-O` only gates the
+    /// `phase1`/`phase9` choice — the canonical pass order in `phase9` is never
+    /// touched.
     fn effective_opt_level(&self) -> OptLevelArg {
         match self.opt_level {
             Some(level) => level,
+            None if self.optimize => OptLevelArg::Speed,
             None if self.debug => OptLevelArg::None,
             None => OptLevelArg::Speed,
         }
@@ -117,16 +143,27 @@ fn main() {
 }
 
 fn compile(cli: &Cli, source: &str) -> Result<()> {
+    // `-v/--verbose`: announce each pipeline stage on stderr. A no-op closure
+    // keeps the discrete steps below unchanged when verbose is off.
+    let step = |msg: &str| {
+        if cli.verbose {
+            eprintln!("pyaot: {msg}");
+        }
+    };
+
     let mut interner = StringInterner::new();
 
     // ── front-half ──
-    // The import search path is the entry script's directory (Phase 8).
-    let root = cli
+    // The import search path starts with the entry script's directory (Phase 8),
+    // then any `--module-path` directories, in order.
+    let mut roots = vec![cli
         .input
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut loader = DirModuleSource { root };
+        .unwrap_or_else(|| PathBuf::from("."))];
+    roots.extend(cli.module_path.iter().cloned());
+    let mut loader = DirModuleSource { roots };
+    step("Parsing");
     let program = pyaot_frontend_python::parse_program(
         source,
         &cli.input.display().to_string(),
@@ -135,9 +172,29 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     )?;
     let mut module = program.module;
     let namespaces = program.namespaces;
+    step("Resolving");
     let resolve = pyaot_semantics::resolve(&mut module, &namespaces, &interner)?;
+
+    // ── --emit-hir: dump the resolved HIR and stop (types are still `Dyn`). ──
+    if cli.emit_hir {
+        println!("{module:#?}");
+        return Ok(());
+    }
+
+    step("Collecting classes");
     let mut classes = pyaot_semantics::collect_classes(&module, &namespaces, &interner)?;
+    step("Type inference");
     pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner)?;
+
+    // ── --emit-types: dump the HIR after inference (the `ty` fields are now
+    // refined — `infer` mutates the HIR in place) and stop. ──
+    if cli.emit_types {
+        println!("{module:#?}");
+        println!("{classes:#?}");
+        return Ok(());
+    }
+
+    step("Lowering");
     let mut mir = pyaot_lowering::lower(&module, &resolve, &interner, &classes)?;
 
     // ── verify after lowering (debug): the first MIR is checked before any pass. ──
@@ -151,6 +208,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // ── optimizer: `--opt-level none` is the single conservative switch (empty
     // MIR pipeline + Cranelift opt_level=none). ──
     let opt_level = cli.effective_opt_level();
+    step(&format!("Optimizing (opt-level {opt_level:?})"));
     let passes = match opt_level {
         OptLevelArg::None => pyaot_optimizer::PassManager::phase1(),
         OptLevelArg::Speed | OptLevelArg::SpeedAndSize => pyaot_optimizer::PassManager::phase9(),
@@ -185,11 +243,30 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         },
         alias_analysis: !cli.no_alias_analysis,
     };
+    step("Codegen");
     pyaot_codegen_cranelift::compile(&mir, &object_path, &codegen_opts, &interner)?;
 
+    step("Linking");
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
     linker.link(&object_path, output, &[])?;
+    step("Done");
+
+    // ── --run: execute the freshly linked binary, propagating its exit code. ──
+    if cli.run {
+        if cli.verbose {
+            eprintln!("pyaot: Running: {}", output.display());
+        }
+        let status = std::process::Command::new(output)
+            .status()
+            .map_err(|e| {
+                CompilerError::link_error(format!(
+                    "failed to run the compiled executable {}: {e}",
+                    output.display()
+                ))
+            })?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 
     Ok(())
 }
