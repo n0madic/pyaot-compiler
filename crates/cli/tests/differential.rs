@@ -773,6 +773,28 @@ const PHASE_CORPUS: &[&str] = &[
     // (the runtime tag query + branch narrowing), plus the always-True/always-False
     // statically-typed cases. The dead-code-warning regression guard.
     "test_dead_code_warnings.py",
+    // §9 (close-out) — str/bytes method arguments: `replace` `count`, the
+    // `find`/`index`/`rfind`/`rindex` `start`/`end` codepoint bounds (negatives,
+    // not-found `ValueError`), and encoding-honoring `encode`/`decode`
+    // (utf-8/ascii/latin-1 + the `Unicode{En,De}codeError`/`LookupError` error
+    // paths, incl. the `ValueError` super-catch through the new exception MRO).
+    // `count`/`start`/`end` ride RAW i64 slots (B16); error messages are
+    // divergence-safe (caught + fixed-string).
+    "p49_str_method_args.py",
+    // §9 (close-out) — Unicode-aware str predicates: `isalpha`/`isalnum`/`isupper`/
+    // `islower`/`isdigit`/`isspace` over codepoints (`char::is_*`) on accented
+    // Latin / Cyrillic / Greek / Unicode-whitespace, restricted to the set where
+    // Rust and CPython agree; ASCII cases must not regress. The residual
+    // Numeric_Type divergence (`½`, superscripts) is a narrower documented limit,
+    // unprobed.
+    "p50_unicode_predicates.py",
+    // §9 (close-out) — container augmented ops + `dict.fromkeys` class form.
+    // `&=`/`-=`/`^=` mutate a `set` in place (`IAnd`/`ISub`/`IXor` →
+    // `rt_set_*_update`, alias witnesses prove the mutation is visible) like the
+    // existing `|=`; numeric `-=`/`&=`/`^=` still produce new values. `dict.
+    // fromkeys(keys[, value])` works as a class method (desugar to the instance
+    // Fromkeys path), incl. the one-shared-value aliasing CPython semantics.
+    "p51_container_aug_ops.py",
 ];
 
 /// Network-dependent entries, run (self-checking) ONLY when `PYAOT_NET_TESTS` is

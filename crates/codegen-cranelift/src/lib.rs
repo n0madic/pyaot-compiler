@@ -93,6 +93,9 @@ struct RuntimeFns {
     obj_bitand: FuncId,
     obj_bitor: FuncId,
     obj_ior: FuncId,
+    obj_iand: FuncId,
+    obj_isub: FuncId,
+    obj_ixor: FuncId,
     obj_bitxor: FuncId,
     obj_lshift: FuncId,
     obj_rshift: FuncId,
@@ -328,6 +331,9 @@ impl RuntimeFns {
             obj_bitand: d("rt_obj_bitand", &[ti, ti], &[ti])?,
             obj_bitor: d("rt_obj_bitor", &[ti, ti], &[ti])?,
             obj_ior: d("rt_obj_ior", &[ti, ti], &[ti])?,
+            obj_iand: d("rt_obj_iand", &[ti, ti], &[ti])?,
+            obj_isub: d("rt_obj_isub", &[ti, ti], &[ti])?,
+            obj_ixor: d("rt_obj_ixor", &[ti, ti], &[ti])?,
             obj_bitxor: d("rt_obj_bitxor", &[ti, ti], &[ti])?,
             obj_lshift: d("rt_obj_lshift", &[ti, ti], &[ti])?,
             obj_rshift: d("rt_obj_rshift", &[ti, ti], &[ti])?,
@@ -2510,6 +2516,12 @@ impl FnGen<'_, '_> {
             // `|=` — in-place merge for `dict`/`set` (returns the same object),
             // numeric/TypeError delegated to `rt_obj_bitor` inside the runtime.
             (_, BinOp::IOr) => self.call(self.rt.obj_ior, &[a, b]).unwrap(),
+            // `&=` / `-=` / `^=` — in-place mutate for `set` (returns the same
+            // object), numeric/TypeError delegated to `rt_obj_bitand`/`rt_obj_sub`/
+            // `rt_obj_bitxor` inside the runtime.
+            (_, BinOp::IAnd) => self.call(self.rt.obj_iand, &[a, b]).unwrap(),
+            (_, BinOp::ISub) => self.call(self.rt.obj_isub, &[a, b]).unwrap(),
+            (_, BinOp::IXor) => self.call(self.rt.obj_ixor, &[a, b]).unwrap(),
             (_, BinOp::BitXor) => self.call(self.rt.obj_bitxor, &[a, b]).unwrap(),
             (_, BinOp::Shl) => self.call(self.rt.obj_lshift, &[a, b]).unwrap(),
             (_, BinOp::Shr) => self.call(self.rt.obj_rshift, &[a, b]).unwrap(),

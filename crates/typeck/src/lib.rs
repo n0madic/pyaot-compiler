@@ -2551,8 +2551,12 @@ impl<'a> Sweeper<'a> {
             BinOp::Pow => "__pow__",
             BinOp::BitAnd => "__and__",
             BinOp::BitOr => "__or__",
-            // `|=` desugars to `x = x IOr y`; CPython tries `__ior__` first.
+            // `|=`/`&=`/`-=`/`^=` desugar to `x = x I<op> y`; CPython tries the
+            // in-place dunder (`__ior__`/`__iand__`/`__isub__`/`__ixor__`) first.
             BinOp::IOr => "__ior__",
+            BinOp::IAnd => "__iand__",
+            BinOp::ISub => "__isub__",
+            BinOp::IXor => "__ixor__",
             BinOp::BitXor => "__xor__",
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
@@ -2579,7 +2583,9 @@ impl<'a> Sweeper<'a> {
             // `+` over two same-base containers already joins to that container
             // (covariant lattice join), so list/tuple/bytes concatenation types
             // correctly without a special case.
-            BinOp::Add | BinOp::Sub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
+            // `-=` (`ISub`) joins here too: `set[int] -= set[int]` → `set[int]`
+            // (covariant join), numeric `-=` stays numeric.
+            BinOp::Add | BinOp::Sub | BinOp::ISub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
                 l.join(&r, self.classes)
             }
             // `@` has no built-in numeric meaning — only the `__matmul__` dunder
@@ -2620,7 +2626,14 @@ impl<'a> Sweeper<'a> {
             // container (covariant lattice join: `set[int] | set[int]` → `set[int]`,
             // `dict[str,int] | dict[str,int]` → `dict[str,int]`), which the
             // `is_int_like` guard skips, so the trailing `join` types them.
-            BinOp::BitAnd | BinOp::BitOr | BinOp::IOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+            BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::IOr
+            | BinOp::IAnd
+            | BinOp::IXor
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr => {
                 if is_int_like(&l) && is_int_like(&r) {
                     SemTy::Int
                 } else if l == SemTy::Never || r == SemTy::Never {

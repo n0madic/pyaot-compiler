@@ -2567,9 +2567,15 @@ impl<'a> FnLowerer<'a> {
         // `x |= y` desugars to `x = x | y`, but `|=` must mutate in place for
         // `dict`/`set` (alias semantics) — route it to the in-place `IOr` op so
         // the runtime can return the same object (binary `|` keeps `BitOr` =
-        // new object). Type-blind: the runtime decides per operand tag.
+        // new object). `&=` / `-=` / `^=` get the same in-place treatment for
+        // `set` operands (`IAnd`/`ISub`/`IXor`) so an alias observes the mutation;
+        // every non-set (numeric) operand still delegates to the new-object path
+        // inside the runtime. Type-blind: the runtime decides per operand tag.
         let op = match binop_from_ast(&a.op) {
             BinOp::BitOr => BinOp::IOr,
+            BinOp::BitAnd => BinOp::IAnd,
+            BinOp::Sub => BinOp::ISub,
+            BinOp::BitXor => BinOp::IXor,
             other => other,
         };
         match a.target.as_ref() {
@@ -7145,6 +7151,48 @@ impl<'a> FnLowerer<'a> {
                     "`**kwargs` spreading is not supported for method calls",
                     span,
                 ));
+            }
+            // `dict.fromkeys(keys[, value])` — the CLASS-method form (§9). A bare
+            // unshadowed `dict` in receiver position otherwise lowers to an
+            // unresolved `Dyn` value, so the instance-form `ContainerMethod::
+            // Fromkeys` dispatch (which keys off a dict-typed receiver) never
+            // fires. Desugar to a `MethodCall` on a throwaway empty-dict receiver:
+            // an empty `DictLit` types to `dict[Never, Never]`, so both typeck and
+            // lowering select the Dict path and reuse the existing `Fromkeys`
+            // machinery (the receiver value is discarded inside it). Gated on an
+            // unshadowed `dict` like the `dict(...)`/`set(...)` constructor
+            // interceptions, so a user binding named `dict` keeps winning.
+            if attr.attr.as_str() == "fromkeys" && c.keywords.is_empty() {
+                if let Expr::Name(base) = attr.value.as_ref() {
+                    let dict_iname = self.intern("dict");
+                    if base.id.as_str() == "dict"
+                        && !self.scope.contains_key(&dict_iname)
+                        && self.global_read_slot(dict_iname).is_none()
+                        && !self.ctx.top_defs.contains_key("dict")
+                        && !self.ctx.class_map.contains_key("dict")
+                    {
+                        if c.args.is_empty() || c.args.len() > 2 {
+                            return Err(parse_error(
+                                "dict.fromkeys() takes 1 or 2 positional arguments",
+                                span,
+                            ));
+                        }
+                        let recv =
+                            self.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span);
+                        let method_name = self.intern("fromkeys");
+                        let args = self.lower_expr_list(&c.args)?;
+                        return Ok(self.alloc(
+                            HirExprKind::MethodCall {
+                                recv,
+                                method_name,
+                                args,
+                                kwargs: vec![],
+                            },
+                            SemTy::Dyn,
+                            span,
+                        ));
+                    }
+                }
             }
             // `.sort(key=K)` with a non-None key desugars HERE, by method NAME
             // (the receiver's type is not known until typeck). Documented

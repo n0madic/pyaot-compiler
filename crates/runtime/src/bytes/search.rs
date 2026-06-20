@@ -6,9 +6,12 @@ use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
-/// Find sub-bytes in bytes
-/// Returns: index of first occurrence or -1 if not found
-pub fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64 {
+/// Bounded sub-bytes search within the byte range `[start, end)` (§9). Bytes
+/// index by byte, so `start`/`end` are byte indices with CPython slice clamping
+/// (a negative adds the length; `start` is floored at 0, `end` capped at the
+/// length). The returned index is the ABSOLUTE byte offset, or -1 if not found.
+/// `backward` selects the last match (rfind) over the first (find).
+fn bytes_find_bounded(bytes: *mut Obj, sub: *mut Obj, start: i64, end: i64, backward: bool) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || sub.is_null() {
@@ -22,104 +25,102 @@ pub fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64 {
         let bytes_len = (*bytes_obj).len;
         let sub_len = (*sub_obj).len;
 
+        // CPython slice clamping (byte indices).
+        let len_i = bytes_len as i64;
+        let start_c: i64 = if start < 0 {
+            (start + len_i).max(0)
+        } else {
+            start
+        };
+        let end_c: i64 = if end < 0 {
+            (end + len_i).max(0)
+        } else {
+            end.min(len_i)
+        };
+
+        // Empty needle: a zero-length match exists at `start` (forward) / `end`
+        // (backward) when `start <= end <= len`.
         if sub_len == 0 {
-            return 0;
+            if start_c > end_c || start_c > len_i {
+                return -1;
+            }
+            return if backward { end_c } else { start_c };
         }
-        if sub_len > bytes_len {
+        if start_c > end_c {
+            return -1;
+        }
+        let start_b = (start_c.min(len_i)) as usize; // <= len, safe for the guard
+        let end_b = end_c as usize; // already in [0, len]
+        if start_b + sub_len > end_b {
             return -1;
         }
 
         let bytes_data = (*bytes_obj).data.as_ptr();
         let sub_data = (*sub_obj).data.as_ptr();
-
-        // Naive search
-        for i in 0..=(bytes_len - sub_len) {
-            let mut matches = true;
+        let matches_at = |i: usize| -> bool {
             for j in 0..sub_len {
                 if *bytes_data.add(i + j) != *sub_data.add(j) {
-                    matches = false;
-                    break;
+                    return false;
                 }
             }
-            if matches {
-                return i as i64;
+            true
+        };
+        let last = end_b - sub_len; // >= start_b (guarded above)
+        if backward {
+            let mut i = last;
+            loop {
+                if matches_at(i) {
+                    return i as i64;
+                }
+                if i == start_b {
+                    break;
+                }
+                i -= 1;
+            }
+        } else {
+            for i in start_b..=last {
+                if matches_at(i) {
+                    return i as i64;
+                }
             }
         }
-
         -1
     }
+}
+
+/// Find sub-bytes in bytes within `[start, end)`.
+/// Returns: index of first occurrence or -1 if not found
+pub fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj, start: i64, end: i64) -> i64 {
+    bytes_find_bounded(bytes, sub, start, end, false)
 }
 #[export_name = "rt_bytes_find"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_bytes_find_abi(bytes: Value, sub: Value) -> i64 {
-    rt_bytes_find(bytes.unwrap_ptr(), sub.unwrap_ptr())
+pub extern "C" fn rt_bytes_find_abi(bytes: Value, sub: Value, start: i64, end: i64) -> i64 {
+    rt_bytes_find(bytes.unwrap_ptr(), sub.unwrap_ptr(), start, end)
 }
 
-/// Find sub-bytes searching from the right
+/// Find sub-bytes searching from the right within `[start, end)`.
 /// Returns: index of last occurrence or -1 if not found
-pub fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64 {
-    use crate::object::BytesObj;
-
-    if bytes.is_null() || sub.is_null() {
-        return -1;
-    }
-
-    unsafe {
-        let bytes_obj = bytes as *mut BytesObj;
-        let sub_obj = sub as *mut BytesObj;
-
-        let bytes_len = (*bytes_obj).len;
-        let sub_len = (*sub_obj).len;
-
-        if sub_len == 0 {
-            return bytes_len as i64;
-        }
-        if sub_len > bytes_len {
-            return -1;
-        }
-
-        let bytes_data = (*bytes_obj).data.as_ptr();
-        let sub_data = (*sub_obj).data.as_ptr();
-
-        // Search backwards
-        let mut i = bytes_len - sub_len;
-        loop {
-            let mut matches = true;
-            for j in 0..sub_len {
-                if *bytes_data.add(i + j) != *sub_data.add(j) {
-                    matches = false;
-                    break;
-                }
-            }
-            if matches {
-                return i as i64;
-            }
-            if i == 0 {
-                break;
-            }
-            i -= 1;
-        }
-
-        -1
-    }
+pub fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj, start: i64, end: i64) -> i64 {
+    bytes_find_bounded(bytes, sub, start, end, true)
 }
 #[export_name = "rt_bytes_rfind"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_bytes_rfind_abi(bytes: Value, sub: Value) -> i64 {
-    rt_bytes_rfind(bytes.unwrap_ptr(), sub.unwrap_ptr())
+pub extern "C" fn rt_bytes_rfind_abi(bytes: Value, sub: Value, start: i64, end: i64) -> i64 {
+    rt_bytes_rfind(bytes.unwrap_ptr(), sub.unwrap_ptr(), start, end)
 }
 
 /// Generic bytes search with operation tag.
 /// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
 pub fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
     let result = match op_tag {
-        0 => rt_bytes_find(bytes, sub),
-        1 => rt_bytes_rfind(bytes, sub),
+        0 => rt_bytes_find(bytes, sub, 0, i64::MAX),
+        1 => rt_bytes_rfind(bytes, sub, 0, i64::MAX),
         2 | 3 => {
             let r = if op_tag == 2 {
-                rt_bytes_find(bytes, sub)
+                rt_bytes_find(bytes, sub, 0, i64::MAX)
             } else {
-                rt_bytes_rfind(bytes, sub)
+                rt_bytes_rfind(bytes, sub, 0, i64::MAX)
             };
             if r < 0 {
                 unsafe {
@@ -197,7 +198,7 @@ pub extern "C" fn rt_bytes_count_abi(bytes: Value, sub: Value) -> i64 {
 /// Check if sub-bytes is contained in bytes
 /// Returns: 1 (true) or 0 (false)
 pub fn rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i64 {
-    if rt_bytes_find(bytes, sub) >= 0 {
+    if rt_bytes_find(bytes, sub, 0, i64::MAX) >= 0 {
         1
     } else {
         0

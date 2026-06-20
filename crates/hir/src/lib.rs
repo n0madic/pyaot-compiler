@@ -871,6 +871,16 @@ pub enum BinOp {
     /// `BitOr` path inside the runtime. Always Tagged (no raw fast path).
     IOr,
     BitXor,
+    /// In-place bitwise-and `&=`, in-place subtract `-=`, in-place xor `^=`. The
+    /// in-place siblings of [`BinOp::BitAnd`]/[`BinOp::Sub`]/[`BinOp::BitXor`]
+    /// (the `IOr` pattern): the frontend emits these for `s &= y` / `s -= y` /
+    /// `s ^= y` so the runtime can mutate a `set` operand in place
+    /// (`*_update`) and return the same object, making the augmented-assign
+    /// rebind alias-preserving. Every non-set operand delegates to the
+    /// new-object numeric path (`BitAnd`/`Sub`/`BitXor`). Always Tagged.
+    IAnd,
+    ISub,
+    IXor,
     Shl,
     Shr,
 }

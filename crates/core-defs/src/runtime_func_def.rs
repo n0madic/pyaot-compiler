@@ -937,10 +937,25 @@ pub static RT_BYTES_STARTS_WITH: RuntimeFuncDef =
     RuntimeFuncDef::binary_to_i8("rt_bytes_startswith");
 /// rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i8
 pub static RT_BYTES_ENDS_WITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_bytes_endswith");
-/// rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64
-pub static RT_BYTES_FIND: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_bytes_find");
-/// rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64
-pub static RT_BYTES_RFIND: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_bytes_rfind");
+/// rt_bytes_find(bytes, sub, start: i64, end: i64) -> i64. `start`/`end` ride
+/// RAW i64 slots (§9 — absent → 0 / i64::MAX, clamped to len).
+pub static RT_BYTES_FIND: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_bytes_find",
+    &[PI64, PI64, PI64, PI64],
+    Some(RI64),
+    false,
+    BYTES_SEARCH_QUATERNARY,
+    Some(MirSemantic::Raw),
+);
+/// rt_bytes_rfind(bytes, sub, start: i64, end: i64) -> i64.
+pub static RT_BYTES_RFIND: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_bytes_rfind",
+    &[PI64, PI64, PI64, PI64],
+    Some(RI64),
+    false,
+    BYTES_SEARCH_QUATERNARY,
+    Some(MirSemantic::Raw),
+);
 /// rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 (index variant)
 pub static RT_BYTES_INDEX: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_bytes_search", &[PI64, PI64, PI8], Some(RI64), false);
@@ -949,8 +964,16 @@ pub static RT_BYTES_RINDEX: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_bytes_search", &[PI64, PI64, PI8], Some(RI64), false);
 /// rt_bytes_count(bytes: *mut Obj, sub: *mut Obj) -> i64
 pub static RT_BYTES_COUNT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_bytes_count");
-/// rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj
-pub static RT_BYTES_REPLACE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_bytes_replace");
+/// rt_bytes_replace(bytes, old, new, count: i64) -> *mut Obj. `count` rides a
+/// RAW i64 slot (`-1` = unlimited, §9).
+pub static RT_BYTES_REPLACE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_bytes_replace",
+    &[PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    REPLACE_QUATERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
 pub static RT_BYTES_SPLIT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_bytes_split", &[PI64, PI64, PI64], Some(RI64), true);
@@ -1213,18 +1236,23 @@ pub static RT_STR_STRIP: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_stri
 pub static RT_STR_STARTSWITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_startswith");
 /// rt_str_endswith(s: *mut Obj, suffix: *mut Obj) -> i8
 pub static RT_STR_ENDSWITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_endswith");
-/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (find variant)
+// `rt_str_search(s, sub, start, end, op_tag) -> i64`: a tagged str receiver and
+// substring, RAW i64 `start`/`end` codepoint bounds (§9 — absent → 0 / i64::MAX,
+// clamped to the length), and a RAW i8 `op_tag`. The `new` (inferred-Raw)
+// semantics accept the Tagged recv/sub (the verifier's I64+Raw slot is lenient)
+// and the Raw bounds.
+/// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (find variant)
 pub static RT_STR_FIND: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (rfind variant)
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (rfind variant)
 pub static RT_STR_RFIND: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (index variant)
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (index variant)
 pub static RT_STR_INDEX: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (rindex variant)
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (rindex variant)
 pub static RT_STR_RINDEX: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
 /// rt_str_rsplit(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj.
 /// `maxsplit` is read as a RAW machine integer (`-1` = unlimited), so the
 /// generic `ptr_ternary` all-Tagged default is wrong — see `STR_SPLIT_TERNARY`.
@@ -1240,8 +1268,17 @@ pub static RT_STR_RSPLIT: RuntimeFuncDef = RuntimeFuncDef::new_typed(
 pub static RT_STR_ISASCII: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isascii");
 /// rt_str_encode(s: *mut Obj, encoding: *mut Obj) -> *mut Obj
 pub static RT_STR_ENCODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_encode");
-/// rt_str_replace(s: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj
-pub static RT_STR_REPLACE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_replace");
+/// rt_str_replace(s, old, new, count: i64) -> *mut Obj. `count` rides a RAW i64
+/// slot (`-1` = unlimited, §9), so the generic `ptr_ternary` all-Tagged default
+/// is wrong — see `REPLACE_QUATERNARY`.
+pub static RT_STR_REPLACE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_str_replace",
+    &[PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+    REPLACE_QUATERNARY,
+    Some(MirSemantic::Tagged),
+);
 /// rt_str_count(s: *mut Obj, sub: *mut Obj) -> i64
 pub static RT_STR_COUNT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_str_count");
 /// rt_str_split(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj.
@@ -1282,6 +1319,22 @@ const STR_SPLIT_TERNARY: &[MirSemantic] =
     &[MirSemantic::Tagged, MirSemantic::Tagged, MirSemantic::Raw];
 // `rt_str_expandtabs`: a tagged str receiver and a RAW i64 `tabsize`.
 const STR_TABS_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
+// Replace ABIs (`rt_str_replace`/`rt_bytes_replace`): a tagged receiver, tagged
+// `old`/`new`, and a RAW i64 `count` (`-1` = unlimited, §9).
+const REPLACE_QUATERNARY: &[MirSemantic] = &[
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Raw,
+];
+// Bytes search ABIs (`rt_bytes_find`/`rt_bytes_rfind`): a tagged bytes receiver
+// and substring, plus RAW i64 `start`/`end` bounds (§9).
+const BYTES_SEARCH_QUATERNARY: &[MirSemantic] = &[
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Raw,
+    MirSemantic::Raw,
+];
 
 /// rt_str_center(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
 pub static RT_STR_CENTER: RuntimeFuncDef = RuntimeFuncDef::new_typed(

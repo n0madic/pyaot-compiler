@@ -284,12 +284,18 @@ struct FnLower<'a> {
 }
 
 /// Wanted repr for a sequence-method argument (`str`/`bytes`): a tagged heap
-/// value (sep / sub / prefix / chars), or a raw i64 (`maxsplit` / `tabsize` —
-/// a count that rides `Raw(I64)`, never a tagged int misread as a width, B16).
+/// value (sep / sub / prefix / chars), or a raw i64 (`maxsplit` / `tabsize` /
+/// `count` / `start`/`end` — a count or bound that rides `Raw(I64)`, never a
+/// tagged int misread as a width, B16). [`ArgWant::RawI64`] carries the value
+/// substituted when the optional argument is ABSENT (its Python default in the
+/// raw register class): `-1` (unlimited) for `maxsplit`/`count`, `8` for
+/// `tabsize`, `0` for a `start` bound, `i64::MAX` for an `end` bound (the
+/// runtime clamps it to the length). Required (non-optional) raw args never read
+/// the default — `0` is conventional there.
 #[derive(Clone, Copy)]
 enum ArgWant {
     Tagged,
-    RawI64,
+    RawI64(i64),
 }
 
 impl<'a> FnLower<'a> {
@@ -2236,28 +2242,49 @@ impl<'a> FnLower<'a> {
                 TypeSpec::Bool,
             )),
             "endswith" => Some((&rf::RT_STR_ENDSWITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
-            "find" => Some((&rf::RT_STR_FIND, &[TaggedArg], 1, Some(0), TypeSpec::Int)),
-            "rfind" => Some((&rf::RT_STR_RFIND, &[TaggedArg], 1, Some(1), TypeSpec::Int)),
-            "index" => Some((&rf::RT_STR_INDEX, &[TaggedArg], 1, Some(2), TypeSpec::Int)),
+            // §9 — find/index family. `start`/`end` ride RAW i64 slots (codepoint
+            // bounds; absent → 0 / i64::MAX which the runtime clamps to the
+            // length). The trailing `op_tag` (`Some(..)`) is appended as Raw(I8).
+            "find" => Some((
+                &rf::RT_STR_FIND,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                Some(0),
+                TypeSpec::Int,
+            )),
+            "rfind" => Some((
+                &rf::RT_STR_RFIND,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                Some(1),
+                TypeSpec::Int,
+            )),
+            "index" => Some((
+                &rf::RT_STR_INDEX,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                Some(2),
+                TypeSpec::Int,
+            )),
             "count" => Some((&rf::RT_STR_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
-            "zfill" => Some((&rf::RT_STR_ZFILL, &[RawI64], 1, None, TypeSpec::Str)),
+            "zfill" => Some((&rf::RT_STR_ZFILL, &[RawI64(0)], 1, None, TypeSpec::Str)),
             "center" => Some((
                 &rf::RT_STR_CENTER,
-                &[RawI64, TaggedArg],
+                &[RawI64(0), TaggedArg],
                 1,
                 None,
                 TypeSpec::Str,
             )),
             "ljust" => Some((
                 &rf::RT_STR_LJUST,
-                &[RawI64, TaggedArg],
+                &[RawI64(0), TaggedArg],
                 1,
                 None,
                 TypeSpec::Str,
             )),
             "rjust" => Some((
                 &rf::RT_STR_RJUST,
-                &[RawI64, TaggedArg],
+                &[RawI64(0), TaggedArg],
                 1,
                 None,
                 TypeSpec::Str,
@@ -2267,14 +2294,14 @@ impl<'a> FnLower<'a> {
             // split, an absent maxsplit defaults to `-1` (unlimited, A2).
             "split" => Some((
                 &rf::RT_STR_SPLIT,
-                &[TaggedArg, RawI64],
+                &[TaggedArg, RawI64(-1)],
                 0,
                 None,
                 TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
             )),
             "rsplit" => Some((
                 &rf::RT_STR_RSPLIT,
-                &[TaggedArg, RawI64],
+                &[TaggedArg, RawI64(-1)],
                 0,
                 None,
                 TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
@@ -2286,10 +2313,11 @@ impl<'a> FnLower<'a> {
                 None,
                 TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_STR),
             )),
-            // `replace(old, new)` — the runtime is 2-arg (no `count`, §9 limit).
+            // `replace(old, new[, count])` — `count` rides a RAW i64 slot
+            // (absent → -1 = replace all, §9). min_args stays 2.
             "replace" => Some((
                 &rf::RT_STR_REPLACE,
-                &[TaggedArg, TaggedArg],
+                &[TaggedArg, TaggedArg, RawI64(-1)],
                 2,
                 None,
                 TypeSpec::Str,
@@ -2304,7 +2332,7 @@ impl<'a> FnLower<'a> {
                 Some((&rf::RT_STR_REMOVESUFFIX, &[TaggedArg], 1, None, TypeSpec::Str))
             }
             // `expandtabs([tabsize])` — tabsize a RAW i64 (default 8, A2).
-            "expandtabs" => Some((&rf::RT_STR_EXPANDTABS, &[RawI64], 0, None, TypeSpec::Str)),
+            "expandtabs" => Some((&rf::RT_STR_EXPANDTABS, &[RawI64(8)], 0, None, TypeSpec::Str)),
             // `partition`/`rpartition(sep)` → a 3-tuple. Typed `Dyn` (a stdlib
             // `Tuple` spec is gradual), so `a, sep, b = …` unpacks through the
             // gradual seam.
@@ -2325,9 +2353,16 @@ impl<'a> FnLower<'a> {
             // `encode([encoding])` → bytes. Encoding is accepted but ignored
             // (always UTF-8, §9 limit); an absent arg is the null sentinel.
             "encode" => Some((&rf::RT_STR_ENCODE, &[TaggedArg], 0, None, TypeSpec::Bytes)),
-            // `rindex(sub)` via the shared `rt_str_search` with op_tag 3 (raises
-            // ValueError on a miss, like `index`).
-            "rindex" => Some((&rf::RT_STR_RINDEX, &[TaggedArg], 1, Some(3), TypeSpec::Int)),
+            // `rindex(sub[, start[, end]])` via the shared `rt_str_search` with
+            // op_tag 3 (raises ValueError on a miss, like `index`); `start`/`end`
+            // ride RAW i64 slots like `find`.
+            "rindex" => Some((
+                &rf::RT_STR_RINDEX,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                Some(3),
+                TypeSpec::Int,
+            )),
             // ASCII-only predicates (`is_ascii_*` in the runtime, §9 limit).
             "isdigit" => Some((&rf::RT_STR_ISDIGIT, &[], 0, None, TypeSpec::Bool)),
             "isalpha" => Some((&rf::RT_STR_ISALPHA, &[], 0, None, TypeSpec::Bool)),
@@ -2386,13 +2421,29 @@ impl<'a> FnLower<'a> {
                 Some((&rf::RT_BYTES_STARTS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool))
             }
             "endswith" => Some((&rf::RT_BYTES_ENDS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
-            "find" => Some((&rf::RT_BYTES_FIND, &[TaggedArg], 1, None, TypeSpec::Int)),
-            "rfind" => Some((&rf::RT_BYTES_RFIND, &[TaggedArg], 1, None, TypeSpec::Int)),
+            // `find`/`rfind(sub[, start[, end]])` — dedicated 2-arg fns (no
+            // op_tag); `start`/`end` ride RAW i64 slots (absent → 0 / i64::MAX,
+            // clamped to len by the runtime).
+            "find" => Some((
+                &rf::RT_BYTES_FIND,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                None,
+                TypeSpec::Int,
+            )),
+            "rfind" => Some((
+                &rf::RT_BYTES_RFIND,
+                &[TaggedArg, RawI64(0), RawI64(i64::MAX)],
+                1,
+                None,
+                TypeSpec::Int,
+            )),
             "count" => Some((&rf::RT_BYTES_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
-            // `replace(old, new)` — the runtime is 2-arg (no `count`).
+            // `replace(old, new[, count])` — `count` rides a RAW i64 slot (absent
+            // → -1 = replace all). min_args stays 2.
             "replace" => Some((
                 &rf::RT_BYTES_REPLACE,
-                &[TaggedArg, TaggedArg],
+                &[TaggedArg, TaggedArg, RawI64(-1)],
                 2,
                 None,
                 TypeSpec::Bytes,
@@ -2401,14 +2452,14 @@ impl<'a> FnLower<'a> {
             // split, an absent `maxsplit` defaults to -1 (unlimited).
             "split" => Some((
                 &rf::RT_BYTES_SPLIT,
-                &[TaggedArg, RawI64],
+                &[TaggedArg, RawI64(-1)],
                 0,
                 None,
                 TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_BYTES),
             )),
             "rsplit" => Some((
                 &rf::RT_BYTES_RSPLIT,
-                &[TaggedArg, RawI64],
+                &[TaggedArg, RawI64(-1)],
                 0,
                 None,
                 TypeSpec::List(&pyaot_stdlib_defs::types::TYPE_BYTES),
@@ -2558,7 +2609,7 @@ impl<'a> FnLower<'a> {
                     };
                     let want_repr = match want {
                         ArgWant::Tagged => Repr::Tagged,
-                        ArgWant::RawI64 => Repr::Raw(RawKind::I64),
+                        ArgWant::RawI64(_) => Repr::Raw(RawKind::I64),
                     };
                     self.coerce(al, ar, want_repr)?
                 }
@@ -2567,8 +2618,9 @@ impl<'a> FnLower<'a> {
                 // sentinel (the runtime reads it as "default": whitespace sep,
                 // whitespace strip, UTF-8 encode). A RawI64 slot must NOT receive
                 // a Tagged null — that would fail the verifier — so it gets the
-                // Python default in its raw register class: `maxsplit = -1`
-                // (unlimited) for split/rsplit, `tabsize = 8` for expandtabs.
+                // Python default carried by the `ArgWant` in its raw register
+                // class (`maxsplit`/`count = -1`, `tabsize = 8`, search `start = 0`
+                // / `end = i64::MAX`).
                 match want {
                     ArgWant::Tagged => {
                         let d = self.alloc_temp(Repr::Tagged);
@@ -2578,12 +2630,11 @@ impl<'a> FnLower<'a> {
                         });
                         d
                     }
-                    ArgWant::RawI64 => {
-                        let default = if name == "expandtabs" { 8 } else { -1 };
+                    ArgWant::RawI64(default) => {
                         let d = self.alloc_temp(Repr::Raw(RawKind::I64));
                         self.emit(MirInst::Const {
                             dst: d,
-                            val: Const::Int(default),
+                            val: Const::Int(*default),
                         });
                         d
                     }
@@ -6198,6 +6249,9 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::BitOr => MBinOp::BitOr,
         HBinOp::IOr => MBinOp::IOr,
         HBinOp::BitXor => MBinOp::BitXor,
+        HBinOp::IAnd => MBinOp::IAnd,
+        HBinOp::ISub => MBinOp::ISub,
+        HBinOp::IXor => MBinOp::IXor,
         HBinOp::Shl => MBinOp::Shl,
         HBinOp::Shr => MBinOp::Shr,
     }

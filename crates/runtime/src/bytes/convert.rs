@@ -5,12 +5,17 @@ use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
-/// Decode bytes to string using specified encoding (utf-8 default)
+/// Decode bytes to string honoring the encoding (§9): `utf-8` (default)
+/// validates UTF-8 and raises `UnicodeDecodeError` on invalid input (the former
+/// code copied blindly — a latent bug); `ascii` raises `UnicodeDecodeError` on
+/// any byte ≥ 0x80; `latin-1` maps each byte to its codepoint (always valid); an
+/// unknown encoding name raises `LookupError`. `errors=` is not modeled.
 /// encoding: pointer to StrObj for encoding name (null for utf-8)
 /// Returns: pointer to allocated StrObj
-pub fn rt_bytes_decode(bytes: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_decode(bytes: *mut Obj, encoding: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::BytesObj;
-    use crate::string::rt_make_str;
+    use crate::string::{classify_encoding, rt_make_str, Encoding};
 
     if bytes.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
@@ -20,16 +25,58 @@ pub fn rt_bytes_decode(bytes: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
         let bytes_obj = bytes as *mut BytesObj;
         let len = (*bytes_obj).len;
         let data = (*bytes_obj).data.as_ptr();
+        let slice = std::slice::from_raw_parts(data, len);
 
-        // For now, only support UTF-8 encoding
-        // In the future, could check encoding parameter and handle other encodings
-        rt_make_str(data, len)
+        match classify_encoding(encoding) {
+            Encoding::Unknown => raise_exc!(
+                crate::exceptions::ExceptionType::LookupError,
+                "unknown encoding"
+            ),
+            Encoding::Utf8 => {
+                if std::str::from_utf8(slice).is_err() {
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::UnicodeDecodeError,
+                        "'utf-8' codec can't decode bytes: invalid utf-8"
+                    );
+                }
+            }
+            Encoding::Ascii => {
+                if slice.iter().any(|&b| b >= 0x80) {
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::UnicodeDecodeError,
+                        "'ascii' codec can't decode byte: ordinal not in range(128)"
+                    );
+                }
+            }
+            Encoding::Latin1 => {
+                // Every byte maps to a codepoint U+0000..U+00FF (always valid).
+                // Build the UTF-8 string in an owned buffer (GC-independent).
+                let mut out = String::with_capacity(len);
+                for &b in slice {
+                    out.push(b as char);
+                }
+                return rt_make_str(out.as_ptr(), out.len());
+            }
+        }
+
+        // utf-8 / validated-ascii: identity copy. Root `bytes` across rt_make_str
+        // → gc_alloc (a collection could free the BytesObj and invalidate `data`).
+        let mut roots: [*mut Obj; 1] = [bytes];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+        let result = rt_make_str(data, len);
+        gc_pop();
+        result
     }
 }
 #[export_name = "rt_bytes_decode"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_bytes_decode_abi(bytes: Value, _encoding: Value) -> Value {
-    Value::from_ptr(rt_bytes_decode(bytes.unwrap_ptr(), _encoding.unwrap_ptr()))
+pub extern "C" fn rt_bytes_decode_abi(bytes: Value, encoding: Value) -> Value {
+    Value::from_ptr(rt_bytes_decode(bytes.unwrap_ptr(), encoding.unwrap_ptr()))
 }
 
 /// Create bytes from hex string

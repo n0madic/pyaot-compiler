@@ -9,11 +9,22 @@ use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 use pyaot_core_defs::Value;
 
-/// Replace all occurrences of old with new in string using Boyer-Moore-Horspool
+/// Replace up to `count` occurrences of old with new in string using
+/// Boyer-Moore-Horspool (`count < 0` ⇒ replace all, §9).
 /// Returns: pointer to new allocated StrObj
-pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
+pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj, count: i64) -> *mut Obj {
     if str_obj.is_null() || old.is_null() || new.is_null() {
         return str_obj; // Return original if any arg is null
+    }
+    // `count < 0` means unlimited (CPython's default); otherwise replace at most
+    // `count` occurrences.
+    let limit = if count < 0 {
+        usize::MAX
+    } else {
+        count as usize
+    };
+    if limit == 0 {
+        return str_obj; // count == 0 ⇒ no replacements, return original
     }
 
     unsafe {
@@ -29,8 +40,10 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
         let new_len = (*new_str).len;
 
         if old_len == 0 {
-            // CPython behavior: insert `new` before each character and at the end
-            // "abc".replace("", "X") -> "XaXbXcX"
+            // CPython behavior: insert `new` before each character and once at the
+            // end, capped at `limit` insertions:
+            //   "abc".replace("", "X")    -> "XaXbXcX"
+            //   "abc".replace("", "X", 2) -> "XaXbc"
             let src_bytes = std::slice::from_raw_parts((*src).data.as_ptr(), (*src).len);
             let new_bytes = std::slice::from_raw_parts((*new_str).data.as_ptr(), (*new_str).len);
 
@@ -44,13 +57,19 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
                     "invalid UTF-8 in string"
                 )
             });
+            let mut inserted = 0usize;
             for ch in src_str.chars() {
-                result.extend_from_slice(new_bytes);
+                if inserted < limit {
+                    result.extend_from_slice(new_bytes);
+                    inserted += 1;
+                }
                 let mut buf = [0u8; 4];
                 let encoded = ch.encode_utf8(&mut buf);
                 result.extend_from_slice(encoded.as_bytes());
             }
-            result.extend_from_slice(new_bytes); // After the last character
+            if inserted < limit {
+                result.extend_from_slice(new_bytes); // After the last character
+            }
 
             return crate::string::core::rt_make_str_impl(result.as_ptr(), result.len());
         }
@@ -90,6 +109,9 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
                 }
                 if matches {
                     positions.push(i);
+                    if positions.len() >= limit {
+                        break; // Hit the `count` cap (§9)
+                    }
                     i += old_len; // Non-overlapping
                 } else {
                     i += 1;
@@ -105,6 +127,9 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
                     break;
                 }
                 positions.push(found as usize);
+                if positions.len() >= limit {
+                    break; // Hit the `count` cap (§9)
+                }
                 pos = (found as usize) + old_len; // Non-overlapping
             }
         }
@@ -177,11 +202,12 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
 }
 #[export_name = "rt_str_replace"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_str_replace_abi(str_obj: Value, old: Value, new: Value) -> Value {
+pub extern "C" fn rt_str_replace_abi(str_obj: Value, old: Value, new: Value, count: i64) -> Value {
     Value::from_ptr(rt_str_replace(
         str_obj.unwrap_ptr(),
         old.unwrap_ptr(),
         new.unwrap_ptr(),
+        count,
     ))
 }
 

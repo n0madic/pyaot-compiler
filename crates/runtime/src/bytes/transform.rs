@@ -27,13 +27,22 @@ unsafe fn make_bytes_from_rooted(src: *mut Obj, ptr: *const u8, len: usize) -> *
     result
 }
 
-/// Replace occurrences of old with new in bytes
+/// Replace up to `count` occurrences of old with new in bytes (`count < 0` ⇒
+/// replace all, §9).
 /// Returns: pointer to new BytesObj
-pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj, count: i64) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if bytes.is_null() {
         return rt_make_bytes_zero(0);
+    }
+    let limit = if count < 0 {
+        usize::MAX
+    } else {
+        count as usize
+    };
+    if limit == 0 {
+        return bytes; // count == 0 ⇒ no replacements
     }
 
     unsafe {
@@ -58,8 +67,8 @@ pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
         let old_data = (*old_obj).data.as_ptr();
         let new_data = (*new_obj).data.as_ptr();
 
-        // Count occurrences
-        let mut count = 0;
+        // Count occurrences (capped at `limit`).
+        let mut n_matches = 0;
         let mut i = 0;
         while i + old_len <= bytes_len {
             let mut matches = true;
@@ -70,32 +79,37 @@ pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
                 }
             }
             if matches {
-                count += 1;
+                n_matches += 1;
+                if n_matches >= limit {
+                    break;
+                }
                 i += old_len;
             } else {
                 i += 1;
             }
         }
 
-        if count == 0 {
+        if n_matches == 0 {
             return bytes;
         }
 
         // Calculate result length
-        let result_len = bytes_len + count * new_len - count * old_len;
+        let result_len = bytes_len + n_matches * new_len - n_matches * old_len;
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
         let result_obj = obj as *mut BytesObj;
         (*result_obj).len = result_len;
 
-        // Build result
+        // Build result, replacing only the first `n_matches` occurrences then
+        // copying the tail verbatim.
         let result_data = (*result_obj).data.as_mut_ptr();
         let mut src_i = 0;
         let mut dst_i = 0;
+        let mut replaced = 0;
 
         while src_i < bytes_len {
-            // Check for match
-            if src_i + old_len <= bytes_len {
+            // Check for match (only while under the cap).
+            if replaced < n_matches && src_i + old_len <= bytes_len {
                 let mut matches = true;
                 for j in 0..old_len {
                     if *bytes_data.add(src_i + j) != *old_data.add(j) {
@@ -110,6 +124,7 @@ pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
                     }
                     src_i += old_len;
                     dst_i += new_len;
+                    replaced += 1;
                     continue;
                 }
             }
@@ -124,11 +139,12 @@ pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
 }
 #[export_name = "rt_bytes_replace"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_bytes_replace_abi(bytes: Value, old: Value, new: Value) -> Value {
+pub extern "C" fn rt_bytes_replace_abi(bytes: Value, old: Value, new: Value, count: i64) -> Value {
     Value::from_ptr(rt_bytes_replace(
         bytes.unwrap_ptr(),
         old.unwrap_ptr(),
         new.unwrap_ptr(),
+        count,
     ))
 }
 

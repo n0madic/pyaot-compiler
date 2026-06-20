@@ -16,6 +16,25 @@ fn byte_offset_to_char_offset(bytes: &[u8], byte_offset: usize) -> usize {
         .count()
 }
 
+/// Convert a character (codepoint) offset to a byte offset in a UTF-8 string —
+/// the inverse of [`byte_offset_to_char_offset`] (§9, for `find`/`index`
+/// `start`/`end` bounds). Returns `bytes.len()` when `char_offset` is at or past
+/// the end (so a clamped past-the-end bound maps to the buffer end).
+fn char_offset_to_byte_offset(bytes: &[u8], char_offset: usize) -> usize {
+    let mut chars_seen = 0;
+    for (byte_idx, &b) in bytes.iter().enumerate() {
+        // A codepoint START byte is any byte that is not a UTF-8 continuation
+        // byte (`0b10xxxxxx`).
+        if (b & 0xC0) != 0x80 {
+            if chars_seen == char_offset {
+                return byte_idx;
+            }
+            chars_seen += 1;
+        }
+    }
+    bytes.len()
+}
+
 /// Minimum pattern length to use Boyer-Moore-Horspool.
 /// For shorter patterns, naive search has less overhead.
 pub(crate) const BMH_THRESHOLD: usize = 4;
@@ -496,34 +515,128 @@ pub extern "C" fn rt_str_rfind_abi(str_obj: Value, sub: Value) -> i64 {
     rt_str_rfind(str_obj.unwrap_ptr(), sub.unwrap_ptr())
 }
 
-/// Generic string search with operation tag.
-/// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
-pub fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
-    let result = match op_tag {
-        0 => rt_str_find(str_obj, sub),
-        1 => rt_str_rfind(str_obj, sub),
-        2 | 3 => {
-            let r = if op_tag == 2 {
-                rt_str_find(str_obj, sub)
-            } else {
-                rt_str_rfind(str_obj, sub)
-            };
-            if r < 0 {
-                unsafe {
-                    raise_exc!(
-                        crate::exceptions::ExceptionType::ValueError,
-                        "substring not found"
-                    );
-                }
+/// Bounded substring search within the codepoint range `[start, end)` (§9). The
+/// returned index is an ABSOLUTE codepoint offset into the string (CPython
+/// semantics: `s.find(sub, start, end)` searches `s[start:end]` but reports the
+/// position in `s`). Returns `-1` when not found. `backward` selects the last
+/// match (rfind/rindex) over the first (find/index).
+///
+/// `start`/`end` are codepoint indices with CPython slice clamping: a negative
+/// adds `char_len`; `start` is floored at 0 (NOT capped at the length, so a
+/// past-the-end start yields "not found"); `end` is capped at `char_len`. The
+/// common full-range case (`start == 0`, `end >= char_len`) delegates to the
+/// BMH-backed [`rt_str_find`]/[`rt_str_rfind`], so unbounded searches keep their
+/// fast path; only an explicit narrowing falls to the bounded byte scan.
+fn str_search_bounded(str_obj: *mut Obj, sub: *mut Obj, start: i64, end: i64, backward: bool) -> i64 {
+    if str_obj.is_null() || sub.is_null() {
+        return -1;
+    }
+    unsafe {
+        debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_str_search");
+        debug_assert_type_tag!(sub, TypeTagKind::Str, "rt_str_search");
+        let src = str_obj as *mut StrObj;
+        let needle = sub as *mut StrObj;
+        let src_len = (*src).len; // bytes
+        let char_len = (*src).char_len as i64; // codepoints
+        let needle_len = (*needle).len; // bytes
+
+        // Adjust codepoint indices (CPython slice semantics).
+        let start_c: i64 = if start < 0 {
+            (start + char_len).max(0)
+        } else {
+            start
+        };
+        let end_c: i64 = if end < 0 {
+            (end + char_len).max(0)
+        } else {
+            end.min(char_len)
+        };
+
+        // Empty needle: a zero-length match exists at `start` (forward) / `end`
+        // (backward), provided `start <= end <= len`.
+        if needle_len == 0 {
+            if start_c > end_c || start_c > char_len {
+                return -1;
             }
-            r
+            return if backward { end_c } else { start_c };
         }
-        _ => unreachable!("invalid search op_tag: {op_tag}"),
-    };
-    result
+
+        // Full-range fast path (BMH) when the bounds cover the whole string.
+        if start_c == 0 && end_c >= char_len {
+            return if backward {
+                rt_str_rfind(str_obj, sub)
+            } else {
+                rt_str_find(str_obj, sub)
+            };
+        }
+        if start_c > end_c {
+            return -1;
+        }
+
+        // Bounded byte scan within [start_byte, end_byte).
+        let src_bytes = std::slice::from_raw_parts((*src).data.as_ptr(), src_len);
+        let start_byte = char_offset_to_byte_offset(src_bytes, start_c as usize);
+        let end_byte = char_offset_to_byte_offset(src_bytes, end_c as usize);
+        if start_byte + needle_len > end_byte {
+            return -1;
+        }
+        let needle_bytes = std::slice::from_raw_parts((*needle).data.as_ptr(), needle_len);
+        let found_byte: Option<usize> = if backward {
+            let mut i = end_byte - needle_len;
+            loop {
+                if &src_bytes[i..i + needle_len] == needle_bytes {
+                    break Some(i);
+                }
+                if i == start_byte {
+                    break None;
+                }
+                i -= 1;
+            }
+        } else {
+            let mut i = start_byte;
+            let mut res = None;
+            while i + needle_len <= end_byte {
+                if &src_bytes[i..i + needle_len] == needle_bytes {
+                    res = Some(i);
+                    break;
+                }
+                i += 1;
+            }
+            res
+        };
+        match found_byte {
+            // Proven ASCII haystack: byte offset IS the character offset.
+            Some(b) if char_len == src_len as i64 => b as i64,
+            Some(b) => byte_offset_to_char_offset(src_bytes, b) as i64,
+            None => -1,
+        }
+    }
+}
+
+/// Generic string search with operation tag and codepoint `start`/`end` bounds.
+/// op_tag: 0=find, 1=rfind, 2=index, 3=rindex (index/rindex raise on a miss).
+pub fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, start: i64, end: i64, op_tag: u8) -> i64 {
+    let backward = op_tag == 1 || op_tag == 3;
+    let raises = op_tag == 2 || op_tag == 3;
+    let r = str_search_bounded(str_obj, sub, start, end, backward);
+    if r < 0 && raises {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "substring not found"
+            );
+        }
+    }
+    r
 }
 #[export_name = "rt_str_search"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_str_search_abi(str_obj: Value, sub: Value, op_tag: u8) -> i64 {
-    rt_str_search(str_obj.unwrap_ptr(), sub.unwrap_ptr(), op_tag)
+pub extern "C" fn rt_str_search_abi(
+    str_obj: Value,
+    sub: Value,
+    start: i64,
+    end: i64,
+    op_tag: u8,
+) -> i64 {
+    rt_str_search(str_obj.unwrap_ptr(), sub.unwrap_ptr(), start, end, op_tag)
 }

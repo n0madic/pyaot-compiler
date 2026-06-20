@@ -18,7 +18,7 @@ mod trim;
 // Re-export all public functions
 pub use align::{rt_str_center, rt_str_ljust, rt_str_rjust, rt_str_zfill};
 pub use case::{rt_str_capitalize, rt_str_lower, rt_str_swapcase, rt_str_title, rt_str_upper};
-pub(crate) use core::{count_codepoints, str_alloc_size};
+pub(crate) use core::{classify_encoding, count_codepoints, str_alloc_size, Encoding};
 pub use core::{
     rt_make_str, rt_make_str_impl, rt_str_concat, rt_str_data, rt_str_encode, rt_str_len,
     rt_str_len_int,
@@ -213,19 +213,35 @@ mod char_len_tests {
         unsafe {
             let u = mk(UNI);
             assert_str(
-                rt_str_replace(u, mk("x"), mk("XY")),
+                rt_str_replace(u, mk("x"), mk("XY"), -1),
                 "приветXY😀y",
                 "replace",
             );
             assert_str(
-                rt_str_replace(mk("ab"), mk(""), mk("X")),
+                rt_str_replace(mk("ab"), mk(""), mk("X"), -1),
                 "XaXbX",
                 "replace empty old",
             );
             assert_str(
-                rt_str_replace(mk("aбa"), mk("a"), mk("ю")),
+                rt_str_replace(mk("aбa"), mk("a"), mk("ю"), -1),
                 "юбю",
                 "replace uni new",
+            );
+            // §9 `count` cap: replace at most N occurrences.
+            assert_str(
+                rt_str_replace(mk("aaaa"), mk("a"), mk("b"), 2),
+                "bbaa",
+                "replace count=2",
+            );
+            assert_str(
+                rt_str_replace(mk("abc"), mk(""), mk("X"), 2),
+                "XaXbc",
+                "replace empty old count=2",
+            );
+            assert_str(
+                rt_str_replace(mk("aaaa"), mk("a"), mk("b"), 0),
+                "aaaa",
+                "replace count=0",
             );
 
             assert_str(rt_str_removeprefix(u, mk("при")), "ветx😀y", "removeprefix");
@@ -256,6 +272,49 @@ mod char_len_tests {
             assert_eq!(rt_str_count(u, mk("")), 10, "count empty");
             assert_eq!(rt_str_count(u, mk("п")), 1, "count п");
             assert_eq!(rt_str_count(mk("aaaa"), mk("aa")), 2, "count overlap");
+        }
+    }
+
+    #[test]
+    fn test_search_bounds() {
+        // §9 — rt_str_search(s, sub, start, end, op_tag). op_tag 0=find, 1=rfind.
+        let _guard = lock_and_init();
+        unsafe {
+            let s = mk("abcabcabc");
+            assert_eq!(rt_str_search(s, mk("bc"), 2, i64::MAX, 0), 4, "find start=2");
+            assert_eq!(rt_str_search(s, mk("bc"), 2, 4, 0), -1, "find [2,4)");
+            assert_eq!(rt_str_search(s, mk("abc"), -3, i64::MAX, 0), 6, "find neg start");
+            assert_eq!(rt_str_search(s, mk("bc"), 0, 4, 1), 1, "rfind [0,4)");
+            assert_eq!(rt_str_search(s, mk("bc"), 0, i64::MAX, 1), 7, "rfind full");
+            assert_eq!(rt_str_search(s, mk("zz"), 0, i64::MAX, 0), -1, "find miss");
+            // Codepoint bounds on a multi-byte string ("café"): absolute index.
+            let cafe = mk("café");
+            assert_eq!(rt_str_search(cafe, mk("é"), 2, i64::MAX, 0), 3, "find é codepoint");
+            assert_eq!(rt_str_search(cafe, mk("f"), 0, 2, 0), -1, "find f [0,2)");
+            assert_eq!(rt_str_search(cafe, mk("f"), 0, 3, 0), 2, "find f [0,3)");
+        }
+    }
+
+    #[test]
+    fn test_unicode_predicates() {
+        // §9 — codepoint-aware predicates (the agreeing Rust/CPython set).
+        let _guard = lock_and_init();
+        unsafe {
+            assert_eq!(rt_str_isalpha(mk("café")), 1, "café isalpha");
+            assert_eq!(rt_str_isalpha(mk("café!")), 0, "café! isalpha");
+            assert_eq!(rt_str_isalpha(mk("Привет")), 1, "cyrillic isalpha");
+            assert_eq!(rt_str_isupper(mk("ÜBER")), 1, "ÜBER isupper");
+            assert_eq!(rt_str_isupper(mk("Über")), 0, "Über isupper");
+            assert_eq!(rt_str_islower(mk("über")), 1, "über islower");
+            assert_eq!(rt_str_isalnum(mk("café123")), 1, "café123 isalnum");
+            assert_eq!(rt_str_isdigit(mk("123")), 1, "123 isdigit");
+            assert_eq!(rt_str_isdigit(mk("12a")), 0, "12a isdigit");
+            assert_eq!(rt_str_isspace(mk("\u{a0}")), 1, "NBSP isspace");
+            assert_eq!(rt_str_isspace(mk("")), 0, "empty isspace");
+            // ASCII regression: unchanged from the old per-byte behavior.
+            assert_eq!(rt_str_isalpha(mk("abc")), 1, "abc isalpha");
+            assert_eq!(rt_str_isupper(mk("ABC")), 1, "ABC isupper");
+            assert_eq!(rt_str_islower(mk("abc")), 1, "abc islower");
         }
     }
 

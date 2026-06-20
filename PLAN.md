@@ -14,12 +14,15 @@ onto the differential gate** (`test_classes`, `test_collections`,
 all diff clean vs CPython in debug + release). The closures (§3, §5, §7, §10–§12,
 §14) are recorded in git history + auto-memory and removed from the backlog.
 
-What remains is **deferred precision**, not breadth: a few documented method
-scope-limits that **block no corpus file** (every one is on the safe Tagged
-baseline today). None of them widen the "Out of scope" list. (The numeric-tower
-int→float seams — §8 — are now closed: every `float` slot, including parameters,
-globals, and fields, coerces an int/bool/gradual value through the checked
-`rt_unbox_float` path. See git history + auto-memory.)
+What remains is **deferred precision**, not breadth, and it **blocks no corpus
+file** (every item is on the safe Tagged baseline today). None of it widens the
+"Out of scope" list. (Two recent closures: the numeric-tower int→float seams —
+§8 — coerce every `float` slot, including parameters, globals, and fields,
+through the checked `rt_unbox_float` path; and the §9 builtin-method scope-limits
+— `replace` `count`, `find`/`index` `start`/`end`, encoding-honoring
+`encode`/`decode` with the Unicode error hierarchy, `dict.fromkeys` class form,
+in-place `&=`/`-=`/`^=` — are closed with differential parity, corpus p49–p51.
+See git history + auto-memory.)
 
 `test_stdlib_urllib.py` is **not** a feature gap — it exercises the live
 `urlopen`/`urlretrieve` network paths and runs (self-checking) only under
@@ -129,12 +132,17 @@ lives in git history + auto-memory). **None of these block a corpus file** — t
 are deferred precision/seam notes, all safe on the Tagged baseline today. Section
 numbers are kept stable so the PITFALLS notes still reference them.
 
-### 9. Methods on builtin types — documented scope limits
-Shipped str/bytes batches carry deliberate scope limits (unprobed, not blocking):
-predicates are ASCII-only, `replace` has no `count`, `find`/`index` take no
-`start`/`end`, `encode`/`decode` ignore the encoding. The class form
-`dict.fromkeys(...)` stays out of scope (the instance form is done). Augmented
-container ops other than `|=` (`&=`/`-=`/`^=`) stay the rebind desugar (untested).
+### 9. Methods on builtin types — closed (narrower residuals only)
+The shipped scope-limits are **closed** with differential parity (corpus
+p49–p51): `replace` `count`, `find`/`index`/`rfind`/`rindex` `start`/`end`
+(codepoint bounds, raw i64 slots), encoding-honoring `encode`/`decode`
+(utf-8/ascii/latin-1 + the `Unicode{,En,De}codeError`/`LookupError` hierarchy),
+the `dict.fromkeys(...)` class form, and in-place `&=`/`-=`/`^=` for sets. The
+only residuals left (all safe, none blocking): str predicates use Rust
+`char::is_*`, so `isdigit` diverges from CPython on obscure Numeric_Type
+codepoints (`½`, `Ⅷ`, superscripts) that need Unicode data the std lacks;
+`encode`/`decode` ignore the `errors=` argument and recognize only
+utf-8/ascii/latin-1 (other codecs raise `LookupError`).
 
 ### 1. Calls & arguments — residual
 - **Heap-arg seam** (`list`/`str` param of a genuinely-`Dyn` callee) keeps the

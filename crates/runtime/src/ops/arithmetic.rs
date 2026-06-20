@@ -574,6 +574,67 @@ pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_ior(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
+/// In-place bitwise-and `a &= b`. For a `set` receiver this mutates `a` in place
+/// (`set.__iand__`) and returns the SAME object, so the compiler's `a = a & b`
+/// augmented-assignment rebind is a no-op and aliases observe the mutation.
+/// Every other operand (numeric, bignum, or a `TypeError`) delegates to the
+/// new-object `rt_obj_bitand`. (`dict` has no `&`, so it falls through to the
+/// numeric path → `TypeError`, matching CPython.)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_iand(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
+            crate::set::rt_set_intersection_update(a, b);
+            return a;
+        }
+        rt_obj_bitand(a, b)
+    }
+}
+#[export_name = "rt_obj_iand"]
+pub extern "C" fn rt_obj_iand_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_iand(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// In-place subtract `a -= b`. For a `set` receiver this mutates `a` in place
+/// (`set.__isub__`) and returns the SAME object. Every other operand (numeric,
+/// bignum, sequence, or a `TypeError`) delegates to the new-object `rt_obj_sub`,
+/// so `int -= int` keeps its existing semantics.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_isub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
+            crate::set::rt_set_difference_update(a, b);
+            return a;
+        }
+        rt_obj_sub(a, b)
+    }
+}
+#[export_name = "rt_obj_isub"]
+pub extern "C" fn rt_obj_isub_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_isub(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// In-place bitwise-xor `a ^= b`. For a `set` receiver this mutates `a` in place
+/// (`set.__ixor__`) and returns the SAME object. Every other operand (numeric,
+/// bignum, or a `TypeError`) delegates to the new-object `rt_obj_bitxor`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_ixor(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
+            crate::set::rt_set_symmetric_difference_update(a, b);
+            return a;
+        }
+        rt_obj_bitxor(a, b)
+    }
+}
+#[export_name = "rt_obj_ixor"]
+pub extern "C" fn rt_obj_ixor_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_ixor(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 // ==================== Unary obj operations (Union dispatch) ====================
 //
 // Generic unary helpers for Union-typed operands. The lowering routes

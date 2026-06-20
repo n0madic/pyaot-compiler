@@ -315,6 +315,25 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
                 parent_class_id: pyaot_core_defs::BuiltinExceptionKind::NameError.tag(),
                 field_count: 0,
             };
+
+        // §9 encode/decode error hierarchy (the loop defaulted these to
+        // Exception). LookupError stays under Exception (correct); UnicodeError ⊂
+        // ValueError; Unicode{En,De}codeError ⊂ UnicodeError. This MRO is what
+        // makes `except ValueError:` catch a `UnicodeEncodeError`, matching
+        // CPython.
+        registry[pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag() as usize] = ClassInfo {
+            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            field_count: 0,
+        };
+        for &tag in &[
+            pyaot_core_defs::BuiltinExceptionKind::UnicodeEncodeError.tag(),
+            pyaot_core_defs::BuiltinExceptionKind::UnicodeDecodeError.tag(),
+        ] {
+            registry[tag as usize] = ClassInfo {
+                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag(),
+                field_count: 0,
+            };
+        }
     });
 }
 

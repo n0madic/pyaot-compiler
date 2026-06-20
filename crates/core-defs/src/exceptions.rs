@@ -199,6 +199,15 @@ define_exceptions! {
     // runtime class registry (`rt_init_builtin_exception_classes`). Raised by the
     // `del name` unbound read-guard (`rt_check_bound`).
     UnboundLocalError = 29 => "UnboundLocalError",
+    // §9 — encode/decode error hierarchy. Parents are wired into the runtime
+    // class registry (`rt_init_builtin_exception_classes`): `LookupError ⊂
+    // Exception` (raised for an unknown encoding name); `UnicodeError ⊂
+    // ValueError`; `Unicode{En,De}codeError ⊂ UnicodeError` (raised when bytes /
+    // codepoints fall outside the target codec).
+    LookupError = 30 => "LookupError",
+    UnicodeError = 31 => "UnicodeError",
+    UnicodeEncodeError = 32 => "UnicodeEncodeError",
+    UnicodeDecodeError = 33 => "UnicodeDecodeError",
 }
 
 #[cfg(test)]

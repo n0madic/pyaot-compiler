@@ -552,11 +552,15 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
         BinOp::Mod => lv.modulo(rv),
         BinOp::FloorDiv => lv.floordiv(rv),
         // True `/` is float; `**` and bitwise/shift are bignum-possible; `@` is a
-        // class dunder and `|=` (`IOr`) an in-place container merge (never a
-        // raw-int interval).
+        // class dunder and the in-place container ops `|=`/`&=`/`-=`/`^=`
+        // (`IOr`/`IAnd`/`ISub`/`IXor`) are set/dict mutations (never a raw-int
+        // interval — numeric `-=` etc. deoptimize to the Tagged baseline).
         BinOp::Div
         | BinOp::MatMul
         | BinOp::IOr
+        | BinOp::IAnd
+        | BinOp::ISub
+        | BinOp::IXor
         | BinOp::Pow
         | BinOp::BitAnd
         | BinOp::BitOr
