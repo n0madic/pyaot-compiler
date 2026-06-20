@@ -33,6 +33,28 @@ cargo build -p pyaot-runtime                      # build the runtime staticlib
 cargo build --workspace                           # everything
 ```
 
+## Usage
+
+```bash
+pyaot script.py                 # → ./script (output defaults to the input stem)
+pyaot script.py -o build/app    # explicit output path
+pyaot script.py --run           # compile, then run it (propagates the exit code)
+```
+
+Common flags (`pyaot --help` for the full list):
+
+| Flag | Effect |
+|---|---|
+| `-o, --output <PATH>` | Output executable. Defaults to the input path with its extension stripped (`foo.py` → `foo`). |
+| `--run` | Run the compiled executable after a successful link, propagating its exit code. |
+| `-O, --optimize` | Enable optimizations (alias for `--opt-level speed`). |
+| `--opt-level <none\|speed\|speed-and-size>` | Optimization level. `speed` is the default; `none` is fully conservative. |
+| `--debug` | Keep debug symbols / DWARF; also defaults `--opt-level` to `none` unless one is given explicitly. |
+| `--module-path <DIR>` | Extra import search directory (repeatable); tried after the entry script's own directory. |
+| `--emit-hir` / `--emit-types` / `--emit-mir` | Dump the resolved HIR / typed HIR / verified MIR to stdout and exit (no codegen). |
+| `-v, --verbose` | Print each pipeline stage to stderr. |
+| `--runtime-lib <PATH>` | Path to `libpyaot_runtime.a` (overrides auto-detection). |
+
 ## Slim runtime (binary size)
 
 The runtime's stdlib surface is feature-gated. The default build enables

@@ -57,7 +57,8 @@ impl ModuleSource for DirModuleSource {
 struct Cli {
     /// Input `.py` source file.
     input: PathBuf,
-    /// Output executable path. Optional when `--emit-mir` is given.
+    /// Output executable path. Defaults to the input path with its extension
+    /// stripped (`foo.py` → `foo`).
     #[arg(short = 'o', long = "output")]
     output: Option<PathBuf>,
     /// Path to `libpyaot_runtime.a` (overrides auto-detection).
@@ -228,12 +229,13 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     }
 
     // ── codegen → object → link. ──
-    let output = cli.output.as_ref().ok_or_else(|| {
-        CompilerError::codegen_error(
-            "an output path (-o) is required unless --emit-mir is set",
-            None,
-        )
-    })?;
+    // Default the output to the input path with its extension stripped
+    // (`foo.py` → `foo`) when `-o` is omitted.
+    let output = cli.output.clone().unwrap_or_else(|| {
+        let mut path = cli.input.clone();
+        path.set_extension("");
+        path
+    });
     let object_path = output.with_extension("o");
     let codegen_opts = CodegenOptions {
         opt_level: match opt_level {
@@ -249,7 +251,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     step("Linking");
     let runtime_lib = locate_runtime_lib(cli)?;
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
-    linker.link(&object_path, output, &[])?;
+    linker.link(&object_path, &output, &[])?;
     step("Done");
 
     // ── --run: execute the freshly linked binary, propagating its exit code. ──
@@ -257,7 +259,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         if cli.verbose {
             eprintln!("pyaot: Running: {}", output.display());
         }
-        let status = std::process::Command::new(output)
+        let status = std::process::Command::new(&output)
             .status()
             .map_err(|e| {
                 CompilerError::link_error(format!(

@@ -61,3 +61,15 @@ cargo check --workspace --exclude pyaot-runtime   # fast front-half check
 cargo build -p pyaot-runtime                       # runtime staticlib
 cargo build --workspace                            # full
 ```
+
+## Running examples quickly
+
+`--run` compiles and immediately executes, propagating the exit code; `-o` is
+optional (defaults to the input stem). Build the runtime staticlib once first
+(`cargo build -p pyaot-runtime`) so the linker finds it.
+
+```bash
+cargo run -p pyaot-cli -- corpus/microgpt.py --run   # compile + run in one step
+# or with the built binary:
+target/debug/pyaot corpus/microgpt.py --run -v       # -v prints each stage
+```
