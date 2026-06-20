@@ -917,4 +917,237 @@ def _rv_gen_chain() -> None:
 _rv_gen_send_none()
 _rv_gen_chain()
 
+
+# =============================================================================
+# Folded from p6_generators.py (generator functions, yield, yield from,
+# next()/list()/sum() drives, multi-arg parameterized generators)
+# Generator defs are hoisted to module level (nested generator defs inside a
+# function trigger a frontend closure-conversion panic in this subset).
+# =============================================================================
+
+# a simple counting generator driven by a for-loop
+def _fg_count_up(n):
+    i = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+
+# a generator transforming an input iterable
+def _fg_squares(xs):
+    for v in xs:
+        yield v * v
+
+
+# a generator with multiple distinct yield points
+def _fg_three():
+    yield "a"
+    yield "b"
+    yield "c"
+
+
+# yield from delegates to a sub-iterable (and to a generator over an iterable)
+def _fg_chained():
+    yield 0
+    yield from [1, 2, 3]
+    yield from _fg_squares([2, 3])
+    yield 99
+
+
+# materializing a generator with list()
+def _fg_evens(limit):
+    i = 0
+    while i < limit:
+        if i % 2 == 0:
+            yield i
+        i = i + 1
+
+
+# next() drives a generator explicitly
+def _fg_naturals():
+    i = 1
+    while True:
+        yield i
+        i = i + 1
+
+
+# sum over a generator
+def _fg_first_n(n):
+    i = 0
+    while i < n:
+        yield i + 1
+        i = i + 1
+
+
+# a generator parameterized by several args
+def _fg_ramp(start, stop, step):
+    cur = start
+    while cur < stop:
+        yield cur
+        cur = cur + step
+
+
+def _fold_p6_generators() -> None:
+    counted: list[int] = []
+    for x in _fg_count_up(5):
+        counted.append(x)
+    assert counted == [0, 1, 2, 3, 4], "count_up(5)"
+
+    sq: list[int] = []
+    for s in _fg_squares([1, 2, 3, 4]):
+        sq.append(s)
+    assert sq == [1, 4, 9, 16], "squares of 1..4"
+
+    letters: list[str] = []
+    for t in _fg_three():
+        letters.append(t)
+    assert letters == ["a", "b", "c"], "three distinct yields"
+
+    chain_out: list[int] = []
+    for v in _fg_chained():
+        chain_out.append(v)
+    assert chain_out == [0, 1, 2, 3, 4, 9, 99], "yield from list + generator"
+
+    assert list(_fg_evens(10)) == [0, 2, 4, 6, 8], "list(evens(10))"
+
+    nat = _fg_naturals()
+    n1: int = next(nat)
+    n2: int = next(nat)
+    n3: int = next(nat)
+    assert n1 == 1, "naturals next 1"
+    assert n2 == 2, "naturals next 2"
+    assert n3 == 3, "naturals next 3"
+
+    assert sum(_fg_first_n(5)) == 15, "sum(first_n(5))"
+
+    ramp_out: list[int] = []
+    for v in _fg_ramp(0, 10, 3):
+        ramp_out.append(v)
+    assert ramp_out == [0, 3, 6, 9], "ramp(0, 10, 3)"
+
+    print("_fold_p6_generators passed")
+
+
+_fold_p6_generators()
+
+
+# =============================================================================
+# Folded from p6_send_close.py (gen.send / gen.close, bare yield coroutines).
+# The originals printed running state from inside the generator; here each
+# generator yields its accumulated state list so the driver can assert it.
+# =============================================================================
+
+# a coroutine-style generator receiving values via send()
+def _fg_accumulator():
+    total = 0
+    totals: list[int] = []
+    while True:
+        x = yield totals
+        total = total + x
+        totals.append(total)
+
+
+# send() that both receives and the body reacts (echo each value twice)
+def _fg_echo_twice():
+    log: list[str] = []
+    while True:
+        x = yield log
+        log.append("once " + x)
+        log.append("twice " + x)
+
+
+# close() ends a generator early
+def _fg_ticking():
+    n = 0
+    while True:
+        n = n + 1
+        yield n
+
+
+def _fold_p6_send_close() -> None:
+    acc = _fg_accumulator()
+    next(acc)  # prime to the first yield
+    acc.send(10)
+    acc.send(5)
+    seen = acc.send(100)
+    assert seen == [10, 15, 115], "accumulator running totals"
+    acc.close()
+
+    e = _fg_echo_twice()
+    next(e)
+    e.send("hi")
+    echoed = e.send("yo")
+    assert echoed == [
+        "once hi",
+        "twice hi",
+        "once yo",
+        "twice yo",
+    ], "echo_twice log"
+    e.close()
+
+    t = _fg_ticking()
+    tick1: int = next(t)
+    tick2: int = next(t)
+    assert tick1 == 1, "ticking first"
+    assert tick2 == 2, "ticking second"
+    t.close()
+
+    print("_fold_p6_send_close passed")
+
+
+_fold_p6_send_close()
+
+
+# =============================================================================
+# Folded from p6_genexpr.py (generator expressions: filter, nested, over a
+# string, sum/list/next drives)
+# =============================================================================
+
+def _fold_p6_genexpr() -> None:
+    xs = [1, 2, 3, 4, 5]
+
+    # a basic generator expression consumed by a for-loop
+    doubled: list[int] = []
+    for v in (x * 2 for x in xs):
+        doubled.append(v)
+    assert doubled == [2, 4, 6, 8, 10], "x * 2 genexpr"
+
+    # genexpr materialized with list()
+    assert list(n * n for n in xs) == [1, 4, 9, 16, 25], "list(n * n genexpr)"
+
+    # genexpr with a filter
+    assert list(x for x in xs if x % 2 == 1) == [1, 3, 5], "odd filter genexpr"
+
+    # sum over a genexpr
+    assert sum(x for x in range(10)) == 45, "sum over genexpr"
+
+    # a nested genexpr (inner clause over a literal)
+    pairs = ((a, b) for a in [1, 2] for b in [10, 20])
+    pair_out: list[tuple[int, int]] = []
+    for p in pairs:
+        pair_out.append(p)
+    assert pair_out == [
+        (1, 10),
+        (1, 20),
+        (2, 10),
+        (2, 20),
+    ], "nested genexpr pairs"
+
+    # genexpr over a string
+    assert list(c for c in "abc") == ["a", "b", "c"], "genexpr over string"
+
+    # a genexpr driven by next()
+    g = (i + 1 for i in range(3))
+    e1: int = next(g)
+    e2: int = next(g)
+    e3: int = next(g)
+    assert e1 == 1, "genexpr next 1"
+    assert e2 == 2, "genexpr next 2"
+    assert e3 == 3, "genexpr next 3"
+
+    print("_fold_p6_genexpr passed")
+
+
+_fold_p6_genexpr()
+
 print("All generator tests passed!")

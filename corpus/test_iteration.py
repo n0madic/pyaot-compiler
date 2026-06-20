@@ -1528,4 +1528,992 @@ assert _wpa_chained_probs[0].v >= 0, "softmax(linear(x))[0].v compile-type chain
 
 print("WPA call-site param-type rerun tests passed!")
 
+# ============================================================================
+# FOLDED SOURCES — point-test files folded in (asserts replace prints).
+# Each source body is isolated in a `def _fold_<source>():` and called.
+# ============================================================================
+
+
+# ===== FOLD: p4_for_iter (for over every container kind, for-else/break/continue) =====
+def _fold_p4_for_iter() -> None:
+    # Iterate every container kind.
+    list_seen: list[int] = []
+    for x in [1, 2, 3]:
+        list_seen.append(x)
+    assert list_seen == [1, 2, 3]
+
+    str_seen: list[str] = []
+    for c in "abc":
+        str_seen.append(c)
+    assert str_seen == ["a", "b", "c"]
+
+    tup_seen: list[int] = []
+    for v in (10, 20, 30):
+        tup_seen.append(v)
+    assert tup_seen == [10, 20, 30]
+
+    dict_keys: list[str] = []
+    for k in {"a": 1, "b": 2}:
+        dict_keys.append(k)
+    assert dict_keys == ["a", "b"]
+
+    # A single-valued set.
+    seen = 0
+    for e in {7}:
+        seen = seen + e
+    assert seen == 7
+
+    # bytes iterate to ints.
+    btotal = 0
+    for byte in b"ABC":
+        btotal = btotal + byte
+    assert btotal == 198
+
+    # Accumulate over a list.
+    total = 0
+    for n in [5, 10, 15, 20]:
+        total = total + n
+    assert total == 50
+
+    # Nested loops over a nested list.
+    grid = [[1, 2, 3], [4, 5, 6]]
+    grid_sums: list[int] = []
+    for row in grid:
+        rowsum = 0
+        for cell in row:
+            rowsum = rowsum + cell
+        grid_sums.append(rowsum)
+    assert grid_sums == [6, 15]
+
+    # for-else: runs the else on normal completion.
+    else_log: list[int] = []
+    for i in [1, 2, 3]:
+        else_log.append(i)
+    else:
+        else_log.append(-1)  # marker for "complete"
+    assert else_log == [1, 2, 3, -1]
+
+    # break skips the else.
+    break_log: list[int] = []
+    for j in [1, 2, 3, 4, 5]:
+        if j == 3:
+            break
+        break_log.append(j)
+    else:
+        break_log.append(-1)  # must NOT run
+    assert break_log == [1, 2]
+
+    # continue.
+    continue_log: list[int] = []
+    for m in [1, 2, 3, 4]:
+        if m % 2 == 0:
+            continue
+        continue_log.append(m)
+    assert continue_log == [1, 3]
+
+    # range fast path still compiles and runs.
+    acc = 0
+    for r in range(1, 6):
+        acc = acc + r
+    assert acc == 15
+
+    # Iterate a variable that holds a list.
+    data = [100, 200]
+    data_seen: list[int] = []
+    for dd in data:
+        data_seen.append(dd)
+    assert data_seen == [100, 200]
+
+    # Membership inside a loop.
+    allowed = [2, 4, 6]
+    member_seen: list[int] = []
+    for q in [1, 2, 3, 4]:
+        if q in allowed:
+            member_seen.append(q)
+    assert member_seen == [2, 4]
+
+
+_fold_p4_for_iter()
+
+
+# ===== FOLD: p4_unpack (tuple unpacking in assignment and for-loop targets) =====
+def _fold_p4_unpack() -> None:
+    # Literal-sequence unpacking.
+    a, b = 1, 2
+    assert a == 1
+    assert b == 2
+
+    # Swap (all RHS staged before binding).
+    a, b = b, a
+    assert a == 2
+    assert b == 1
+
+    # Unpack from a tuple value.
+    point = (3, 4)
+    x, y = point
+    assert x == 3
+    assert y == 4
+
+    # Unpack from a list value.
+    first, second, third = [10, 20, 30]
+    assert first == 10
+    assert second == 20
+    assert third == 30
+
+    # Unpack in a for-loop over a list of pairs.
+    pair_log: list[str] = []
+    pairs = [(1, "one"), (2, "two"), (3, "three")]
+    for num, word in pairs:
+        pair_log.append(str(num))
+        pair_log.append(word)
+    assert pair_log == ["1", "one", "2", "two", "3", "three"]
+
+    # Unpack three-element rows.
+    row_sums: list[int] = []
+    rows = [(1, 2, 3), (4, 5, 6)]
+    for p, q, r in rows:
+        row_sums.append(p + q + r)
+    assert row_sums == [6, 15]
+
+    # Iterate dict keys and index for the value.
+    table = {"a": 1, "b": 2}
+    kv_log: list[str] = []
+    for key in table:
+        kv_log.append(key)
+        kv_log.append(str(table[key]))
+    assert kv_log == ["a", "1", "b", "2"]
+
+    # Unpacking feeds further computation.
+    lo, hi = 2, 8
+    assert hi - lo == 6
+
+
+_fold_p4_unpack()
+
+
+# ===== FOLD: p4_comprehensions (list/dict/set comprehensions, nested for, filters) =====
+def _fold_p4_comprehensions() -> None:
+    # Simple list comprehension.
+    squares = [x * x for x in range(7)]
+    assert squares == [0, 1, 4, 9, 16, 25, 36]
+
+    # Filtered.
+    evens = [x for x in range(15) if x % 2 == 0]
+    assert evens == [0, 2, 4, 6, 8, 10, 12, 14]
+
+    # Multiple filters.
+    both = [x for x in range(30) if x % 2 == 0 if x % 3 == 0]
+    assert both == [0, 6, 12, 18, 24]
+
+    # Mapped from a list.
+    doubled = [n * 2 for n in [10, 20, 30]]
+    assert doubled == [20, 40, 60]
+
+    # Nested `for` clauses (cartesian product).
+    grid = [(i, j) for i in range(3) for j in range(2)]
+    assert grid == [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+
+    # Comprehension over a string.
+    chars = [c for c in "hello"]
+    assert chars == ["h", "e", "l", "l", "o"]
+
+    # Heap-element comprehension (a list of lists).
+    nested_rows = [[y for y in range(x)] for x in range(5)]
+    assert nested_rows == [[], [0], [0, 1], [0, 1, 2], [0, 1, 2, 3]]
+
+    # Comprehension with a function call in the element.
+    words = ["a", "bb", "ccc", "dddd"]
+    lengths = [len(w) for w in words]
+    assert lengths == [1, 2, 3, 4]
+
+    # Set comprehension (dedups).
+    mods = {x % 4 for x in range(20)}
+    assert len(mods) == 4
+    assert sorted(mods) == [0, 1, 2, 3]
+
+    # Dict comprehension.
+    table = {x: x * x for x in range(6)}
+    assert table == {0: 0, 1: 1, 2: 4, 3: 9, 4: 16, 5: 25}
+    assert table[4] == 16
+
+    # Dict comprehension with a filter.
+    big = {k: k * 10 for k in range(10) if k > 5}
+    assert big == {6: 60, 7: 70, 8: 80, 9: 90}
+
+    # Comprehension result fed into a reduce.
+    total = sum([x for x in range(10) if x % 2 == 1])
+    assert total == 25
+
+    # Comprehension over another comprehension's result.
+    base = [x + 1 for x in range(5)]
+    scaled = [b * 3 for b in base]
+    assert scaled == [3, 6, 9, 12, 15]
+
+    # Membership against a comprehension result.
+    allowed = [n * n for n in range(5)]
+    assert (9 in allowed) == True
+    assert (10 in allowed) == False
+
+
+_fold_p4_comprehensions()
+
+
+# ===== FOLD: p4_iter_builtins (enumerate/zip/sorted/reversed/min/max/sum/constructors) =====
+def _fold_p4_iter_builtins() -> None:
+    # enumerate.
+    enum_log: list[str] = []
+    for i, name in enumerate(["alpha", "beta", "gamma"]):
+        enum_log.append(str(i))
+        enum_log.append(name)
+    assert enum_log == ["0", "alpha", "1", "beta", "2", "gamma"]
+
+    # enumerate with a start.
+    enum_start_log: list[str] = []
+    for idx, ch in enumerate("xyz", 1):
+        enum_start_log.append(str(idx))
+        enum_start_log.append(ch)
+    assert enum_start_log == ["1", "x", "2", "y", "3", "z"]
+
+    # zip.
+    zip_log: list[str] = []
+    for a, b in zip([1, 2, 3], ["one", "two", "three"]):
+        zip_log.append(str(a))
+        zip_log.append(b)
+    assert zip_log == ["1", "one", "2", "two", "3", "three"]
+
+    # sorted over an int list and a str list.
+    assert sorted([5, 2, 8, 1, 9]) == [1, 2, 5, 8, 9]
+    assert sorted(["banana", "apple", "cherry"]) == ["apple", "banana", "cherry"]
+    assert sorted({3, 1, 2}) == [1, 2, 3]
+
+    # reversed.
+    assert list(reversed([1, 2, 3, 4])) == [4, 3, 2, 1]
+    rev_str: list[str] = []
+    for c in reversed("abc"):
+        rev_str.append(c)
+    assert rev_str == ["c", "b", "a"]
+
+    # min / max over int lists.
+    assert min([7, 3, 9, 1]) == 1
+    assert max([7, 3, 9, 1]) == 9
+
+    # min / max over str lists (value comparison, not pointer order).
+    assert min(["pear", "fig", "kiwi"]) == "fig"
+    assert max(["pear", "fig", "kiwi"]) == "pear"
+
+    # min / max with multiple positional args.
+    assert min(4, 9, 2, 7) == 2
+    assert max(4, 9, 2, 7) == 9
+
+    # sum over ints and floats.
+    assert sum([10, 20, 30]) == 60
+    assert sum([1.5, 2.5, 3.0]) == 7.0
+    assert sum(range(5)) == 10
+    assert sum([1, 2, 3], 100) == 106
+
+    # Constructors over iterables.
+    assert list(range(4)) == [0, 1, 2, 3]
+    assert list("abc") == ["a", "b", "c"]
+    assert tuple([9, 8, 7]) == (9, 8, 7)
+    # Set iteration order is implementation-defined, so compare via sorted/len.
+    assert sorted(set([1, 1, 2, 2, 3])) == [1, 2, 3]
+    assert len(set("mississippi")) == 4
+    assert dict([("x", 1), ("y", 2)]) == {"x": 1, "y": 2}
+    assert bytes([72, 73]) == b"HI"
+
+    # Builtins composed.
+    assert sorted([len(w) for w in ["aa", "b", "cccc", "ddd"]]) == [1, 2, 3, 4]
+    assert max([x * x for x in range(5)]) == 16
+    assert sum(sorted([3, 1, 2])) == 6
+    composed_pairs = list(zip([1, 2], [3, 4]))
+    assert composed_pairs == [(1, 3), (2, 4)]
+
+
+_fold_p4_iter_builtins()
+
+
+# ===== FOLD: p14_nested_unpack (nested destructuring a,(b,c)=...) =====
+class _FoldBox:
+    x: int
+    y: int
+
+    def __init__(self) -> None:
+        self.x = 0
+        self.y = 0
+
+
+def _fold_make_nested() -> "tuple[int, tuple[int, int]]":
+    return (1, (2, 3))
+
+
+def _fold_add3(p: int, q: int, r: int) -> int:
+    return p + q + r
+
+
+def _fold_p14_nested_unpack() -> None:
+    # ===== Assignment, literal RHS =====
+    a1, (b1, c1) = 1, (2, 3)
+    assert (a1, b1, c1) == (1, 2, 3)
+
+    # Deep nesting (3 levels).
+    x1, (y1, (z1, w1)) = 10, (20, (30, 40))
+    assert (x1, y1, z1, w1) == (10, 20, 30, 40)
+
+    # Multiple nested groups.
+    (m1, m2), (m3, m4) = (1, 2), (3, 4)
+    assert (m1, m2, m3, m4) == (1, 2, 3, 4)
+
+    # Mixed tuple/list.
+    g1, [h1, i1] = 1, [2, 3]
+    assert (g1, h1, i1) == (1, 2, 3)
+
+    # Single-element parenthesized target.
+    (p1,) = (9,)
+    assert p1 == 9
+
+    # ===== Assignment, runtime RHS (forces the subscript path) =====
+    pair: tuple[int, tuple[int, int]] = (1, (2, 3))
+    a2, (b2, c2) = pair
+    assert (a2, b2, c2) == (1, 2, 3)
+
+    # A call RHS likewise drives the subscript path.
+    a3, (b3, c3) = _fold_make_nested()
+    assert (a3, b3, c3) == (1, 2, 3)
+
+    # ===== Nested attribute / subscript leaves =====
+    box = _FoldBox()
+    slot: list[int] = [0, 0]
+    a4, (box.x, slot[0]) = 1, (2, 3)
+    assert (a4, box.x, slot[0]) == (1, 2, 3)
+
+    # ===== Nested + starred (assignment context only) =====
+    a5, (b5, c5) = 1, (2, 3)
+    assert (a5, b5, c5) == (1, 2, 3)
+
+    s1, (s2, *s3, s4) = 1, (2, 3, 4, 5)
+    assert s1 == 1
+    assert s2 == 2
+    assert s3 == [3, 4]
+    assert s4 == 5
+
+    t1, (*t2, t3) = 1, [2, 3, 4]
+    assert t1 == 1
+    assert t2 == [2, 3]
+    assert t3 == 4
+
+    # ===== For-loop nested target =====
+    for_log1: list[str] = []
+    for fa, (fb, fc) in [(1, (2, 3)), (4, (5, 6))]:
+        for_log1.append(str(fa) + str(fb) + str(fc))
+    assert for_log1 == ["123", "456"]
+
+    for_log2: list[str] = []
+    for fg, [fh, fi] in [(1, [2, 3]), (4, [5, 6])]:
+        for_log2.append(str(fg) + str(fh) + str(fi))
+    assert for_log2 == ["123", "456"]
+
+    # ===== Comprehensions with nested targets =====
+    lc = [a + b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))]]
+    assert lc == [6, 15]
+
+    dc = {a: b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))]}
+    assert dc == {1: 5, 4: 11}
+
+    sc = sorted({a + b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))]})
+    assert sc == [6, 15]
+
+    # Multi-clause: outer clause binds a row, inner clause unpacks nested tuples.
+    mc = [a + b for row in [[(1, (2, 3))], [(4, (5, 6))]] for a, (b, c) in row]
+    assert mc == [3, 9]
+
+    # ===== Generator expression with a nested target =====
+    gs = sum(a * b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))])
+    assert gs == 31  # (1*2+3) + (4*5+6)
+
+    # ===== Interaction probes =====
+    total = sum(x for x in [a + b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))]])
+    assert total == 21  # 6 + 15
+
+    # A triple built from a nested unpack, spread into a fixed-arity callee.
+    ia, (ib, ic) = 1, (2, 3)
+    triple = (ia, ib, ic)
+    assert _fold_add3(*triple) == 6
+
+
+_fold_p14_nested_unpack()
+
+
+# ===== FOLD: p22_loop_targets (attr/subscript for-targets, range step) =====
+class _FoldCell:
+    v: int
+
+    def __init__(self) -> None:
+        self.v = 0
+
+
+class _FoldAccumulator:
+    cur: int
+    total: int
+
+    def __init__(self) -> None:
+        self.cur = 0
+        self.total = 0
+
+    def run(self, xs: list[int]) -> int:
+        for self.cur in xs:
+            self.total = self.total + self.cur
+        return self.total
+
+
+def _fold_step_sum(start: int, stop: int, st: int) -> int:
+    acc2 = 0
+    for v in range(start, stop, st):
+        acc2 = acc2 + v
+    return acc2
+
+
+def _fold_p22_loop_targets() -> None:
+    # ===== Attribute as a `for`-target =====
+    c = _FoldCell()
+    for c.v in [10, 20, 30]:
+        pass
+    assert c.v == 30, "attribute for-target (list) keeps the last bound value"
+
+    # Attribute for-target over a range (general path: simple step, attr target).
+    for c.v in range(3):
+        pass
+    assert c.v == 2, "attribute for-target (range) keeps the last bound value"
+
+    # ===== Subscript as a `for`-target =====
+    a: list[int] = [0, 0, 0]
+    for a[0] in [1, 2, 3]:
+        pass
+    assert a[0] == 3, "subscript for-target keeps the last bound value"
+
+    # Dict-subscript for-target with a runtime key.
+    dctt: dict[str, int] = {"k": 0}
+    k = "k"
+    for dctt[k] in [7, 8, 9]:
+        pass
+    assert dctt[k] == 9, "dict-subscript for-target keeps the last bound value"
+
+    # ===== Non-literal / computed `range()` step (general path) =====
+    # Negative VARIABLE step (the §4 trap): must descend, NOT collapse to empty.
+    step = -1
+    descending: list[int] = []
+    for i in range(10, 0, step):
+        descending.append(i)
+    assert descending == [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], "negative variable step descends"
+    assert sum(range(10, 0, step)) == 55, "negative variable step: sum is 55, not 0 (§4 trap)"
+
+    # Computed positive step (a BinOp, not a literal → general path).
+    computed: list[int] = []
+    for i in range(0, 10, 1 + 1):
+        computed.append(i)
+    assert computed == [0, 2, 4, 6, 8], "computed positive step"
+
+    # `-(-1)` is a nested unary → general path; step is +1 so range(10,0,+1) is EMPTY.
+    empty_dir: list[int] = []
+    for i in range(10, 0, -(-1)):
+        empty_dir.append(i)
+    assert empty_dir == [], "range(10, 0, +1) is empty (ascending past stop)"
+    assert sum(range(10, 0, -(-1))) == 0, "genuinely-empty range sums to 0"
+
+    # Direction cases through the value form (regression-guard).
+    pos_var = 2
+    assert list(range(0, 5, pos_var)) == [0, 2, 4], "positive variable step ascends"
+    neg_var = -2
+    assert list(range(5, 0, neg_var)) == [5, 3, 1], "negative variable step descends"
+    empty_var = 3
+    assert list(range(0, 0, empty_var)) == [], "empty start==stop range"
+
+    # ===== `step == 0` → ValueError (runtime contract) =====
+    zero = 0
+    caught_loop = False
+    try:
+        for i in range(0, 5, zero):
+            pass
+    except ValueError as e:
+        caught_loop = True
+        assert "must not be zero" in str(e), "step==0 message"
+    assert caught_loop, "for-loop range(_, _, 0) raises ValueError"
+
+    # Value form: list(range(0, 5, 0)) raises at construction.
+    caught_value = False
+    try:
+        _ = list(range(0, 5, 0))
+    except ValueError as e:
+        caught_value = True
+        assert "must not be zero" in str(e), "step==0 value-form message"
+    assert caught_value, "list(range(0, 5, 0)) raises ValueError"
+
+    # ===== Interaction probes =====
+    acc = _FoldAccumulator()
+    assert acc.run([1, 2, 3, 4]) == 10, "attr for-target accumulates in a method"
+    assert acc.cur == 4, "attr for-target leaves the last element bound"
+    assert acc.run([5, 6]) == 21, "attr for-target accumulates (10 + 5 + 6)"
+
+    # Subscript for-target writing into a list, then reading back.
+    buf: list[int] = [0, 0]
+    idx = 1
+    for buf[idx] in [100, 200, 300]:
+        pass
+    assert buf == [0, 300], "subscript for-target writes the indexed slot only"
+
+    # Variable-step range inside a function.
+    assert _fold_step_sum(0, 10, 2) == 20, "variable-step range in a function (ascending)"
+    assert _fold_step_sum(10, 0, -2) == 30, "variable-step range in a function (descending)"
+
+    # Tuple-unpack target still works (no regression).
+    upairs: list[tuple[int, int]] = [(1, 10), (2, 20), (3, 30)]
+    unpack_sum = 0
+    for ka, vb in upairs:
+        unpack_sum = unpack_sum + ka + vb
+    assert unpack_sum == 66, "tuple-unpack for-target unaffected"
+
+
+_fold_p22_loop_targets()
+
+
+# ===== FOLD: p23_iter_isinstance (iter()/next() over kinds + isinstance containers) =====
+def _fold_p23_iter_isinstance() -> None:
+    # ===== (A) iter() / next() over each iterable kind =====
+    inums: list[int] = [10, 20, 30]
+    it = iter(inums)
+    assert next(it) == 10
+    assert next(it) == 20
+    assert next(it) == 30
+
+    # StopIteration on exhaustion.
+    caught = False
+    try:
+        next(it)
+    except StopIteration:
+        caught = True
+    assert caught, "exhausted list iterator raises StopIteration"
+
+    # Tuple.
+    ti = iter((1, 2))
+    assert next(ti) == 1
+    assert next(ti) == 2
+
+    # String.
+    si = iter("AB")
+    assert next(si) == "A"
+    assert next(si) == "B"
+
+    # Range.
+    ri = iter(range(3))
+    assert next(ri) == 0
+    assert next(ri) == 1
+    assert next(ri) == 2
+
+    # Dict (iterates keys, insertion order).
+    dd: dict[str, int] = {"a": 1, "b": 2}
+    di = iter(dd)
+    assert next(di) == "a"
+    assert next(di) == "b"
+
+    # iter() of a freshly-built list, then consume fully via a manual loop.
+    acc = 0
+    manual = iter([1, 2, 3, 4])
+    manual_done = False
+    while not manual_done:
+        try:
+            acc = acc + next(manual)
+        except StopIteration:
+            manual_done = True
+    assert acc == 10
+
+    # ===== (B) isinstance() against container builtins =====
+    li: list[int] = [1, 2, 3]
+    tu: tuple[int, int] = (1, 2)
+    ddt: dict[str, int] = {"x": 1}
+    ss: set[int] = {1, 2, 3}
+
+    assert isinstance(li, list)
+    assert isinstance(tu, tuple)
+    assert isinstance(ddt, dict)
+    assert isinstance(ss, set)
+
+    # Cross-kind: each value is NOT an instance of the other container kinds.
+    assert not isinstance(li, tuple)
+    assert not isinstance(li, dict)
+    assert not isinstance(li, set)
+    assert not isinstance(tu, list)
+    assert not isinstance(ddt, list)
+    assert not isinstance(ss, list)
+
+    # Container vs primitive and vice versa.
+    assert not isinstance(li, int)
+    assert not isinstance(42, list)
+    assert not isinstance("hi", tuple)
+
+    # Element types are irrelevant to isinstance.
+    words: list[str] = ["a", "b"]
+    assert isinstance(words, list)
+    mixed_tuple: tuple[int, str] = (1, "x")
+    assert isinstance(mixed_tuple, tuple)
+
+    # A `*rest` from a starred unpack is a list.
+    for _first, *rest in [(1, 2, 3), (10, 20, 30)]:
+        assert isinstance(rest, list)
+
+    # isinstance still works for the primitive builtins + bool ⊂ int.
+    assert isinstance(5, int)
+    assert isinstance(True, int)
+    assert isinstance(3.0, float)
+    assert isinstance("s", str)
+    assert isinstance(b"b", bytes)
+
+
+_fold_p23_iter_isinstance()
+
+
+# ===== FOLD: p24_reduce (functools.reduce) =====
+def _fold_reduce_add(a: int, b: int) -> int:
+    return a + b
+
+
+def _fold_append_doubled(acc: list[int], x: int) -> list[int]:
+    return acc + [x * 2]
+
+
+def _fold_fold_sum(xs: list[int]) -> int:
+    return reduce(lambda a, b: a + b, xs, 0)
+
+
+def _fold_p24_reduce() -> None:
+    # ===== Basic: sum / product over a list, no initial =====
+    assert reduce(lambda a, b: a + b, [1, 2, 3, 4, 5]) == 15
+    assert reduce(lambda a, b: a * b, [1, 2, 3, 4]) == 24
+
+    # ===== With an initial value =====
+    assert reduce(lambda a, b: a + b, [1, 2, 3, 4, 5], 100) == 115
+    assert reduce(lambda a, b: a + b, [], 42) == 42  # empty + initial → initial
+    assert reduce(lambda a, b: a + b, [7], 3) == 10  # single elem + initial → f(3, 7)
+    assert reduce(lambda a, b: a + b, [1, 2, 3], 100) == 106
+
+    # ===== Single element, no initial → returns the element =====
+    assert reduce(lambda a, b: a + b, [99]) == 99
+
+    # ===== Named function as the callable =====
+    assert reduce(_fold_reduce_add, [10, 20, 30]) == 60
+    assert reduce(_fold_reduce_add, [10, 20, 30], 5) == 65
+
+    # ===== Capturing lambda (free variable) =====
+    offset: int = 10
+    assert reduce(lambda a, b: a + b + offset, [1, 2, 3]) == (1 + 2 + offset) + 3 + offset
+    assert reduce(lambda a, b: a + b + offset, [1, 2, 3]) == 26
+
+    # ===== Over a range and over a tuple =====
+    assert reduce(lambda a, b: a + b, range(1, 5)) == 10  # 1+2+3+4
+    assert reduce(lambda a, b: a + b, (10, 20, 30)) == 60
+
+    # ===== String accumulator (heap-typed acc) =====
+    assert reduce(lambda a, b: a + b, ["a", "b", "c", "d"]) == "abcd"
+    assert reduce(lambda a, b: a + b, ["x", "y"], "init-") == "init-xy"
+
+    # ===== List accumulator built across iterations (heap acc, GC-rooted) =====
+    doubled = reduce(_fold_append_doubled, [1, 2, 3], [])
+    assert doubled == [2, 4, 6]
+
+    # ===== reduce() inside a function, over a parameter =====
+    assert _fold_fold_sum([1, 2, 3, 4]) == 10
+    assert _fold_fold_sum([]) == 0
+    assert _fold_fold_sum([5, 5, 5]) == 15
+
+    # ===== Empty iterable with no initial → TypeError =====
+    caught = False
+    try:
+        reduce(lambda a, b: a + b, [])
+    except TypeError as e:
+        caught = True
+        assert "empty" in str(e)
+    assert caught, "reduce() of empty iterable with no initial value must raise TypeError"
+
+    # ===== Left-fold order matters (subtraction is not commutative) =====
+    assert reduce(lambda a, b: a - b, [10, 1, 2, 3]) == 4  # (((10 - 1) - 2) - 3)
+
+
+_fold_p24_reduce()
+
+
+# ===== FOLD: p25_tuple_cmp_seq_concat (tuple ordering in min/max/sorted; seq concat) =====
+def _fold_cat(a, b):
+    return a + b
+
+
+def _fold_p25_tuple_cmp_seq_concat() -> None:
+    # ===== (A) min/max over tuple-yielding gen-exprs =====
+    assert max((v, i) for i, v in enumerate([3, 1, 4, 1, 5])) == (5, 4)
+    assert min((v, i) for i, v in enumerate([3, 1, 4, 1, 5])) == (1, 1)
+
+    # Tie-breaking: strict </> keeps the first-seen best on tie.
+    assert min((v, i) for i, v in enumerate([3, 1, 1, 4])) == (1, 1)
+    assert max((v, i) for i, v in enumerate([4, 1, 4, 1])) == (4, 2)
+
+    # 3-tuple lexicographic compare.
+    _data = [(1, 2, 3), (1, 2, 4), (1, 1, 9)]
+    assert min((a, b, c) for a, b, c in _data) == (1, 1, 9)
+    assert max((a, b, c) for a, b, c in _data) == (1, 2, 4)
+    assert min(_data) == (1, 1, 9)
+    assert max(_data) == (1, 2, 4)
+
+    # ===== min/max over a direct list of tuples =====
+    pairs: list[tuple[int, str]] = [(2, "b"), (1, "z"), (1, "a")]
+    assert min(pairs) == (1, "a")
+    assert max(pairs) == (2, "b")
+
+    # ===== sorted() over a list of tuples (lexicographic) =====
+    unsorted: list[tuple[int, int]] = [(3, 1), (1, 2), (1, 1), (2, 5)]
+    assert sorted(unsorted) == [(1, 1), (1, 2), (2, 5), (3, 1)]
+    assert sorted(unsorted, reverse=True) == [(3, 1), (2, 5), (1, 2), (1, 1)]
+
+    # Mixed-type tuple elements (int then str) sort lexicographically.
+    mixed: list[tuple[int, str]] = [(2, "x"), (1, "b"), (1, "a")]
+    assert sorted(mixed) == [(1, "a"), (1, "b"), (2, "x")]
+
+    # ===== Nested tuples order recursively =====
+    nested: list[tuple[int, tuple[int, int]]] = [(1, (2, 3)), (1, (1, 9)), (0, (9, 9))]
+    assert sorted(nested) == [(0, (9, 9)), (1, (1, 9)), (1, (2, 3))]
+    assert min(nested) == (0, (9, 9))
+    assert max(nested) == (1, (2, 3))
+
+    # ===== Direct tuple comparison operators =====
+    assert (1, 2) < (1, 3)
+    assert (1, 2) < (2, 0)
+    assert (1, 2, 3) > (1, 2)
+    assert (1, 2) <= (1, 2)
+    assert not ((1, 2) < (1, 2))
+
+    # ===== (B) Dynamic sequence concatenation through gradual `+` =====
+    assert _fold_cat([1, 2], [3, 4]) == [1, 2, 3, 4]
+    assert _fold_cat((1, 2), (3, 4)) == (1, 2, 3, 4)
+    assert _fold_cat(b"ab", b"cd") == b"abcd"
+    assert _fold_cat("ab", "cd") == "abcd"  # str path — regression guard
+    assert _fold_cat(2, 3) == 5  # numeric path — regression guard
+
+    # Empty-operand concatenation.
+    assert _fold_cat([], [1]) == [1]
+    assert _fold_cat([1], []) == [1]
+    assert _fold_cat((), (1,)) == (1,)
+
+    # Chained dynamic concatenation (fresh allocations each step — GC exercise).
+    acc_list = _fold_cat(_fold_cat([1], [2]), _fold_cat([3], [4]))
+    assert acc_list == [1, 2, 3, 4]
+
+    # ===== Mismatched sequence concatenation raises TypeError =====
+    caught = False
+    try:
+        _ = _fold_cat([1], (2,))
+    except TypeError:
+        caught = True
+    assert caught, "list + tuple must raise TypeError"
+
+
+_fold_p25_tuple_cmp_seq_concat()
+
+
+# ===== FOLD: p28_map_filter (map/filter builtins) =====
+def _fold_triple(n: int) -> int:
+    return n * 3
+
+
+def _fold_is_even(n: int) -> bool:
+    return n % 2 == 0
+
+
+def _fold_is_pos(n: int) -> bool:
+    return n > 0
+
+
+_fold_map_calls: int = 0
+
+
+def _fold_count_map(x: int) -> int:
+    global _fold_map_calls
+    _fold_map_calls += 1
+    return x * 10
+
+
+_fold_filt_calls: int = 0
+
+
+def _fold_count_pred(x: int) -> bool:
+    global _fold_filt_calls
+    _fold_filt_calls += 1
+    return x > 2
+
+
+def _fold_shadow_map() -> int:
+    # A local `map` shadows the builtin; the call dispatches the user binding.
+    map = lambda items: sum(items)
+    return map([10, 20, 30])
+
+
+def _fold_p28_map_filter() -> None:
+    # ===== map: named def, consumed via a for-loop =====
+    out: list[int] = []
+    for v in map(_fold_triple, [1, 2, 3, 4]):
+        out.append(v)
+    assert out == [3, 6, 9, 12]
+
+    # ===== map: consumed via repeated next() + StopIteration =====
+    mi = map(lambda x: x + 100, [1, 2])
+    assert next(mi) == 101
+    assert next(mi) == 102
+    caught = False
+    try:
+        next(mi)
+    except StopIteration:
+        caught = True
+    assert caught, "an exhausted map iterator raises StopIteration"
+
+    # ===== map: plain lambda =====
+    assert list(map(lambda x: x * x, [1, 2, 3, 4])) == [1, 4, 9, 16]
+
+    # ===== map: capturing lambda (single + multiple free variables) =====
+    factor: int = 3
+    assert list(map(lambda x: x * factor, [1, 2, 3])) == [3, 6, 9]
+
+    a: int = 2
+    b: int = 10
+    assert list(map(lambda x: x * a + b, [1, 2, 3])) == [12, 14, 16]
+
+    # ===== map: builtin callbacks (the Symbol-dispatch cases) =====
+    assert list(map(str, [1, 2, 3])) == ["1", "2", "3"]
+    assert list(map(int, ["10", "20", "30"])) == [10, 20, 30]
+    assert list(map(len, ["a", "bb", "ccc"])) == [1, 2, 3]
+    assert list(map(abs, [-5, 3, -2])) == [5, 3, 2]
+    assert list(map(lambda x: str(x), [7, 8])) == ["7", "8"]
+
+    # ===== map: over string elements =====
+    assert list(map(lambda s: s + "!", ["a", "b", "c"])) == ["a!", "b!", "c!"]
+
+    # ===== filter: named predicate =====
+    assert list(filter(_fold_is_even, [1, 2, 3, 4, 5, 6])) == [2, 4, 6]
+
+    # ===== filter: consumed via next() =====
+    fi = filter(_fold_is_even, [1, 2, 3, 4])
+    assert next(fi) == 2
+    assert next(fi) == 4
+
+    # ===== filter(None, xs): element truthiness across kinds =====
+    assert list(filter(None, [0, 1, 2, 0, 3])) == [1, 2, 3]
+    assert list(filter(None, ["", "a", "", "b"])) == ["a", "b"]
+    assert list(filter(None, [[], [1], [], [2, 3]])) == [[1], [2, 3]]
+    assert list(filter(None, [True, False, True, False])) == [True, True]
+
+    # filter(None) over a sequence with `None` (the Optional case): None is falsy.
+    opt = [1, None, 2, None, 3]
+    assert list(filter(None, opt)) == [1, 2, 3]
+
+    # All-falsy → empty; all-truthy → unchanged.
+    assert list(filter(None, [0, 0, False, ""])) == []
+    assert list(filter(None, [1, 2, 3])) == [1, 2, 3]
+
+    # next() over a filter(None, …) iterator.
+    fn = filter(None, [0, 5, 0, 7])
+    assert next(fn) == 5
+    assert next(fn) == 7
+
+    # ===== nesting: map(f, filter(g, xs)) =====
+    assert list(map(lambda x: x * 2, filter(_fold_is_pos, [-1, 2, -3, 4]))) == [4, 8]
+
+    # ===== list(map(...)) / list(filter(...)) with a closure + `: list[int]` =====
+    mult: int = 5
+    sq: list[int] = list(map(lambda x: x * mult, [1, 2, 3]))
+    assert sq == [5, 10, 15]
+
+    threshold: int = 3
+    big: list[int] = list(filter(lambda x: x > threshold, [1, 2, 3, 4, 5]))
+    assert big == [4, 5]
+
+    # ===== sum(map(...)) + for-accumulate over filter(...) =====
+    assert sum(map(lambda x: x * x, [1, 2, 3, 4])) == 30
+
+    total: int = 0
+    for v in filter(_fold_is_even, [1, 2, 3, 4, 5, 6, 7, 8]):
+        total += v
+    assert total == 20  # 2 + 4 + 6 + 8
+
+    # ===== single-evaluation guard: the callback is called once per element =====
+    mapped = list(map(_fold_count_map, [1, 2, 3, 4]))
+    assert mapped == [10, 20, 30, 40]
+    assert _fold_map_calls == 4  # exactly one call per element
+
+    kept = list(filter(_fold_count_pred, [1, 2, 3, 4, 5, 6]))
+    assert kept == [3, 4, 5, 6]
+    assert _fold_filt_calls == 6  # the predicate runs once per element
+
+    # ===== shadowing guard: a local `map` binding wins over the builtin =====
+    assert _fold_shadow_map() == 60
+
+
+_fold_p28_map_filter()
+
+
+# ===== FOLD: p4_integration (cross-feature: containers + iteration + =====
+# comprehensions + methods + nested structures + iteration builtins composed) =====
+def _fold_p4int_process(data) -> dict:
+    result = {}
+    for key, values in data:
+        total = sum(values)
+        result[key] = total
+    return result
+
+
+def _fold_p4_integration() -> None:
+    # Dict-build-from-pairs: iterate (key, list) records, sum each list into a dict.
+    records = [("a", [1, 2, 3]), ("b", [10, 20]), ("c", [100])]
+    summed = _fold_p4int_process(records)
+    assert sorted(summed.items()) == [("a", 6), ("b", 30), ("c", 100)]
+
+    # Comprehension + methods + builtins composed.
+    matrix = [[i * j for j in range(1, 4)] for i in range(1, 4)]
+    assert matrix == [[1, 2, 3], [2, 4, 6], [3, 6, 9]]
+    flat = []
+    for row in matrix:
+        flat.extend(row)
+    assert flat == [1, 2, 3, 2, 4, 6, 3, 6, 9]
+    assert sum(flat) == 36
+    assert max(flat) == 9
+    assert min(flat) == 1
+    assert sorted(set(flat)) == [1, 2, 3, 4, 6, 9]
+
+    # Iteration builtins composed.
+    names = ["alice", "bob", "carol"]
+    indexed = {i: n for i, n in enumerate(names)}
+    assert sorted(indexed.items()) == [(0, "alice"), (1, "bob"), (2, "carol")]
+    assert [len(n) for n in names] == [5, 3, 5]
+    zipped = list(zip(names, [len(n) for n in names]))
+    assert zipped == [("alice", 5), ("bob", 3), ("carol", 5)]
+
+    # Nested containers + subscript write + methods.
+    grid = [[0, 0], [0, 0]]
+    grid[0][1] = 5
+    grid[1][0] = 7
+    assert grid == [[0, 5], [7, 0]]
+    for r in grid:
+        r.append(99)
+    assert grid == [[0, 5, 99], [7, 0, 99]]
+
+    # Membership + filters.
+    primes = [2, 3, 5, 7, 11]
+    assert [p for p in range(15) if p in primes] == [2, 3, 5, 7, 11]
+    assert (6 in primes) == False
+
+    # bytes + tuple.
+    b = bytes([72, 105])
+    assert b == b"Hi"
+    assert b[0] == 72
+    t = (1, 2, 3)
+    assert t + (4, 5) == (1, 2, 3, 4, 5)
+    assert sum(t) == 6
+
+
+_fold_p4_integration()
+
+
 print("All iteration and comprehension tests passed!")

@@ -8,11 +8,17 @@ release-safe pre-codegen MIR verifier; the uniform value-call convention + its
 `devirt` recovery pass). That completed phase log lives in git history (commits +
 each crate's `lib.rs` doc) and the auto-memory.
 
-**The breadth goal is met: every aspirational `corpus/test_*.py` is now lifted
-onto the differential gate** (`test_classes`, `test_collections`,
-`test_dead_code_warnings`, `test_file_io`, `test_generics`, `test_types_system` —
-all diff clean vs CPython in debug + release). The closures (§3, §5, §7, §10–§12,
-§14) are recorded in git history + auto-memory and removed from the backlog.
+**The breadth goal is met: every aspirational feature is lifted onto the
+differential gate** (`test_classes`, `test_collections`, `test_generics`,
+`test_strings`, `test_file_io`, … — all diff clean vs CPython in debug +
+release). The gate is now organized as one consolidated `corpus/test_*.py` per
+large feature category: the former per-feature point files (`pN_*.py`) and the
+finer-grained `test_*` splits (`test_types_system`, `test_collections_*`,
+`test_format_spec`, `test_dead_code_warnings`, …) were folded into their
+category file, every check is an `assert` that passes on both pyaot and CPython,
+and the allowlist in `crates/cli/tests/differential.rs` records each fold. The
+closures (§3, §5, §7, §10–§12, §14) are recorded in git history + auto-memory
+and removed from the backlog.
 
 What remains is **deferred precision**, not breadth, and it **blocks no corpus
 file** (every item is on the safe Tagged baseline today). None of it widens the

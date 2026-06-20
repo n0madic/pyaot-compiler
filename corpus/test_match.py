@@ -765,4 +765,186 @@ test_match_class_inheritance_specific_first()
 
 print("Class pattern inheritance tests passed!")
 
+# ===== SECTION: Folded from p7_match.py (structural match desugar) =====
+
+# User class used in class-patterns must live at module level (cannot nest).
+class _p7m_Point:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+
+def _fold_p7_match():
+    # ── literals + default ──
+    def kind(n: int) -> str:
+        match n:
+            case 0:
+                return "zero"
+            case 1:
+                return "one"
+            case _:
+                return "many"
+
+    assert kind(0) == "zero"
+    assert kind(1) == "one"
+    assert kind(5) == "many"
+
+    # ── string literals ──
+    def color(s: str) -> int:
+        match s:
+            case "red":
+                return 1
+            case "green":
+                return 2
+            case _:
+                return 0
+
+    assert color("red") == 1
+    assert color("green") == 2
+    assert color("blue") == 0
+
+    # ── singletons ──
+    def truthy(b: bool) -> str:
+        match b:
+            case True:
+                return "yes"
+            case False:
+                return "no"
+
+    assert truthy(True) == "yes"
+    assert truthy(False) == "no"
+
+    # ── capture pattern + guard ──
+    def bucket(n: int) -> str:
+        match n:
+            case 0:
+                return "zero"
+            case x if x < 0:
+                return "neg"
+            case x if x < 10:
+                return "small"
+            case x:
+                return "big:" + str(x)
+
+    assert bucket(0) == "zero"
+    assert bucket(-3) == "neg"
+    assert bucket(7) == "small"
+    assert bucket(42) == "big:42"
+
+    # ── or-patterns (capture-free) on strings ──
+    def vowel(c: str) -> bool:
+        match c:
+            case "a" | "e" | "i" | "o" | "u":
+                return True
+            case _:
+                return False
+
+    assert vowel("a") == True
+    assert vowel("z") == False
+
+    # ── sequence patterns on a list subject ──
+    def shape(items: list[int]) -> str:
+        match items:
+            case []:
+                return "empty"
+            case [x]:
+                return "one:" + str(x)
+            case [x, y]:
+                return "two:" + str(x + y)
+            case [first, *rest]:
+                return "many:" + str(first) + ":" + str(len(rest))
+
+    assert shape([]) == "empty"
+    assert shape([5]) == "one:5"
+    assert shape([2, 3]) == "two:5"
+    assert shape([1, 2, 3, 4]) == "many:1:3"
+
+    # ── star capture keeps the tail as a list ──
+    def tail_sum(items: list[int]) -> int:
+        match items:
+            case [_, *rest]:
+                total = 0
+                for v in rest:
+                    total = total + v
+                return total
+            case _:
+                return -1
+
+    assert tail_sum([10, 1, 2, 3]) == 6
+    assert tail_sum([]) == -1
+
+    # ── mapping patterns (literal value inside mapping) ──
+    def role(d: dict[str, str]) -> str:
+        match d:
+            case {"role": "admin"}:
+                return "admin"
+            case {"role": r}:
+                return "role:" + r
+            case _:
+                return "none"
+
+    assert role({"role": "admin"}) == "admin"
+    assert role({"role": "user"}) == "role:user"
+    assert role({"name": "x"}) == "none"
+
+    # ── mapping with **rest (copy semantics, original untouched) ──
+    def split(d: dict[str, int]) -> int:
+        match d:
+            case {"a": a, **rest}:
+                return a + len(rest)
+            case _:
+                return -1
+
+    base = {"a": 10, "b": 2, "c": 3}
+    assert split(base) == 12
+    assert len(base) == 3
+    assert split({"b": 1}) == -1
+
+    # ── class patterns (keyword-only) ──
+    def describe(p: _p7m_Point) -> str:
+        match p:
+            case _p7m_Point(x=0, y=0):
+                return "origin"
+            case _p7m_Point(x=0, y=yy):
+                return "on-y:" + str(yy)
+            case _p7m_Point(x=xx, y=0):
+                return "on-x:" + str(xx)
+            case _p7m_Point(x=a, y=b):
+                return "at:" + str(a) + "," + str(b)
+
+    assert describe(_p7m_Point(0, 0)) == "origin"
+    assert describe(_p7m_Point(0, 5)) == "on-y:5"
+    assert describe(_p7m_Point(3, 0)) == "on-x:3"
+    assert describe(_p7m_Point(2, 4)) == "at:2,4"
+
+    # ── nested literal inside sequence ──
+    def pair_kind(p: list[int]) -> str:
+        match p:
+            case [0, y]:
+                return "zero-first:" + str(y)
+            case [x, 0]:
+                return "zero-second:" + str(x)
+            case _:
+                return "other"
+
+    assert pair_kind([0, 9]) == "zero-first:9"
+    assert pair_kind([7, 0]) == "zero-second:7"
+    assert pair_kind([1, 2]) == "other"
+
+
+_fold_p7_match()
+
+# ── match as a statement (no return), capture leaks like CPython ──
+match [1, 2, 3]:
+    case [a, *bs]:
+        leak = a + len(bs)
+    case _:
+        leak = -1
+assert leak == 3
+
+print("p7_match fold tests passed!")
+
 print("All match tests passed!")

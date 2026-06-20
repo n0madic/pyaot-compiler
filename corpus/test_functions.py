@@ -1,5 +1,7 @@
 # Consolidated test file for functions
 
+from typing import Callable
+
 # ===== SECTION: Function definitions and calls =====
 
 def add(a: int, b: int) -> int:
@@ -1910,5 +1912,1662 @@ def _test_unannotated_capturing_closures() -> None:
 
 
 _test_unannotated_capturing_closures()
+
+# ===== SECTION: Folded point-tests (p2/p6/p10/p13/p36-p41 + decorator factory & class decorators) =====
+
+# ===== FOLDED: p2_funcs.py (basic functions / recursion / classify) =====
+def _fold_p2_funcs():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    def factorial(n: int) -> int:
+        if n <= 1:
+            return 1
+        return n * factorial(n - 1)
+
+    def fib(n: int) -> int:
+        if n < 2:
+            return n
+        return fib(n - 1) + fib(n - 2)
+
+    def is_even(n: int) -> bool:
+        return n % 2 == 0
+
+    def area(r: float) -> float:
+        return 3.14159 * r * r
+
+    def greet(name: str) -> str:
+        return name
+
+    def countdown(n: int) -> int:
+        total = 0
+        while n > 0:
+            total = total + n
+            n = n - 1
+        return total
+
+    def classify(n: int) -> str:
+        if n < 0:
+            return "negative"
+        elif n == 0:
+            return "zero"
+        else:
+            return "positive"
+
+    assert add(3, 4) == 7
+    assert factorial(5) == 120
+    assert fib(10) == 55
+    assert is_even(4) == True
+    assert is_even(7) == False
+    assert area(2.0) == 12.56636
+    assert greet("hello") == "hello"
+    assert countdown(5) == 15
+    assert classify(-3) == "negative"
+    assert classify(0) == "zero"
+    assert classify(42) == "positive"
+    assert add(factorial(4), fib(7)) == 37
+
+
+_fold_p2_funcs()
+
+
+# ===== FOLDED: p6_closures.py (nested defs, returned closures, late binding) =====
+def _fold_p6_closures():
+    # nested def reading an enclosing local (basic capture)
+    def twice(x: int) -> int:
+        def inner(y: int) -> int:
+            return y * 2
+        return inner(x)
+
+    assert twice(21) == 42
+
+    # returned closures: independent cells per activation
+    def make_adder(n: int) -> Callable[[int], int]:
+        def add(x: int) -> int:
+            return x + n
+        return add
+
+    add5 = make_adder(5)
+    add7 = make_adder(7)
+    assert add5(1) == 6
+    assert add7(1) == 8
+    assert add5(add7(0)) == 12
+
+    # outer rebinding visible through the shared cell (late binding)
+    def make_getter() -> int:
+        x = 10
+
+        def get() -> int:
+            return x
+
+        first = get()
+        x = 20
+        return first * 1000 + get()
+
+    assert make_getter() == 10020
+
+    # recursion via self-capture
+    def make_fact() -> Callable[[int], int]:
+        def fact(n: int) -> int:
+            if n <= 1:
+                return 1
+            return n * fact(n - 1)
+        return fact
+
+    fact = make_fact()
+    assert fact(6) == 720
+
+    # transitive (two-level) capture bubbling
+    def outer(a: int) -> int:
+        def mid(b: int) -> int:
+            def inner(c: int) -> int:
+                return a + b + c
+            return inner(b * 10)
+        return mid(a * 10)
+
+    assert outer(3) == 333
+
+    # stored closures: a list of function values, called by index
+    fs: list[Callable[[], int]] = []
+
+    def make_const(k: int) -> Callable[[], int]:
+        def const() -> int:
+            return k
+        return const
+
+    for i in range(3):
+        fs.append(make_const(i * 11))
+    assert fs[0]() == 0
+    assert fs[1]() == 11
+    assert fs[2]() == 22
+
+    # classic late-binding pitfall: all loop closures see the FINAL i
+    def make_loop_closures() -> list[Callable[[], int]]:
+        out: list[Callable[[], int]] = []
+        for i in range(3):
+            def f() -> int:
+                return i
+            out.append(f)
+        return out
+
+    loop_fs = make_loop_closures()
+    assert loop_fs[0]() == 2
+    assert loop_fs[1]() == 2
+    assert loop_fs[2]() == 2
+
+    # multiple captures of mixed types
+    def describe(name: str, base: int) -> Callable[[int], str]:
+        def fmt(extra: int) -> str:
+            return name + ": " + str(base + extra)
+        return fmt
+
+    f = describe("total", 100)
+    assert f(11) == "total: 111"
+    assert f(22) == "total: 122"
+
+    # a top-level function used as a value (thunk)
+    def square(x: int) -> int:
+        return x * x
+
+    def apply(g: Callable[[int], int], x: int) -> int:
+        return g(x)
+
+    assert apply(square, 4) == 16
+    assert apply(make_adder(3), 4) == 7
+
+
+_fold_p6_closures()
+
+
+# ===== FOLDED: p6_lambda_hof.py (lambdas, HOFs, compose, late binding) =====
+def _fold_p6_lambda_hof():
+    # plain lambdas (no capture)
+    double = lambda x: x * 2
+    assert double(21) == 42
+
+    add = lambda a, b: a + b
+    assert add(3, 4) == 7
+
+    # lambda capturing an enclosing binding (here: a local)
+    base = 100
+    shift = lambda d: base + d
+    assert shift(1) == 101
+
+    # lambdas passed to user higher-order functions
+    def apply(f: Callable[[int], int], x: int) -> int:
+        return f(x)
+
+    assert apply(lambda y: y + 1, 41) == 42
+    assert apply(double, 5) == 10
+
+    def apply_twice(f: Callable[[int], int], x: int) -> int:
+        return f(f(x))
+
+    assert apply_twice(lambda n: n * 3, 2) == 18
+
+    # a HOF returning a lambda (capture of both params)
+    def compose(f: Callable[[int], int], g: Callable[[int], int]) -> Callable[[int], int]:
+        return lambda x: f(g(x))
+
+    inc = lambda v: v + 1
+    assert compose(double, inc)(10) == 22
+    assert compose(inc, double)(10) == 21
+
+    # lambda capturing the loop variable inside a function (late binding)
+    def lambda_rows() -> list[Callable[[int], int]]:
+        rows: list[Callable[[int], int]] = []
+        for k in range(3):
+            rows.append(lambda x: x + k)
+        return rows
+
+    rows = lambda_rows()
+    assert rows[0](100) == 102
+    assert rows[1](100) == 102
+    assert rows[2](100) == 102
+
+    # conditional lambda selection
+    def pick(flag: bool) -> Callable[[int], int]:
+        if flag:
+            return lambda n: n - 1
+        return lambda n: n + 1
+
+    assert pick(True)(10) == 9
+    assert pick(False)(10) == 11
+
+    # lambdas over strings
+    shout = lambda s: s + "!"
+    assert shout("hello") == "hello!"
+
+
+_fold_p6_lambda_hof()
+
+
+# ===== FOLDED: p6_nonlocal_global.py (nonlocal/global cells) =====
+def _fold_p6_nonlocal_global():
+    # counter closure: nonlocal rebinding through the shared cell
+    def make_counter() -> Callable[[], int]:
+        n = 0
+
+        def inc() -> int:
+            nonlocal n
+            n = n + 1
+            return n
+
+        return inc
+
+    c1 = make_counter()
+    c2 = make_counter()
+    assert c1() == 1
+    assert c1() == 2
+    assert c1() == 3
+    assert c2() == 1
+
+    # augmented nonlocal assignment
+    def make_acc(start: int) -> Callable[[int], int]:
+        total = start
+
+        def add(x: int) -> int:
+            nonlocal total
+            total += x
+            return total
+
+        return add
+
+    acc = make_acc(100)
+    assert acc(1) == 101
+    assert acc(2) == 103
+    assert acc(3) == 106
+
+    # two-level bubbling: the innermost writes the outermost's cell
+    def level0() -> int:
+        v = 1
+
+        def level1() -> int:
+            def level2() -> None:
+                nonlocal v
+                v = v * 10
+
+            level2()
+            level2()
+            return v
+
+        return level1()
+
+    assert level0() == 100
+
+    # two closures sharing one cell (reader + writer)
+    def make_pair() -> int:
+        state = 5
+
+        def read() -> int:
+            return state
+
+        def bump() -> None:
+            nonlocal state
+            state = state + 1
+
+        bump()
+        bump()
+        return read()
+
+    assert make_pair() == 7
+
+    # the late-binding list: every closure sees the final loop value
+    fs: list[Callable[[], int]] = []
+    for i in range(3):
+        fs.append(lambda: i)
+    assert [f() for f in fs] == [2, 2, 2]
+
+
+_fold_p6_nonlocal_global()
+
+
+# ===== FOLDED: p6_nonlocal_global.py (module-global mutation) =====
+# Kept at module scope because it exercises module-level `global` statements.
+_png_count = 0
+
+
+def _png_bump_global() -> None:
+    global _png_count
+    _png_count = _png_count + 1
+
+
+def _png_show_count() -> int:
+    return _png_count
+
+
+_png_bump_global()
+_png_bump_global()
+_png_bump_global()
+assert _png_count == 3
+assert _png_show_count() == 3
+
+_png_scale = 7
+
+
+def _png_scaled(x: int) -> int:
+    return x * _png_scale
+
+
+assert _png_scaled(6) == 42
+_png_scale = 9
+assert _png_scaled(6) == 54
+
+
+# ===== FOLDED: p6_varargs.py (*args / **kwargs collection) =====
+def _fold_p6_varargs():
+    def total(*nums):
+        s = 0
+        for n in nums:
+            s += n
+        return s
+
+    assert total() == 0
+    assert total(1, 2, 3) == 6
+    assert total(10, 20) == 30
+
+    def greet(greeting, *names):
+        out = greeting
+        for n in names:
+            out += " " + n
+        return out
+
+    assert greet("Hi") == "Hi"
+    assert greet("Hi", "Alice", "Bob") == "Hi Alice Bob"
+
+    def describe(**attrs):
+        keys = sorted(attrs.keys())
+        out = ""
+        for k in keys:
+            out += k + "=" + str(attrs[k]) + ";"
+        return out
+
+    assert describe() == ""
+    assert describe(a=1, b=2) == "a=1;b=2;"
+    assert describe(z=26, a=1, m=13) == "a=1;m=13;z=26;"
+
+    def both(first, *rest, **opts):
+        return str(first) + "/" + str(len(rest)) + "/" + str(len(opts))
+
+    assert both(1) == "1/0/0"
+    assert both(1, 2, 3) == "1/2/0"
+    assert both(1, 2, x=9) == "1/1/1"
+    assert both(0, 1, 2, 3, a=1, b=2) == "0/3/2"
+
+    # forwarding *args through another varargs function
+    def forward(*a):
+        return total(*a)
+
+    assert forward(4, 5, 6) == 15
+    assert forward() == 0
+
+    # len() and iteration over the *args tuple
+    def count_and_sum(*xs):
+        return len(xs)
+
+    assert count_and_sum(1, 2, 3, 4) == 4
+
+
+_fold_p6_varargs()
+
+
+# ===== FOLDED: p6_defaults_kwargs.py (defaults, keyword reordering, kwonly) =====
+# Module scope: keyword arguments bound to regular positional parameters are only
+# supported on top-level functions, so these defs stay at module level (`_pdk_`).
+def _pdk_power(base, exp=2):
+    result = 1
+    for _ in range(exp):
+        result = result * base
+    return result
+
+
+def _pdk_greet(name, greeting="Hello", punct="!"):
+    return greeting + ", " + name + punct
+
+
+def _pdk_make(width, *, height=10, label="box"):
+    return label + ":" + str(width) + "x" + str(height)
+
+
+def _pdk_config(name, **opts):
+    base = name
+    keys = sorted(opts.keys())
+    for k in keys:
+        base += " " + k + "=" + str(opts[k])
+    return base
+
+
+def _pdk_flags(a=1, b=True, c="x", d=None):
+    return str(a) + "/" + str(b) + "/" + c + "/" + str(d)
+
+
+def _fold_p6_defaults_kwargs():
+    # positional defaults
+    assert _pdk_power(5) == 25
+    assert _pdk_power(5, 3) == 125
+    assert _pdk_power(base=4) == 16
+    assert _pdk_power(exp=3, base=2) == 8
+
+    # multiple defaults, keyword reordering
+    assert _pdk_greet("World") == "Hello, World!"
+    assert _pdk_greet("World", "Hi") == "Hi, World!"
+    assert _pdk_greet("World", punct="?") == "Hello, World?"
+    assert _pdk_greet("World", greeting="Hey", punct=".") == "Hey, World."
+    assert _pdk_greet(greeting="Yo", name="Sam") == "Yo, Sam!"
+
+    # keyword-only parameters
+    assert _pdk_make(5) == "box:5x10"
+    assert _pdk_make(5, height=20) == "box:5x20"
+    assert _pdk_make(5, label="rect", height=7) == "rect:5x7"
+
+    # a fixed param plus **kwargs for extras
+    assert _pdk_config("srv") == "srv"
+    assert _pdk_config("srv", port=8080, debug=1) == "srv debug=1 port=8080"
+
+    # default values of several literal kinds
+    assert _pdk_flags() == "1/True/x/None"
+    assert _pdk_flags(2, False, "y", 3) == "2/False/y/3"
+    assert _pdk_flags(c="z") == "1/True/z/None"
+
+
+_fold_p6_defaults_kwargs()
+
+
+# ===== FOLDED: p6_decorators.py (forwarding wrappers, stacking, factory) =====
+# Module scope: decorators on nested `def`s are out of scope, so this source's
+# defs stay at module top level (identifiers prefixed `_pdc_`).
+_pdc_log: list[str] = []
+
+
+# a logging wrapper that forwards *args/**kwargs
+def _pdc_logged(func: Callable[..., int]) -> Callable[..., int]:
+    def wrapper(*args, **kwargs) -> int:
+        _pdc_log.append("call")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+@_pdc_logged
+def _pdc_add(a, b):
+    return a + b
+
+
+# a counting wrapper that keeps state via nonlocal
+def _pdc_counted(func: Callable[..., int]) -> Callable[..., int]:
+    count = 0
+
+    def wrapper(*args, **kwargs) -> int:
+        nonlocal count
+        count = count + 1
+        _pdc_log.append("n=" + str(count))
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_pdc_counted
+def _pdc_square(x):
+    return x * x
+
+
+# stacked decorators apply innermost-first; order visible via the log
+def _pdc_deco_a(func: Callable[..., int]) -> Callable[..., int]:
+    def wrapper(*args, **kwargs) -> int:
+        _pdc_log.append("a")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def _pdc_deco_b(func: Callable[..., int]) -> Callable[..., int]:
+    def wrapper(*args, **kwargs) -> int:
+        _pdc_log.append("b")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+@_pdc_deco_a
+@_pdc_deco_b
+def _pdc_hello():
+    _pdc_log.append("hello")
+    return 0
+
+
+# a decorator factory @repeat(3)
+def _pdc_repeat(n: int) -> Callable[[Callable[..., int]], Callable[..., int]]:
+    def decorator(func: Callable[..., int]) -> Callable[..., int]:
+        def wrapper(*args, **kwargs) -> int:
+            result = 0
+            for _ in range(n):
+                result = func(*args, **kwargs)
+            return result
+        return wrapper
+    return decorator
+
+
+@_pdc_repeat(3)
+def _pdc_announce(msg):
+    _pdc_log.append(msg)
+    return 1
+
+
+# decorators over non-int return types (float / str)
+def _pdc_trace_f(func: Callable[..., float]) -> Callable[..., float]:
+    def wrapper(*args, **kwargs) -> float:
+        _pdc_log.append("f")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+@_pdc_trace_f
+def _pdc_scaled(x) -> float:
+    return x * 1.5
+
+
+def _pdc_trace_s(func: Callable[..., str]) -> Callable[..., str]:
+    def wrapper(*args, **kwargs) -> str:
+        _pdc_log.append("s")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+@_pdc_trace_s
+def _pdc_shout(text) -> str:
+    return text + "!"
+
+
+assert _pdc_add(2, 3) == 5
+assert _pdc_add(10, 20) == 30
+assert _pdc_square(4) == 16
+assert _pdc_square(5) == 25
+assert _pdc_square(6) == 36
+assert _pdc_hello() == 0
+assert _pdc_announce("hi") == 1
+assert _pdc_scaled(4) == 6.0
+assert _pdc_shout("hey") == "hey!"
+
+# side-effect order across the whole script (matches the original prints)
+assert _pdc_log == [
+    "call", "call",
+    "n=1", "n=2", "n=3",
+    "a", "b", "hello",
+    "hi", "hi", "hi",
+    "f", "s",
+]
+
+
+# ===== FOLDED: p10_kwargs_evalorder.py (argument eval order, written-order) =====
+# Module scope: keyword arguments bound to regular positional parameters are only
+# supported on top-level functions, so these defs stay at module level (`_peo_`).
+_peo_log: list[str] = []
+
+
+def _peo_trace(label: str, val: int) -> int:
+    _peo_log.append("eval " + label)
+    return val
+
+
+def _peo_f(a: int, b: int, c: int) -> None:
+    _peo_log.append("f " + str(a) + " " + str(b) + " " + str(c))
+
+
+def _peo_g(a: int, b: int = 10, c: int = 20) -> None:
+    _peo_log.append("g " + str(a) + " " + str(b) + " " + str(c))
+
+
+def _peo_h(a: int, b: int = 1, *args: int, **kw: int) -> None:
+    out = ""
+    for k in sorted(kw.keys()):
+        out += k + "=" + str(kw[k]) + ";"
+    _peo_log.append("h " + str(a) + " " + str(b) + " " + str(len(args)) + " " + out)
+
+
+def _fold_p10_kwargs_evalorder():
+    # Keywords written out of parameter order: must evaluate a, c, b.
+    _peo_f(_peo_trace("f.a", 1), c=_peo_trace("f.c", 3), b=_peo_trace("f.b", 2))
+    # All keywords, fully reversed.
+    _peo_f(c=_peo_trace("f2.c", 30), b=_peo_trace("f2.b", 20), a=_peo_trace("f2.a", 10))
+    # Defaults skipped in the middle: written order is a then c.
+    _peo_g(_peo_trace("g.a", 1), c=_peo_trace("g.c", 99))
+    # Keyword for an earlier param evaluated after a later one.
+    _peo_g(b=_peo_trace("g2.b", 5), a=_peo_trace("g2.a", 4))
+    # **kwargs leftovers interleaved with a fixed-param keyword.
+    _peo_h(_peo_trace("h.a", 1), z=_peo_trace("h.z", 26), b=_peo_trace("h.b", 2), y=_peo_trace("h.y", 25))
+
+    assert _peo_log == [
+        "eval f.a", "eval f.c", "eval f.b", "f 1 2 3",
+        "eval f2.c", "eval f2.b", "eval f2.a", "f 10 20 30",
+        "eval g.a", "eval g.c", "g 1 10 99",
+        "eval g2.b", "eval g2.a", "g 4 5 20",
+        "eval h.a", "eval h.z", "eval h.b", "eval h.y", "h 1 2 0 y=25;z=26;",
+    ]
+
+
+_fold_p10_kwargs_evalorder()
+
+
+# ===== FOLDED: p10_kwargs_methods.py (method kwargs, virtual dispatch, sort) =====
+# Module scope: classes can't be defined inside a function, so the class defs and
+# the trace log stay at module top level (identifiers prefixed `_pkm_`).
+_pkm_log: list[str] = []
+
+
+def _pkm_trace(label: str, val: int) -> int:
+    _pkm_log.append("eval " + label)
+    return val
+
+
+class _pkm_Greeter:
+    def __init__(self, name: str):
+        self.name = name
+
+    def greet(self, greeting: str = "Hello", punct: str = "!") -> str:
+        return greeting + ", " + self.name + punct
+
+    def add(self, a: int, b: int = 10, c: int = 100) -> int:
+        return a + b * 2 + c * 3
+
+    def collect(self, first: int, **extra: int) -> str:
+        out = str(first)
+        for k in sorted(extra.keys()):
+            out += ";" + k + "=" + str(extra[k])
+        return out
+
+    @staticmethod
+    def shout(word: str, times: int = 2) -> str:
+        return word * times
+
+    @classmethod
+    def tag(cls, label: str = "g") -> str:
+        return "<" + label + ">"
+
+
+class _pkm_Base:
+    def describe(self, prefix: str = "p", n: int = 1) -> str:
+        return prefix + ":" + str(n)
+
+
+class _pkm_Derived(_pkm_Base):
+    def describe(self, prefix: str = "p", n: int = 1) -> str:
+        return "[" + prefix + ":" + str(n) + "]"
+
+
+class _pkm_Child(_pkm_Base):
+    def describe(self, prefix: str = "p", n: int = 1) -> str:
+        inner = super().describe(n=99, prefix=prefix)
+        return "{" + inner + "}"
+
+
+def _fold_p10_kwargs_methods():
+    g = _pkm_Greeter("Ada")
+
+    # defaults / keyword permutations
+    assert g.greet() == "Hello, Ada!"
+    assert g.greet(punct="?") == "Hello, Ada?"
+    assert g.greet(greeting="Hi") == "Hi, Ada!"
+    assert g.greet("Hey", punct=".") == "Hey, Ada."
+    assert g.greet(punct="!!", greeting="Yo") == "Yo, Ada!!"
+    assert g.add(1) == 321
+    assert g.add(1, c=2) == 27
+    assert g.add(1, b=5) == 311
+    assert g.add(c=1, a=2, b=3) == 11
+
+    # written-order side effects across reordered keywords
+    assert g.add(_pkm_trace("a", 1), c=_pkm_trace("c", 2), b=_pkm_trace("b", 3)) == 13
+    assert _pkm_log == ["eval a", "eval c", "eval b"]
+
+    # **kwargs leftovers on a method
+    assert g.collect(1, z=26, b=2) == "1;b=2;z=26"
+    assert g.collect(first=5, y=25) == "5;y=25"
+
+    # staticmethod / classmethod with keywords
+    assert _pkm_Greeter.shout("ha", times=3) == "hahaha"
+    assert _pkm_Greeter.shout(word="oi") == "oioi"
+    assert g.shout("eh", times=1) == "eh"
+    assert _pkm_Greeter.tag(label="x") == "<x>"
+    assert _pkm_Greeter.tag() == "<g>"
+
+    # virtual dispatch with keywords (override has its own defaults)
+    objs = [_pkm_Base(), _pkm_Derived(), _pkm_Child()]
+    described_n5 = [o.describe(n=5) for o in objs]
+    assert described_n5 == ["p:5", "[p:5]", "{p:99}"]
+    described_kw = [o.describe(prefix="kw") for o in objs]
+    assert described_kw == ["kw:1", "[kw:1]", "{kw:99}"]
+
+    # super().m(kw=)
+    assert _pkm_Child().describe() == "{p:99}"
+
+    # list.sort matrix
+    xs = [3, 1, 2]
+    xs.sort()
+    assert xs == [1, 2, 3]
+    xs.sort(reverse=True)
+    assert xs == [3, 2, 1]
+    xs.sort(reverse=False)
+    assert xs == [1, 2, 3]
+    xs.sort(key=lambda v: -v)
+    assert xs == [3, 2, 1]
+    xs.sort(key=None, reverse=True)
+    assert xs == [3, 2, 1]
+
+    ws = ["bbb", "a", "cc"]
+    ws.sort(key=len)
+    assert ws == ["a", "cc", "bbb"]
+    ws.sort(key=len, reverse=True)
+    assert ws == ["bbb", "cc", "a"]
+
+    # stability under key sort: equal keys keep order, reverse does not flip them
+    pairs = [(2, "a"), (1, "b"), (2, "c"), (1, "d")]
+    pairs.sort(key=lambda p: p[0])
+    assert pairs == [(1, "b"), (1, "d"), (2, "a"), (2, "c")]
+    pairs = [(2, "a"), (1, "b"), (2, "c"), (1, "d")]
+    pairs.sort(key=lambda p: p[0], reverse=True)
+    assert pairs == [(2, "a"), (2, "c"), (1, "b"), (1, "d")]
+
+    # key closure capture + side-effect order of sort kwargs
+    factor = -1
+    nums = [5, 1, 4]
+    nums.sort(key=lambda v: v * factor, reverse=_pkm_trace("rv", 0) == 1)
+    assert nums == [5, 4, 1]
+    assert _pkm_log == ["eval a", "eval c", "eval b", "eval rv"]
+
+
+_fold_p10_kwargs_methods()
+
+
+# ===== FOLDED: p13_spread.py (*seq spread into non-*args callees) =====
+# The decorated callee is hoisted to module scope (decorators on nested `def`s
+# are out of scope); the rest of the probes live in the wrapper below.
+def _psp_logged(func: Callable[..., int]) -> Callable[..., int]:
+    def wrapper(*args: int, **kwargs: int) -> int:
+        return func(*args, **kwargs)
+    return wrapper
+
+
+@_psp_logged
+def _psp_add2(x: int, y: int) -> int:
+    return x + y
+
+
+def _fold_p13_spread():
+    # Fixed-arity, no defaults
+    def f3(a: int, b: int, c: int) -> int:
+        return a + b + c
+
+    assert f3(*[1, 2, 3]) == 6
+    assert f3(*(7, 8, 9)) == 24
+
+    nums_list: list[int] = [10, 20, 30]
+    nums_tuple: tuple[int, int, int] = (4, 5, 6)
+    assert f3(*nums_list) == 60
+    assert f3(*nums_tuple) == 15
+
+    def make3() -> tuple[int, int, int]:
+        return (100, 200, 300)
+
+    assert f3(*make3()) == 600
+
+    # Mixed plain + spread
+    def f4(a: int, b: int, c: int, d: int) -> int:
+        return a * 1000 + b * 100 + c * 10 + d
+
+    assert f4(1, *[2, 3], 4) == 1234
+    mid: list[int] = [2, 3]
+    assert f4(1, *mid, 4) == 1234
+
+    first: int = 9
+    rest_pair: tuple[int, int] = (8, 7)
+    assert f3(first, *rest_pair) == 24
+
+    # Multiple spreads
+    assert f4(*[1, 2], *[3, 4]) == 1234
+    a2: tuple[int, int] = (1, 2)
+    b2: tuple[int, int] = (3, 4)
+
+    def f5(a: int, b: int, c: int, d: int, e: int) -> int:
+        return a + b + c + d + e
+
+    assert f5(*a2, *b2, 5) == 15
+
+    # Empty spread
+    empty: list[int] = []
+    assert f3(1, *empty, 2, 3) == 6
+    assert f3(*[], 1, 2, 3) == 6
+
+    # str parameters (gradual heap)
+    def cat3(a: str, b: str, c: str) -> str:
+        return a + b + c
+
+    assert cat3(*["x", "y", "z"]) == "xyz"
+    words: list[str] = ["Hello", " ", "World"]
+    assert cat3(*words) == "Hello World"
+
+    # float parameters (Raw(F64) laundered through a typed slot)
+    def addf(a: float, b: float) -> float:
+        return a + b
+
+    floats: list[float] = [1.5, 2.5]
+    assert addf(*floats) == 4.0
+    assert addf(*[10.25, 0.75]) == 11.0
+
+    # bool parameters (Raw(I8) laundered through a typed slot)
+    def andb(a: bool, b: bool) -> bool:
+        return a and b
+
+    bools: list[bool] = [True, False]
+    assert andb(*bools) == False
+    flags: tuple[bool, bool] = (True, True)
+    assert andb(*flags) == True
+
+    # Defaults filled from a short spread
+    def with_def(a: int, b: int, c: int = 100) -> int:
+        return a + b + c
+
+    assert with_def(*[1, 2]) == 103
+    assert with_def(*[1, 2, 3]) == 6
+    two: list[int] = [1, 2]
+    three: list[int] = [1, 2, 3]
+    assert with_def(*two) == 103
+    assert with_def(*three) == 6
+
+    def multi_def(a: int, b: int = 10, c: int = 20) -> int:
+        return a + b + c
+
+    assert multi_def(*[5]) == 35
+    assert multi_def(*[5, 15]) == 40
+    assert multi_def(*[5, 15, 25]) == 45
+
+    def greet(name: str, greeting: str = "Hello", punct: str = "!") -> str:
+        return greeting + " " + name + punct
+
+    only_name: tuple[str] = ("World",)
+    assert greet(*only_name) == "Hello World!"
+    assert greet(*["Sun", "Hi"]) == "Hi Sun!"
+
+    # *args callee
+    def va(a: int, *rest: int) -> int:
+        total: int = a
+        for x in rest:
+            total += x
+        return total
+
+    assert va(*[1, 2, 3]) == 6
+    assert va(10, *[4, 5]) == 19
+    assert va(*[42]) == 42
+
+    def va2(a: int, b: int, *rest: int) -> int:
+        total: int = a + b
+        for x in rest:
+            total += x
+        return total
+
+    assert va2(*[10, 20, 30, 40]) == 100
+    assert va2(*[5, 15]) == 20
+    lead: list[int] = [1, 2]
+    assert va2(1, 2, *[3, 4, 5]) == 15
+
+    # Interaction: comprehension as the spread source
+    assert f3(*[x * 2 for x in range(3)]) == 6
+
+    # Interaction: spread inside a loop
+    def f1(x: int) -> int:
+        return x * x
+
+    loop_total: int = 0
+    for i in range(4):
+        one: list[int] = [i]
+        loop_total += f1(*one)
+    assert loop_total == 14
+
+    # Interaction: left-to-right evaluation order
+    order_log: list[int] = []
+
+    def rec(n: int) -> int:
+        order_log.append(n)
+        return n
+
+    def src() -> list[int]:
+        order_log.append(99)
+        return [7, 8]
+
+    def take4(a: int, b: int, c: int, d: int) -> int:
+        return a * 1000 + b * 100 + c * 10 + d
+
+    r: int = take4(rec(1), *src(), rec(2))
+    assert order_log == [1, 99, 2]
+    assert r == 1782
+
+    # Decorated function (its slot is a (*args, **kwargs) wrapper) — module-level _psp_add2
+    pair: list[int] = [10, 20]
+    assert _psp_add2(*pair) == 30
+    assert _psp_add2(*[3, 4]) == 7
+    assert _psp_add2(1, *[6]) == 7
+
+
+_fold_p13_spread()
+
+
+# ===== FOLDED: p36_mutable_defaults.py (mutable / computed defaults) =====
+# Module scope: mutable / computed parameter defaults are only supported on
+# top-level functions, so these defs stay at module top level (prefixed `_pmd_`).
+def _pmd_append_to_list(x: int, lst: list[int] = []) -> list[int]:
+    lst.append(x)
+    return lst
+
+
+def _pmd_collect(k: str, v: int, d: dict[str, int] = {}) -> dict[str, int]:
+    d[k] = v
+    return d
+
+
+def _pmd_expr_defaults(*, name: str = "default", count: int = 5 + 5) -> str:
+    return name + ":" + str(count)
+
+
+def _pmd_accumulate(x: int, acc: list[int] = [0]) -> list[int]:
+    acc.append(x)
+    return acc
+
+
+def _pmd_with_literals(a: int, b: int = 10, c: str = "z", d: bool = True) -> str:
+    return str(a) + str(b) + c + str(d)
+
+
+def _fold_p36_mutable_defaults():
+    # Mutable list default: shared across calls (aliasing trap)
+    r1: list[int] = _pmd_append_to_list(1)
+    assert len(r1) == 1
+    assert r1[0] == 1
+
+    r2: list[int] = _pmd_append_to_list(2)
+    assert len(r2) == 2
+    assert r2[0] == 1
+    assert r2[1] == 2
+
+    r3: list[int] = _pmd_append_to_list(3)
+    assert len(r3) == 3
+    assert r3[2] == 3
+
+    assert r1 == r2
+    assert r2 == r3
+    assert r1 is r2
+    assert r2 is r3
+
+    fresh: list[int] = [100]
+    r4: list[int] = _pmd_append_to_list(4, fresh)
+    assert len(r4) == 2
+    assert r4[0] == 100
+    assert r4[1] == 4
+    assert r4 is fresh
+
+    r5: list[int] = _pmd_append_to_list(5)
+    assert len(r5) == 4
+    assert r5[3] == 5
+    assert r5 is r1
+
+    # Mutable dict default: shared across calls
+    d1 = _pmd_collect("a", 1)
+    d2 = _pmd_collect("b", 2)
+    assert len(d2) == 2
+    assert d1 is d2
+    assert d1["a"] == 1
+    assert d1["b"] == 2
+
+    # Computed default: an arithmetic expression, evaluated once
+    assert _pmd_expr_defaults() == "default:10"
+    assert _pmd_expr_defaults(name="custom") == "custom:10"
+    assert _pmd_expr_defaults(count=20) == "default:20"
+
+    # A non-empty list default starts from its initial elements (once)
+    a1 = _pmd_accumulate(1)
+    assert a1 == [0, 1]
+    a2 = _pmd_accumulate(2)
+    assert a2 == [0, 1, 2]
+    assert a1 is a2
+
+    # Literal defaults are unchanged (regression): per-call fresh, not shared
+    assert _pmd_with_literals(1) == "110zTrue"
+    assert _pmd_with_literals(1, 2) == "12zTrue"
+    assert _pmd_with_literals(1, 2, "q") == "12qTrue"
+    assert _pmd_with_literals(1, 2, "q", False) == "12qFalse"
+
+
+_fold_p36_mutable_defaults()
+
+
+# ===== FOLDED: p36 computed default over a module global (def-time, module scope) =====
+# Kept at module scope because the computed default reads a module global at def time.
+_md_BASE: int = 100
+
+
+def _md_scaled(x: int, factor: int = _md_BASE * 2) -> int:
+    return x + factor
+
+
+assert _md_scaled(1) == 201
+assert _md_scaled(1, 0) == 1
+assert _md_scaled(5) == 205
+
+
+# ===== FOLDED: p37_kwargs_spread.py (**dict spread into direct calls) =====
+# Module scope: **dict / keyword binding to regular positional parameters is only
+# supported on top-level functions, so these defs stay at module level (`_pks_`).
+def _pks_accepts_two(a: int, b: int) -> int:
+    return a + b
+
+
+def _pks_with_defaults(a: int, b: int = 10, c: int = 20) -> int:
+    return a + b + c
+
+
+def _pks_three(x: int, y: int, z: int) -> int:
+    return x + y + z
+
+
+def _pks_kwonly(a: int, *, b: int = 50) -> int:
+    return a + b
+
+
+def _pks_make_kwargs() -> dict[str, int]:
+    return {"a": 3, "b": 4}
+
+
+def _fold_p37_kwargs_spread():
+    # literal **{...} dicts (compile-time flatten)
+    assert _pks_accepts_two(**{"a": 5, "b": 10}) == 15
+    assert _pks_accepts_two(a=1, **{"b": 2}) == 3
+    assert _pks_accepts_two(**{"a": 10, "b": 20}) == 30
+    assert _pks_with_defaults(**{"a": 1}) == 31
+    assert _pks_with_defaults(**{"a": 1, "b": 2}) == 23
+    assert _pks_with_defaults(**{"a": 1, "c": 3}) == 14
+    # literal **{...} combined with a literal *[...] positional spread
+    assert _pks_three(*[1, 2], **{"z": 3}) == 6
+    assert _pks_three(1, *[2], **{"z": 3}) == 6
+
+    # runtime **d dicts (per-parameter binding)
+    d_basic: dict[str, int] = {"a": 5, "b": 10}
+    assert _pks_accepts_two(**d_basic) == 15
+
+    d_mixed: dict[str, int] = {"b": 20}
+    assert _pks_accepts_two(a=1, **d_mixed) == 21
+
+    d_defaults: dict[str, int] = {"a": 5}
+    assert _pks_with_defaults(**d_defaults) == 35
+
+    d_partial_b: dict[str, int] = {"a": 1, "b": 2}
+    assert _pks_with_defaults(**d_partial_b) == 23
+
+    d_partial_c: dict[str, int] = {"a": 1, "c": 3}
+    assert _pks_with_defaults(**d_partial_c) == 14
+
+    d_kwonly_full: dict[str, int] = {"a": 10, "b": 20}
+    assert _pks_kwonly(**d_kwonly_full) == 30
+
+    d_kwonly_part: dict[str, int] = {"a": 25}
+    assert _pks_kwonly(**d_kwonly_part) == 75
+
+    # **d from a function result, evaluated once
+    assert _pks_accepts_two(**_pks_make_kwargs()) == 7
+
+
+_fold_p37_kwargs_spread()
+
+
+# ===== FOLDED: p38_unbox_bool.py (Dyn -> : bool checked unbox) =====
+def _fold_p38_unbox_bool():
+    def echo_bool(x):
+        flag: bool = x  # Dyn -> bool slot: the checked unbox
+        assert flag == x
+        assert (not flag) == (not x)
+        if flag:
+            assert x == True
+        else:
+            assert x == False
+        return flag
+
+    assert echo_bool(True) == True
+    assert echo_bool(False) == False
+
+    def combine(p, q):
+        a: bool = p
+        b: bool = q
+        assert (a and b) == (p and q)
+        assert (a or b) == (p or q)
+        assert (a == b) == (p == q)
+        return a and b
+
+    assert combine(True, True) == True
+    assert combine(True, False) == False
+    assert combine(False, False) == False
+
+    # A : bool slot reassigned from another Dyn value within the same function
+    def toggle(first, second):
+        state: bool = first
+        assert state == first
+        state = second
+        assert state == second
+        return state
+
+    assert toggle(True, False) == False
+    assert toggle(False, True) == True
+
+
+_fold_p38_unbox_bool()
+
+
+# ===== FOLDED: p39_closure_values.py (closure/lambda VALUES with Callable sigs) =====
+def _fold_p39_closure_values():
+    # 1. A lambda bound to a variable, then called
+    add = lambda x, y: x + y
+    assert add(2, 3) == 5
+    assert add(40, 2) == 42
+
+    is_pos = lambda x: x > 0
+    assert is_pos(5) == True
+    assert is_pos(-3) == False
+
+    double = lambda x: x * 2
+    assert double(21) == 42
+
+    # 2. A lambda capturing an enclosing variable, bound and called
+    def lambda_capture() -> int:
+        base: int = 100
+        inc = lambda d: base + d
+        return inc(5)
+
+    assert lambda_capture() == 105
+
+    # 3. A single-level factory returning an annotated nested closure
+    def adder_factory(n: int):
+        def add_n(x: int) -> int:
+            return x + n
+
+        return add_n
+
+    add5 = adder_factory(5)
+    assert add5(10) == 15
+    assert add5(100) == 105
+
+    def scale_factory(k: int):
+        def scale(x: int) -> int:
+            return x * k
+
+        return scale
+
+    triple = scale_factory(3)
+    assert triple(7) == 21
+
+    # 4. A returned closure stored and invoked more than once
+    def counter_base(start: int):
+        def step(d: int) -> int:
+            return start + d
+
+        return step
+
+    s = counter_base(10)
+    assert s(1) == 11
+    assert s(2) == 12
+    assert s(40) == 50
+
+
+_fold_p39_closure_values()
+
+
+# ===== FOLDED: p40_value_call_kwargs.py (value-call into kwonly / **kwargs closures) =====
+def _fold_p40_value_call_kwargs():
+    # **kwargs: inspect the dict (iterate / len / subscript)
+    def make_sum_kwargs():
+        def f(**kwargs) -> int:
+            total: int = 0
+            for k in kwargs:
+                total = total + kwargs[k]
+            return total
+        return f
+
+    g = make_sum_kwargs()
+    assert g(a=1, b=2, c=3) == 6
+    assert g() == 0
+    assert g(x=10) == 10
+
+    def make_count_kwargs():
+        def f(**kwargs) -> int:
+            return len(kwargs)
+        return f
+
+    k = make_count_kwargs()
+    assert k() == 0
+    assert k(p=1, q=2) == 2
+
+    # **d forward + named/**d merge into a closure
+    d_forward = {"x": 10, "y": 20}
+    assert g(**d_forward) == 30
+    assert g(a=1, **d_forward) == 31
+
+    # keyword-only parameters bound by keyword / by default
+    def make_kwonly():
+        def f(a: int, *, b: int = 10) -> int:
+            return a + b
+        return f
+
+    h = make_kwonly()
+    assert h(5) == 15
+    assert h(5, b=20) == 25
+
+    def make_kwonly_required():
+        def f(*, name: str, count: int = 1) -> str:
+            return name + ":" + str(count)
+        return f
+
+    m = make_kwonly_required()
+    assert m(name="hi") == "hi:1"
+    assert m(name="x", count=3) == "x:3"
+
+    # *args + **kwargs closure: positional via *args, keyword via **kwargs
+    def make_both():
+        def f(*args: int, **kwargs: int) -> int:
+            total: int = 0
+            for v in args:
+                total = total + v
+            for kk in kwargs:
+                total = total + kwargs[kk]
+            return total
+        return f
+
+    b = make_both()
+    assert b(1, 2, 3) == 6
+    assert b(a=10, b=20) == 30
+    assert b(1, 2, x=3, y=4) == 10
+
+    # a wrapper closure forwarding func(*args, **kwargs) with keywords
+    def passthrough(func):
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+
+    def kw_consumer(**kwargs) -> int:
+        return len(kwargs)
+
+    wrapped = passthrough(kw_consumer)
+    assert wrapped() == 0
+    assert wrapped(a=1, b=2) == 2
+
+
+_fold_p40_value_call_kwargs()
+
+
+# ===== FOLDED: p41_call_guard.py (runtime callable guard on value-call path) =====
+def _fold_p41_call_guard():
+    def call_it(x):  # x is Dyn (unannotated) -> the uniform indirect-call path
+        return x()
+
+    # A data tuple as a Dyn callee (the closure/tuple tag-collision SEGV vector).
+    raised = False
+    try:
+        call_it((1, 2))
+    except TypeError:
+        raised = True
+    assert raised, "tuple not callable"
+
+    # An int as a Dyn callee.
+    raised = False
+    try:
+        call_it(5)
+    except TypeError:
+        raised = True
+    assert raised, "int not callable"
+
+    # None as a Dyn callee.
+    raised = False
+    try:
+        call_it(None)
+    except TypeError:
+        raised = True
+    assert raised, "None not callable"
+
+    # A string as a Dyn callee.
+    raised = False
+    try:
+        call_it("hi")
+    except TypeError:
+        raised = True
+    assert raised, "str not callable"
+
+    # A genuine closure flowing through the SAME Dyn call_it path still works.
+    def adder(n: int):
+        def add() -> int:
+            return n + 1
+        return add
+
+    assert call_it(adder(41)) == 42
+
+
+_fold_p41_call_guard()
+
+
+
+# ===== FOLDED: test_decorator_factory.py (@decorator(arg), capture counts, *args) =====
+# Module scope: all callees are decorated, so they stay at module top level
+# (identifiers prefixed `_pdf_`).
+def _pdf_multiply(factor: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) * factor
+        return wrapper
+    return decorator
+
+
+@_pdf_multiply(3)
+def _pdf_get_value(x: int) -> int:
+    return x + 5
+
+
+@_pdf_multiply(5)
+def _pdf_double_five(x: int) -> int:
+    return x * 2
+
+
+def _pdf_call_get_value(n: int) -> int:
+    return _pdf_get_value(n)
+
+
+def _pdf_add_constant(val: int):
+    def decorator(func):
+        def wrapper() -> int:
+            return func() + val
+        return wrapper
+    return decorator
+
+
+@_pdf_add_constant(100)
+def _pdf_get_zero() -> int:
+    return 0
+
+
+def _pdf_make_linear(a: int, b: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) * a + b
+        return wrapper
+    return decorator
+
+
+@_pdf_make_linear(3, 7)
+def _pdf_identity_3cap(x: int) -> int:
+    return x
+
+
+def _pdf_make_quadratic(a: int, b: int, c: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) * a + b * x + c
+        return wrapper
+    return decorator
+
+
+@_pdf_make_quadratic(2, 3, 5)
+def _pdf_identity_4cap(x: int) -> int:
+    return x
+
+
+def _pdf_make_poly_5cap(a: int, b: int, c: int, d: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) + a + b + c + d
+        return wrapper
+    return decorator
+
+
+@_pdf_make_poly_5cap(1, 2, 3, 4)
+def _pdf_base_5cap(x: int) -> int:
+    return x * 10
+
+
+def _pdf_make_sum_6cap(v1: int, v2: int, v3: int, v4: int, v5: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) + v1 + v2 + v3 + v4 + v5
+        return wrapper
+    return decorator
+
+
+@_pdf_make_sum_6cap(1, 2, 3, 4, 5)
+def _pdf_base_6cap(x: int) -> int:
+    return x
+
+
+def _pdf_make_sum_7cap(v1: int, v2: int, v3: int, v4: int, v5: int, v6: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) + v1 + v2 + v3 + v4 + v5 + v6
+        return wrapper
+    return decorator
+
+
+@_pdf_make_sum_7cap(1, 2, 3, 4, 5, 6)
+def _pdf_base_7cap(x: int) -> int:
+    return x
+
+
+def _pdf_make_sum_8cap(v1: int, v2: int, v3: int, v4: int, v5: int, v6: int, v7: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            return func(x) + v1 + v2 + v3 + v4 + v5 + v6 + v7
+        return wrapper
+    return decorator
+
+
+@_pdf_make_sum_8cap(1, 2, 3, 4, 5, 6, 7)
+def _pdf_base_8cap(x: int) -> int:
+    return x
+
+
+def _pdf_simple_decorator(func):
+    def wrapper(x: int, y: int) -> int:
+        result: int = func(x, y)
+        return result
+    return wrapper
+
+
+@_pdf_simple_decorator
+def _pdf_add_values(x: int, y: int) -> int:
+    return x + y
+
+
+def _pdf_double_result(func):
+    def wrapper(a: int, b: int) -> int:
+        r: int = func(a, b)
+        return r * 2
+    return wrapper
+
+
+@_pdf_double_result
+def _pdf_mul_two(a: int, b: int) -> int:
+    return a * b
+
+
+def _pdf_log_decorator(func):
+    def wrapper(x: int) -> int:
+        return func(x)
+    return wrapper
+
+
+@_pdf_log_decorator
+def _pdf_inc(x: int) -> int:
+    return x + 1
+
+
+def _pdf_varargs_decorator(func):
+    def wrapper(*args):
+        return func(*args)
+    return wrapper
+
+
+@_pdf_varargs_decorator
+def _pdf_add_va(x: int, y: int) -> int:
+    return x + y
+
+
+@_pdf_varargs_decorator
+def _pdf_double_va(x: int) -> int:
+    return x * 2
+
+
+@_pdf_varargs_decorator
+def _pdf_add3_va(x: int, y: int, z: int) -> int:
+    return x + y + z
+
+
+@_pdf_varargs_decorator
+def _pdf_greet_va(name: str) -> str:
+    return "Hello, " + name
+
+
+@_pdf_varargs_decorator
+def _pdf_zero_va() -> int:
+    return 42
+
+
+def _pdf_logging_decorator(func):
+    def wrapper(*args):
+        result = func(*args)
+        return result * 2
+    return wrapper
+
+
+@_pdf_logging_decorator
+def _pdf_mul_va(x: int, y: int) -> int:
+    return x * y
+
+
+@_pdf_varargs_decorator
+def _pdf_sub_va(x: int, y: int) -> int:
+    return x - y
+
+
+def _pdf_my_deco_f(f):
+    def wrapper(*args):
+        return f(*args)
+    return wrapper
+
+
+@_pdf_my_deco_f
+def _pdf_add_nf(x: int, y: int) -> int:
+    return x + y
+
+
+def _pdf_my_deco_g(g):
+    def wrapper_g(x: int) -> int:
+        return g(x) + 1
+    return wrapper_g
+
+
+@_pdf_my_deco_g
+def _pdf_inc_g(x: int) -> int:
+    return x
+
+
+def _pdf_plain_deco(func):
+    def plain_wrapper(x: int, y: int) -> int:
+        return func(x, y)
+    return plain_wrapper
+
+
+@_pdf_plain_deco
+def _pdf_add_plain(x: int, y: int) -> int:
+    return x + y
+
+
+assert _pdf_get_value(10) == 45      # (10+5) * 3
+assert _pdf_double_five(4) == 40     # (4 * 2) * 5
+assert _pdf_call_get_value(5) == 30  # (5+5) * 3
+assert _pdf_get_zero() == 100
+assert _pdf_identity_3cap(10) == 37  # 10 * 3 + 7
+assert _pdf_identity_4cap(4) == 25   # 4*2 + 3*4 + 5
+assert _pdf_base_5cap(5) == 60       # 50 + 1+2+3+4
+assert _pdf_base_6cap(100) == 115    # 100 + 1+2+3+4+5
+assert _pdf_base_7cap(100) == 121    # 100 + 1+2+3+4+5+6
+assert _pdf_base_8cap(100) == 128    # 100 + 1+2+3+4+5+6+7
+assert _pdf_add_values(10, 20) == 30
+assert _pdf_mul_two(3, 4) == 24
+assert _pdf_inc(5) == 6
+assert _pdf_add_va(1, 2) == 3
+assert _pdf_double_va(5) == 10
+assert _pdf_add3_va(1, 2, 3) == 6
+assert _pdf_greet_va("World") == "Hello, World"
+assert _pdf_zero_va() == 42
+assert _pdf_mul_va(3, 4) == 24
+assert _pdf_sub_va(10, 3) == 7
+assert _pdf_add_nf(3, 4) == 7
+assert _pdf_inc_g(10) == 11
+_pdf_nums_list: list[int] = [10, 20]
+assert _pdf_add_plain(*_pdf_nums_list) == 30
+
+
+# ===== FOLDED: test_class_decorators.py (class decorators / factory form) =====
+# Module scope: classes can't be defined inside a function and the decorators
+# apply to class statements (identifiers prefixed `_pcd_`).
+_pcd_marks: list = []
+_pcd_count: list = [0]
+
+
+# A plain side-effecting decorator: runs for effect, returns the class.
+def _pcd_register(cls: int) -> int:
+    _pcd_marks.append(cls)
+    _pcd_count[0] = _pcd_count[0] + 1
+    return cls
+
+
+# A parameterized factory decorator @label("name").
+def _pcd_label(name: str):
+    def deco(cls: int) -> int:
+        _pcd_marks.append(cls)
+        return cls
+
+    return deco
+
+
+@_pcd_register
+class _pcd_Widget:
+    def __init__(self, n: int):
+        self.n = n
+
+    def doubled(self) -> int:
+        return self.n * 2
+
+
+@_pcd_label("gadget")
+class _pcd_Gadget:
+    def __init__(self, m: int):
+        self.m = m
+
+    def tripled(self) -> int:
+        return self.m * 3
+
+
+# Stacked: both decorators run (innermost first), the class is unchanged.
+@_pcd_register
+@_pcd_label("both")
+class _pcd_Both:
+    def __init__(self, k: int):
+        self.k = k
+
+
+# (a) The side effects ran.
+assert _pcd_count[0] == 2
+assert len(_pcd_marks) == 4
+
+# (b) The decorated classes still construct and behave normally.
+_pcd_w = _pcd_Widget(5)
+assert _pcd_w.doubled() == 10
+assert _pcd_w.n == 5
+
+_pcd_g = _pcd_Gadget(7)
+assert _pcd_g.tripled() == 21
+
+_pcd_b = _pcd_Both(9)
+assert _pcd_b.k == 9
+
+# The decorator received the class id (an int) — distinct ids for distinct classes.
+assert _pcd_marks[0] != _pcd_marks[1]
+
 
 print("All function tests passed!")

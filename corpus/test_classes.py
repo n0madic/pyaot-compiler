@@ -2,6 +2,7 @@
 
 from typing import Any
 from abc import abstractmethod
+from collections import deque
 
 # ===== SECTION: Class definitions and __init__ =====
 
@@ -3745,5 +3746,986 @@ assert (
     str(type(_NoRepr())) == "<class '__main__._NoRepr'>"
 ), "type(instance) is module-qualified"
 assert type(_NoRepr()).__name__ == "_NoRepr", "type(instance).__name__ is the bare class name"
+
+
+
+# ===== SECTION: Folded point-tests =====
+# Several point-test corpus files are folded in here. pyaot has no nested classes
+# and a per-program user-class cap (runtime class_id is a u8), so each kept class
+# lives at module scope with a per-source prefix to avoid colliding with the many
+# classes defined earlier in this file. Prints were converted to asserts against
+# the CPython-correct values. Sources whose cases are already fully covered above
+# (basic construction, arithmetic/comparison dunders, @property/@staticmethod/
+# @classmethod, container __getitem__/__setitem__/__contains__/__len__) are
+# DEDUPED rather than re-added: p5_class_basic (Point/AttrCounter/TypedPoint),
+# p5_dunder_arith (DunderVec/Vector2D/RevNum), p5_dunder_container (IntList/
+# Container), p5_decorators (PropCounter/StaticMath/MixedMethods/AnnotatedClassAttr).
+
+
+# --- folded from p5_inherit.py + p5_mro_join.py (merged): super(), C3 MRO/diamond,
+#     virtual dispatch from a base method, polymorphic dispatch, isinstance,
+#     and MRO-aware nominal joins (unannotated sibling lists/returns/ternary). ---
+class _oo_Animal:
+    def __init__(self, name: str):
+        self.name = name
+
+    def speak(self) -> str:
+        return "..."
+
+    def describe(self) -> str:
+        # Virtual dispatch from within a base method (self.speak()).
+        return self.name + " says " + self.speak()
+
+
+class _oo_Dog(_oo_Animal):
+    def __init__(self, name: str, breed: str):
+        super().__init__(name)  # super() chain into _oo_Animal.__init__
+        self.breed = breed
+
+    def speak(self) -> str:
+        return "Woof"
+
+
+class _oo_Puppy(_oo_Dog):
+    def speak(self) -> str:
+        return "Yip"
+
+
+class _oo_Cat(_oo_Animal):
+    def speak(self) -> str:
+        return "Meow"
+
+
+# Diamond root carries a defaulted name so D() (who-test) and D("d") (speak-zoo)
+# both construct; who()/speak() exercise C3 (MRO = D, B, C, A → B before C).
+class _oo_A(_oo_Animal):
+    def __init__(self, name: str = ""):
+        super().__init__(name)
+
+    def who(self) -> str:
+        return "A"
+
+    def speak(self) -> str:
+        return "A"
+
+
+class _oo_B(_oo_A):
+    def who(self) -> str:
+        return "B"
+
+    def speak(self) -> str:
+        return "B"
+
+
+class _oo_C(_oo_A):
+    def who(self) -> str:
+        return "C"
+
+    def speak(self) -> str:
+        return "C"
+
+
+class _oo_D(_oo_B, _oo_C):
+    pass
+
+
+# Polymorphic dispatch over a base-typed list of mixed subclasses + describe().
+_oo_animals: list[_oo_Animal] = [
+    _oo_Dog("Rex", "Lab"),
+    _oo_Cat("Felix"),
+    _oo_Puppy("Buddy", "Pug"),
+    _oo_Animal("Thing"),
+]
+_oo_describes = [a.describe() for a in _oo_animals]
+assert _oo_describes == ["Rex says Woof", "Felix says Meow", "Buddy says Yip", "Thing says ..."]
+
+_oo_d = _oo_Dog("Fido", "Beagle")
+assert _oo_d.describe() == "Fido says Woof"
+assert _oo_d.speak() == "Woof"
+assert _oo_d.name == "Fido"
+assert _oo_d.breed == "Beagle"
+
+_oo_pup = _oo_Puppy("Spot", "Terrier")
+assert _oo_pup.describe() == "Spot says Yip"
+assert _oo_pup.name == "Spot"
+assert _oo_pup.breed == "Terrier"
+
+# isinstance across the hierarchy.
+assert isinstance(_oo_d, _oo_Dog) is True
+assert isinstance(_oo_d, _oo_Animal) is True
+assert isinstance(_oo_d, _oo_Cat) is False
+assert isinstance(_oo_pup, _oo_Animal) is True
+assert isinstance(_oo_pup, _oo_Dog) is True
+assert isinstance(_oo_pup, _oo_Puppy) is True
+_oo_c = _oo_Cat("Tom")
+assert isinstance(_oo_c, _oo_Dog) is False
+assert isinstance(_oo_c, _oo_Animal) is True
+
+# C3 diamond via who().
+assert _oo_D().who() == "B"
+assert _oo_B().who() == "B"
+assert _oo_C().who() == "C"
+assert _oo_A().who() == "A"
+
+# MRO-aware nominal join: unannotated mixed literal joins to list[_oo_Animal].
+_oo_pets = [_oo_Dog("Rex", "x"), _oo_Cat("Tom")]
+_oo_pet_lines = [p.name + ": " + p.speak() for p in _oo_pets]
+assert _oo_pet_lines == ["Rex: Woof", "Tom: Meow"]
+
+
+def _oo_pick(n: int):
+    # Unannotated return joins sibling branches to the common base.
+    if n == 0:
+        return _oo_Dog("D", "x")
+    return _oo_Cat("C")
+
+
+assert _oo_pick(0).speak() == "Woof"
+assert _oo_pick(1).speak() == "Meow"
+
+# Derived + Base collapses to Base (subsumption, not a two-member union).
+_oo_mixed = [_oo_Dog("M", "x"), _oo_Animal("Plain")]
+_oo_mixed_speak = [m.speak() for m in _oo_mixed]
+assert _oo_mixed_speak == ["Woof", "..."]
+
+# Diamond join(B, C) = Animal; zoo dispatches per C3 (B before C), through name.
+_oo_zoo = [_oo_B("b"), _oo_C("c"), _oo_D("d")]
+_oo_zoo_lines = [z.name + ": " + z.speak() for z in _oo_zoo]
+assert _oo_zoo_lines == ["b: B", "c: C", "d: B"]
+
+# Conditional expression over siblings — another unannotated join site.
+_oo_flip = True
+_oo_chosen = _oo_Dog("Yes", "x") if _oo_flip else _oo_Cat("No")
+assert _oo_chosen.speak() == "Woof"
+assert isinstance(_oo_chosen, _oo_Animal) is True
+assert isinstance(_oo_chosen, _oo_Cat) is False
+
+
+# --- folded from p27_matmul.py: matrix-multiply operator `@` / __matmul__ (PEP 465) ---
+class _mm_Vec:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def __matmul__(self, other: "_mm_Vec") -> int:
+        return self.x * other.x + self.y * other.y
+
+
+_mm_v1 = _mm_Vec(1, 2)
+_mm_v2 = _mm_Vec(3, 4)
+assert (_mm_v1 @ _mm_v2) == 11
+assert (_mm_v2 @ _mm_v1) == 11
+assert (_mm_Vec(0, 0) @ _mm_v1) == 0
+
+
+class _mm_Mat:
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+    def __matmul__(self, other: "_mm_Mat") -> "_mm_Mat":
+        return _mm_Mat(self.v * other.v)
+
+
+_mm_product = _mm_Mat(3) @ _mm_Mat(5)
+assert _mm_product.v == 15
+
+_mm_chained = _mm_Mat(2) @ _mm_Mat(3) @ _mm_Mat(4)
+assert _mm_chained.v == 24
+
+
+class _mm_Scaled:
+    def __init__(self, k: int) -> None:
+        self.k = k
+
+    def __rmatmul__(self, other: int) -> int:
+        return other + self.k
+
+
+assert (10 @ _mm_Scaled(5)) == 15
+
+_mm_acc = _mm_Mat(2)
+_mm_acc @= _mm_Mat(7)
+assert _mm_acc.v == 14
+
+
+def _mm_total_dot(pairs: list[tuple[_mm_Vec, _mm_Vec]]) -> int:
+    total = 0
+    for a, b in pairs:
+        total += a @ b
+    return total
+
+
+assert _mm_total_dot([(_mm_Vec(1, 1), _mm_Vec(2, 2)), (_mm_Vec(3, 0), _mm_Vec(1, 5))]) == 7
+
+_mm_caught_num = False
+try:
+    _mm_x = 3 @ 4
+except TypeError:
+    _mm_caught_num = True
+assert _mm_caught_num
+
+
+class _mm_NoMat:
+    def __init__(self) -> None:
+        self.q = 1
+
+
+_mm_caught_obj = False
+try:
+    _mm_y = _mm_NoMat() @ _mm_NoMat()
+except TypeError:
+    _mm_caught_obj = True
+assert _mm_caught_obj
+
+
+# --- folded from p42_iter_protocol.py: lazy user-class iterator protocol ---
+# Basic for-loop / iter()/next() / for...else / empty / break / inherited iteration
+# are already covered above by `CountUp` / `CountUpNamed`; we reuse those classes
+# for the cases unique to p42 (direct next(), StopIteration on exhaustion, list()/
+# sum() over an instance) and only add the genuinely-new shapes: a re-iterable
+# whose __iter__ yields a FRESH iterator, and a __next__ that raises a non-Stop
+# exception which must propagate.
+_p42_collected = [x for x in CountUp(4)]
+assert _p42_collected == [0, 1, 2, 3]
+
+_p42_empty = [x for x in CountUp(0)]
+assert _p42_empty == []
+
+_p42_it = iter(CountUp(3))
+assert next(_p42_it) == 0
+assert next(_p42_it) == 1
+assert next(_p42_it) == 2
+_p42_stop_caught = False
+try:
+    next(_p42_it)
+except StopIteration:
+    _p42_stop_caught = True
+assert _p42_stop_caught
+
+# next() called DIRECTLY on a self-iterator instance (no intervening iter()).
+_p42_cu = CountUp(2)
+assert next(_p42_cu) == 0
+assert next(_p42_cu) == 1
+
+# break-early (the iterator is abandoned mid-stream).
+_p42_early = []
+for x in CountUp(100):
+    if x >= 3:
+        break
+    _p42_early.append(x)
+assert _p42_early == [0, 1, 2]
+
+# list() / sum() over an instance.
+assert list(CountUp(5)) == [0, 1, 2, 3, 4]
+assert sum(CountUp(5)) == 10
+
+
+class _it_Squares:
+    def __init__(self, n: int):
+        self.i = 0
+        self.n = n
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> int:
+        if self.i >= self.n:
+            raise StopIteration
+        v = self.i * self.i
+        self.i = self.i + 1
+        return v
+
+
+class _it_SquaresIterable:
+    # `__iter__` returns a FRESH `_it_Squares` each call (re-iterable).
+    def __init__(self, n: int):
+        self.n = n
+
+    def __iter__(self):
+        return _it_Squares(self.n)
+
+
+_it_si = _it_SquaresIterable(4)
+assert list(_it_si) == [0, 1, 4, 9]
+assert list(_it_si) == [0, 1, 4, 9]  # fresh iterator → same result
+
+
+class _it_Boom:
+    # __next__ raises a NON-StopIteration exception — it must propagate.
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> int:
+        raise ValueError("boom")
+
+
+_it_boom_msg = ""
+try:
+    for x in _it_Boom():
+        _it_boom_msg = "unreachable"
+except ValueError as e:
+    _it_boom_msg = str(e)
+assert _it_boom_msg == "boom"
+
+
+# --- folded from p43_hetero_tuple_iter.py: heterogeneous-numeric tuple iteration ---
+# DIVERGENCE-SAFE: float-forced values compared via `==` / value-based list equality.
+class _ht_Accum:
+    __slots__ = ("data", "acc")
+
+    def __init__(self, d):
+        self.data = d
+        self.acc = 0  # frontend infers Int from the literal `0`
+
+    def add_grad(self, scalar):
+        # `scalar` is bound from a heterogeneous-tuple element → must stay Tagged.
+        self.acc = self.acc + scalar * self.data
+
+
+_ht_a = _ht_Accum(2.0)
+_ht_b = _ht_Accum(3.0)
+for _ht_scalar in (1.5, 1):
+    _ht_a.add_grad(_ht_scalar)
+    _ht_b.add_grad(_ht_scalar)
+
+assert _ht_a.acc == 5.0
+assert _ht_b.acc == 7.5
+assert _ht_a.acc ** 2 == 25.0
+assert _ht_b.acc ** 2 == 56.25
+
+assert [x for x in (1.5, 1)] == [1.5, 1]
+assert [x * 2 for x in (2.5, 2)] == [5.0, 4]
+
+_ht_tot = 0.0
+for _ht_v in (True, 2.0, 3):
+    _ht_tot = _ht_tot + _ht_v
+assert _ht_tot == 6.0
+
+_ht_fs = 0.0
+for _ht_f in (1.0, 2.0, 3.5):
+    _ht_fs = _ht_fs + _ht_f
+assert _ht_fs == 6.5
+
+_ht_is = 0
+for _ht_i in (10, 20, 30):
+    _ht_is = _ht_is + _ht_i
+assert _ht_is == 60
+
+
+# --- folded from p45_in_method_field_annot.py: in-method instance-field annotations ---
+# DIVERGENCE-SAFE: a float field written from an int holds 5.0 (pyaot) / 5 (CPython);
+# asserts use `==` and only float-FORCED expressions, never a divergent repr.
+class _fa_Box:
+    def __init__(self, v: int) -> None:
+        self.x: float = v          # int value into a float-annotated field
+        self.label: str = "box"    # str field declared in-method
+
+    def get(self) -> float:
+        return self.x
+
+
+_fa_b = _fa_Box(5)
+assert _fa_b.x == 5.0
+assert _fa_b.label == "box"
+assert (_fa_b.get() + 0.5) == 5.5
+assert (_fa_b.x + 0.5) == 5.5
+assert _fa_b.label == "box"
+
+# bignum int into an in-method float field (the §8 box bignum arm), via _fa_Box.
+_fa_big = _fa_Box(2 ** 62)             # exact power of two, f64-representable
+assert _fa_big.x == 4611686018427387904.0
+
+
+class _fa_Lazy:
+    def __init__(self) -> None:
+        self.v: float                  # pure type declaration (no store)
+        self.v = 0                     # int write into the float field
+
+    def bump(self, n: int) -> None:
+        self.v = n                     # another int write -> §8 SetField box
+
+
+_fa_lz = _fa_Lazy()
+assert _fa_lz.v == 0.0
+_fa_lz.bump(7)
+assert _fa_lz.v == 7.0
+assert (_fa_lz.v + 0.5) == 7.5
+
+
+class _fa_Acc:
+    def __init__(self) -> None:
+        self.total = 0.0
+
+    def configure(self, flag: bool, k: int) -> None:
+        if flag:
+            self.scale: float = k      # in-method annotation inside an `if`
+        else:
+            self.scale = 1.0
+
+    def scaled(self) -> float:
+        return self.total * self.scale
+
+
+_fa_a = _fa_Acc()
+_fa_a.total = 4.0
+_fa_a.configure(True, 3)
+assert _fa_a.scale == 3.0
+assert _fa_a.scaled() == 12.0
+assert (_fa_a.scale + 0.5) == 3.5
+assert (_fa_a.scaled() + 0.5) == 12.5
+
+
+def _fa_half(x: float) -> float:
+    return x * 0.5
+
+
+_fa_box2 = _fa_Box(9)                  # box2.x: float = 9 -> 9.0
+assert _fa_half(_fa_box2.x) == 4.5     # the boxed float field flows into a float param
+
+
+# --- folded from p48_gradual_builtin_immediate.py: gradual builtin op on immediate ---
+def _im_as_dyn(x):
+    return x
+
+
+def _im_raises_type_error(fn) -> bool:
+    try:
+        fn()
+        return False
+    except TypeError:
+        return True
+
+
+# Immediate receivers raise TypeError on len / in / subscript (not SIGSEGV).
+assert _im_raises_type_error(lambda: len(_im_as_dyn(42)))
+assert _im_raises_type_error(lambda: len(_im_as_dyn(True)))
+assert _im_raises_type_error(lambda: len(_im_as_dyn(None)))
+assert _im_raises_type_error(lambda: 5 in _im_as_dyn(42))
+assert _im_raises_type_error(lambda: 1 in _im_as_dyn(None))
+assert _im_raises_type_error(lambda: _im_as_dyn(99)[0])
+assert _im_raises_type_error(lambda: _im_as_dyn(False)[0])
+
+# The same ops on genuine containers still work.
+assert len(_im_as_dyn([1, 2, 3])) == 3
+assert len(_im_as_dyn("hello")) == 5
+assert len(_im_as_dyn({1: 1, 2: 2})) == 2
+assert (2 in _im_as_dyn([1, 2, 3])) is True
+assert (9 in _im_as_dyn([1, 2, 3])) is False
+assert _im_as_dyn([7, 8, 9])[1] == 8
+assert _im_as_dyn((4, 5, 6))[0] == 4
+assert _im_as_dyn("abc")[2] == "c"
+assert len(_im_as_dyn([1, 2, 3, 4])) == 4
+assert _im_as_dyn([10, 20, 30])[2] == 30
+assert _im_as_dyn("xyz")[0] == "x"
+
+
+# --- folded from p8h_dyn_attr.py: by-name field access on a Dyn receiver ---
+class _dy_Node:
+    def __init__(self, data: float):
+        self.data = data
+        self.grad = 0.0
+
+
+class _dy_Pair:
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+
+def _dy_pick(flag):
+    if flag:
+        return _dy_Node(1.5)
+    return "not a node"
+
+
+# Dyn receiver (unannotated return) — field read/write by name.
+_dy_n = _dy_pick(True)
+assert _dy_n.data == 1.5
+_dy_n.grad = 2.5
+assert _dy_n.grad == 2.5
+
+
+def _dy_make_pair():
+    return _dy_Pair(_dy_Node(10.0), _dy_Node(20.0))
+
+
+# Dyn elements out of a heterogeneous structure, two-deep.
+_dy_p = _dy_make_pair()
+assert _dy_p.left.data + _dy_p.right.data == 30.0
+
+
+def _dy_add_data(a, b):
+    bb = b if isinstance(b, _dy_Node) else _dy_Node(float(b))
+    return a.data + bb.data
+
+
+assert _dy_add_data(_dy_Node(3.0), _dy_Node(4.0)) == 7.0
+assert _dy_add_data(_dy_Node(3.0), 2) == 5.0
+
+
+class _dy_Acc:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __add__(self, other):
+        return _dy_Acc(self.v + other.v)
+
+    def __radd__(self, other):
+        return _dy_Acc(self.v + other)
+
+
+# class elements through sum()'s inferred __add__ / __radd__ returns.
+_dy_s = sum([_dy_Acc(1), _dy_Acc(2), _dy_Acc(3)])
+assert _dy_s.v == 6
+
+# AttributeError on a missing field / non-instance (caught, not a crash).
+_dy_missing_caught = False
+try:
+    _dy_tmp = _dy_n.missing
+except AttributeError:
+    _dy_missing_caught = True
+assert _dy_missing_caught
+
+_dy_bad = _dy_pick(False)
+_dy_noninstance_caught = False
+try:
+    _dy_tmp2 = _dy_bad.data
+except AttributeError:
+    _dy_noninstance_caught = True
+assert _dy_noninstance_caught
+
+
+# --- folded from test_gradual_methods.py: Dyn/Union-receiver method dispatch ---
+class _gm_Base:
+    def __init__(self, x):
+        self.x = x
+
+    def kind(self):
+        return "base"
+
+    def val(self):
+        return self.x
+
+    def combine(self, other, scale=1):
+        return (self.x + other) * scale
+
+
+class _gm_Derived(_gm_Base):
+    def kind(self):
+        return "derived"  # override
+
+    def doubled(self):
+        return self.x * 2
+
+
+class _gm_Other:
+    def kind(self):
+        return "other"
+
+    def val(self):
+        return -1
+
+
+def _gm_call_kind(obj):
+    # `obj` is an unannotated param → `Dyn`; called with several unrelated types.
+    return obj.kind()
+
+
+def _gm_container_methods():
+    # A heterogeneous dict → its values are `Dyn`; `box[k]` is a `Dyn` receiver.
+    box = {}
+
+    box["lst"] = [3, 1, 2]
+    box["lst"].append(4)
+    box["lst"].sort()
+    assert box["lst"] == [1, 2, 3, 4]
+    box["lst"].insert(0, 9)
+    assert box["lst"] == [9, 1, 2, 3, 4]
+    assert box["lst"].index(2) == 2
+    assert box["lst"].count(9) == 1
+    box["lst"].reverse()
+    assert box["lst"] == [4, 3, 2, 1, 9]
+    box["lst"].remove(9)
+    assert box["lst"].pop() == 1
+    assert box["lst"] == [4, 3, 2]
+    assert box["lst"].copy() == [4, 3, 2]
+    box["lst"].extend([7, 8])
+    assert box["lst"] == [4, 3, 2, 7, 8]
+    box["lst"].clear()
+    assert box["lst"] == []
+
+    box["d"] = {"a": 1}
+    box["d"].update({"b": 2})
+    box["d"].setdefault("c", 3)
+    box["d"].setdefault("a", 99)  # present → keeps 1
+    assert box["d"].get("a") == 1
+    assert box["d"].get("z") is None
+    assert box["d"].get("z", -1) == -1
+    assert sorted(box["d"].keys()) == ["a", "b", "c"]
+    assert sorted(box["d"].values()) == [1, 2, 3]
+    assert sorted(box["d"].items()) == [("a", 1), ("b", 2), ("c", 3)]
+    assert box["d"].pop("a") == 1
+    assert box["d"].pop("zz", -7) == -7
+    box["d"].clear()
+    assert box["d"] == {}
+    assert box["d"].copy() == {}
+
+    box["s"] = {1, 2, 3}
+    box["s"].add(4)
+    box["s"].discard(2)
+    box["s"].discard(99)  # absent → no error
+    box["s"].remove(1)
+    box["s"].update({5, 6})
+    assert sorted(box["s"]) == [3, 4, 5, 6]
+    assert sorted(box["s"].copy()) == [3, 4, 5, 6]
+
+    box["dq"] = deque([1, 2, 3])
+    box["dq"].append(4)
+    box["dq"].appendleft(0)
+    box["dq"].extend([5, 6])
+    assert list(box["dq"]) == [0, 1, 2, 3, 4, 5, 6]
+    assert box["dq"].pop() == 6
+    assert box["dq"].popleft() == 0
+    assert box["dq"].count(3) == 1
+    box["dq"].clear()
+    assert list(box["dq"]) == []
+
+
+def _gm_user_methods():
+    # A heterogeneous list (no common base) → element type `Dyn`.
+    items = [_gm_Base(10), _gm_Derived(7), _gm_Other()]
+    kinds = [it.kind() for it in items]  # `it` is genuinely `Dyn`
+    assert kinds == ["base", "derived", "other"]
+    assert _gm_call_kind(items[0]) == "base"
+    assert _gm_call_kind(items[1]) == "derived"
+    assert _gm_call_kind(items[2]) == "other"
+
+    d = items[1]  # `Dyn`, holds a Derived
+    assert d.doubled() == 14          # own method
+    assert d.val() == 7               # inherited (Base.val) — self coerces C→B
+    assert d.kind() == "derived"      # overridden
+    assert d.combine(100) == 107      # default arg
+    assert d.combine(100, 3) == 321   # positional 2nd arg
+    assert d.combine(5, scale=2) == 24  # positional-or-keyword param by keyword
+    assert d.combine(other=5, scale=2) == 24  # both by keyword
+
+    b = items[0]  # `Dyn`, holds a Base
+    assert b.combine(3) == 13
+    assert b.val() == 10
+
+
+def _gm_scalar_methods():
+    box = {}
+
+    # tuple.index / .count on a `Dyn` tuple.
+    box["t"] = (10, 20, 30, 20)
+    box["pad"] = {}  # keep the dict's value type `Dyn`
+    assert box["t"].index(20) == 1
+    assert box["t"].count(20) == 2
+
+    # int methods on a `Dyn` int (immediate fixnum, bool, and heap bignum).
+    box["n"] = 255
+    assert box["n"].bit_length() == 8
+    assert box["n"].bit_count() == 8
+    assert box["n"].conjugate() == 255
+    assert box["n"].__index__() == 255
+    box["b"] = True
+    assert box["b"].bit_length() == 1
+    box["big"] = 2 ** 70
+    assert box["big"].bit_length() == 71
+
+    # list.sort(reverse=) on a `Dyn` list.
+    box["lst"] = [1, 3, 2, 5, 4]
+    box["lst"].sort(reverse=True)
+    assert box["lst"] == [5, 4, 3, 2, 1]
+    box["lst"].sort(reverse=False)
+    assert box["lst"] == [1, 2, 3, 4, 5]
+
+
+_gm_container_methods()
+_gm_user_methods()
+_gm_scalar_methods()
+
+
+# --- folded from b10_field_inference.py: cross-instance field-type inference ---
+class _b10_Value:
+    def __init__(self, data):
+        self.data = data
+        self.grad = 0.0
+        self._prev = []
+        self._local = []
+
+    def __add__(self, other):
+        out = _b10_Value(self.data + other.data)
+        out._prev = [self, other]
+        out._local = [1.0, 1.0]
+        return out
+
+    def __mul__(self, other):
+        out = _b10_Value(self.data * other.data)
+        out._prev = [self, other]
+        out._local = [other.data, self.data]
+        return out
+
+    def backward_step(self):
+        for i in range(len(self._prev)):
+            child = self._prev[i]
+            child.grad = child.grad + self._local[i] * self.grad
+
+
+# the autograd pattern: self-referential writes through non-self receivers.
+_b10_a = _b10_Value(2.0)
+_b10_b = _b10_Value(3.0)
+_b10_c = _b10_a * _b10_b
+_b10_d = _b10_c + _b10_a
+_b10_d.grad = 1.0
+_b10_d.backward_step()
+_b10_c.backward_step()
+assert _b10_a.data == 2.0
+assert _b10_b.data == 3.0
+assert _b10_c.data == 6.0
+assert _b10_d.data == 8.0
+assert _b10_a.grad == 4.0
+assert _b10_b.grad == 2.0
+assert _b10_c.grad == 1.0
+assert _b10_d.grad == 1.0
+
+
+class _b10_Mixed:
+    # mixed int/float writes demote the field (and the program still compiles).
+    def __init__(self, flag):
+        if flag:
+            self.v = 1.5
+        else:
+            self.v = 7
+
+
+_b10_m1 = _b10_Mixed(True)
+_b10_m2 = _b10_Mixed(False)
+assert _b10_m1.v == 1.5
+assert _b10_m2.v == 7
+
+
+class _b10_Counter:
+    def __init__(self):
+        self.total = 0.0
+
+    def bump(self, amount):
+        self.total = self.total + amount
+
+
+class _b10_DoubleCounter(_b10_Counter):
+    # a subclass writing an inherited field feeds the base class's variable.
+    def bump2(self, amount):
+        self.total = self.total + amount * 2.0
+
+
+_b10_dc = _b10_DoubleCounter()
+_b10_dc.bump(1.25)
+_b10_dc.bump2(2.0)
+assert _b10_dc.total == 5.25
+
+
+class _b10_Tagged:
+    # an annotated field stays authoritative.
+    label: str
+
+    def __init__(self, label: str):
+        self.label = label
+
+
+_b10_t = _b10_Tagged("ok")
+assert _b10_t.label == "ok"
+
+
+# --- folded from p46_heap_arg_guard.py + p47_heap_readback_guard.py (shared classes):
+#     gradual Tagged->Heap shape guard at the call/arg/return, read-back-into-typed-
+#     local, Dyn-global, and Dyn-field seams; plus the subclass-aware instance guard
+#     and the class-reject path. Kept at module scope: the Dyn GLOBAL read
+#     (`_hg_gdyn`) and Dyn FIELD read are load-bearing seams. ---
+# DIVERGENCE-SAFE: error paths raise at the guard (pyaot) vs inside the body
+# (CPython); both are caught and asserted as a boolean, never a divergent repr.
+def _hg_as_dyn(x):
+    # Unannotated param -> gradual `Dyn`; the inferred return type is `Dyn`.
+    return x
+
+
+def _hg_takes_str(x: str) -> int:
+    return len(x)
+
+
+def _hg_takes_list(x: list) -> int:
+    return len(x)
+
+
+def _hg_takes_dict(x: dict) -> int:
+    return len(x)
+
+
+def _hg_takes_set(x: set) -> int:
+    return len(x)
+
+
+def _hg_takes_tuple(x: tuple) -> int:
+    return len(x)
+
+
+# Correct path: a Dyn value that IS the shape passes the arg guard.
+assert _hg_takes_str(_hg_as_dyn("hello")) == 5
+assert _hg_takes_list(_hg_as_dyn([1, 2, 3])) == 3
+assert _hg_takes_dict(_hg_as_dyn({1: 10, 2: 20})) == 2
+assert _hg_takes_set(_hg_as_dyn({1, 2, 3, 4})) == 4
+assert _hg_takes_tuple(_hg_as_dyn((7, 8))) == 2
+assert _hg_takes_str(_hg_as_dyn("world!")) == 6
+assert _hg_takes_list(_hg_as_dyn([1, 2, 3, 4, 5])) == 5
+assert _hg_takes_dict(_hg_as_dyn({1: 1})) == 1
+assert _hg_takes_set(_hg_as_dyn({9})) == 1
+assert _hg_takes_tuple(_hg_as_dyn((1, 2, 3))) == 3
+
+
+def _hg_arg_raises(fn) -> bool:
+    try:
+        fn()
+        return False
+    except TypeError:
+        return True
+
+
+# Error path: a Dyn int -> TypeError (guard here, `len(int)` in CPython).
+assert _hg_arg_raises(lambda: _hg_takes_str(_hg_as_dyn(42)))
+assert _hg_arg_raises(lambda: _hg_takes_list(_hg_as_dyn(42)))
+assert _hg_arg_raises(lambda: _hg_takes_dict(_hg_as_dyn(42)))
+assert _hg_arg_raises(lambda: _hg_takes_set(_hg_as_dyn(42)))
+assert _hg_arg_raises(lambda: _hg_takes_tuple(_hg_as_dyn(42)))
+
+
+# Read-back into a typed LOCAL: a Dyn value that IS the shape passes.
+def _hg_rb_str(d) -> int:
+    x: str = d
+    return len(x)
+
+
+def _hg_rb_list(d) -> int:
+    x: list = d
+    x.append(0)          # typed list op: x stays Heap(List); guard survives
+    return len(x)
+
+
+def _hg_rb_dict(d) -> int:
+    x: dict = d
+    return len(x)
+
+
+def _hg_rb_set(d) -> int:
+    x: set = d
+    return len(x)
+
+
+def _hg_rb_tuple(d) -> int:
+    x: tuple = d
+    return len(x)
+
+
+assert _hg_rb_str(_hg_as_dyn("hello")) == 5
+assert _hg_rb_list(_hg_as_dyn([1, 2, 3])) == 4      # 3 + appended 0
+assert _hg_rb_dict(_hg_as_dyn({1: 1, 2: 2})) == 2
+assert _hg_rb_set(_hg_as_dyn({1, 2, 3})) == 3
+assert _hg_rb_tuple(_hg_as_dyn((9, 8))) == 2
+assert _hg_rb_str(_hg_as_dyn("world")) == 5
+assert _hg_rb_list(_hg_as_dyn([7, 7])) == 3
+assert _hg_rb_dict(_hg_as_dyn({1: 1})) == 1
+assert _hg_rb_set(_hg_as_dyn({5})) == 1
+assert _hg_rb_tuple(_hg_as_dyn((1, 2, 3))) == 3
+
+
+# Read-back from a Dyn GLOBAL into a typed local.
+_hg_gdyn = _hg_as_dyn({10: 100, 20: 200, 30: 300})
+
+
+def _hg_from_global() -> int:
+    y: dict = _hg_gdyn       # Dyn global -> typed dict local
+    return len(y)
+
+
+assert _hg_from_global() == 3
+
+
+# Read-back from a Dyn FIELD into a typed local.
+class _hg_Box:
+    def __init__(self, v):       # `v` unannotated -> the field is Dyn
+        self.contents = v
+
+
+def _hg_from_field(b: _hg_Box) -> int:
+    z: list = b.contents         # Dyn field -> typed list local
+    return len(z)
+
+
+assert _hg_from_field(_hg_Box([1, 2, 3, 4])) == 4
+assert _hg_from_field(_hg_Box([6, 6, 6])) == 3
+
+
+def _hg_rb_raises(fn) -> bool:
+    try:
+        fn(_hg_as_dyn(42))
+        return False
+    except (TypeError, AttributeError):
+        return True
+
+
+# Read-back ERROR path: a Dyn int into a typed local (both raise).
+assert _hg_rb_raises(_hg_rb_str)
+assert _hg_rb_raises(_hg_rb_list)
+assert _hg_rb_raises(_hg_rb_dict)
+assert _hg_rb_raises(_hg_rb_set)
+assert _hg_rb_raises(_hg_rb_tuple)
+
+
+# Instance guard: subclass-aware CORRECT path + class-REJECT path (type diverges).
+class _hg_Animal:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _hg_Dog(_hg_Animal):
+    pass
+
+
+def _hg_animal_name(a: _hg_Animal) -> str:
+    return a.name
+
+
+# A Dog (subclass) into an Animal param passes the subclass-aware instance guard.
+assert _hg_animal_name(_hg_as_dyn(_hg_Animal("Rex"))) == "Rex"
+assert _hg_animal_name(_hg_as_dyn(_hg_Dog("Fido"))) == "Fido"
+
+
+def _hg_class_reject() -> bool:
+    # pyaot: TypeError at rt_check_instance; CPython: AttributeError at `.name`.
+    try:
+        _hg_animal_name(_hg_as_dyn(42))
+        return False
+    except (TypeError, AttributeError):
+        return True
+
+
+assert _hg_class_reject()
+
+
+def _hg_animal_local(d) -> str:
+    a: _hg_Animal = d        # Dyn -> typed Animal local (rt_check_instance)
+    return a.name
+
+
+def _hg_class_readback_reject() -> bool:
+    try:
+        _hg_animal_local(_hg_as_dyn(42))
+        return False
+    except (TypeError, AttributeError):
+        return True
+
+
+assert _hg_class_readback_reject()
+
 
 print("All class tests passed!")

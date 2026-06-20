@@ -1630,4 +1630,640 @@ _rv_int_nan_inf()
 _rv_minmax_str()
 _rv_int_float_dispatch()
 
+
+# ============================================================================
+# FOLDED-IN POINT TESTS (assert-only; prints converted/dropped)
+# Folded from: p18_scalar_builtins, p30_introspection, p31_zip_multi,
+#   p32_int_methods, p33_zero_arg_conversions, p34_isinstance_tuple,
+#   p10_kwargs_builtins, p17_type_builtin, test_builtin_first_class.
+# ============================================================================
+
+
+# p17 user classes MUST stay at module top level: wrapping them in a function
+# changes __qualname__ to "<locals>", which changes the asserted type string.
+class _p17_Widget:
+    def __init__(self) -> None:
+        self.x = 1
+
+
+# p30 / p34 user classes also stay at module level (pyaot frontend does not
+# support class definitions nested inside a function body).
+class _p30_Animal:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def speak(self) -> str:
+        return "..."
+
+
+class _p30_Dog(_p30_Animal):
+    def speak(self) -> str:
+        return "woof"
+
+
+class _p30_Cat(_p30_Animal):
+    def speak(self) -> str:
+        return "meow"
+
+
+class _p30_HasAttrTest:
+    def __init__(self) -> None:
+        self.x = 10
+        self.name = "hat"
+
+    def method(self) -> int:
+        return self.x
+
+
+class _p34_Animal:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def speak(self) -> str:
+        return "..."
+
+
+class _p34_Dog(_p34_Animal):
+    def speak(self) -> str:
+        return "woof"
+
+
+class _p34_Cat(_p34_Animal):
+    def speak(self) -> str:
+        return "meow"
+
+
+# Helper referenced from inside a generator expression (separate scope): the
+# pyaot frontend resolves it at module level, not from a nested def.
+_p18_witness: list = []
+
+
+def _p18_tap(v):
+    _p18_witness.append(v)
+    return v
+
+
+def _fold_p18_scalar_builtins() -> None:
+    # ===== pow -> ** (bignum + numeric-tower correct) =====
+    assert pow(2, 3) == 8
+    assert pow(2, 10) == 1024
+    assert pow(5, 0) == 1
+    assert pow(2, -1) == 0.5  # negative exponent -> float, exactly like **
+    assert pow(2, 64) == 2 ** 64  # bignum result
+    assert pow(10, 20) == 10 ** 20
+
+    # ===== divmod -> (a // b, a % b), CPython floor/sign semantics (B1) =====
+    assert divmod(17, 5) == (3, 2)
+    assert divmod(-7, 2) == (-4, 1)
+    assert divmod(7, -2) == (-4, -1)
+    assert divmod(-7, -2) == (3, -1)
+    assert divmod(7.5, 2) == (3.0, 1.5)
+    assert divmod(20, 4) == (5, 0)
+
+    # ===== all / any -- list, genexpr, empty, short-circuit, mixed, range =====
+    assert all([True, True, True]) == True
+    assert all([True, False, True]) == False
+    assert all([]) == True  # empty -> seed
+    assert any([False, False, True]) == True
+    assert any([False, False, False]) == False
+    assert any([]) == False  # empty -> seed
+    assert all([1, 2, 3]) == True  # truthy non-bools
+    assert all([1, 0, 3]) == False  # 0 is falsy
+    assert any([0, 0, 5]) == True
+    assert all(x > 0 for x in [1, 2, 3]) == True  # generator comprehension
+    assert any(x > 2 for x in [1, 2, 3]) == True
+    assert all(x < 0 for x in [1, 2, 3]) == False
+    assert all(x < 5 for x in range(5)) == True  # over range
+    assert any(x == 3 for x in range(5)) == True
+    assert all(["a", "b"]) == True  # non-empty strings truthy
+    assert all(["a", "", "b"]) == False  # empty string falsy
+
+    # short-circuit witness: a falsy early element stops all before later truthy
+    _p18_witness.clear()
+    assert all(_p18_tap(x) for x in [1, 0, 1]) == False
+    # stopped at the first falsy, never saw the trailing 1
+    assert _p18_witness == [1, 0]
+
+    # ===== id -- stability, distinctness, consistency with is =====
+    id_x = [1, 2, 3]
+    assert id(id_x) == id(id_x)  # stable across calls
+    a = [1]
+    b = [1]
+    assert id(a) != id(b)  # distinct live objects have distinct ids
+    assert (a is b) == (id(a) == id(b))  # consistent with is
+    assert (a is a) == (id(a) == id(a))
+
+    # ===== round -- banker's (round-half-to-even, B1) =====
+    assert round(2.5) == 2  # half -> even (down)
+    assert round(3.5) == 4  # half -> even (up)
+    assert round(0.5) == 0
+    assert round(-0.5) == 0  # -0.0 -> 0
+    assert round(1.5) == 2
+    assert round(2.675, 2) == 2.67  # 2.675 is 2.6749999... as a double
+    assert round(3.14159, 2) == 3.14  # ndigits present -> float result
+    assert round(7.5 / 2.5) == 3  # 3.0 -> int 3
+    assert round(5) == 5  # int stays int
+    assert round(123.456, 1) == 123.5
+
+    # ===== bin / hex / oct -- bignum-aware (B16) =====
+    assert bin(10) == "0b1010"
+    assert bin(0) == "0b0"
+    assert bin(-5) == "-0b101"  # sign before the prefix
+    assert hex(255) == "0xff"
+    assert hex(-255) == "-0xff"
+    assert oct(8) == "0o10"
+    assert oct(-8) == "-0o10"
+    assert bin(True) == "0b1"  # bool formats as its int value
+    assert hex(False) == "0x0"
+    assert bin(2 ** 100) == "0b1" + "0" * 100  # bignum (B16)
+    assert hex(2 ** 100) == "0x1" + "0" * 25  # bignum hex (B16)
+
+    # ===== interaction probes (cross with green features) =====
+    assert f"{divmod(17, 5)}" == "(3, 2)"  # f-string of a tuple
+    assert f"{bin(10)}" == "0b1010"
+    assert f"round={round(3.14159, 2)}" == "round=3.14"
+    assert pow(2, 3) + round(1.5) == 10  # 8 + 2
+    q, r = divmod(17, 5)  # unpack a divmod result
+    assert q == 3
+    assert r == 2
+    assert bin(10) + " " + hex(255) == "0b1010 0xff"
+
+
+def _fold_p30_introspection() -> None:
+    # self-subclass (reflexive), direct subclass, and the False cases.
+    # issubclass/isinstance need the class NAME directly (resolved at compile
+    # time), so the module-level _p30_* names are used in place of aliases.
+    assert issubclass(_p30_Dog, _p30_Animal) is True
+    assert issubclass(_p30_Cat, _p30_Animal) is True
+    assert issubclass(_p30_Animal, _p30_Animal) is True
+    assert issubclass(_p30_Dog, _p30_Dog) is True
+    assert issubclass(_p30_Dog, _p30_Cat) is False
+    assert issubclass(_p30_Cat, _p30_Dog) is False
+    assert issubclass(_p30_Animal, _p30_Dog) is False
+
+    hat = _p30_HasAttrTest()
+    assert hasattr(hat, "x") is True        # present field
+    assert hasattr(hat, "name") is True     # present field
+    assert hasattr(hat, "method") is True   # present method
+    assert hasattr(hat, "missing") is False  # absent name
+    assert hasattr(hat, "xyz") is False     # absent name
+
+    # ===== setattr / getattr round-trips on a concrete instance =====
+    hat2 = _p30_HasAttrTest()
+    assert getattr(hat2, "x") == 10
+    setattr(hat2, "x", 42)
+    assert getattr(hat2, "x") == 42
+    assert hat2.x == 42  # write is visible to direct attribute access too
+
+    setattr(hat2, "name", "world")
+    assert getattr(hat2, "name") == "world"
+    assert hat2.name == "world"
+    # setattr evaluates to None
+    assert setattr(hat2, "x", 7) is None
+    assert hat2.x == 7
+
+    # ===== cross with already-green features (f-string, arithmetic) =====
+    d = _p30_Dog("Rex")
+    assert getattr(d, "name") == "Rex"
+    total = getattr(hat2, "x") + 100
+    assert total == 107
+    assert f"name={getattr(d, 'name')} x={getattr(hat2, 'x')}" == "name=Rex x=7"
+
+    # polymorphic instance, crossed with a compile-time issubclass gate
+    voices = []
+    if issubclass(_p30_Dog, _p30_Animal):
+        animals = [_p30_Dog("D"), _p30_Cat("C")]
+        for a in animals:
+            voices.append(f"{getattr(a, 'name')}: {a.speak()}")
+    assert voices == ["D: woof", "C: meow"]
+
+
+def _fold_p31_zip_multi() -> None:
+    # ===== zip of 3 lists into an annotated list[tuple[...]] slot =====
+    z3_a: list[int] = [1, 2, 3]
+    z3_b: list[str] = ["a", "b", "c"]
+    z3_c: list[float] = [1.0, 2.0, 3.0]
+    z3: list[tuple[int, str, float]] = list(zip(z3_a, z3_b, z3_c))
+    assert len(z3) == 3
+    assert z3[0] == (1, "a", 1.0)
+    assert z3[1] == (2, "b", 2.0)
+    assert z3[2] == (3, "c", 3.0)
+
+    # ===== shortest iterable wins (different lengths) =====
+    s_a: list[int] = [1, 2]
+    s_b: list[int] = [10, 20, 30]
+    s_c: list[int] = [100, 200, 300, 400]
+    s: list[tuple[int, int, int]] = list(zip(s_a, s_b, s_c))
+    assert len(s) == 2
+    assert s == [(1, 10, 100), (2, 20, 200)]
+
+    # ===== 4-iterable form (ZipN with count=4) =====
+    q4 = list(zip([1, 2], [3, 4], [5, 6], [7, 8]))
+    assert q4 == [(1, 3, 5, 7), (2, 4, 6, 8)]
+
+    # ===== 5 iterables, mixed element types =====
+    m = list(zip([1, 2], ["x", "y"], [1.5, 2.5], [True, False], ["p", "q"]))
+    assert m[0] == (1, "x", 1.5, True, "p")
+    assert m[1] == (2, "y", 2.5, False, "q")
+
+    # ===== direct iteration of a 3-zip (tuple unpacking in the for-target) =====
+    total = 0
+    joined = ""
+    for i, name, f in zip(z3_a, z3_b, z3_c):
+        total += i
+        joined += name
+        assert isinstance(f, float)
+    assert total == 6
+    assert joined == "abc"
+
+    # ===== 2-iterable form still works (unchanged rt_zip_new path) =====
+    two: list[tuple[int, str]] = list(zip(z3_a, z3_b))
+    assert two == [(1, "a"), (2, "b"), (3, "c")]
+
+    # ===== cross with already-green features (sum over zipped products) =====
+    xs: list[int] = [1, 2, 3]
+    ys: list[int] = [4, 5, 6]
+    dot = 0
+    for a, b in zip(xs, ys):
+        dot += a * b
+    assert dot == 32  # 1*4 + 2*5 + 3*6
+
+
+def _fold_p32_int_methods() -> None:
+    # ===== bit_length(): bits to represent abs(n); 0 for 0 =====
+    assert (0).bit_length() == 0
+    assert (5).bit_length() == 3
+    assert (255).bit_length() == 8
+    assert (1024).bit_length() == 11
+    assert (-7).bit_length() == 3       # sign ignored
+    n = 1000
+    assert n.bit_length() == 10         # variable receiver
+
+    # loop-variable receiver (each element is Int-typed)
+    expected = [1, 2, 4, 8]
+    i = 0
+    for x in [1, 2, 8, 255]:
+        assert x.bit_length() == expected[i]
+        i += 1
+    assert i == 4
+
+    # ===== bit_count(): set bits of abs(n) (Python 3.10+) =====
+    assert (0).bit_count() == 0
+    assert (255).bit_count() == 8
+    assert (-7).bit_count() == 3
+    assert (7).bit_count() == 3
+
+    # ===== bool is an int subtype: methods work on bools =====
+    assert True.bit_length() == 1
+    assert False.bit_length() == 0
+    assert True.bit_count() == 1
+    assert False.bit_count() == 0
+
+    # ===== conjugate() / __index__() return the int value =====
+    assert (42).conjugate() == 42
+    assert (42).__index__() == 42
+    assert (-5).conjugate() == -5
+    # bool widens to int (Int-typed result, usable in arithmetic)
+    assert True.conjugate() == 1
+    assert False.conjugate() == 0
+    assert True.__index__() == 1
+    assert (True.conjugate() + 5) == 6
+
+    # ===== BIGNUM-aware: arbitrary-precision receivers =====
+    big = 2 ** 100
+    assert big.bit_length() == 101
+    assert big.bit_count() == 1
+    assert (2 ** 64 - 1).bit_length() == 64
+    assert (2 ** 64 - 1).bit_count() == 64
+    assert big.conjugate() == big       # bignum preserved
+    assert big.__index__() == big
+    assert (2 ** 128 - 1).bit_count() == 128
+
+    # ===== cross with green features (f-string, indexing into a list) =====
+    vals = [1, 7, 255, 1023]
+    bl = [v.bit_length() for v in vals]
+    assert bl == [1, 3, 8, 10]
+    assert f"bits of 255 = {(255).bit_length()}, ones = {(255).bit_count()}" == \
+        "bits of 255 = 8, ones = 8"
+
+
+def _fold_p33_zero_arg_conversions() -> None:
+    # ===== the four defaults =====
+    assert int() == 0
+    assert float() == 0.0
+    assert bool() == False
+    assert str() == ""
+    assert repr(str()) == "''"
+
+    # ===== str() is a real empty string (length, concat, iteration) =====
+    s = str()
+    assert len(s) == 0
+    assert s + "abc" == "abc"
+    assert "x" + str() + "y" == "xy"
+    assert not s            # empty string is falsy
+    joined = str().join(["a", "b", "c"])
+    assert joined == "abc"  # "".join(...)
+    assert repr(s + "tail") == "'tail'"
+
+    # ===== defaults usable in arithmetic / control flow =====
+    assert int() + 5 == 5
+    assert float() + 1.5 == 1.5
+    assert (bool() or True) is True
+    total = 0
+    for _ in range(3):
+        total += int() + 1
+    assert total == 3
+
+    # ===== the with-args forms still work (no regression) =====
+    assert int(42) == 42
+    assert int("ff", 16) == 255
+    assert float("2.5") == 2.5
+    assert bool(1) is True
+    assert str(42) == "42"
+    assert str(3.14) == "3.14"
+    assert int("101", 2) == 5
+    assert str([1, 2]) == "[1, 2]"
+
+    # ===== user shadow wins (unshadowed-gated) =====
+    def make_default() -> str:
+        return str()  # the builtin, unshadowed here
+
+    assert make_default() == ""
+
+
+def _fold_p34_isinstance_tuple() -> None:
+    # isinstance needs the class NAME directly (resolved at compile time), so
+    # the module-level _p34_* names are used in place of aliases.
+    # ===== builtin-only tuples (static fold per element) =====
+    five = 5
+    flt = 5.0
+    txt = "a"
+    assert isinstance(five, (str, int)) is True
+    assert isinstance(flt, (str, int)) is False
+    assert isinstance(txt, (int, str, bytes)) is True
+    assert isinstance(txt, (int, float)) is False
+
+    # bool subset int in Python.
+    flag = True
+    assert isinstance(flag, (int,)) is True
+    assert isinstance(flag, (str,)) is False
+
+    # ===== container KINDS (matches by kind, ignores element types) =====
+    lst = [1, 2, 3]
+    tup = (1, 2)
+    dct = {"k": 1}
+    assert isinstance(lst, (dict, list)) is True
+    assert isinstance(tup, (list, tuple)) is True
+    assert isinstance(dct, (list, dict)) is True
+    assert isinstance(lst, (dict, tuple)) is False
+
+    # ===== user classes (runtime inheritance-aware check) =====
+    d = _p34_Dog("rex")
+    c = _p34_Cat("mia")
+    assert isinstance(d, (_p34_Cat, _p34_Animal)) is True   # Dog is-a Animal
+    assert isinstance(c, (_p34_Dog,)) is False              # Cat is not-a Dog
+    assert isinstance(c, (_p34_Cat, _p34_Dog)) is True
+    assert isinstance(d, (_p34_Cat,)) is False
+
+    # ===== MIXED user-class + builtin element =====
+    assert isinstance(d, (int, _p34_Dog)) is True
+    assert isinstance(d, (int, _p34_Cat)) is False
+    assert isinstance(five, (_p34_Dog, int)) is True  # builtin element wins
+
+    # ===== nested type-tuple flatten (CPython flattens recursively) =====
+    assert isinstance(five, (str, (bytes, int))) is True
+    assert isinstance(flt, (str, (bytes, int))) is False
+    assert isinstance(d, (_p34_Cat, (str, _p34_Animal))) is True
+
+    # ===== empty tuple => False =====
+    assert isinstance(five, ()) is False
+    assert isinstance(d, ()) is False
+
+    # ===== single-eval: the receiver is evaluated EXACTLY once =====
+    eval_witness = []
+
+    def bump() -> int:
+        eval_witness.append(1)
+        return len(eval_witness)
+
+    result = isinstance(bump(), (int, str))   # int element first -> 1 eval
+    assert result is True
+    assert len(eval_witness) == 1             # advanced by exactly one
+    result2 = isinstance(bump(), (str, float))
+    assert result2 is False                   # an int is neither str nor float
+    assert len(eval_witness) == 2
+
+    # ===== cross with green features: if, and, or, comprehension =====
+    def classify(x: int) -> str:
+        if isinstance(x, (int, float)):
+            return "number"
+        return "other"
+
+    assert classify(7) == "number"
+    assert isinstance(five, (int, str)) and isinstance(txt, (int, str))
+    assert isinstance(flt, (int,)) or isinstance(flt, (float,))
+
+    nums = [1, 2, 3, 4]
+    kept = [v for v in nums if isinstance(v, (int, float))]
+    assert kept == [1, 2, 3, 4]
+
+    animals = [_p34_Dog("a"), _p34_Cat("b"), _p34_Dog("c")]
+    voices = [a.speak() for a in animals if isinstance(a, (_p34_Dog,))]
+    assert voices == ["woof", "woof"]
+
+
+def _fold_p10_kwargs_builtins() -> None:
+    def neg(x: int) -> int:
+        return -x
+
+    # trace records eval ORDER into a witness instead of printing.
+    trace_order = []
+
+    def trace(label: str, val: int) -> int:
+        trace_order.append(label)
+        return val
+
+    xs = [3, 1, 2]
+
+    # -- sorted: reverse only (both truthiness spellings) --
+    assert sorted(xs, reverse=True) == [3, 2, 1]
+    assert sorted(xs, reverse=False) == [1, 2, 3]
+    assert sorted(xs, reverse=1) == [3, 2, 1]
+    assert sorted(xs, reverse=0) == [1, 2, 3]
+
+    # -- sorted: key= lambda / named fn / builtins --
+    assert sorted(xs, key=lambda v: -v) == [3, 2, 1]
+    assert sorted(xs, key=neg) == [3, 2, 1]
+    assert sorted([-5, 2, -1, 4], key=abs) == [-1, 2, 4, -5]
+    assert sorted(["bbb", "a", "cc"], key=len) == ["a", "cc", "bbb"]
+    assert sorted([10, 2, 33], key=str) == [10, 2, 33]
+
+    # -- key + reverse together, both keyword orders --
+    assert sorted(xs, key=neg, reverse=True) == [1, 2, 3]
+    assert sorted(xs, reverse=True, key=neg) == [1, 2, 3]
+
+    # -- key=None literal behaves like no key --
+    assert sorted(xs, key=None) == [1, 2, 3]
+    assert sorted(xs, key=None, reverse=True) == [3, 2, 1]
+
+    # -- kwargs x closure: the key captures an enclosing variable --
+    pivot = 2
+
+    def dist(v: int) -> int:
+        return abs(v - pivot)
+
+    assert sorted([5, 1, 2, 4], key=dist) == [2, 1, 4, 5]
+    assert sorted([5, 1, 2, 4], key=lambda v: abs(v - pivot), reverse=True) == \
+        [5, 4, 1, 2]
+
+    # -- stability: equal keys keep written order; reverse must NOT flip them --
+    pairs = [(2, "a"), (1, "b"), (2, "c"), (1, "d")]
+    assert sorted(pairs, key=lambda p: p[0]) == \
+        [(1, "b"), (1, "d"), (2, "a"), (2, "c")]
+    assert sorted(pairs, key=lambda p: p[0], reverse=True) == \
+        [(2, "a"), (2, "c"), (1, "b"), (1, "d")]
+    words = ["bb", "aa", "cc", "dd"]
+    assert sorted(words, key=len) == ["bb", "aa", "cc", "dd"]
+    assert sorted(words, key=len, reverse=True) == ["bb", "aa", "cc", "dd"]
+
+    # -- sorted over non-list iterables with keywords --
+    assert sorted((3, 1, 2), reverse=True) == [3, 2, 1]
+    assert sorted({"b": 1, "a": 2}, reverse=True) == ["b", "a"]
+    assert sorted("cab", key=str, reverse=True) == ["c", "b", "a"]
+
+    # -- the input is never mutated --
+    assert xs == [3, 1, 2]
+
+    # -- enumerate: positional and keyword start --
+    enum_pos = []
+    for i, v in enumerate(["x", "y"], 5):
+        enum_pos.append((i, v))
+    assert enum_pos == [(5, "x"), (6, "y")]
+    enum_kw = []
+    for i, v in enumerate(["x", "y"], start=7):
+        enum_kw.append((i, v))
+    assert enum_kw == [(7, "x"), (8, "y")]
+    assert list(enumerate("ab", start=1)) == [(1, "a"), (2, "b")]
+
+    # -- dict: pure-kwargs, mixed, written-order side effects --
+    d1 = dict(a=1, b=2, c=3)
+    assert list(d1.items()) == [("a", 1), ("b", 2), ("c", 3)]
+    d2 = dict(d1, b=20, z=26)
+    assert list(d2.items()) == [("a", 1), ("b", 20), ("c", 3), ("z", 26)]
+    assert list(d1.items()) == [("a", 1), ("b", 2), ("c", 3)]  # d1 unchanged
+
+    # dict kwargs evaluate in written order (b before a here)
+    trace_order.clear()
+    d3 = dict(b=trace("d3.b", 2), a=trace("d3.a", 1))
+    assert trace_order == ["d3.b", "d3.a"]
+    assert list(d3.items()) == [("b", 2), ("a", 1)]
+
+    trace_order.clear()
+    d4 = dict([("k", 0)], v=trace("d4.v", 9))
+    assert trace_order == ["d4.v"]
+    assert list(d4.items()) == [("k", 0), ("v", 9)]
+
+    # -- sorted kwargs values evaluate in written order --
+    trace_order.clear()
+    assert sorted([2, 1], reverse=trace("rev", 0) == 1) == [1, 2]
+    assert trace_order == ["rev"]
+
+
+def _fold_p17_type_builtin() -> None:
+    # builtins via the value tag.
+    type_list: list[int] = [1, 2, 3]
+    type_tuple: tuple[int, int] = (1, 2)
+    type_dict: dict[str, int] = {"a": 1}
+    type_set: set[int] = {1, 2, 3}
+
+    assert str(type(42)) == "<class 'int'>"
+    assert str(type(3.14)) == "<class 'float'>"
+    assert str(type(True)) == "<class 'bool'>"
+    assert str(type(False)) == "<class 'bool'>"
+    assert str(type("hello")) == "<class 'str'>"
+    assert str(type(None)) == "<class 'NoneType'>"
+    assert str(type(type_list)) == "<class 'list'>"
+    assert str(type(type_tuple)) == "<class 'tuple'>"
+    assert str(type(type_dict)) == "<class 'dict'>"
+    assert str(type(type_set)) == "<class 'set'>"
+
+    # ===== type(v).__name__ -- bare name from the runtime extractor =====
+    assert type(42).__name__ == "int"
+    assert type(3.14).__name__ == "float"
+    assert type(True).__name__ == "bool"
+    assert type(False).__name__ == "bool"
+    assert type("hello").__name__ == "str"
+    assert type(None).__name__ == "NoneType"
+    assert type(type_list).__name__ == "list"
+    assert type(type_tuple).__name__ == "tuple"
+    assert type(type_dict).__name__ == "dict"
+    assert type(type_set).__name__ == "set"
+
+    # ===== user class: qualified vs bare from the SAME source =====
+    # _p17_Widget is at MODULE level (see above) to preserve __qualname__.
+    assert str(type(_p17_Widget())) == "<class '__main__._p17_Widget'>"
+    assert type(_p17_Widget()).__name__ == "_p17_Widget"
+
+    # ===== interaction probes (the one-source principle) =====
+    name_var = type("x").__name__
+    assert name_var == "str"
+    assert name_var + "!" == "str!"
+    assert f"{type(42).__name__}" == "int"
+    assert f"a {type(_p17_Widget()).__name__} b" == "a _p17_Widget b"
+    assert type(1).__name__ == type(2).__name__
+    assert type("p").__name__ == type("q").__name__
+    assert type(1).__name__ != type(1.0).__name__
+
+
+def _fold_test_builtin_first_class() -> None:
+    # sorted() with key= builtin functions (works for all element types)
+    words_sorted_1 = ["aaa", "b", "cc"]
+    assert sorted(words_sorted_1, key=len) == ["b", "cc", "aaa"]
+    assert sorted(words_sorted_1, key=len, reverse=True) == ["aaa", "cc", "b"]
+
+    nums_sorted_abs = [-3, 1, -2, 4]
+    assert sorted(nums_sorted_abs, key=abs) == [1, -2, -3, 4]
+
+    nums_sorted_str = [10, 2, 1, 20]
+    assert sorted(nums_sorted_str, key=str) == [1, 10, 2, 20]
+
+    data_sorted = [[1], [1, 2, 3], [1, 2]]
+    result_sorted_lists = sorted(data_sorted, key=len)
+    assert len(result_sorted_lists[0]) == 1
+    assert len(result_sorted_lists[1]) == 2
+    assert len(result_sorted_lists[2]) == 3
+
+    # list.sort() with key= builtin functions
+    words_sort_1 = ["aaa", "b", "cc"]
+    words_sort_1.sort(key=len)
+    assert words_sort_1 == ["b", "cc", "aaa"]
+
+    words_sort_2 = ["aaa", "b", "cc"]
+    words_sort_2.sort(key=len, reverse=True)
+    assert words_sort_2 == ["aaa", "cc", "b"]
+
+    nums_sort_abs = [-5, 2, -3]
+    nums_sort_abs.sort(key=abs)
+    assert nums_sort_abs == [2, -3, -5]
+
+    # min()/max() with key= builtin functions
+    words_minmax = ["aaa", "b", "cc"]
+    assert min(words_minmax, key=len) == "b"
+    assert max(words_minmax, key=len) == "aaa"
+
+    nums_minmax_abs = [-5, 2, -3, 1]
+    assert min(nums_minmax_abs, key=abs) == 1
+    assert max(nums_minmax_abs, key=abs) == -5
+
+
+_fold_p18_scalar_builtins()
+_fold_p30_introspection()
+_fold_p31_zip_multi()
+_fold_p32_int_methods()
+_fold_p33_zero_arg_conversions()
+_fold_p34_isinstance_tuple()
+_fold_p10_kwargs_builtins()
+_fold_p17_type_builtin()
+_fold_test_builtin_first_class()
+
 print("All builtins code-review regression tests passed!")

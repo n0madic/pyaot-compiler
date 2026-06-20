@@ -712,4 +712,404 @@ def _rv_range_step() -> None:
 _rv_unary_bool()
 _rv_range_step()
 
+
+# ===== FOLDED: p2_control (if/elif/else, while, for, break/continue, for/while-else) =====
+# Print-based regression originally; converted to asserts. Adds an explicit
+# if/elif/else chain and the elif-fallthrough case not otherwise covered above.
+def _fold_p2_control() -> None:
+    x = 5
+    assert x == 5
+    x += 3
+    assert x == 8
+    x = y = 10
+    assert x == 10 and y == 10
+    a: int = 7
+    assert a == 7
+    b: float = 2.5
+    assert b == 2.5
+
+    # if/else
+    branch1: str = ""
+    if x > 5:
+        branch1 = "big"
+    else:
+        branch1 = "small"
+    assert branch1 == "big"
+
+    # if/elif/else chain (elif falls through to else here)
+    branch2: str = ""
+    if x < 0:
+        branch2 = "neg"
+    elif x == 13:
+        branch2 = "thirteen"
+    else:
+        branch2 = "other"
+    assert branch2 == "other"
+
+    # while loop accumulating 0..4
+    i = 0
+    while_seen: list[int] = []
+    while i < 5:
+        while_seen.append(i)
+        i += 1
+    assert while_seen == [0, 1, 2, 3, 4]
+
+    # for over range(1, 6) sum
+    total = 0
+    for n in range(1, 6):
+        total += n
+    assert total == 15
+
+    # for with break at 3
+    break_seen: list[int] = []
+    for j in range(10):
+        if j == 3:
+            break
+        break_seen.append(j)
+    assert break_seen == [0, 1, 2]
+
+    # for with continue keeping odds
+    cont_seen: list[int] = []
+    for k in range(5):
+        if k % 2 == 0:
+            continue
+        cont_seen.append(k)
+    assert cont_seen == [1, 3]
+
+    # for...else (no break → else runs)
+    for_else_done: bool = False
+    for m in range(3):
+        pass
+    else:
+        for_else_done = True
+    assert for_else_done
+
+    # while...else (no break → else runs)
+    w = 0
+    while_else_done: bool = False
+    while w < 3:
+        w += 1
+    else:
+        while_else_done = True
+    assert while_else_done
+
+    # inline asserts from the original
+    assert x == 10
+    assert 1 < 2
+
+    # range with negative step
+    desc_seen: list[int] = []
+    for d in range(10, 0, -2):
+        desc_seen.append(d)
+    assert desc_seen == [10, 8, 6, 4, 2]
+
+    # sum of range(100)
+    s = 0
+    for q in range(100):
+        s += q
+    assert s == 4950
+
+
+_fold_p2_control()
+
+
+# ===== FOLDED: p11_is_identity (`is` / `is not` bit-identity, §2) =====
+# Identity is bit-identity: bool/None singletons, same-object, distinct-object.
+# Class hoisted to module level (classes cannot nest in a function).
+class _Fold11Box:
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+
+def _fold_p11_is_identity() -> None:
+    # bool singletons
+    assert (True is True) == True
+    assert (False is False) == True
+    assert (True is False) == False
+    assert (True is not False) == True
+    assert (True is not True) == False
+
+    flag = True
+    other = False
+    assert (flag is True) == True
+    assert (flag is False) == False
+    assert (other is False) == True
+    assert (flag is not False) == True
+
+    # class-instance identity
+    a = _Fold11Box(1)
+    b = _Fold11Box(1)
+    c = a
+    assert (a is b) == False        # distinct objects
+    assert (a is a) == True         # same object
+    assert (a is c) == True         # alias of the same object
+    assert (a is not b) == True
+    assert (c is not a) == False
+    assert (a is None) == False     # the dedicated None path still works
+
+    # container identity (distinct literals are distinct objects)
+    l1 = [1, 2, 3]
+    l2 = [1, 2, 3]
+    l3 = l1
+    assert (l1 is l2) == False
+    assert (l1 is l3) == True
+    assert (l1 is not l2) == True
+
+    d1 = {"k": 1}
+    d2 = d1
+    assert (d1 is d2) == True
+
+    # interaction probes: identity inside guards, with and/or/not
+    guard_and: bool = False
+    if a is c and flag is True:
+        guard_and = True
+    assert guard_and
+    guard_not: bool = False
+    if not (a is b):
+        guard_not = True
+    assert guard_not
+
+    loop_iters: int = 0
+    i = 0
+    while a is c and i < 2:
+        loop_iters += 1
+        i += 1
+    assert loop_iters == 2
+
+    # identity as a stored / returned bool value
+    same = a is c
+    assert same == True
+    assert (l1 is l2 or a is c) == True
+
+
+_fold_p11_is_identity()
+
+
+# ===== FOLDED: p12_del (`del` stmt: dict/list/local/global/attr + matching errors, §3) =====
+# Classes hoisted to module level. Error paths keep concrete exception types and
+# assert a caught flag instead of printing.
+class _Fold12IntList:
+    def __init__(self) -> None:
+        self.data = [10, 20, 30]
+
+    def __delitem__(self, i: int) -> None:
+        del self.data[i]  # subscript del on an attribute base, inside a method
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+
+class _Fold12Holder:
+    def __init__(self) -> None:
+        self.payload = 42
+
+
+def _fold12_rebind() -> int:
+    x = 5
+    del x
+    x = 10
+    return x
+
+
+def _fold12_use_after_del() -> None:
+    y = 7
+    del y
+    caught: bool = False
+    try:
+        print(y)
+    except UnboundLocalError:
+        caught = True
+    assert caught
+
+
+def _fold12_multi_target() -> None:
+    a = 1
+    b = 2
+    del a, b
+    caught_a: bool = False
+    try:
+        print(a)
+    except UnboundLocalError:
+        caught_a = True
+    assert caught_a
+    caught_b: bool = False
+    try:
+        print(b)
+    except UnboundLocalError:
+        caught_b = True
+    assert caught_b
+
+
+def _fold_p12_del() -> None:
+    # del d[k] — present, missing (KeyError), survivor
+    d = {"a": 1, "b": 2, "c": 3}
+    del d["b"]
+    assert len(d) == 2
+    assert d["a"] == 1 and d["c"] == 3
+    assert ("b" in d) == False
+    key_err: bool = False
+    try:
+        del d["zzz"]
+    except KeyError:
+        key_err = True
+    assert key_err
+    assert len(d) == 2  # the dict survived the failed delete
+
+    # del li[i] — positive, negative, OOB (IndexError), shift
+    xs = [10, 20, 30, 40, 50]
+    del xs[0]
+    assert xs == [20, 30, 40, 50]
+    del xs[-1]
+    assert xs == [20, 30, 40]
+    del xs[1]
+    assert xs == [20, 40]
+    idx_err: bool = False
+    try:
+        del xs[99]
+    except IndexError:
+        idx_err = True
+    assert idx_err
+    assert xs == [20, 40]
+
+    # user class with __delitem__ (del self.data[i] on an attribute base)
+    container = _Fold12IntList()
+    del container[1]
+    assert container.data == [10, 30]
+    assert len(container) == 2
+
+    # del name (local): del then rebind + read is fine
+    assert _fold12_rebind() == 10
+
+    # del name (local): del then read raises UnboundLocalError
+    _fold12_use_after_del()
+
+    # del obj.attr: del then read raises AttributeError, then reassign + read
+    h = _Fold12Holder()
+    assert h.payload == 42
+    del h.payload
+    attr_err: bool = False
+    try:
+        print(h.payload)
+    except AttributeError:
+        attr_err = True
+    assert attr_err
+    h.payload = 7
+    assert h.payload == 7
+
+    # interaction probes: del in if / loop bodies, multi-target
+    d3 = {"x": 1, "y": 2, "z": 3}
+    if "y" in d3:
+        del d3["y"]
+    assert ("y" in d3) == False and len(d3) == 2
+
+    words = {"a": 1, "b": 2, "c": 3, "d": 4}
+    for k in ["a", "c"]:
+        del words[k]
+    assert sorted(words.keys()) == ["b", "d"]
+
+    _fold12_multi_target()
+
+
+_fold_p12_del()
+
+
+# del name (module global): del then read raises NameError. Kept at module level
+# because it asserts a module global, not a function local.
+_fold12_g = 99
+del _fold12_g
+_fold12_name_err: bool = False
+try:
+    print(_fold12_g)
+except NameError:
+    _fold12_name_err = True
+assert _fold12_name_err
+
+
+# ===== FOLDED: p26_walrus (walrus `:=` in if/while/comprehension/ternary, leak semantics, §2) =====
+# Extends the basic walrus section above with while-condition re-evaluation,
+# comprehension-leak, nested walrus, ternary walrus, and loop reuse. The
+# module-global-promotion case is kept at module level (it asserts a module
+# global read inside a function).
+def _fold_p26_walrus() -> None:
+    # Basic walrus in an if condition (name visible after the if)
+    nums: list[int] = [1, 2, 3, 4, 5]
+    if (n := len(nums)) > 3:
+        assert n == 5
+    assert n == 5  # binds in the enclosing scope
+
+    # Nested sub-expression
+    x: int = 10
+    if (doubled := x * 2) > 15:
+        assert doubled == 20
+    assert doubled == 20
+
+    # Walrus in a while condition (re-evaluated each iteration)
+    data: list[int] = [3, 2, 1, 0]
+    idx: int = 0
+    collected: list[int] = []
+    while (val := data[idx]) > 0:
+        collected.append(val)
+        idx += 1
+    assert collected == [3, 2, 1]
+    assert val == 0  # the falsy value that ended the loop is still bound
+
+    # Walrus in a comprehension filter (leaks to the enclosing FUNCTION scope)
+    src: list[int] = [1, 2, 3, 4, 5]
+    squares_gt5: list[int] = [yv for v in src if (yv := v * v) > 5]
+    assert squares_gt5 == [9, 16, 25]
+    assert yv == 25  # PEP 572: the comprehension walrus binds in the containing scope
+
+    # Walrus as a sub-expression value
+    z = (w := 42) + 1
+    assert z == 43 and w == 42
+
+    # Nested walrus
+    if (aa := (bb := 5) + 1) == 6:
+        assert aa == 6 and bb == 5
+
+    # Walrus in a ternary
+    t = (mm := 7) if True else 0
+    assert t == 7 and mm == 7
+
+    # Walrus reused / overwritten across a loop
+    acc: int = 0
+    for k in [1, 2, 3]:
+        acc += (sq := k * k)
+    assert sq == 9 and acc == 14
+
+    # Regression: unary +/- on a bool yields an int
+    assert (+True) == 1 and isinstance(+True, int)
+    assert (+False) == 0
+    assert (-True) == -1
+    assert (-False) == 0
+
+
+# Walrus inside a function-local scope (returns a value)
+def _fold26_big_sum(xs: list[int]) -> int:
+    total = 0
+    i = 0
+    while i < len(xs):
+        if (d := xs[i] * 2) > 4:
+            total += d
+        i += 1
+    return total
+
+
+_fold_p26_walrus()
+assert _fold26_big_sum([1, 2, 3, 4]) == 6 + 8
+
+
+# Module-level walrus read inside a function (promoted to global). Kept at module
+# level so the function reads a genuine module global.
+if (_fold26_config := 100) > 50:
+    pass
+
+
+def _fold26_read_config() -> int:
+    return _fold26_config + 1
+
+
+assert _fold26_read_config() == 101
+
+
 print("All control flow tests passed!")

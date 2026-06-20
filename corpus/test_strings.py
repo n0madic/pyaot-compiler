@@ -1168,4 +1168,669 @@ def _rv_str_split_maxsplit() -> None:
 
 _rv_str_split_maxsplit()
 
+# ===== SECTION: Folded p19 — str methods (split/replace/strip/partition/encode/predicates) =====
+# Folded from corpus/p19_str_methods.py. Cyrillic / café inputs exercise the
+# codepoint char_len recount paths; predicates here are the ASCII-agreeing set.
+def _fold_p19_str_methods() -> None:
+    # split: whitespace / sep / maxsplit (RAW slot) / Cyrillic
+    assert "  a b  c  ".split() == ["a", "b", "c"]
+    assert "a,b,c".split(",") == ["a", "b", "c"]
+    assert "a,b,c,d".split(",", 2) == ["a", "b", "c,d"]
+    assert "".split() == []
+    assert "раз два три".split() == ["раз", "два", "три"]
+    assert "мир,труд,май".split(",") == ["мир", "труд", "май"]
+    # rsplit: sep+maxsplit / no-arg whitespace / explicit None / Cyrillic
+    assert "a-b-c".rsplit("-", 1) == ["a-b", "c"]
+    assert "one two three".rsplit() == ["one", "two", "three"]
+    assert "a b c".rsplit(None, 1) == ["a b", "c"]
+    assert "раз-два-три".rsplit("-", 1) == ["раз-два", "три"]
+    # splitlines: \n / \r\n / \r mix / Cyrillic / empty
+    assert "a\nb\nc".splitlines() == ["a", "b", "c"]
+    assert "a\r\nb\rc\n".splitlines() == ["a", "b", "c"]
+    assert "".splitlines() == []
+    assert "one line".splitlines() == ["one line"]
+    assert "привет\nмир".splitlines() == ["привет", "мир"]
+    # replace: ASCII / byte-ratio change (café → recount) / growth
+    assert "a,b,c".replace(",", ";") == "a;b;c"
+    assert "café".replace("é", "e") == "cafe"
+    assert len("café".replace("é", "e")) == 4
+    assert "aaa".replace("a", "bb") == "bbbbbb"
+    assert "hello".replace("l", "L") == "heLLo"
+    # lstrip / rstrip: whitespace + chars-set, codepoint-correct len
+    assert "  hi  ".lstrip() == "hi  "
+    assert "  hi  ".rstrip() == "  hi"
+    assert "xxcafé".lstrip("x") == "café"
+    assert "caféxx".rstrip("x") == "café"
+    assert len("  café".lstrip()) == 4
+    assert len("café  ".rstrip()) == 4
+    assert "café".lstrip(None) == "café"
+    # removeprefix / removesuffix: exact char_len subtract (Cyrillic)
+    assert "foobar".removeprefix("foo") == "bar"
+    assert "foobar".removesuffix("bar") == "foo"
+    assert "hello".removeprefix("xyz") == "hello"
+    assert "мир".removeprefix("ми") == "р"
+    assert len("мир".removeprefix("ми")) == 1
+    # expandtabs: RAW tabsize / default 8 / Cyrillic + tab
+    assert "a\tb".expandtabs(4) == "a   b"
+    assert "a\tb".expandtabs() == "a       b"
+    assert "a\tб".expandtabs(4) == "a   б"
+    assert "\tб".expandtabs(2) == "  б"
+    # partition / rpartition: 3-tuple unpack through the gradual seam
+    a, sep, b = "key=value".partition("=")
+    assert a == "key" and sep == "=" and b == "value"
+    assert "no-sep".partition("=") == ("no-sep", "", "")
+    assert "a=b=c".partition("=") == ("a", "=", "b=c")
+    assert "a=b=c".rpartition("=") == ("a=b", "=", "c")
+    ca, csep, cb = "имя=значение".partition("=")
+    assert ca == "имя" and csep == "=" and cb == "значение"
+    # encode: utf-8 bytes, codepoint↔byte length
+    assert "café".encode() == b"caf\xc3\xa9"
+    assert len("café".encode()) == 5
+    assert "x".encode("utf-8") == b"x"
+    assert "abc".encode() == b"abc"
+    # rindex: found (codepoint offset) / Cyrillic / miss → ValueError
+    assert "abcabc".rindex("b") == 4
+    assert "abcabc".rindex("a") == 3
+    assert "абвабв".rindex("б") == 4
+    miss_caught = False
+    try:
+        "abc".rindex("z")
+    except ValueError:
+        miss_caught = True
+    assert miss_caught
+    # predicates: ASCII-only (non-ASCII diverges → kept out)
+    assert "123".isdigit() == True
+    assert "12a".isdigit() == False
+    assert "abc".isalpha() == True
+    assert "abc1".isalpha() == False
+    assert "abc123".isalnum() == True
+    assert "abc!".isalnum() == False
+    assert " \t".isspace() == True
+    assert "a b".isspace() == False
+    assert "ABC".isupper() == True
+    assert "Abc".isupper() == False
+    assert "abc".islower() == True
+    assert "Abc".islower() == False
+    assert "abc".isascii() == True
+    assert "café".isascii() == False
+    # interaction probes (cross green features)
+    parts = "a,b,c".split(",")
+    assert len(parts[0]) == 1
+    assert f"first={parts[0]}" == "first=a"
+    total = 0
+    for x in "1,2,3,4".split(","):
+        total += int(x)
+    assert total == 10
+    if "42".isdigit():
+        flag = "numeric"
+    else:
+        flag = "other"
+    assert flag == "numeric"
+    joined = "-".join("a,b,c".split(","))
+    assert joined == "a-b-c"
+
+
+_fold_p19_str_methods()
+
+
+# ===== SECTION: Folded p20 — bytes methods (startswith/find/count/replace/split/strip/join/decode) =====
+# Folded from corpus/p20_bytes_methods.py. Non-ASCII byte content (b"\xc3\xa9")
+# exercises the byte-accurate (non-codepoint) paths.
+def _fold_p20_bytes_methods() -> None:
+    # startswith / endswith
+    assert b"hello".startswith(b"he") == True
+    assert b"hello".startswith(b"lo") == False
+    assert b"hello".endswith(b"lo") == True
+    assert b"hello".endswith(b"he") == False
+    assert b"caf\xc3\xa9".startswith(b"caf") == True
+    # find / rfind (dedicated 2-arg fns, byte offsets)
+    assert b"abcabc".find(b"b") == 1
+    assert b"abcabc".rfind(b"b") == 4
+    assert b"abcabc".find(b"z") == -1
+    assert b"caf\xc3\xa9".find(b"\xc3\xa9") == 3
+    # count
+    assert b"abcabc".count(b"a") == 2
+    assert b"aaaa".count(b"aa") == 2
+    assert b"abc".count(b"z") == 0
+    # replace (2-arg, no count)
+    assert b"a,b,c".replace(b",", b";") == b"a;b;c"
+    assert b"aaa".replace(b"a", b"bb") == b"bbbbbb"
+    assert b"caf\xc3\xa9".replace(b"\xc3\xa9", b"e") == b"cafe"
+    # split: whitespace / sep / maxsplit (RAW slot) / explicit None
+    assert b"a,b,c".split(b",") == [b"a", b"b", b"c"]
+    assert b"  a b  c  ".split() == [b"a", b"b", b"c"]
+    assert b"a,b,c,d".split(b",", 1) == [b"a", b"b,c,d"]
+    assert b"a b c".split(None) == [b"a", b"b", b"c"]
+    assert b"".split() == []
+    # rsplit: sep+maxsplit / no-arg whitespace
+    assert b"a-b-c".rsplit(b"-", 1) == [b"a-b", b"c"]
+    assert b"one two three".rsplit() == [b"one", b"two", b"three"]
+    assert b"a b c".rsplit(None, 1) == [b"a b", b"c"]
+    # strip / lstrip / rstrip (whitespace only — no chars)
+    assert b"  hi  ".strip() == b"hi"
+    assert b"  hi  ".lstrip() == b"hi  "
+    assert b"  hi  ".rstrip() == b"  hi"
+    assert b"\t\n x \r\n".strip() == b"x"
+    # upper / lower (ASCII-only; non-ASCII bytes pass through)
+    assert b"Hello".upper() == b"HELLO"
+    assert b"Hello".lower() == b"hello"
+    assert b"caf\xc3\xa9".upper() == b"CAF\xc3\xa9"
+    # join (materializes the iterable, like str.join)
+    assert b",".join([b"a", b"b", b"c"]) == b"a,b,c"
+    assert b"".join([b"x", b"y", b"z"]) == b"xyz"
+    assert b"-".join([b"solo"]) == b"solo"
+    # decode round-trip with str.encode (§9-str)
+    assert b"caf\xc3\xa9".decode() == "café"
+    assert "café".encode() == b"caf\xc3\xa9"
+    assert "café".encode().decode() == "café"
+    assert b"abc".decode() == "abc"
+    assert b"abc".decode("utf-8") == "abc"
+    # interaction probes (cross green features; bytes NOT in an f-string)
+    assert len(b"hello") == 5
+    total = 0
+    for byte in b"abc":
+        total += byte
+    assert total == 97 + 98 + 99
+    parts = b"10,20,30".split(b",")
+    assert len(parts) == 3
+    acc = 0
+    for p in parts:
+        acc += len(p)
+    assert acc == 6
+    assert b",".join(b"a,b,c".split(b",")) == b"a,b,c"
+    assert (b"ana" in b"banana") == True
+    assert (b"xyz" in b"banana") == False
+    assert (b"" in b"banana") == True
+    assert (98 in b"abc") == True  # 98 == ord('b')
+    assert (b"banana".find(b"a") != -1) == True
+    assert b"banana".count(b"a") == 3
+
+
+_fold_p20_bytes_methods()
+
+
+# ===== SECTION: Folded p49 — str/bytes method arguments (replace count, find/index start/end, encode/decode) =====
+# Folded from corpus/p49_str_method_args.py. count + search start/end ride RAW
+# i64 slots; encode/decode honor utf-8/ascii/latin-1 and raise on out-of-range.
+def _fold_p49_str_method_args() -> None:
+    # replace count (str)
+    assert "aaaa".replace("a", "b", 2) == "bbaa"
+    assert "aaaa".replace("a", "b") == "bbbb"
+    assert "aaaa".replace("a", "b", 0) == "aaaa"
+    assert "aaaa".replace("a", "b", 100) == "bbbb"
+    assert "abc".replace("", "X", 2) == "XaXbc"
+    assert "abc".replace("", "X") == "XaXbXcX"
+    assert "one two one two one".replace("one", "1", 1) == "1 two one two one"
+    assert "café cafē".replace("caf", "C", 1) == "Cé cafē"
+    # replace count (bytes)
+    assert b"aaaa".replace(b"a", b"b", 2) == b"bbaa"
+    assert b"aaaa".replace(b"a", b"b") == b"bbbb"
+    assert b"xyxyxy".replace(b"xy", b"Z", 2) == b"ZZxy"
+    # find / rfind / index / rindex with start / end (str)
+    s = "abcabcabc"
+    assert s.find("bc", 2) == 4
+    assert s.find("bc", 2, 4) == -1
+    assert s.find("bc", 2, 5) == -1
+    assert s.find("abc", -3) == 6
+    assert s.rfind("bc", 0, 4) == 1
+    assert s.rfind("bc") == 7
+    assert s.rfind("bc", 0, -1) == 4
+    assert s.index("bc", 3) == 4
+    assert s.rindex("bc", 0, 7) == 4
+    assert s.find("zzz") == -1
+    assert s.find("bc", 100) == -1
+    assert "café".find("é") == 3
+    assert "café".find("é", 2) == 3
+    assert "café".find("f", 0, 3) == 2
+    assert "café".find("f", 0, 2) == -1
+    assert "naïve naïve".find("ï", 4) == 8
+    # index / rindex miss → ValueError (assert the caught outcome)
+    def index_miss(fn) -> bool:
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+    assert index_miss(lambda: "abc".index("z", 0, 2))
+    assert index_miss(lambda: "abcabc".rindex("z"))
+    assert index_miss(lambda: "abcabc".index("bc", 0, 2))
+    # find / rfind with start / end (bytes)
+    bs = b"abcabc"
+    assert bs.find(b"bc", 2) == 4
+    assert bs.find(b"bc", 2, 4) == -1
+    assert bs.find(b"bc", -4) == 4
+    assert bs.rfind(b"bc", 0, 4) == 1
+    assert bs.rfind(b"bc") == 4
+    assert bs.count(b"bc") == 2
+    # encode / decode correct paths
+    assert "café".encode("utf-8") == b"caf\xc3\xa9"
+    assert "café".encode("UTF_8") == b"caf\xc3\xa9"
+    assert "hello".encode("ascii") == b"hello"
+    assert "café".encode("latin-1") == b"caf\xe9"
+    assert "café".encode("latin1") == b"caf\xe9"
+    assert b"caf\xc3\xa9".decode("utf-8") == "café"
+    assert b"hello".decode("ascii") == "hello"
+    assert b"caf\xe9".decode("latin-1") == "café"
+    assert b"caf\xe9".decode("iso-8859-1") == "café"
+    assert "Ωmega".encode("utf-8").decode("utf-8") == "Ωmega"
+    # encode / decode error paths (assert the caught outcome; precise type AND a
+    # super-catch through the MRO, e.g. UnicodeError ⊂ ValueError).
+    enc_ascii_unicode = False
+    try:
+        "café".encode("ascii")
+    except UnicodeError:
+        enc_ascii_unicode = True
+    assert enc_ascii_unicode
+    enc_ascii_value = False
+    try:
+        "café".encode("ascii")
+    except ValueError:
+        enc_ascii_value = True
+    assert enc_ascii_value
+    enc_latin1_unicode = False
+    try:
+        "€".encode("latin-1")
+    except UnicodeError:
+        enc_latin1_unicode = True
+    assert enc_latin1_unicode
+    enc_unknown_lookup = False
+    try:
+        "x".encode("zzz-codec")
+    except LookupError:
+        enc_unknown_lookup = True
+    assert enc_unknown_lookup
+    dec_utf8_unicode = False
+    try:
+        b"\xff\xfe".decode("utf-8")
+    except UnicodeDecodeError:
+        dec_utf8_unicode = True
+    assert dec_utf8_unicode
+    dec_utf8_value = False
+    try:
+        b"\xff\xfe".decode("utf-8")
+    except ValueError:
+        dec_utf8_value = True
+    assert dec_utf8_value
+    dec_ascii_unicode = False
+    try:
+        b"\xe9".decode("ascii")
+    except UnicodeError:
+        dec_ascii_unicode = True
+    assert dec_ascii_unicode
+    dec_unknown_lookup = False
+    try:
+        b"x".decode("zzz-codec")
+    except LookupError:
+        dec_unknown_lookup = True
+    assert dec_unknown_lookup
+
+
+_fold_p49_str_method_args()
+
+
+# ===== SECTION: Folded p50 — Unicode-aware predicates (isalpha/isalnum/isupper/islower/isdigit/isspace) =====
+# Folded from corpus/p50_unicode_predicates.py. Restricted to codepoints where
+# Rust char::is_* and CPython categories agree (Latin/Cyrillic/Greek/ASCII).
+def _fold_p50_unicode_predicates() -> None:
+    # isalpha (accented Latin, Cyrillic, Greek)
+    assert "café".isalpha() == True
+    assert "über".isalpha() == True
+    assert "Привет".isalpha() == True
+    assert "Ωμέγα".isalpha() == True
+    assert "naïve".isalpha() == True
+    assert "café!".isalpha() == False
+    assert "abc".isalpha() == True
+    assert "abc1".isalpha() == False
+    assert "".isalpha() == False
+    # isupper / islower (Unicode case)
+    assert "Ñ".isupper() == True
+    assert "ñ".islower() == True
+    assert "ÜBER".isupper() == True
+    assert "über".islower() == True
+    assert "ПРИВЕТ".isupper() == True
+    assert "привет".islower() == True
+    assert "Привет".isupper() == False
+    assert "Привет".islower() == False
+    assert "ABC".isupper() == True
+    assert "abc".islower() == True
+    assert "Abc".isupper() == False
+    assert "ÅÄÖ".isupper() == True
+    assert "123".isupper() == False
+    assert "".isupper() == False
+    # isalnum (letters + digits across scripts)
+    assert "café123".isalnum() == True
+    assert "Привет42".isalnum() == True
+    assert "abc123".isalnum() == True
+    assert "abc 123".isalnum() == False
+    assert "".isalnum() == False
+    # isdigit (ASCII digits — the agreeing set)
+    assert "123".isdigit() == True
+    assert "0".isdigit() == True
+    assert "12a".isdigit() == False
+    assert "".isdigit() == False
+    # isspace (Unicode whitespace — space / NBSP / thin-space are distinct cases)
+    assert " ".isspace() == True
+    assert "\t\n\r ".isspace() == True
+    assert " ".isspace() == True  # U+00A0 no-break space
+    assert " ".isspace() == True  # U+2009 thin space
+    assert "a b".isspace() == False
+    assert "".isspace() == False
+    # isascii (unchanged)
+    assert "hello".isascii() == True
+    assert "café".isascii() == False
+    assert "".isascii() == True
+
+
+_fold_p50_unicode_predicates()
+
+
+# ===== SECTION: Folded p8h — codepoint-correct string model (len/slice/iter/case/align) =====
+# Folded from corpus/p8h_unicode.py. Cyrillic + emoji exercise codepoint
+# indexing, slicing, iteration, reversal, case folding, and width alignment.
+def _fold_p8h_unicode() -> None:
+    s = "привет"
+    assert len(s) == 6
+    assert s[0] == "п"
+    assert s[2] == "и"
+    assert s[-1] == "т"
+    assert s[-3] == "в"
+    assert s[1:4] == "рив"
+    assert s[:3] == "при"
+    assert s[3:] == "вет"
+    assert s[-4:-1] == "иве"
+    assert s[::-1] == "тевирп"
+    assert s[::2] == "пие"
+    assert s[1::2] == "рвт"
+    assert s[5:1:-1] == "теви"
+
+    m = "aбвgд"  # mixed ASCII + Cyrillic
+    assert len(m) == 5
+    assert m[1] == "б"
+    assert m[3] == "g"
+    assert m[::-1] == "дgвбa"
+
+    e = "x😀y"
+    assert len(e) == 3
+    assert e[0] == "x"
+    assert e[1] == "😀"
+    assert e[2] == "y"
+    assert e[::-1] == "y😀x"
+    assert e[1:] == "😀y"
+
+    # Iteration walks codepoints
+    s_chars = []
+    for ch in s:
+        s_chars.append(ch)
+    assert s_chars == ["п", "р", "и", "в", "е", "т"]
+    chars = []
+    for ch in e:
+        chars.append(ch)
+    assert chars == ["x", "😀", "y"]
+
+    # reversed()
+    rev_chars = []
+    for ch in reversed(s):
+        rev_chars.append(ch)
+    assert rev_chars == ["т", "е", "в", "и", "р", "п"]
+
+    # find / index / count are codepoint-based
+    assert s.find("вет") == 3
+    assert s.index("р") == 1
+    assert "абабаб".count("аб") == 3
+    assert s.find("нет") == -1
+
+    # in / concat
+    assert ("ив" in s) == True
+    assert ("xy" in e) == False
+    assert s + "!" + e == "привет!x😀y"
+
+    # case conversions (Unicode-aware)
+    assert s.upper() == "ПРИВЕТ"
+    assert "ПРИВЕТ".lower() == "привет"
+    assert "straße".upper() == "STRASSE"
+    assert "привет мир".title() == "Привет Мир"
+    assert "привет".capitalize() == "Привет"
+    assert "ПрИвЕт".swapcase() == "пРиВеТ"
+
+    # alignment widths are in characters
+    assert "[" + "пр".center(6) + "]" == "[  пр  ]"
+    assert "[" + "пр".ljust(5, "-") + "]" == "[пр---]"
+    assert "[" + "пр".rjust(5, "*") + "]" == "[***пр]"
+    assert "[" + "ab".center(5) + "]" == "[  ab ]"
+    assert "-42".zfill(6) == "-00042"
+    assert "пр".zfill(4) == "00пр"
+
+    # ord/chr round-trip
+    assert ord("ё") == 1105
+    assert chr(1105) == "ё"
+    assert ord("😀") == 128512
+    assert chr(128512) == "😀"
+
+    # f-strings with unicode values
+    name = "мир"
+    assert f"привет, {name}!" == "привет, мир!"
+    assert f"{name:>6}" == "   мир"
+    assert f"{name:*^7}" == "**мир**"
+
+
+_fold_p8h_unicode()
+
+
+# User classes for the folded format suites below. The compiler's typed subset
+# does not support nested class definitions, so these are hoisted to module
+# scope (formerly local to test_format_spec.py / p29_format.py).
+class _FmtPoint:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __format__(self, spec: str) -> str:
+        if spec == "polar":
+            return "Point(" + str(self.x) + "," + str(self.y) + ")"
+        return "(" + str(self.x) + ", " + str(self.y) + ")"
+
+
+class _FmtTemperature:
+    def __init__(self, celsius: float):
+        self.celsius = celsius
+
+    def __format__(self, spec: str) -> str:
+        if spec == "F":
+            return str(self.celsius * 9 / 5 + 32) + "F"
+        return str(self.celsius) + "C"
+
+
+class _FmtLabelled:
+    def __init__(self, label: str):
+        self.label = label
+
+    def __str__(self) -> str:
+        return "label:" + self.label
+
+
+# ===== SECTION: Folded test_format_spec — PEP 3101 format spec mini-language =====
+# Folded from corpus/test_format_spec.py. Integer/float type chars, width/align,
+# sign, zero-pad, grouping, truncation, bool, nested specs, format()/.format().
+def _fold_test_format_spec() -> None:
+    # Integer type characters
+    assert f"{42:d}" == "42"
+    assert f"{42:b}" == "101010"
+    assert f"{42:o}" == "52"
+    assert f"{42:x}" == "2a"
+    assert f"{42:X}" == "2A"
+    assert f"{42:#x}" == "0x2a"
+    assert f"{42:#b}" == "0b101010"
+    assert f"{42:#o}" == "0o52"
+    assert f"{255:x}" == "ff"
+    assert f"{255:X}" == "FF"
+    assert f"{0:d}" == "0"
+    assert f"{-42:d}" == "-42"
+    # Width and alignment
+    assert f"{42:5}" == "   42"
+    assert f"{42:<5}" == "42   "
+    assert f"{42:>5}" == "   42"
+    assert f"{42:^5}" == " 42  "
+    assert f"{'hi':>10}" == "        hi"
+    assert f"{'hi':<10}" == "hi        "
+    assert f"{'hi':^10}" == "    hi    "
+    assert f"{'a':*^7}" == "***a***"
+    # Sign
+    assert f"{42:+d}" == "+42"
+    assert f"{-42:+d}" == "-42"
+    assert f"{42: d}" == " 42"
+    assert f"{-42: d}" == "-42"
+    # Zero-padding
+    assert f"{42:05d}" == "00042"
+    assert f"{-42:05d}" == "-0042"
+    assert f"{42:08b}" == "00101010"
+    # Grouping separators
+    assert f"{1234567:,}" == "1,234,567"
+    assert f"{1234567:_}" == "1_234_567"
+    assert f"{1234567.89:,.2f}" == "1,234,567.89"
+    assert f"{1000000:,d}" == "1,000,000"
+    # Float type characters
+    assert f"{3.14:.2f}" == "3.14"
+    assert f"{0.0001234:.2e}" == "1.23e-04"
+    assert f"{0.25:.1%}" == "25.0%"
+    assert f"{1.0:.0f}" == "1"
+    assert f"{3.14159:.4f}" == "3.1416"
+    assert f"{1234.5:10.2f}" == "   1234.50"
+    assert f"{0.0:.4f}" == "0.0000"
+    # String truncation (precision)
+    assert f"{'abcdef':.3}" == "abc"
+    assert f"{'hello':10}" == "hello     "
+    assert f"{'hello':>10}" == "     hello"
+    # Bool formatting (treated as int subclass for numeric specs)
+    assert f"{True:5}" == "    1"
+    assert f"{False:5}" == "    0"
+    assert f"{True:d}" == "1"
+    assert f"{False:d}" == "0"
+    # §F.2 regression: non-literal expression must get correct alignment
+    def fmt_int_var(x: int) -> str:
+        return f"{x:5d}"
+    assert fmt_int_var(2) == "    2"
+    assert fmt_int_var(1000) == " 1000"
+    assert fmt_int_var(-3) == "   -3"
+    def fmt_float_var(x: float) -> str:
+        return f"{x:.3f}"
+    assert fmt_float_var(3.14159) == "3.142"
+    assert fmt_float_var(0.0) == "0.000"
+    # Nested (dynamic) format specs
+    n = 4
+    assert f"{3.14159:.{n}f}" == "3.1416"
+    width = 8
+    assert f"{42:{width}d}" == "      42"
+    # format() builtin — parallel with f-strings
+    assert format(42, "5d") == "   42"
+    assert format(3.14, ".2f") == "3.14"
+    assert format("hello", ">10") == "     hello"
+    assert format(True, "d") == "1"
+    assert format(255, "x") == "ff"
+    assert format(1234567, ",") == "1,234,567"
+    # .format() method — positional and keyword
+    assert "Hello {:>10}!".format("world") == "Hello      world!"
+    assert "{0:5d} + {1:5d}".format(1, 2) == "    1 +     2"
+    assert "{name:>10}".format(name="Alice") == "     Alice"
+    assert "{:.4f}".format(3.14159) == "3.1416"
+    # User-class __format__ (class hoisted to module scope: _FmtPoint)
+    p = _FmtPoint(3, 4)
+    assert f"{p:polar}" == "Point(3,4)"
+    assert f"{p}" == "(3, 4)"
+    assert format(p, "polar") == "Point(3,4)"
+
+
+_fold_test_format_spec()
+
+
+# ===== SECTION: Folded p29 — .format() / !a-ascii() / dynamic specs / user __format__ =====
+# Folded from corpus/p29_format.py. Auto/manual/keyword positional fields, brace
+# escapes, conversion flags, ascii() builtin + !a, dynamic specs, user classes.
+# A few specs (e.g. the "Hello {:>10}!" .format() group, format()/ascii bool
+# cases) overlap the test_format_spec fold but are kept here so this function
+# probes the full auto/manual/keyword field-numbering surface as one unit.
+def _fold_p29_format() -> None:
+    # str.format(): auto-indexed positional fields
+    assert "{}".format("only") == "only"
+    assert "{} + {} = {}".format(1, 2, 3) == "1 + 2 = 3"
+    assert "Hello {}!".format("world") == "Hello world!"
+    assert "{} and {}".format("a", "b") == "a and b"
+    # str.format(): explicit (manual) positional indices, including reuse + reorder
+    assert "{0}".format("x") == "x"
+    assert "{0} {1} {0}".format("a", "b") == "a b a"
+    assert "{2}{1}{0}".format("c", "b", "a") == "abc"
+    assert "{1} + {0} = {2}".format(1, 2, 3) == "2 + 1 = 3"
+    # str.format(): keyword fields, and mixed positional + keyword
+    assert "{name}".format(name="Alice") == "Alice"
+    assert "{x} and {y} and {x}".format(x="foo", y="bar") == "foo and bar and foo"
+    assert "{0} and {name}".format("first", name="second") == "first and second"
+    assert "{0}: {item}, {1}: {value}".format("key", "val", item="apple", value=42) == "key: apple, val: 42"
+    # str.format(): brace escapes and zero placeholders
+    assert "No placeholders".format() == "No placeholders"
+    assert "".format() == ""
+    assert "Use {{}} for placeholders".format() == "Use {} for placeholders"
+    assert "{{{}}}".format(42) == "{42}"
+    assert "{{literal}}".format() == "{literal}"
+    # str.format(): static format specs inside fields (auto / indexed / keyword)
+    assert "Hello {:>10}!".format("world") == "Hello      world!"
+    assert "{0:5d} + {1:5d}".format(1, 2) == "    1 +     2"
+    assert "{name:>10}".format(name="Alice") == "     Alice"
+    assert "{:.4f}".format(3.14159) == "3.1416"
+    assert "{:*^7}".format("a") == "***a***"
+    assert "{0:>5}{1:<5}".format("x", "y") == "    xy    "
+    assert "{val:08.2f}".format(val=3.14159) == "00003.14"
+    assert "{:x}".format(255) == "ff"
+    assert "{:,}".format(1234567) == "1,234,567"
+    # str.format(): conversion flags inside fields
+    assert "{!r}".format("hi") == "'hi'"
+    assert "{0!r}".format("hi") == "'hi'"
+    assert "{name!r}".format(name="hi") == "'hi'"
+    assert "{!s}".format(42) == "42"
+    assert "{!r} and {!s}".format("a", "b") == "'a' and b"
+    # format() builtin (single + spec)
+    assert format(42) == "42"
+    assert format(3.14) == "3.14"
+    assert format("hi") == "hi"
+    assert format(42, "5d") == "   42"
+    assert format(3.14159, ".2f") == "3.14"
+    assert format("hello", ">10") == "     hello"
+    assert format(255, "#x") == "0xff"
+    assert format(True, "d") == "1"
+    assert format(7, "05") == "00007"
+    # ascii() builtin and the f-string `!a` conversion (ASCII content)
+    assert ascii("hello") == "'hello'"
+    assert ascii(42) == "42"
+    assert ascii(3.14) == "3.14"
+    assert ascii(True) == "True"
+    assert ascii(None) == "None"
+    assert ascii([1, 2, 3]) == "[1, 2, 3]"
+    a_str = "world"
+    assert f"{a_str!a}" == "'world'"
+    a_int = 42
+    assert f"{a_int!a}" == "42"
+    assert "{!a}".format("z") == "'z'"
+    # Dynamic (nested) f-string format specs reuse the same engine
+    prec = 3
+    assert f"{3.14159:.{prec}f}" == "3.142"
+    wid = 6
+    assert f"{42:{wid}d}" == "    42"
+    assert f"{'hi':>{wid}}" == "    hi"
+    # User-class __format__ via f-string, format() and bare {p}
+    # (class hoisted to module scope: _FmtTemperature)
+    t = _FmtTemperature(100.0)
+    assert f"{t}" == "100.0C"
+    assert f"{t:F}" == "212.0F"
+    assert format(t, "F") == "212.0F"
+    assert "{}".format(t) == "100.0C"
+    assert "{0:F}".format(t) == "212.0F"
+
+    # A class with __str__ but no __format__: empty spec routes to __str__.
+    # (class hoisted to module scope: _FmtLabelled)
+    lab = _FmtLabelled("hi")
+    assert f"{lab}" == "label:hi"
+    assert "{}".format(lab) == "label:hi"
+
+
+_fold_p29_format()
+
+
 print("All string tests passed!")

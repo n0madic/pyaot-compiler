@@ -1680,4 +1680,772 @@ with _WtEnterInt() as _wt_v:
 
 print("with-statement tuple target tests passed!")
 
+# ===== SECTION: folded from p7_raise_tryexcept.py (raise + try/except builtins) =====
+
+# Helper functions hoisted to module level (per-source prefix _p7r_).
+
+def _p7r_classify(kind: int) -> str:
+    try:
+        if kind == 0:
+            raise ValueError("v")
+        if kind == 1:
+            raise TypeError("t")
+        if kind == 2:
+            raise KeyError("k")
+        return "none"
+    except ValueError:
+        return "value"
+    except TypeError:
+        return "type"
+    except KeyError:
+        return "key"
+
+def _p7r_multi(kind: int) -> str:
+    try:
+        if kind == 0:
+            raise ValueError("v")
+        raise IndexError("i")
+    except (ValueError, IndexError):
+        return "either"
+
+def _p7r_base_catch() -> str:
+    try:
+        raise RuntimeError("r")
+    except Exception:
+        return "base"
+
+def _p7r_bare() -> str:
+    try:
+        raise AttributeError("a")
+    except:
+        return "bare"
+
+def _p7r_div(a: int, b: int) -> int:
+    try:
+        return a // b
+    except ZeroDivisionError:
+        return -1
+
+def _p7r_parse(s: str) -> int:
+    try:
+        return int(s)
+    except ValueError:
+        return -1
+
+def _p7r_nested_inner() -> str:
+    try:
+        try:
+            raise ValueError("inner")
+        except ValueError:
+            return "inner-caught"
+    except ValueError:
+        return "outer-caught"
+
+def _p7r_nested_outer() -> str:
+    try:
+        try:
+            raise TypeError("inner")
+        except ValueError:
+            return "wrong"
+    except TypeError:
+        return "outer"
+
+def _p7r_reraise() -> str:
+    try:
+        try:
+            raise ValueError("once")
+        except ValueError:
+            raise
+    except ValueError:
+        return "reraised"
+
+def _p7r_raiser():
+    raise KeyError("deep")
+
+def _p7r_call_catch() -> str:
+    try:
+        _p7r_raiser()
+        return "no"
+    except KeyError:
+        return "from-callee"
+
+def _p7r_bare_class() -> str:
+    try:
+        raise ValueError
+    except ValueError:
+        return "bare-class"
+
+def _p7r_no_msg() -> str:
+    try:
+        raise TypeError()
+    except TypeError:
+        return "no-msg"
+
+def _p7r_preserve() -> int:
+    x = 0
+    y = 0.0
+    s = ""
+    try:
+        x = 41
+        y = 2.5
+        s = "kept"
+        raise ValueError("u")
+    except ValueError:
+        pass
+    if s == "kept" and y == 2.5:
+        return x + 1
+    return -1
+
+def _p7r_loop_try() -> int:
+    total = 0
+    for i in range(6):
+        try:
+            if i == 2:
+                raise ValueError("skip")
+            if i == 4:
+                break
+            total = total + i
+        except ValueError:
+            continue
+    return total
+
+def _p7r_ret_in_try(flag: bool) -> str:
+    try:
+        if flag:
+            return "early"
+        raise ValueError("late")
+    except ValueError:
+        return "handled"
+
+def _p7r_as_bind() -> str:
+    try:
+        raise ValueError("bound")
+    except ValueError as e:
+        return "as-ok"
+
+def _p7r_raise_in_handler() -> str:
+    try:
+        try:
+            raise ValueError("first")
+        except ValueError:
+            raise TypeError("second")
+    except TypeError:
+        return "chained"
+
+def _fold_p7_raise_tryexcept():
+    # basic catch
+    caught = False
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        caught = True
+    assert caught == True
+
+    # no exception: except skipped
+    ran = False
+    skipped = True
+    try:
+        ran = True
+    except ValueError:
+        skipped = False
+    assert ran == True
+    assert skipped == True
+
+    # specific handler chain picks the right clause
+    assert _p7r_classify(0) == "value"
+    assert _p7r_classify(1) == "type"
+    assert _p7r_classify(2) == "key"
+    assert _p7r_classify(3) == "none"
+
+    # tuple clause (OR-chain)
+    assert _p7r_multi(0) == "either"
+    assert _p7r_multi(1) == "either"
+
+    # Exception catches subclass-tagged builtins
+    assert _p7r_base_catch() == "base"
+
+    # bare except
+    assert _p7r_bare() == "bare"
+
+    # runtime-raised exceptions are catchable
+    assert _p7r_div(10, 2) == 5
+    assert _p7r_div(10, 0) == -1
+    assert _p7r_parse("42") == 42
+    assert _p7r_parse("nope") == -1
+
+    # nested try, inner catches
+    assert _p7r_nested_inner() == "inner-caught"
+    # nested try, no inner match -> outer catches
+    assert _p7r_nested_outer() == "outer"
+    # bare raise re-raises
+    assert _p7r_reraise() == "reraised"
+    # unmatched handler propagates to the caller
+    assert _p7r_call_catch() == "from-callee"
+    # raise without arguments list (bare class)
+    assert _p7r_bare_class() == "bare-class"
+    # raise without message
+    assert _p7r_no_msg() == "no-msg"
+    # variables assigned in try survive the unwind
+    assert _p7r_preserve() == 42
+    # try inside a loop with break/continue
+    assert _p7r_loop_try() == 4
+    # return inside try (normal path pops the frame)
+    assert _p7r_ret_in_try(True) == "early"
+    assert _p7r_ret_in_try(False) == "handled"
+    # as-binding accepted
+    assert _p7r_as_bind() == "as-ok"
+    # exception raised inside except handler propagates outward
+    assert _p7r_raise_in_handler() == "chained"
+
+_fold_p7_raise_tryexcept()
+print("_fold_p7_raise_tryexcept passed")
+
+# ===== SECTION: folded from p7_finally.py (finally/else, raise-from, instance surface) =====
+
+def _p7f_full(raise_it: bool) -> str:
+    log = ""
+    try:
+        log = log + "T"
+        if raise_it:
+            raise ValueError("v")
+    except ValueError:
+        log = log + "E"
+    else:
+        log = log + "L"
+    finally:
+        log = log + "F"
+    return log
+
+_p7f_trace: list[str] = []
+
+def _p7f_ret_through_finally() -> int:
+    try:
+        _p7f_trace.append("in")
+        return 7
+    finally:
+        _p7f_trace.append("fin")
+
+def _p7f_ret_from_handler() -> int:
+    try:
+        raise ValueError("v")
+    except ValueError:
+        return 1
+    finally:
+        _p7f_trace.append("fin2")
+
+def _p7f_loop_finally() -> int:
+    count = 0
+    for i in range(5):
+        try:
+            if i == 1:
+                continue
+            if i == 3:
+                break
+            count = count + 1
+        finally:
+            count = count + 10
+    return count
+
+def _p7f_else_raises() -> str:
+    try:
+        try:
+            x = 1
+        except ValueError:
+            return "wrong"
+        else:
+            raise TypeError("from-else")
+    except TypeError:
+        return "outer"
+
+def _p7f_nested_finally() -> str:
+    log = ""
+    try:
+        try:
+            log = log + "a"
+            raise ValueError("v")
+        finally:
+            log = log + "b"
+    except ValueError:
+        log = log + "c"
+    finally:
+        log = log + "d"
+    return log
+
+def _p7f_raise_from() -> str:
+    try:
+        raise ValueError("main") from TypeError("cause")
+    except ValueError:
+        return "from-caught"
+
+def _p7f_raise_from_none() -> str:
+    try:
+        try:
+            raise ValueError("orig")
+        except ValueError:
+            raise TypeError("new") from None
+    except TypeError:
+        return "from-none"
+
+def _p7f_tuple_clause_msg(kind: int) -> str:
+    try:
+        if kind == 0:
+            raise ValueError("tc-value")
+        raise RuntimeError("tc-runtime")
+    except (ValueError, RuntimeError) as e:
+        return str(e)
+
+def _fold_p7_finally():
+    # finally on the normal path
+    order: list[str] = []
+    try:
+        order.append("try")
+    finally:
+        order.append("finally")
+    assert order == ["try", "finally"]
+
+    # finally on the exceptional path (caught outside)
+    steps: list[str] = []
+    try:
+        try:
+            steps.append("body")
+            raise ValueError("x")
+        finally:
+            steps.append("finally")
+    except ValueError:
+        steps.append("caught")
+    assert steps == ["body", "finally", "caught"]
+
+    # try/except/else/finally ordering
+    assert _p7f_full(False) == "TLF"
+    assert _p7f_full(True) == "TEF"
+
+    # return inside try still runs finally
+    assert _p7f_ret_through_finally() == 7
+    assert _p7f_trace == ["in", "fin"]
+
+    # return inside except runs finally
+    assert _p7f_ret_from_handler() == 1
+    assert _p7f_trace == ["in", "fin", "fin2"]
+
+    # break/continue through finally
+    assert _p7f_loop_finally() == 42
+
+    # exception in else is not caught by the same try
+    assert _p7f_else_raises() == "outer"
+
+    # nested finally
+    assert _p7f_nested_finally() == "abcd"
+
+    # raise X from Y / from None
+    assert _p7f_raise_from() == "from-caught"
+    assert _p7f_raise_from_none() == "from-none"
+
+    # instance surface: str(e), e.args, e.__class__.__name__
+    try:
+        raise ValueError("boom")
+    except ValueError as e:
+        assert str(e) == "boom"
+        assert e.args[0] == "boom"
+        assert e.__class__.__name__ == "ValueError"
+
+    try:
+        raise RuntimeError("rt-message")
+    except RuntimeError as e2:
+        assert str(e2) == "rt-message"
+        assert e2.__class__.__name__ == "RuntimeError"
+
+    # str(e) of a message-less exception is empty; its args tuple is ()
+    try:
+        raise TypeError()
+    except TypeError as e3:
+        assert "empty:[" + str(e3) + "]" == "empty:[]"
+        assert len(e3.args) == 0
+
+    # tuple-clause `as` binding keeps the exception-message surface
+    assert _p7f_tuple_clause_msg(0) == "tc-value"
+    assert _p7f_tuple_clause_msg(1) == "tc-runtime"
+
+    try:
+        raise ValueError("tc-args")
+    except (ValueError, RuntimeError) as e4:
+        assert e4.args[0] == "tc-args"
+
+    # min()/max() on empty input raise with the live-oracle message
+    try:
+        empty_l: list[int] = []
+        bad = min(empty_l)
+    except ValueError as e5:
+        assert str(e5) == "min() iterable argument is empty"
+    try:
+        empty_l2: list[int] = []
+        bad2 = max(empty_l2)
+    except ValueError as e6:
+        assert str(e6) == "max() iterable argument is empty"
+
+    # min/max with a builtin key function
+    vals: list[int] = [3, -7, 2, -1]
+    assert min(vals, key=abs) == -1
+    assert max(vals, key=abs) == -7
+
+    # starred unpacking of a literal RHS
+    first, *mid, last = [1, 2, 3, 4]
+    assert first == 1
+    assert mid == [2, 3]
+    assert last == 4
+
+_fold_p7_finally()
+print("_fold_p7_finally passed")
+
+# ===== SECTION: folded from p7_custom_exc.py (custom exception classes) =====
+
+# Custom exception classes hoisted to module level with per-source prefix _p7c_.
+
+class _p7c_AppError(Exception):
+    pass
+
+class _p7c_ParseError(_p7c_AppError):
+    pass
+
+class _p7c_LimitError(ValueError):
+    pass
+
+class _p7c_HttpError(Exception):
+    def __init__(self, status: int, reason: str):
+        self.status = status
+        self.reason = reason
+
+def _p7c_basic() -> str:
+    try:
+        raise _p7c_AppError("app failed")
+    except _p7c_AppError:
+        return "caught"
+
+def _p7c_by_parent() -> str:
+    try:
+        raise _p7c_ParseError("bad token")
+    except _p7c_AppError:
+        return "parent"
+
+def _p7c_by_builtin_parent() -> str:
+    try:
+        raise _p7c_LimitError("too big")
+    except ValueError:
+        return "builtin-parent"
+
+def _p7c_by_exception() -> str:
+    try:
+        raise _p7c_ParseError("deep")
+    except Exception:
+        return "exception"
+
+def _p7c_specific_first() -> str:
+    try:
+        raise _p7c_ParseError("p")
+    except _p7c_ParseError:
+        return "specific"
+    except _p7c_AppError:
+        return "general"
+
+def _p7c_unrelated() -> str:
+    try:
+        try:
+            raise _p7c_AppError("a")
+        except ValueError:
+            return "wrong"
+    except _p7c_AppError:
+        return "outer"
+
+def _p7c_message() -> str:
+    try:
+        raise _p7c_AppError("hello world")
+    except _p7c_AppError as e:
+        return str(e)
+
+def _p7c_fields() -> str:
+    try:
+        raise _p7c_HttpError(404, "Not Found")
+    except _p7c_HttpError as e:
+        if e.status == 404:
+            return e.reason
+        return "wrong"
+
+def _p7c_class_name() -> str:
+    try:
+        raise _p7c_ParseError("x")
+    except _p7c_ParseError as e:
+        return e.__class__.__name__
+
+def _p7c_raise_instance() -> str:
+    try:
+        try:
+            raise _p7c_HttpError(500, "boom")
+        except _p7c_HttpError as e:
+            raise e
+    except _p7c_HttpError as e2:
+        if e2.status == 500:
+            return "instance"
+        return "lost"
+
+def _p7c_tuple_clause(kind: int) -> str:
+    try:
+        if kind == 0:
+            raise _p7c_AppError("a")
+        raise _p7c_LimitError("l")
+    except (_p7c_AppError, _p7c_LimitError):
+        return "either"
+
+def _fold_p7_custom_exc():
+    # raise / catch a custom class
+    assert _p7c_basic() == "caught"
+    # caught by user parent
+    assert _p7c_by_parent() == "parent"
+    # caught by builtin parent
+    assert _p7c_by_builtin_parent() == "builtin-parent"
+    # caught by Exception
+    assert _p7c_by_exception() == "exception"
+    # specific handler wins over parent listed later
+    assert _p7c_specific_first() == "specific"
+    # unrelated handler does not catch
+    assert _p7c_unrelated() == "outer"
+    # message surface for __init__-less custom classes
+    assert _p7c_message() == "hello world"
+    # custom exception with fields
+    assert _p7c_fields() == "Not Found"
+    # class name of a caught custom exception (prefixed name)
+    assert _p7c_class_name() == "_p7c_ParseError"
+    # raise e (re-raise a caught instance)
+    assert _p7c_raise_instance() == "instance"
+    # as-binding for tuple of custom classes
+    assert _p7c_tuple_clause(0) == "either"
+    assert _p7c_tuple_clause(1) == "either"
+
+_fold_p7_custom_exc()
+print("_fold_p7_custom_exc passed")
+
+# ===== SECTION: folded from p7_with.py (context managers / with) =====
+
+# Context-manager classes hoisted to module level with per-source prefix _p7w_.
+
+_p7w_log: list[str] = []
+
+class _p7w_Tracker:
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self) -> str:
+        _p7w_log.append(self.name + ":enter")
+        return self.name
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        _p7w_log.append(self.name + ":exit")
+        return False
+
+_p7w_log2: list[str] = []
+
+class _p7w_Tracker2:
+    def __enter__(self) -> int:
+        _p7w_log2.append("enter")
+        return 1
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        _p7w_log2.append("exit:" + str(bool(exc_type)))
+        return False
+
+class _p7w_Quiet:
+    def __enter__(self) -> int:
+        return 0
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        return bool(exc_type)
+
+_p7w_log3: list[str] = []
+
+class _p7w_Item:
+    tag: str
+
+    def __init__(self, tag: str):
+        self.tag = tag
+
+    def __enter__(self) -> str:
+        _p7w_log3.append("e" + self.tag)
+        return self.tag
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        _p7w_log3.append("x" + self.tag)
+        return False
+
+class _p7w_SawIt:
+    saw: bool
+
+    def __init__(self):
+        self.saw = False
+
+    def __enter__(self) -> int:
+        return 0
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.saw = bool(exc_type)
+        return False
+
+_p7w_log4: list[str] = []
+
+class _p7w_R:
+    def __enter__(self) -> int:
+        return 5
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        _p7w_log4.append("exit")
+        return False
+
+class _p7w_Star:
+    def __enter__(self) -> int:
+        return 9
+
+    def __exit__(self, *a) -> bool:
+        return False
+
+class _p7w_Pair:
+    def __enter__(self):
+        return (10, 20)
+
+    def __exit__(self, *a) -> bool:
+        return False
+
+class _p7w_SelfYield:
+    tag: int
+
+    def __init__(self, tag: int):
+        self.tag = tag
+
+    def __enter__(self) -> "_p7w_SelfYield":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        return False
+
+def _p7w_with_raises() -> str:
+    try:
+        with _p7w_Tracker2():
+            _p7w_log2.append("body")
+            raise ValueError("inside")
+    except ValueError:
+        return "propagated"
+
+def _p7w_suppressed() -> str:
+    with _p7w_Quiet():
+        raise ValueError("swallowed")
+    return "after"
+
+def _p7w_ret_in_with() -> int:
+    with _p7w_R() as n:
+        return n + 1
+
+def _p7w_loop_with() -> int:
+    total = 0
+    for i in range(5):
+        with _p7w_R():
+            if i == 1:
+                continue
+            if i == 3:
+                break
+            total = total + i
+    return total
+
+def _p7w_nested() -> str:
+    t = _p7w_SawIt()
+    try:
+        with t:
+            with _p7w_Tracker("n") as inner:
+                raise KeyError("deep")
+    except KeyError:
+        if t.saw:
+            return "all-good"
+        return "outer-missed"
+
+def _fold_p7_with():
+    # normal path
+    with _p7w_Tracker("a") as v:
+        _p7w_log.append("body:" + v)
+    assert _p7w_log == ["a:enter", "body:a", "a:exit"]
+
+    # exception path: __exit__ runs, exception propagates
+    assert _p7w_with_raises() == "propagated"
+    assert _p7w_log2 == ["enter", "body", "exit:True"]
+
+    # suppression: truthy __exit__ swallows the exception
+    assert _p7w_suppressed() == "after"
+
+    # multiple items nest left-to-right
+    with _p7w_Item("1") as a, _p7w_Item("2") as b:
+        _p7w_log3.append(a + b)
+    assert _p7w_log3 == ["e1", "e2", "12", "x2", "x1"]
+
+    # inner suppressor hides exception from the outer manager
+    outer = _p7w_SawIt()
+    with outer, _p7w_Quiet():
+        raise ValueError("inner only")
+    assert outer.saw == False
+
+    # return inside with runs __exit__
+    assert _p7w_ret_in_with() == 6
+    assert _p7w_log4 == ["exit"]
+
+    # break/continue out of with inside a loop
+    assert _p7w_loop_with() == 2
+    assert len(_p7w_log4) == 5
+
+    # varargs __exit__
+    with _p7w_Star() as s:
+        assert s == 9
+
+    # tuple target
+    with _p7w_Pair() as (x, y):
+        assert x == 10
+        assert y == 20
+
+    # forward-reference string annotation on __enter__
+    with _p7w_SelfYield(7) as sy:
+        assert sy.tag == 7
+
+    # nested with + try around it
+    assert _p7w_nested() == "all-good"
+
+_fold_p7_with()
+print("_fold_p7_with passed")
+
+# ===== SECTION: folded from test_multi_except.py (multi-except clauses) =====
+
+def _p7m_value_error() -> str:
+    try:
+        x: int = int("abc")
+        return "no error"
+    except (ValueError, TypeError) as e:
+        return "caught"
+
+def _p7m_second_type() -> str:
+    try:
+        x: int = 1 // 0
+        return "no error"
+    except (ValueError, ZeroDivisionError) as e:
+        return "caught"
+
+def _p7m_no_match() -> str:
+    try:
+        x: int = 1 // 0
+        return "no error"
+    except (ValueError, KeyError):
+        return "wrong handler"
+    except ZeroDivisionError:
+        return "correct"
+
+def _fold_test_multi_except():
+    assert _p7m_value_error() == "caught", "multi except ValueError failed"
+    assert _p7m_second_type() == "caught", "multi except second type failed"
+    assert _p7m_no_match() == "correct", "multi except no match failed"
+
+_fold_test_multi_except()
+print("_fold_test_multi_except passed")
+
 print("All exception tests passed!")

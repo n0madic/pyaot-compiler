@@ -16,7 +16,7 @@ ROOT="$(dirname "$SCRIPT_DIR")"
 SLIM_TARGET="${TMPDIR:-/tmp}/pyaot_slim_runtime"
 OUT_DIR="${TMPDIR:-/tmp}/pyaot_size"
 FEATURES="${1:-}"
-HELLO="$ROOT/corpus/test_hello.py"
+HELLO="$SCRIPT_DIR/hello.py"
 
 mkdir -p "$OUT_DIR"
 
