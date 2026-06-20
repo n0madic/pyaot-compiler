@@ -2209,8 +2209,8 @@ impl<'a> Sweeper<'a> {
                 // fallthrough → `Dyn`, so a chained str method (`",".join(s).split(",")`)
                 // wrongly saw a gradual receiver.
                 "join" => return SemTy::Str,
-                "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum" | "isspace"
-                | "isupper" | "islower" | "isascii" => return SemTy::Bool,
+                "startswith" | "endswith" | "isdecimal" | "isdigit" | "isnumeric" | "isalpha"
+                | "isalnum" | "isspace" | "isupper" | "islower" | "isascii" => return SemTy::Bool,
                 "find" | "rfind" | "index" | "count" | "rindex" => return SemTy::Int,
                 "split" | "rsplit" | "splitlines" => return SemTy::list_of(SemTy::Str),
                 "encode" => return SemTy::Bytes,

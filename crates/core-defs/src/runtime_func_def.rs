@@ -1388,8 +1388,12 @@ pub static RT_STR_ZFILL: RuntimeFuncDef = RuntimeFuncDef::new_typed(
     ALIGN_BINARY,
     Some(MirSemantic::Tagged),
 );
+/// rt_str_isdecimal(s: *mut Obj) -> i8
+pub static RT_STR_ISDECIMAL: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isdecimal");
 /// rt_str_isdigit(s: *mut Obj) -> i8
 pub static RT_STR_ISDIGIT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isdigit");
+/// rt_str_isnumeric(s: *mut Obj) -> i8
+pub static RT_STR_ISNUMERIC: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isnumeric");
 /// rt_str_isalpha(s: *mut Obj) -> i8
 pub static RT_STR_ISALPHA: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isalpha");
 /// rt_str_isalnum(s: *mut Obj) -> i8

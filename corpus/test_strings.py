@@ -560,6 +560,35 @@ assert "Hello".islower() == False, "islower() on mixed case failed"
 assert "hello123".islower() == True, "islower() with digits failed"
 assert "".islower() == False, "islower() on empty failed"
 
+# Unicode numeric predicates — isdecimal ⊂ isdigit ⊂ isnumeric (§9, Numeric_Type).
+# Superscript two (Numeric_Type=Digit): isdigit/isnumeric True, isdecimal False.
+assert "²".isdigit() == True, "superscript-2 isdigit failed"
+assert "²".isdecimal() == False, "superscript-2 isdecimal failed"
+assert "²".isnumeric() == True, "superscript-2 isnumeric failed"
+# Vulgar fraction one half (Numeric_Type=Numeric): only isnumeric True.
+assert "½".isnumeric() == True, "1/2 isnumeric failed"
+assert "½".isdigit() == False, "1/2 isdigit failed"
+assert "½".isdecimal() == False, "1/2 isdecimal failed"
+# Roman numeral eight (Numeric): only isnumeric.
+assert "Ⅷ".isnumeric() == True, "roman-8 isnumeric failed"
+assert "Ⅷ".isdigit() == False, "roman-8 isdigit failed"
+# CJK numeral one (category Lo) — the old char::is_numeric path missed it.
+assert "一".isnumeric() == True, "CJK-1 isnumeric failed"
+assert "一".isdigit() == False, "CJK-1 isdigit failed"
+# ASCII decimals satisfy all three; Arabic-Indic digits are decimal too.
+assert "10".isdecimal() == True, "ascii isdecimal failed"
+assert "10".isdigit() == True, "ascii isdigit failed"
+assert "10".isnumeric() == True, "ascii isnumeric failed"
+assert "٠١٢".isdecimal() == True, "arabic-indic isdecimal failed"
+# Non-numeric and empty are False for all three.
+assert "abc".isnumeric() == False, "letters isnumeric failed"
+assert "".isdecimal() == False, "empty isdecimal failed"
+assert "".isnumeric() == False, "empty isnumeric failed"
+# A fraction beside a decimal: numeric overall, but not digit/decimal.
+assert "1½".isnumeric() == True, "mixed isnumeric failed"
+assert "1½".isdigit() == False, "mixed isdigit failed"
+print("Unicode numeric predicate tests passed")
+
 # Test storing predicate results in variables
 result = "test".isalpha()
 assert result == True, "storing isalpha() result failed"

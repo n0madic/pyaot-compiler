@@ -9,6 +9,7 @@ mod case;
 mod core;
 pub mod interning;
 mod modify;
+mod numeric_type_table;
 mod predicates;
 mod search;
 pub mod slice;
@@ -25,8 +26,8 @@ pub use core::{
 };
 pub use modify::{rt_str_mul, rt_str_replace};
 pub use predicates::{
-    rt_str_isalnum, rt_str_isalpha, rt_str_isascii, rt_str_isdigit, rt_str_islower, rt_str_isspace,
-    rt_str_isupper,
+    rt_str_isalnum, rt_str_isalpha, rt_str_isascii, rt_str_isdecimal, rt_str_isdigit,
+    rt_str_islower, rt_str_isnumeric, rt_str_isspace, rt_str_isupper,
 };
 pub use search::{
     rt_str_contains, rt_str_count, rt_str_endswith, rt_str_eq, rt_str_find, rt_str_rfind,

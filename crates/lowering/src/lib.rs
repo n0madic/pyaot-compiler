@@ -2394,8 +2394,12 @@ impl<'a> FnLower<'a> {
                 Some(3),
                 TypeSpec::Int,
             )),
-            // ASCII-only predicates (`is_ascii_*` in the runtime, §9 limit).
+            // Codepoint predicates (Unicode-aware in the runtime, §9). The
+            // numeric trio (`isdecimal`/`isdigit`/`isnumeric`) rides the
+            // generated Numeric_Type table; the rest use `char::is_*`.
+            "isdecimal" => Some((&rf::RT_STR_ISDECIMAL, &[], 0, None, TypeSpec::Bool)),
             "isdigit" => Some((&rf::RT_STR_ISDIGIT, &[], 0, None, TypeSpec::Bool)),
+            "isnumeric" => Some((&rf::RT_STR_ISNUMERIC, &[], 0, None, TypeSpec::Bool)),
             "isalpha" => Some((&rf::RT_STR_ISALPHA, &[], 0, None, TypeSpec::Bool)),
             "isalnum" => Some((&rf::RT_STR_ISALNUM, &[], 0, None, TypeSpec::Bool)),
             "isspace" => Some((&rf::RT_STR_ISSPACE, &[], 0, None, TypeSpec::Bool)),
