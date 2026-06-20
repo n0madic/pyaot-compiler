@@ -1,4 +1,4 @@
-//! Declarative descriptors for bare scalar/value builtins (PLAN §5).
+//! Declarative descriptors for bare scalar/value builtins.
 //!
 //! These are NOT module members — they are bare names (`id`, `round`, `bin`,
 //! `hex`, `oct`) the frontend dispatch references directly by `&'static`

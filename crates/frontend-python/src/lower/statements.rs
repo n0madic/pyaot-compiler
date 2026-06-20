@@ -219,7 +219,7 @@ impl<'a> FnLowerer<'a> {
             Stmt::Delete(d) => self.lower_delete(d),
             // A PEP 695 `type X = T` alias is a compile-time annotation binding
             // (collected in the module pre-scan into `type_aliases`); it emits no
-            // runtime code (PLAN §3 B).
+            // runtime code.
             Stmt::TypeAlias(_) => Ok(false),
             other => Err(parse_error(
                 "unsupported statement for this milestone",
@@ -852,7 +852,7 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn lower_annassign(&mut self, a: &rustpython_parser::ast::StmtAnnAssign) -> Result<()> {
         // `X: TypeAlias = T` (PEP 613) is a compile-time alias binding (collected
         // in the module pre-scan into `type_aliases`), NOT a value assignment: the
-        // RHS `T` is a type, not a runtime value, so do not lower it (PLAN §3 C).
+        // RHS `T` is a type, not a runtime value, so do not lower it.
         if matches!(a.annotation.as_ref(), Expr::Name(n) if n.id.as_str() == "TypeAlias") {
             return Ok(());
         }

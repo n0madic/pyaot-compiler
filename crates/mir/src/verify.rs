@@ -493,7 +493,7 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 //    (Phase 8H, D3) backed by `rt_unbox_float`/`rt_unbox_int`/
                 //    `rt_unbox_bool`;
                 //  - a `Tagged→Heap(shape)` shape guard for any `shape` whose
-                //    `dyn_check` is `Some` (PLAN §1) backed by
+                //    `dyn_check` is `Some` backed by
                 //    `rt_check_heap_kind`/`rt_check_instance`.
                 // Each has a matching runtime guard that raises `TypeError`
                 // instead of SEGV. Never widen this set without adding the
@@ -1327,7 +1327,7 @@ mod tests {
 
     #[test]
     fn checked_coerce_legal_only_for_guard_backed_shapes() {
-        // Phase 8H, D3 + Phase 1 lift + PLAN §1: `checked: true` is legal for the
+        // Phase 8H, D3 + Phase 1 lift + heap-arg guard: `checked: true` is legal for the
         // three Raw unbox shapes (Tagged, Raw(F64)) / (Tagged, Raw(I64)) /
         // (Tagged, Raw(I8)) — each backed by a raising `rt_unbox_*` guard — AND
         // for any `Tagged → Heap(shape)` whose `dyn_check` is `Some` (the
@@ -1778,7 +1778,7 @@ mod tests {
 
     /// An interprocedural raw-int callee `(Raw(I64)) -> Raw(I64)` — the shape the
     /// whole-program interval pass produces for a specializable bounded-int
-    /// function (PLAN backlog #7, Part A).
+    /// function.
     fn raw_i64_callee() -> MirFunction {
         MirFunction {
             name: interned("callee"),

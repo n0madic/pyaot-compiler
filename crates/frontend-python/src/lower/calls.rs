@@ -454,7 +454,7 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // Scalar / value builtins (PLAN §5): `pow`, `divmod`, `all`, `any`,
+        // Scalar / value builtins: `pow`, `divmod`, `all`, `any`,
         // `id`, `round`, `bin`, `hex`, `oct`. Gated on an UNSHADOWED bare name
         // (a local / global / top-def binding keeps winning — `id = 5; id(x)`
         // reads the local), slightly stricter than the unconditional min/max
@@ -1093,7 +1093,7 @@ impl<'a> FnLowerer<'a> {
         for deco in cdef.decorator_list.iter().rev() {
             // `@runtime_checkable` (typing) is a no-op marker on a `Protocol` — it
             // only enables `isinstance` against the protocol, which this compiler
-            // supports structurally regardless. Emit no runtime call (PLAN §3, F).
+            // supports structurally regardless. Emit no runtime call.
             if matches!(deco, Expr::Name(n) if n.id.as_str() == "runtime_checkable") {
                 continue;
             }
@@ -2110,7 +2110,7 @@ impl<'a> FnLowerer<'a> {
             Constant::Bool(b) => (HirExprKind::BoolLit(*b), SemTy::Bool),
             Constant::None => (HirExprKind::NoneLit, SemTy::NoneTy),
             // `...` (Ellipsis) appears as a Protocol/stub method body (`def m(self)
-            // -> int: ...`, PLAN §3). The stub never runs (a protocol receiver is
+            // -> int: ...`). The stub never runs (a protocol receiver is
             // `Dyn`, so calls route through `rt_obj_method`), so lower it to a
             // gradual no-op value — the surrounding expr-statement discards it.
             Constant::Ellipsis => (HirExprKind::NoneLit, SemTy::Dyn),

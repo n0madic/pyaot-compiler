@@ -25,7 +25,7 @@
 //! instant any endpoint leaves `[-BOUND, BOUND]` — over-approximation is always
 //! toward `⊤` (PITFALLS A2), never a finite range narrower than reality.
 //!
-//! ## Interprocedural extension (whole-program, Part A of PLAN backlog #7)
+//! ## Interprocedural extension (whole-program)
 //!
 //! The same terminal interval analysis is made *whole-program* so a function's
 //! parameters and return can be `Raw(I64)` across **direct** call edges (closing

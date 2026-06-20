@@ -94,7 +94,11 @@ additionally need bignum (invariant scope) and broad stdlib coverage
 
 ## Status
 
-Skeleton. Substrate crates build; front-half crates are typed scaffolds. The
-`types` crate (`SemTy` / `Repr` / `repr_of` / lattice) is implemented — it is the
+Working. All compiler phases through Phase 9 (optimization & polish) are
+implemented: the full differential `corpus/` — including `corpus/microgpt.py` —
+matches CPython byte-for-byte, on top of a MIR optimizer pipeline (inline,
+constant folding, peephole, DCE, cold-block layout) and Cranelift
+`opt_level=speed` by default. Every front-half crate is implemented, not a
+scaffold; the `types` crate (`SemTy` / `Repr` / `repr_of` / lattice) remains the
 load-bearing architectural artifact. See each crate's `lib.rs` for its
-responsibility, and [PLAN.md](PLAN.md) for the phased roadmap.
+responsibility.

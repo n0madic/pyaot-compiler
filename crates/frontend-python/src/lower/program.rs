@@ -358,7 +358,7 @@ impl<'a> ProgramLowerer<'a> {
         let mut class_map: ClassNameMap = HashMap::new();
         let mut class_ids: Vec<ClassId> = Vec::with_capacity(classdefs.len());
         let mut own_classes: Vec<(String, ClassId, InternedString)> = Vec::new();
-        // Class ids of `Protocol` classes (PLAN §3 G): a protocol-typed annotation
+        // Class ids of `Protocol` classes: a protocol-typed annotation
         // erases to `Dyn`, and `isinstance(obj, P)` is a structural check.
         let mut proto_ids: HashSet<ClassId> = HashSet::new();
         for cdef in &classdefs {
@@ -519,7 +519,7 @@ impl<'a> ProgramLowerer<'a> {
         // Restore the namespace for this module's own function reservations.
         self.shared.current_ns = my_ns;
 
-        // ── Module type aliases (PLAN §3 B/C). `type X = T` (PEP 695) and `X:
+        // ── Module type aliases. `type X = T` (PEP 695) and `X:
         // TypeAlias = T` (PEP 613) register `name → body SemTy`; the body resolves
         // through a bootstrap annotation context (class_map + module type vars are
         // known; alias-to-alias references and the `[V]` params of PEP 695 aliases

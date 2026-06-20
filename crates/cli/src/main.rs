@@ -270,7 +270,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     };
     passes.run(&mut mir).map_err(verify_to_error)?;
 
-    // ── mandatory pre-codegen verify (release-safe, PLAN #2). ──
+    // ── mandatory pre-codegen verify (release-safe). ──
     verify_pre_codegen(&mir)?;
 
     // ── --emit-mir: dump the verified MIR and stop (no codegen/link). ──
@@ -332,7 +332,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     Ok(())
 }
 
-/// The mandatory, release-safe pre-codegen representation gate (PLAN #2).
+/// The mandatory, release-safe pre-codegen representation gate.
 ///
 /// Runs in ALL build profiles — never wrap this call, or this function, in
 /// `#[cfg(debug_assertions)]`. The per-pass-boundary verifier in `optimizer`

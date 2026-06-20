@@ -141,11 +141,11 @@ pub(crate) struct AnnCtx<'a> {
     /// as `Option` (not relied-on key absence) so a method/nested function that
     /// shares a top-level function's name cannot wrongly pick up its slot.
     default_slots: Option<&'a DefaultSlotMap>,
-    /// Module type aliases (PLAN §3 B/C): `type X = T` (PEP 695) and `X:
+    /// Module type aliases: `type X = T` (PEP 695) and `X:
     /// TypeAlias = T` (PEP 613) → the alias name resolves to its body `SemTy` in
     /// annotation position (consulted by `named_annotation`).
     type_aliases: &'a HashMap<String, SemTy>,
-    /// Class ids of `Protocol` classes (PLAN §3 G): a protocol-typed slot/param
+    /// Class ids of `Protocol` classes: a protocol-typed slot/param
     /// erases to `Dyn` (Tagged baseline) so method dispatch rides the gradual
     /// `rt_obj_method` path. Consulted by `named_annotation` /
     /// `annotation_subscript` after a class id is resolved.

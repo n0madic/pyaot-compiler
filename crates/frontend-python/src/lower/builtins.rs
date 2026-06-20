@@ -218,7 +218,7 @@ impl<'a> FnLowerer<'a> {
         Ok(self.local_ref(acc, span))
     }
 
-    /// `pow(a, b)` (PLAN §5) → the `**` operator (`BinOp::Pow`), which is
+    /// `pow(a, b)` → the `**` operator (`BinOp::Pow`), which is
     /// already end-to-end and bignum- / numeric-tower-correct via `rt_obj_pow`
     /// (a negative exponent yields a float, exactly like `a ** b`). 2-arg only:
     /// the 1-arg form and the 3-arg modular form `pow(a, b, m)` are out of scope.
@@ -243,7 +243,7 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
-    /// `divmod(a, b)` (PLAN §5) → the 2-tuple `(a // b, a % b)`. `a` and `b` are
+    /// `divmod(a, b)` → the 2-tuple `(a // b, a % b)`. `a` and `b` are
     /// each staged into a fresh local ONCE, left-to-right (CPython
     /// evaluate-once / eval-order, §1); both binops apply CPython floor/sign
     /// semantics via `rt_obj_floordiv`/`rt_obj_mod` (PITFALLS B1), so the tuple
@@ -296,7 +296,7 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
-    /// `all(iterable)` / `any(iterable)` (PLAN §5) — an iterator loop mirroring
+    /// `all(iterable)` / `any(iterable)` — an iterator loop mirroring
     /// [`Self::lower_minmax`]. The accumulator seeds to the empty-input answer
     /// (`all([]) == True`, `any([]) == False`); each element is tested for
     /// truthiness (the same `Branch`-cond mechanism `if elem:` uses) and the

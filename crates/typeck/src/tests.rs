@@ -476,7 +476,7 @@ fn class_attribute_read_takes_field_type() {
 fn in_method_field_annotation_is_a_type_contract() {
     // `self.x: float = v` (v an int param) inside a method declares a `float`
     // FIELD — the in-method annotation is honored as a field-type contract,
-    // exactly like a class-level `x: float` (PLAN §8 follow-up). A read of the
+    // exactly like a class-level `x: float`. A read of the
     // field is then `float`, NOT the `int` best-effort type of the written value;
     // this distinguishes the contract (the implemented level 2) from a merely
     // decorative annotation (level 1, which would leave the field `int`). The

@@ -818,7 +818,7 @@ pub(super) fn lower_class(
             Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Str(_))) =>
                 {}
             // A bare `...` (Ellipsis) class body — a Protocol's `class P(Protocol):
-            // ...` stub (PLAN §3) — is a no-op like `pass`.
+            // ...` stub — is a no-op like `pass`.
             Stmt::Expr(e) if matches!(e.value.as_ref(), Expr::Constant(c) if matches!(c.value, Constant::Ellipsis)) =>
                 {}
             Stmt::Pass(_) => {}
@@ -873,7 +873,7 @@ pub(super) fn lower_class(
 }
 
 /// Collect `self.<name>: T` field-type annotations from a method body into
-/// `out` (PLAN §8 follow-up — in-method field declarations). Recurses into nested
+/// `out` (in-method field declarations). Recurses into nested
 /// blocks (a field may be annotated inside an `if`/`for`/`with`/`try`), since the
 /// annotation is a declaration regardless of control flow. A name already present
 /// (a class-level annotation, or an earlier method's) is left untouched, so
@@ -948,8 +948,8 @@ pub(super) fn type_param_name(tp: &rustpython_parser::ast::TypeParam) -> String 
 }
 
 /// True iff a class declares a `Protocol` base — bare (`class P(Protocol)`) or
-/// subscripted (`class P(Protocol[T])`) — i.e. a structural-typing protocol
-/// (PLAN §3). Mirrors the `is_protocol` detection in `lower_class`'s base loop,
+/// subscripted (`class P(Protocol[T])`) — i.e. a structural-typing protocol.
+/// Mirrors the `is_protocol` detection in `lower_class`'s base loop,
 /// but runs in the pre-lowering class scan (to seed `proto_ids`).
 pub(super) fn class_def_is_protocol(cdef: &StmtClassDef) -> bool {
     cdef.bases.iter().any(|base| match base {

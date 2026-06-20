@@ -268,7 +268,7 @@ struct FnLower<'a> {
     deletable_fields: &'a std::collections::HashSet<InternedString>,
     /// Annotated module-global slot types (`var_id → SemTy`). A `GlobalSet` into a
     /// `float`-annotated slot routes through `box_float_for_slot` so an int/bool
-    /// value lands as a genuine `FloatObj` (the numeric tower, PLAN §8).
+    /// value lands as a genuine `FloatObj` (the numeric tower).
     global_annotations: &'a HashMap<u32, SemTy>,
     /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
     ret_repr: Repr,
@@ -472,14 +472,14 @@ impl<'a> FnLower<'a> {
     ///
     /// When `want` is a `Raw(F64)`/`Raw(I64)`/`Raw(I8)` register slot and the
     /// value is not statically that type, the conversion is a *real* one (an
-    /// int/bool/gradual value into a `float` slot — the numeric tower, PLAN §8;
+    /// int/bool/gradual value into a `float` slot — the numeric tower;
     /// or a gradual value into a stdlib raw-ABI param — Phase 8H, D3), so it
     /// takes the CHECKED unbox: box to `Tagged` then `CoerceInst::new_checked`,
     /// whose codegen calls `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`
     /// (TypeError on a wrong tag, bignum→f64 round-to-nearest) instead of
     /// reinterpreting bits.
     ///
-    /// Likewise (PLAN §1), when `want` is a guard-backed `Heap(shape)` and the
+    /// Likewise, when `want` is a guard-backed `Heap(shape)` and the
     /// value is genuinely `Dyn`/`Union` (a gradual heap seam), it takes a CHECKED
     /// `Tagged → Heap(shape)` coercion whose codegen calls `rt_check_heap_kind` /
     /// `rt_check_instance` (TypeError at the boundary on a wrong shape) instead
@@ -509,7 +509,7 @@ impl<'a> FnLower<'a> {
             // (`rt_unbox_bool`, the third member of the checked family) — a
             // statically-proven `bool` keeps the plain `UntagBool`.
             Repr::Raw(RawKind::I8) => matches!(ty, SemTy::Dyn | SemTy::Union(_)),
-            // PLAN §1: a genuinely-`Dyn` value flowing into a typed `Heap` slot
+            // Heap-arg guard: a genuinely-`Dyn` value flowing into a typed `Heap` slot
             // (builtin container / class instance) takes a CHECKED `Tagged →
             // Heap(shape)` coercion — `rt_check_heap_kind` / `rt_check_instance`
             // raise `TypeError` at the boundary instead of crashing later at the
@@ -549,7 +549,7 @@ impl<'a> FnLower<'a> {
     /// type `slot_ty`. The result is always `Tagged`.
     ///
     /// When the slot is `float` and the value is an `int`/`bool`/gradual (the
-    /// numeric tower, PLAN §8), a bare `coerce(src, Tagged)` would store a tagged
+    /// numeric tower), a bare `coerce(src, Tagged)` would store a tagged
     /// fixnum that the slot's unchecked `UnboxFloat` read later misreads as an f64
     /// (PITFALLS A2). So first coerce to a genuine f64 (the CHECKED `Tagged →
     /// Raw(F64)` unbox via `coerce_value`/`rt_unbox_float`, with a bignum arm),
@@ -625,13 +625,13 @@ impl<'a> FnLower<'a> {
                 let ty = self.func.exprs[*value].ty.clone();
                 // A gradual value into an annotated `: float`/`: bool` local is a
                 // real (checked) coercion, not a bit reinterpret. Float is the
-                // numeric tower (PLAN §8: int/bool/gradual → f64); bool is the
+                // numeric tower (int/bool/gradual → f64); bool is the
                 // Dyn→`Raw(I8)` checked unbox (`rt_unbox_bool`).
                 let raw_checked = matches!(
                     target_repr,
                     Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8)
                 );
-                // PLAN §1 read-back seam: a genuinely-`Dyn` value (a `Dyn` global
+                // Heap-arg read-back seam: a genuinely-`Dyn` value (a `Dyn` global
                 // / field / element read as `Tagged`) assigned into an annotated
                 // guard-backed `Heap` local (`list`/`str`/`dict`/…/class instance)
                 // takes the CHECKED `Tagged → Heap(shape)` coercion
@@ -1205,7 +1205,7 @@ impl<'a> FnLower<'a> {
             HirTerminator::Return(Some(idx)) => {
                 let (loc, repr) = self.lower_expr(*idx)?;
                 let want = self.ret_repr.clone();
-                // Numeric tower (PLAN §8): an int/bool/gradual value through a
+                // Numeric tower: an int/bool/gradual value through a
                 // `-> float` slot is a real (checked) coercion, not a noop.
                 let ty = self.func.exprs[*idx].ty.clone();
                 let coerced = self.coerce_value(loc, repr, &ty, want)?;
@@ -2870,7 +2870,7 @@ impl<'a> FnLower<'a> {
         // takes THAT one string and returns its last dotted segment. Routing
         // `.__name__` through the same runtime source — never a compile-time
         // class-name table — keeps every `type()` form (`str(type(x))`,
-        // `print(type(x))`, `type(x).__name__`) on one formatting path (PLAN §6).
+        // `print(type(x))`, `type(x).__name__`) on one formatting path.
         if self.interner.resolve(name) == "__name__" && self.is_type_builtin_call(value) {
             let (vl, vr) = self.lower_expr(value)?;
             let str_local = self.coerce(vl, vr, Repr::Tagged)?;
@@ -3869,7 +3869,7 @@ impl<'a> FnLower<'a> {
         // Carry each call-site value's static `SemTy` alongside its lowered
         // `(loc, repr)` so the slot fill can pick the CHECKED numeric coercion
         // (`coerce_value`) when an int/bool/gradual arg lands in a `float`/`bool`
-        // param (the numeric tower, PLAN §8) — covering instance / static /
+        // param (the numeric tower) — covering instance / static /
         // classmethod / `super()` / virtual / `__call__` dispatch (all funnel
         // here). Default / `*args` / `**kwargs` slots carry no call-site expr; a
         // `Dyn` placeholder is correct either way (`coerce_value` round-trips it).
@@ -4153,7 +4153,7 @@ impl<'a> FnLower<'a> {
     }
 
     /// Lower `isinstance(value, Cls)` → the inheritance-aware runtime check, or —
-    /// for a `Protocol` class (PLAN §3 H) — a structural method-presence check.
+    /// for a `Protocol` class — a structural method-presence check.
     fn lower_isinstance(
         &mut self,
         value: Idx<HirExpr>,
@@ -4176,7 +4176,7 @@ impl<'a> FnLower<'a> {
         Ok((dst, Repr::Raw(RawKind::I8)))
     }
 
-    /// Structural `isinstance(obj, P)` for a protocol `P` (PLAN §3 H): True iff the
+    /// Structural `isinstance(obj, P)` for a protocol `P`: True iff the
     /// receiver has EVERY method `P` declares. Each method is probed with
     /// `rt_obj_has_method` (returns 0 for a non-instance receiver, so
     /// `isinstance(42, P)` is correctly False); the per-method `Raw(I8)` flags are

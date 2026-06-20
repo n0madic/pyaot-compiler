@@ -58,7 +58,7 @@ pub enum HeapShape {
 }
 
 /// The runtime shape-guard a gradual `Tagged → Heap(shape)` coercion needs to
-/// stay safe (PLAN §1): when a genuinely-`Dyn` value flows into a typed heap
+/// stay safe: when a genuinely-`Dyn` value flows into a typed heap
 /// slot, lowering emits a CHECKED coercion that calls one of these guards
 /// (`rt_check_heap_kind` / `rt_check_instance`) to raise `TypeError` at the
 /// boundary instead of crashing later at the first container op. This is the

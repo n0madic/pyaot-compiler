@@ -115,7 +115,7 @@ is chosen only when a range proof guarantees no overflow.
 ### A7. A benchmark gap that is correct to leave open (`bench_int_loop`)
 **Trap:** a hot integer loop (`bench_int_loop` — collatz `n = 3n+1` / a step
 counter, fib `a, b = b, a+b`) runs on the tagged baseline and reads ~2x slower
-than CPython. The pressure (PLAN backlog #7) is to *make it raw anyway*: either
+than CPython. The pressure is to *make it raw anyway*: either
 speculate `Raw(I64)` and deopt-to-bignum on overflow, or raise on overflow.
 **Why it bites:** both "fixes" reintroduce the deepest Part-A traps. A
 speculative raw-or-bignum value is precisely the representation-ambiguous

@@ -456,7 +456,7 @@ impl MirInst {
                 matches!(val, Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_))
             }
             // `checked` coercions call a raising guard — `rt_unbox_float/int/bool`
-            // (Raw unbox) or `rt_check_heap_kind/instance` (PLAN §1 heap shape) —
+            // (Raw unbox) or `rt_check_heap_kind/instance` (heap shape) —
             // any of which RAISES on a bad shape (TypeError allocates the
             // exception); `BoxFloat` allocates a `FloatObj`. Every other bridge is
             // bit ops / a load.
@@ -569,7 +569,7 @@ impl MirInst {
             // produces a fresh value in `dst`.
             MirInst::Const { .. } => false,
             // A `checked` coercion raises TypeError on a bad tag/shape (Raw
-            // unbox or PLAN §1 heap guard); every unchecked bridge is bit ops /
+            // unbox or heap guard); every unchecked bridge is bit ops /
             // a box allocation.
             MirInst::Coerce(c) => c.checked(),
             // Raw +,-,* and bitwise and/or/xor cannot raise; raw

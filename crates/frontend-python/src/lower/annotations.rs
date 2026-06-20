@@ -117,7 +117,7 @@ pub(super) fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
             if let Some(id) = ctx.type_vars.get(other) {
                 return SemTy::Var(*id);
             }
-            // A module type alias (`type X = T` / `X: TypeAlias = T`, PLAN §3 B/C)
+            // A module type alias (`type X = T` / `X: TypeAlias = T`)
             // resolves to its body. Checked before `class_map` so an alias name
             // never collides with a class; aliases never shadow a type var above.
             if let Some(sty) = ctx.type_aliases.get(other) {
@@ -125,7 +125,7 @@ pub(super) fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
             }
             // A user-defined class name annotates an instance of that class.
             if let Some((class_id, name)) = ctx.class_map.get(other) {
-                // A `Protocol` annotation (PLAN §3 G) erases to `Dyn` (Tagged
+                // A `Protocol` annotation erases to `Dyn` (Tagged
                 // baseline): method dispatch rides the gradual `rt_obj_method`
                 // path, never a per-protocol ABI. `isinstance` resolves the
                 // protocol class by NAME (independent of this), so structural
@@ -189,7 +189,7 @@ pub(super) fn annotation_subscript(base: &Expr, slice: &Expr, ctx: &AnnCtx) -> S
         // dict param (Phase 6C ABI).
         "Callable" => callable_annotation(slice, ctx),
         // A user generic class annotation `Stack[int]` → `Generic{base, [int]}` (5E).
-        // A subscripted `Protocol[T]` annotation (PLAN §3 G) erases to `Dyn` like
+        // A subscripted `Protocol[T]` annotation erases to `Dyn` like
         // the bare-name protocol case in `named_annotation`.
         other => match ctx.class_map.get(other) {
             Some((class_id, _)) if ctx.proto_ids.contains(class_id) => SemTy::Dyn,

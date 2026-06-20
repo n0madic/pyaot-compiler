@@ -45,7 +45,7 @@ impl CoerceInst {
     ///
     /// - **Raw unbox** (Phase 8H, D3): `Raw(F64)` / `Raw(I64)` / `Raw(I8)` —
     ///   `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool` (`runtime/src/boxing.rs`).
-    /// - **Heap shape guard** (PLAN §1): `Heap(shape)` for any `shape` whose
+    /// - **Heap shape guard**: `Heap(shape)` for any `shape` whose
     ///   [`HeapShape::dyn_check`] is `Some` (builtin containers + class
     ///   instances) — `rt_check_heap_kind` / `rt_check_instance`
     ///   (`runtime/src/instance.rs`). The rare guard-less shapes
@@ -61,7 +61,7 @@ impl CoerceInst {
         let legal = from == Repr::Tagged
             && match &to {
                 Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8) => true,
-                // PLAN §1: a gradual `Tagged → Heap(shape)` coercion is checked
+                // Heap-arg guard: a gradual `Tagged → Heap(shape)` coercion is checked
                 // iff the shape has a matching raising guard — exactly the
                 // shapes `dyn_check` returns `Some` for. B18: never admit a
                 // guard-less Heap shape (it would reopen the blind-cast SEGV).
@@ -165,7 +165,7 @@ mod tests {
             CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Raw(RawKind::I8))
                 .is_some_and(|c| c.checked())
         );
-        // PLAN §1: guard-backed Heap shapes (builtin containers + class
+        // Heap-arg guard: guard-backed Heap shapes (builtin containers + class
         // instances) are now also admissible — `rt_check_heap_kind` /
         // `rt_check_instance`.
         for shape in [

@@ -705,7 +705,7 @@ enum ReinterpretKind {
     /// iteration elements legitimately produce `Dyn → Heap` bindings. At a
     /// call/arg/return seam OR an annotated-local read-back (`x: list =
     /// <dyn global/field/value>`) that admitted `Dyn → Heap` is no longer a blind
-    /// cast: lowering emits a CHECKED coercion (PLAN §1) that calls a raising
+    /// cast: lowering emits a CHECKED coercion that calls a raising
     /// runtime guard (`rt_check_heap_kind` / `rt_check_instance`) so a wrong-shape
     /// gradual value becomes a clean `TypeError` at the boundary instead of
     /// crashing later at a container op. (A direct field/global STORE of a `Dyn`
@@ -774,8 +774,7 @@ fn check_repr_boundaries(
                                 "assigned to",
                                 classes,
                                 // The annotated-local-assign seam: int/bool/Dyn
-                                // into a `: float` local coerces at the store
-                                // (PLAN §8).
+                                // into a `: float` local coerces at the store.
                                 true,
                             )?;
                         }
@@ -815,7 +814,7 @@ fn check_repr_boundaries(
                                     kind,
                                     "assigned to global",
                                     classes,
-                                    // Numeric tower (PLAN §8): an int/bool/gradual
+                                    // Numeric tower: an int/bool/gradual
                                     // value into a `float` global coerces at the
                                     // store — lowering's `box_float_for_slot` emits
                                     // a checked `Tagged → Raw(F64)` unbox then
@@ -841,7 +840,7 @@ fn check_repr_boundaries(
                                             kind,
                                             "assigned to field",
                                             classes,
-                                            // Numeric tower (PLAN §8): an
+                                            // Numeric tower: an
                                             // int/bool/gradual value into a
                                             // `float` field coerces at the store —
                                             // lowering's `box_float_for_slot`
@@ -870,7 +869,7 @@ fn check_repr_boundaries(
                         "returned from",
                         classes,
                         // The return seam: int/bool/Dyn through `-> float`
-                        // coerces at the return store (PLAN §8).
+                        // coerces at the return store.
                         true,
                     )?;
                 }
@@ -885,7 +884,7 @@ fn check_repr_boundaries(
         // otherwise mis-read a mismatched value (PITFALLS A2).
         for (_idx, expr) in func.exprs.iter() {
             // `allow_coerce` enables the CHECKED numeric coercion at the param
-            // boundary (the numeric tower, PLAN §8): an `int`/`bool`/`Dyn` value
+            // boundary (the numeric tower): an `int`/`bool`/`Dyn` value
             // into a `float` slot, and a gradual `Dyn` into a `bool` slot. It is
             // on for every direct call kind whose lowering routes args through
             // `coerce_value` — free functions, methods, constructors (`Cls(args)`
@@ -958,7 +957,7 @@ fn check_repr_boundaries(
                                         kind,
                                         "passed to",
                                         classes,
-                                        // Numeric tower (PLAN §8): a keyword arg
+                                        // Numeric tower: a keyword arg
                                         // into a `float`/`bool` param coerces at
                                         // its slot in `build_call_operands` (the
                                         // `Kw` source routes through
@@ -992,7 +991,7 @@ fn check_repr_boundaries(
             };
             for (arg, param) in args.iter().zip(params) {
                 if let Some(kind) = reinterpret_kind(&param.ty) {
-                    // Numeric tower (PLAN §8): a positional arg into a
+                    // Numeric tower: a positional arg into a
                     // `float`/`bool` param takes the checked coercion lowering
                     // now emits at every direct-call seam (`coerce_value` →
                     // `rt_unbox_float`/`rt_unbox_bool`). `allow_coerce` is on for
@@ -1225,7 +1224,7 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
     }
 }
 
-/// True iff `value` and `target` denote the SAME user class (PLAN §3 D). A
+/// True iff `value` and `target` denote the SAME user class. A
 /// nominal `Class{C}` and a generic `Generic{C, args}` share one physical repr
 /// (`Heap(Class(C))` — type args are erased to a single layout), so storing a
 /// `IntWrapper(77)` (`Class{IntWrapper}`) into an `IntWrapper[int]`
@@ -1291,7 +1290,7 @@ fn check_reinterpret(
     classes: &ClassTable,
     allow_numeric_coerce: bool,
 ) -> Result<()> {
-    // Numeric tower (PLAN §8): an `int`/`bool`/gradual value flowing into a
+    // Numeric tower: an `int`/`bool`/gradual value flowing into a
     // `float` slot is a *real* coercion (int→f64, with a bignum arm), never a
     // noop — but the slot ends up holding a genuine f64, so it is sound. CPython
     // ignores the `-> float` / `: float` annotation and keeps the raw int; this
@@ -1303,7 +1302,7 @@ fn check_reinterpret(
     // via `allow_numeric_coerce` at every seam whose lowering emits the checked
     // coercion: the return terminator, the annotated-`float` local assign, the
     // param boundary (free-fn / method / ctor / `super()` / virtual), and the
-    // `float` global / field stores (PLAN §8 — all closed). The coercion lands at
+    // `float` global / field stores (all closed). The coercion lands at
     // the store as a CHECKED `Tagged → Raw(F64)` unbox (`rt_unbox_float`), which
     // covers int→f64, bool→f64 and gradual Dyn→f64 uniformly and raises
     // `TypeError` on a non-numeric tag; the global/field stores additionally

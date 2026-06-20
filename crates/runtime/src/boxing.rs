@@ -74,8 +74,8 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
             );
         }
     }
-    // A heap `BigInt` is the int→float numeric tower above fixnum range (PLAN
-    // §8): `float(huge_int)` rounds to the nearest f64, returning ±inf on
+    // A heap `BigInt` is the int→float numeric tower above fixnum range:
+    // `float(huge_int)` rounds to the nearest f64, returning ±inf on
     // overflow — exactly `num_bigint::BigInt::to_f64`'s semantics (matches
     // CPython). Mirrors `rt_unbox_int_abi`'s `BigIntObj` access; without this
     // arm `rt_unbox_float` below would TypeError on a legitimate big int.

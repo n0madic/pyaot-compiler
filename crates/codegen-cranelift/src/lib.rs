@@ -74,7 +74,7 @@ struct RuntimeFns {
     unbox_float_checked: FuncId,
     unbox_int_checked: FuncId,
     unbox_bool_checked: FuncId,
-    /// PLAN §1 gradual heap-arg shape guards (raise `TypeError` on a wrong-shape
+    /// Gradual heap-arg shape guards (raise `TypeError` on a wrong-shape
     /// `Dyn` value at the boundary instead of a deferred container-op crash).
     check_heap_kind: FuncId,
     check_instance: FuncId,
@@ -312,7 +312,7 @@ impl RuntimeFns {
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
             unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
             unbox_bool_checked: d("rt_unbox_bool", &[ti], &[t8])?,
-            // PLAN §1: `(value, kind|class_id) -> value` — return the same tagged
+            // Heap-arg guard: `(value, kind|class_id) -> value` — return the same tagged
             // value on a match, raise `TypeError` otherwise. NOT in
             // `never_raises`, so the TypeError edge auto-wires the handler.
             check_heap_kind: d("rt_check_heap_kind", &[ti, ti], &[ti])?,
@@ -2524,15 +2524,14 @@ impl FnGen<'_, '_> {
     ) -> Result<()> {
         // A checked coercion validates the tag at runtime — the Raw unbox shapes
         // (`rt_unbox_float`/`rt_unbox_int`/`rt_unbox_bool`, Phase 8H D3) and the
-        // gradual Heap shape guards (`rt_check_heap_kind`/`rt_check_instance`,
-        // PLAN §1) all raise `TypeError` on a wrong-shape value instead of SEGV.
+        // gradual Heap shape guards (`rt_check_heap_kind`/`rt_check_instance`) all raise `TypeError` on a wrong-shape value instead of SEGV.
         if checked {
             let s = self.use_operand(src);
             let v = match to {
                 Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
                 Repr::Raw(RawKind::I8) => self.call(self.rt.unbox_bool_checked, &[s]).unwrap(),
-                // PLAN §1: a guarded `Tagged → Heap(shape)` coercion calls the
+                // Heap-arg guard: a guarded `Tagged → Heap(shape)` coercion calls the
                 // shape's raising guard and returns the same tagged value on a
                 // match. The `dyn_check` is `Some` by construction — lowering
                 // only emits a checked heap coerce for a guarded shape (B18).

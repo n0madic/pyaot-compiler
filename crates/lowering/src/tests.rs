@@ -135,7 +135,7 @@ fn unprovable_int_arithmetic_stays_tagged() {
 
 #[test]
 fn bounded_call_specializes_params_and_return_to_raw() {
-    // Interprocedural raw-int (PLAN backlog #7, Part A): a free function whose
+    // Interprocedural raw-int: a free function whose
     // EVERY direct call site passes a provably-bounded int gets Raw(I64) params
     // AND a Raw(I64) return, so its body divides raw — closing the exc_hotpath gap.
     let i64r = Repr::Raw(RawKind::I64);

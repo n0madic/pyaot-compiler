@@ -326,7 +326,7 @@ fn value_type_name(v: Value) -> &'static str {
     unsafe { (*obj).type_tag().type_name() }
 }
 
-/// PLAN §1 — the gradual builtin-container shape guard (the `Heap` analogue of
+/// The gradual builtin-container shape guard (the `Heap` analogue of
 /// `rt_unbox_float`). When a genuinely-`Dyn` value flows into a typed
 /// `str`/`bytes`/`list`/`dict`/`set`/`tuple` parameter / return / slot, lowering
 /// routes it through this CHECKED coercion: if the runtime tag matches `kind` (a
@@ -368,7 +368,7 @@ pub extern "C" fn rt_check_heap_kind_abi(value: Value, kind: i64) -> Value {
     }
 }
 
-/// PLAN §1 — the gradual user-class instance shape guard (subclass-aware sibling
+/// The gradual user-class instance shape guard (subclass-aware sibling
 /// of `rt_check_heap_kind`). A genuinely-`Dyn` value flowing into a typed
 /// class-instance parameter / return / slot is routed here: it must be a heap
 /// `Instance` whose class is `class_id` OR a subclass of it
@@ -464,7 +464,7 @@ pub(crate) unsafe fn instance_default_repr(obj: *mut Obj) -> String {
 
 #[cfg(test)]
 mod plan1_guard_tests {
-    //! PLAN §1 — the gradual heap-arg shape guards (`rt_check_heap_kind` /
+    //! The gradual heap-arg shape guards (`rt_check_heap_kind` /
     //! `rt_check_instance`).
     //!
     //! Only the ACCEPT paths and the reject DECISION predicates are exercised
