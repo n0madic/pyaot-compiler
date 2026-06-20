@@ -10,6 +10,12 @@ use std::process::Command;
 pub struct Linker {
     runtime_lib: PathBuf,
     debug: bool,
+    /// Run a second, post-link `strip` pass for minimal binary size. Off by
+    /// default: the link step already strips fully, so this only trims the
+    /// residual global symbol table (~7%) at the cost of a whole-binary rewrite
+    /// in a fresh process (~8-10ms) on every compile. Opt-in for size-conscious
+    /// builds (`--opt-level speed-and-size`); the default fast path skips it.
+    minimize_size: bool,
 }
 
 impl Linker {
@@ -17,6 +23,7 @@ impl Linker {
         Self {
             runtime_lib: runtime_lib.into(),
             debug: false,
+            minimize_size: false,
         }
     }
 
@@ -25,7 +32,14 @@ impl Linker {
         Self {
             runtime_lib: runtime_lib.into(),
             debug,
+            minimize_size: false,
         }
+    }
+
+    /// Enable the extra post-link `strip` pass for minimal binary size.
+    pub fn minimize_size(mut self, yes: bool) -> Self {
+        self.minimize_size = yes;
+        self
     }
 
     /// Link object file with runtime to create executable.
@@ -117,9 +131,12 @@ impl Linker {
             )));
         }
 
-        // Post-link strip for maximum size reduction (removes symbol table entries
-        // that the linker's -Wl,-x,-S cannot remove)
-        if !self.debug {
+        // Post-link `strip` for minimal size — opt-in only (see `minimize_size`).
+        // The link step above already strips (`-Wl,-x,-S,-dead_strip` /
+        // `-s --gc-sections`); this second pass only trims the residual global
+        // symbol table (~7%) and costs ~8-10ms (a whole-binary rewrite in a fresh
+        // process), so the default fast path skips it.
+        if !self.debug && self.minimize_size {
             let _ = Command::new("strip").arg(output).output();
         }
 

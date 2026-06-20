@@ -48,7 +48,7 @@ Common flags (`pyaot --help` for the full list):
 | `-o, --output <PATH>` | Output executable. Defaults to the input path with its extension stripped (`foo.py` → `foo`). |
 | `--run` | Run the compiled executable after a successful link, propagating its exit code. |
 | `-O, --optimize` | Enable optimizations (alias for `--opt-level speed`). |
-| `--opt-level <none\|speed\|speed-and-size>` | Optimization level. `speed` is the default; `none` is fully conservative. |
+| `--opt-level <none\|speed\|speed-and-size>` | Optimization level. `speed` is the default; `none` is fully conservative. `speed-and-size` additionally runs an extra post-link `strip` for minimal binary size (the default path skips it, ~8-10ms faster per compile). |
 | `--debug` | Keep debug symbols / DWARF; also defaults `--opt-level` to `none` unless one is given explicitly. |
 | `--module-path <DIR>` | Extra import search directory (repeatable); tried after the entry script's own directory. |
 | `--emit-hir` / `--emit-types` / `--emit-mir` | Dump the resolved HIR / typed HIR / verified MIR to stdout and exit (no codegen). |

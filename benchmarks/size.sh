@@ -32,8 +32,10 @@ PYAOT="$ROOT/target/release/pyaot"
 FULL_LIB="$ROOT/target/release/libpyaot_runtime.a"
 SLIM_LIB="$SLIM_TARGET/release/libpyaot_runtime.a"
 
-"$PYAOT" "$HELLO" -o "$OUT_DIR/hello_full" --runtime-lib "$FULL_LIB"
-"$PYAOT" "$HELLO" -o "$OUT_DIR/hello_slim" --runtime-lib "$SLIM_LIB"
+# `speed-and-size` enables the extra post-link `strip` pass (the default fast
+# path skips it), so this measures the minimal achievable executable size.
+"$PYAOT" "$HELLO" -o "$OUT_DIR/hello_full" --opt-level speed-and-size --runtime-lib "$FULL_LIB"
+"$PYAOT" "$HELLO" -o "$OUT_DIR/hello_slim" --opt-level speed-and-size --runtime-lib "$SLIM_LIB"
 
 size_of() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
 

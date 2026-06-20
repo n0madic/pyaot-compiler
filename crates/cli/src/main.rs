@@ -305,7 +305,11 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
 
     timer.step("Linking");
     let runtime_lib = locate_runtime_lib(cli)?;
-    let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug);
+    // The extra post-link `strip` pass is a size optimization, so it runs only
+    // under `--opt-level speed-and-size`; the default path skips it (~8-10ms
+    // faster per compile — matters most for the `--run` edit-compile loop).
+    let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug)
+        .minimize_size(opt_level == OptLevelArg::SpeedAndSize);
     linker.link(&object_path, &output, &[])?;
     timer.finish();
 

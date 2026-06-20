@@ -326,6 +326,12 @@ pub(crate) fn narrow_raw_ints(
     // non-specializable caller's seed is constant ⊤, so it is computed once).
     let mut contrib: Vec<Vec<(usize, Vec<Interval>)>> = vec![Vec::new(); n];
     let mut dirty = vec![true; n];
+    // Per-function cache of `(seed, expr_iv, writers)` from its most recent
+    // in-loop analysis, reused by the final apply when the converged seed matches
+    // (which it does for every converged function) — eliding a redundant second
+    // full analysis, e.g. of a large top-level `__main__`.
+    let mut analysis_cache: Vec<Option<(Vec<Interval>, ExprIv, HashMap<usize, Vec<Interval>>)>> =
+        vec![None; n];
 
     let total: usize = n_params.iter().sum();
     let max_rounds = (total + n)
@@ -339,7 +345,7 @@ pub(crate) fn narrow_raw_ints(
             }
             let func = &module.functions[caller];
             let seed = build_seed(func, &entry_iv[caller], !specializable[caller]);
-            let analyzed = analyze_func(func, resolve, &seed).map(|(expr_iv, _)| expr_iv);
+            let analyzed = analyze_func(func, resolve, &seed);
             contrib[caller] = call_sites[caller]
                 .iter()
                 .map(|cs| {
@@ -348,7 +354,7 @@ pub(crate) fn narrow_raw_ints(
                         .map(|p| match &analyzed {
                             // A non-converging caller (or an arg past the
                             // recorded set) contributes ⊤: we cannot bound it.
-                            Some(expr_iv) if p < cs.args.len() => {
+                            Some((expr_iv, _)) if p < cs.args.len() => {
                                 expr_iv.get(&cs.args[p]).copied().unwrap_or(Interval::Top)
                             }
                             _ => Interval::Top,
@@ -357,6 +363,9 @@ pub(crate) fn narrow_raw_ints(
                     (cs.callee, ivs)
                 })
                 .collect();
+            // Keep the full result (with `writers`) for the final apply, keyed by
+            // the seed it was computed under.
+            analysis_cache[caller] = analyzed.map(|(expr_iv, writers)| (seed, expr_iv, writers));
         }
         // Rebuild every callee's entry join fresh from ALL cached contributions.
         let mut fresh: Vec<Vec<Interval>> = n_params
@@ -406,8 +415,19 @@ pub(crate) fn narrow_raw_ints(
         let spec = specializable[fid];
         let func = &module.functions[fid];
         let seed = build_seed(func, &entry_iv[fid], !spec);
-        let Some((expr_iv, mut writers)) = analyze_func(func, resolve, &seed) else {
-            continue;
+        // Reuse the loop's cached analysis when the seed is unchanged. `analyze_func`
+        // is a pure function of `(func, seed)`, and at convergence every function's
+        // seed equals the seed of its last in-loop analysis — a function whose seed
+        // still moved would have been re-marked dirty and re-analyzed — so this hits
+        // for every function, eliding a second full pass. The equality check is the
+        // correctness guard for the rare mismatch (e.g. a function that bailed under
+        // a wider seed in a later round).
+        let (expr_iv, mut writers) = match analysis_cache[fid].take() {
+            Some((cached_seed, expr_iv, writers)) if cached_seed == seed => (expr_iv, writers),
+            _ => match analyze_func(func, resolve, &seed) {
+                Some(r) => r,
+                None => continue,
+            },
         };
         let ret_iv = return_interval(func, &expr_iv);
         apply_flags(
@@ -1036,47 +1056,75 @@ fn analyze_func(
         cand
     };
 
-    // ── Phase 1: widening to a post-fixpoint. ──
+    // ── Phase 1: widening to a post-fixpoint (worklist / Gauss-Seidel). ──
     // Each (block, local) endpoint climbs through at most `WIDEN_LIMIT` finite
     // values before widening pins it to a `±∞` sentinel, so the ascending chain
-    // stabilizes; the cap bounds the pathological case and bails conservatively.
-    let max_rounds = n
+    // stabilizes. A worklist — not the Jacobi round-robin a `recompute`-per-round
+    // loop would be — is essential: Jacobi reads the *previous* round's `in_env`
+    // for every block, so a fact advances exactly one CFG edge per round, making
+    // a long block chain `O(blocks²·locals)` (a 1076-block top-level `__main__`
+    // took ~1000 rounds). The worklist propagates each refined out-env to its
+    // successors immediately and re-queues only blocks whose in-env actually
+    // moved, so the chain converges in a handful of passes. The result is the
+    // same sound post-fixpoint: `join` is associative/commutative, and widening
+    // still fires only at loop heads once a head has moved `WIDEN_LIMIT` times.
+    // `step_cap` bounds the pathological case and bails conservatively (the same
+    // budget the Jacobi loop used as `max_rounds`).
+    let step_cap = n
         .saturating_mul(n_locals.saturating_add(1))
-        .saturating_mul(WIDEN_LIMIT + 2);
-    let max_rounds = max_rounds.clamp(64, 200_000);
-    let mut converged = false;
-    for _ in 0..max_rounds {
-        let cand = recompute(&in_env);
-        let mut changed = false;
-        for bi in 0..n {
-            if bi == entry {
-                continue;
+        .saturating_mul(WIDEN_LIMIT + 2)
+        .clamp(64, 5_000_000);
+    let mut steps = 0usize;
+    let mut on_queue = vec![false; n];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    queue.push_back(entry);
+    on_queue[entry] = true;
+    let mut bailed = false;
+    while let Some(b) = queue.pop_front() {
+        on_queue[b] = false;
+        steps += 1;
+        if steps > step_cap {
+            bailed = true;
+            break;
+        }
+        // Snapshot `b`'s in-env (clone releases the borrow before we mutate a
+        // successor — which may be `b` itself on a self-loop), then transfer.
+        let Some(mut out) = in_env[b].clone() else {
+            continue;
+        };
+        transfer_block(func, resolve, &func.blocks[order[b]], &mut out);
+        for (succ, edge) in successors(&func.blocks[order[b]], &index_of) {
+            if succ == entry {
+                continue; // entry stays pinned to its seeded in-env
             }
-            let new_in = match (&in_env[bi], &cand[bi]) {
-                (cur, None) => cur.clone(),
-                (None, Some(c)) => Some(c.clone()),
-                (Some(old), Some(c)) => {
-                    let joined = join_env(old, c);
-                    let merged = if heads.contains(&bi) && visit[bi] >= WIDEN_LIMIT {
+            let refined = match edge {
+                Edge::Flow => Some(out.clone()),
+                Edge::Branch(cond, taken) => refine_edge(func, resolve, &out, cond, taken),
+                Edge::Handler => Some(top_env()),
+            };
+            let Some(r) = refined else { continue };
+            let new_in = match &in_env[succ] {
+                None => r,
+                Some(old) => {
+                    let joined = join_env(old, &r);
+                    if heads.contains(&succ) && visit[succ] >= WIDEN_LIMIT {
                         widen_env(old, &joined)
                     } else {
                         joined
-                    };
-                    Some(merged)
+                    }
                 }
             };
-            if new_in != in_env[bi] {
-                in_env[bi] = new_in;
-                visit[bi] += 1;
-                changed = true;
+            if in_env[succ].as_ref() != Some(&new_in) {
+                in_env[succ] = Some(new_in);
+                visit[succ] += 1;
+                if !on_queue[succ] {
+                    on_queue[succ] = true;
+                    queue.push_back(succ);
+                }
             }
         }
-        if !changed {
-            converged = true;
-            break;
-        }
     }
-    if !converged {
+    if bailed {
         return None;
     }
 

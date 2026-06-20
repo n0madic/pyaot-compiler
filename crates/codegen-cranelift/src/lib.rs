@@ -28,11 +28,15 @@ use cranelift_codegen::ir::{
     ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
     StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
-use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::control::ControlPlane;
+use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
+use cranelift_codegen::Context;
 use cranelift_codegen::FinalizedMachExceptionHandler;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module};
+use cranelift_module::{
+    default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module, ModuleReloc,
+};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use pyaot_core_defs::tag;
@@ -763,26 +767,48 @@ pub fn compile(
 
     // Define each function body, harvesting its protected call sites for the
     // program-wide unwind table and its line ranges for the traceback table.
-    let mut exc_sites: Vec<(FuncId, Vec<ExcSite>)> = Vec::new();
-    let mut tb_funcs: Vec<(FuncId, String, String, FnTb)> = Vec::new();
+    // Codegen in three phases so the per-function Cranelift compile — the bulk of
+    // codegen wall-clock — runs in parallel. Translation (Phase 1) and object
+    // emission (Phase 3) stay serial because they touch the shared
+    // `&mut ObjectModule` (declare_func_in_func, the trampoline accumulator,
+    // define_function_bytes); only `Context::compile` (Phase 2) is fanned out.
+    // The emitted object is byte-identical to the serial path: Phase 3 replays
+    // exactly what `Module::define_function` does (compile under the default
+    // ControlPlane, then `define_function_bytes`), with the compile already done
+    // and the functions emitted in the same (index) order.
+
+    // Phase 1 (serial): translate each MIR function into a finalized, not-yet-
+    // compiled Cranelift `Context`.
     let mut trampolines = Trampolines::default();
-    for (i, mf) in program.funcs.iter().enumerate() {
-        let (sites, tb) = define_function(
+    let mut contexts: Vec<Context> = Vec::with_capacity(program.funcs.len());
+    for mf in program.funcs.iter() {
+        contexts.push(translate_function(
             &mut module,
             mf,
-            func_ids[i],
             &func_ids,
             &rt,
             &data_ids,
             ptr_ty,
             call_conv,
             &mut trampolines,
-        )?;
+        )?);
+    }
+
+    // Phase 2 (parallel): compile every Context.
+    compile_contexts_parallel(module.isa(), &mut contexts)?;
+
+    // Phase 3 (serial): emit each compiled function in index order (identical
+    // object layout) and harvest its exception / traceback metadata.
+    let mut exc_sites: Vec<(FuncId, Vec<ExcSite>)> = Vec::new();
+    let mut tb_funcs: Vec<(FuncId, String, String, FnTb)> = Vec::new();
+    for (i, ctx) in contexts.iter().enumerate() {
+        let (sites, tb) = harvest_fn_metadata(ctx)?;
         if !sites.is_empty() {
             exc_sites.push((func_ids[i], sites));
         }
         // Display name: module bodies (`__main__`, imported-module `<init>`s)
         // print as CPython's `<module>`; everything else by the Python name.
+        let mf = &program.funcs[i];
         let py_name = interner.resolve(mf.name);
         let display = if py_name == "__main__" || py_name.ends_with(".<init>") {
             "<module>".to_string()
@@ -795,7 +821,22 @@ pub fn compile(
             interner.resolve(mf.file).to_string(),
             tb,
         ));
+
+        let compiled = ctx
+            .compiled_code()
+            .ok_or_else(|| cg_error("compiled_code missing after parallel compile"))?;
+        let alignment = compiled.buffer.alignment as u64;
+        let relocs: Vec<ModuleReloc> = compiled
+            .buffer
+            .relocs()
+            .iter()
+            .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, func_ids[i]))
+            .collect();
+        module
+            .define_function_bytes(func_ids[i], alignment, compiled.buffer.data(), &relocs)
+            .map_err(|e| cg_error(format!("define function: {e}")))?;
     }
+    drop(contexts);
     define_trampolines(&mut module, trampolines)?;
 
     let exc_table = emit_exc_table(&mut module, &exc_sites)?;
@@ -1372,17 +1413,16 @@ fn emit_main(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn define_function(
+fn translate_function(
     module: &mut ObjectModule,
     mf: &MirFunction,
-    cl_func_id: FuncId,
     func_ids: &[FuncId],
     rt: &RuntimeFns,
     data_ids: &HashMap<InternedString, (DataId, u32)>,
     ptr_ty: Type,
     cc: CallConv,
     trampolines: &mut Trampolines,
-) -> Result<(Vec<ExcSite>, FnTb)> {
+) -> Result<Context> {
     let mut sig = Signature::new(cc);
     for p in &mf.params {
         sig.params.push(abi_param(clif_ty(p)));
@@ -1489,18 +1529,64 @@ fn define_function(
         builder.seal_all_blocks();
         builder.finalize();
     }
-    module
-        .define_function(cl_func_id, &mut ctx)
-        .map_err(|e| cg_error(format!("define function: {e}")))?;
+    // The expensive compile (isel/regalloc/egraph) is deferred to a parallel
+    // phase; this returns the finalized-but-uncompiled context.
+    Ok(ctx)
+}
 
-    // Harvest this function's exception metadata: every emitted `try_call`
-    // produced a machine call site carrying its handler's code offset. The
-    // records feed the program-wide PC→handler table the runtime unwinder
-    // searches at raise time.
+/// Compile every translated [`Context`] to machine code in parallel — the
+/// isel/regalloc/egraph step that dominates codegen wall-clock. A shared work
+/// queue balances the load (one giant `__main__` next to many tiny functions);
+/// only `&isa` is shared (it is `Sync`), and each `Context` is owned by exactly
+/// one worker at a time (moved through the queue), so `#![forbid(unsafe_code)]`
+/// holds with no aliasing. A fresh `ControlPlane::default()` per function keeps
+/// the output bit-identical to the serial `Module::define_function` path.
+fn compile_contexts_parallel(isa: &dyn TargetIsa, contexts: &mut Vec<Context>) -> Result<()> {
+    use std::sync::Mutex;
+    let n = contexts.len();
+    if n == 0 {
+        return Ok(());
+    }
+    let queue: Mutex<Vec<(usize, Context)>> =
+        Mutex::new(std::mem::take(contexts).into_iter().enumerate().collect());
+    let done: Mutex<Vec<(usize, std::result::Result<Context, String>)>> =
+        Mutex::new(Vec::with_capacity(n));
+    let nthreads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(n);
+    std::thread::scope(|s| {
+        for _ in 0..nthreads {
+            s.spawn(|| loop {
+                let next = { queue.lock().unwrap().pop() };
+                let Some((i, mut ctx)) = next else { break };
+                let mut ctrl = ControlPlane::default();
+                let outcome = match ctx.compile(isa, &mut ctrl) {
+                    Ok(_) => Ok(ctx),
+                    Err(e) => Err(format!("compile function {i}: {e:?}")),
+                };
+                done.lock().unwrap().push((i, outcome));
+            });
+        }
+    });
+    let mut results = done.into_inner().unwrap();
+    results.sort_by_key(|(i, _)| *i);
+    let mut out = Vec::with_capacity(n);
+    for (_, r) in results {
+        out.push(r.map_err(cg_error)?);
+    }
+    *contexts = out;
+    Ok(())
+}
+
+/// Harvest a compiled function's exception sites + traceback metadata from its
+/// `CompiledCode` (call-site handler offsets, code size, srcloc line ranges).
+/// Must run after [`compile_contexts_parallel`] — the offsets are post-compile.
+fn harvest_fn_metadata(ctx: &Context) -> Result<(Vec<ExcSite>, FnTb)> {
     let mut sites = Vec::new();
     let compiled = ctx
         .compiled_code()
-        .ok_or_else(|| cg_error("compiled_code missing after define_function"))?;
+        .ok_or_else(|| cg_error("compiled_code missing after compile"))?;
     for site in compiled.buffer.call_sites() {
         for h in site.exception_handlers {
             match h {
@@ -1528,8 +1614,6 @@ fn define_function(
         }
     }
 
-    // Harvest the traceback metadata (real tracebacks): the function's code
-    // size plus the line ranges the `LineMarker`-driven srclocs produced.
     let tb = FnTb {
         code_size: compiled.buffer.total_size(),
         locs: compiled
@@ -1540,8 +1624,6 @@ fn define_function(
             .map(|s| (s.start, s.end, s.loc.bits()))
             .collect(),
     };
-
-    module.clear_context(&mut ctx);
     Ok((sites, tb))
 }
 
