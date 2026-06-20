@@ -484,13 +484,14 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Unpack an arbitrary iterable RHS (`a, b = expr`, `for k, v in pairs`): stage
-    /// the value once, then bind `target_i = tmp[i]` via positional subscripts.
-    /// One starred target (`a, *rest = …`) captures a fresh list of the middle
-    /// slice. A nested sequence target recurses here via [`Self::assign_to_target`]
-    /// (`a, (b, c) = …`, backlog §4). Arity beyond the pattern is a runtime
-    /// `IndexError` (no static shape here); an over-long sequence is *not*
-    /// statically rejected (CPython's "too many values to unpack" is not raised) —
-    /// this matches the flat-unpack contract and is an inherited limitation.
+    /// the value once, validate its arity, then bind `target_i = tmp[i]` via
+    /// positional subscripts. One starred target (`a, *rest = …`) captures a fresh
+    /// list of the middle slice. A nested sequence target recurses here via
+    /// [`Self::assign_to_target`] (`a, (b, c) = …`, backlog §4). Arity is checked
+    /// against `len(tmp)` up front by [`Self::emit_unpack_guard`], raising the exact
+    /// CPython `ValueError` ("too many values to unpack" / "not enough values to
+    /// unpack") — a non-starred pattern requires an exact count, a starred one a
+    /// minimum.
     pub(super) fn lower_unpack_subscript(
         &mut self,
         targets: &[Expr],
@@ -512,6 +513,25 @@ impl<'a> FnLowerer<'a> {
             Some(p) => (&targets[..p], &targets[p + 1..]),
             None => (targets, &[]),
         };
+
+        // n = len(tmp), staged once: the arity guard, the star slice, and the
+        // suffix back-indices all read it.
+        let tmp_ref = self.local_ref(tmp, span);
+        let len_e = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::Len,
+                args: vec![tmp_ref],
+            },
+            SemTy::Int,
+            span,
+        );
+        let len_l = self.fresh_local(SemTy::Int);
+        self.push_stmt(HirStmt::Assign {
+            target: len_l,
+            value: len_e,
+        });
+        self.emit_unpack_guard(len_l, prefix.len(), suffix.len(), star_pos.is_some(), span);
+
         for (i, target) in prefix.iter().enumerate() {
             let tmp_ref = self.local_ref(tmp, span);
             let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
@@ -527,23 +547,7 @@ impl<'a> FnLowerer<'a> {
         }
         let Some(p) = star_pos else { return Ok(()) };
 
-        // n = len(tmp), staged once for the star slice and the suffix indices.
-        let tmp_ref = self.local_ref(tmp, span);
-        let len_e = self.alloc(
-            HirExprKind::ContainerExpr {
-                op: ContainerOp::Len,
-                args: vec![tmp_ref],
-            },
-            SemTy::Int,
-            span,
-        );
-        let len_l = self.fresh_local(SemTy::Int);
-        self.push_stmt(HirStmt::Assign {
-            target: len_l,
-            value: len_e,
-        });
-
-        // *rest = tmp[p .. n - m] as a fresh list.
+        // *rest = tmp[p .. n - m] as a fresh list (len_l already staged above).
         let Expr::Starred(st) = &targets[p] else {
             unreachable!()
         };
@@ -592,6 +596,125 @@ impl<'a> FnLowerer<'a> {
             self.assign_to_target(target, sub)?;
         }
         Ok(())
+    }
+
+    /// Emit the CPython arity check for a runtime-value unpack: compare the staged
+    /// `len(tmp)` (`len_l`) against the target pattern, raising the exact
+    /// `ValueError` on a mismatch and falling through to a fresh block on success.
+    /// A non-starred pattern requires exactly `prefix` values; a starred one
+    /// requires at least `prefix + suffix` (the star absorbs any excess, so there
+    /// is no upper bound). Mirrors the match-pattern length guard in `patterns.rs`.
+    pub(super) fn emit_unpack_guard(
+        &mut self,
+        len_l: LocalId,
+        prefix: usize,
+        suffix: usize,
+        has_star: bool,
+        span: Span,
+    ) {
+        let expected = prefix + suffix;
+        if has_star {
+            // n < expected → "not enough values to unpack (expected at least E, got N)".
+            let len_ref = self.local_ref(len_l, span);
+            let need = self.alloc(HirExprKind::IntLit(expected as i64), SemTy::Int, span);
+            let lt = self.alloc(
+                HirExprKind::Compare {
+                    op: CmpOp::Lt,
+                    l: len_ref,
+                    r: need,
+                },
+                SemTy::Bool,
+                span,
+            );
+            let fail = self.new_block();
+            let cont = self.new_block();
+            self.seal(HirTerminator::Branch {
+                cond: lt,
+                then: fail,
+                else_: cont,
+            });
+            self.switch(fail);
+            self.raise_unpack_value_error(
+                &format!("not enough values to unpack (expected at least {expected}, got "),
+                len_l,
+                span,
+            );
+            self.switch(cont);
+            return;
+        }
+        // Non-starred: n > expected → too many; n < expected → not enough.
+        let len_ref = self.local_ref(len_l, span);
+        let exp = self.alloc(HirExprKind::IntLit(expected as i64), SemTy::Int, span);
+        let gt = self.alloc(
+            HirExprKind::Compare {
+                op: CmpOp::Gt,
+                l: len_ref,
+                r: exp,
+            },
+            SemTy::Bool,
+            span,
+        );
+        let too_many = self.new_block();
+        let check_few = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond: gt,
+            then: too_many,
+            else_: check_few,
+        });
+
+        // too many: "too many values to unpack (expected E, got N)".
+        self.switch(too_many);
+        self.raise_unpack_value_error(
+            &format!("too many values to unpack (expected {expected}, got "),
+            len_l,
+            span,
+        );
+
+        self.switch(check_few);
+        let len_ref = self.local_ref(len_l, span);
+        let exp = self.alloc(HirExprKind::IntLit(expected as i64), SemTy::Int, span);
+        let lt = self.alloc(
+            HirExprKind::Compare {
+                op: CmpOp::Lt,
+                l: len_ref,
+                r: exp,
+            },
+            SemTy::Bool,
+            span,
+        );
+        let too_few = self.new_block();
+        let cont = self.new_block();
+        self.seal(HirTerminator::Branch {
+            cond: lt,
+            then: too_few,
+            else_: cont,
+        });
+        self.switch(too_few);
+        self.raise_unpack_value_error(
+            &format!("not enough values to unpack (expected {expected}, got "),
+            len_l,
+            span,
+        );
+        self.switch(cont);
+    }
+
+    /// Raise `ValueError` with the runtime message `prefix + str(len_l) + ")"`,
+    /// embedding the actual length so the wording matches CPython byte-for-byte.
+    /// Seals the current block as unreachable; the caller switches to the success
+    /// edge afterwards.
+    fn raise_unpack_value_error(&mut self, prefix: &str, len_l: LocalId, span: Span) {
+        let pre_id = self.intern(prefix);
+        let pre = self.alloc(HirExprKind::StrLit(pre_id), SemTy::Str, span);
+        let len_ref = self.local_ref(len_l, span);
+        let got = self.call_builtin1("str", len_ref, span);
+        let close_id = self.intern(")");
+        let close = self.alloc(HirExprKind::StrLit(close_id), SemTy::Str, span);
+        let msg = self.concat_str_parts(vec![pre, got, close], span);
+        self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+            tag: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            msg: Some(msg),
+        }));
+        self.seal(HirTerminator::Unreachable);
     }
 
     pub(super) fn lower_augassign(&mut self, a: &rustpython_parser::ast::StmtAugAssign) -> Result<()> {

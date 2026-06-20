@@ -2516,4 +2516,30 @@ def _fold_p4_integration() -> None:
 _fold_p4_integration()
 
 
+# ===== SECTION: Comprehension outermost-iterable scope =====
+# The outermost iterable is evaluated in the ENCLOSING scope, not the
+# comprehension-local shadow (was a SIGSEGV; folded from test_review_fixes.py).
+def _rvf_comp_scope():
+    xs = [1, 2, 3]
+    assert [x for x in xs] == [1, 2, 3]
+    vals = [10, 20, 30]
+    assert [v for v in vals if v > 10] == [20, 30]
+    # The loop variable name matches the iterable name: the iterable still reads
+    # the enclosing binding before the shadow exists.
+    src = [7, 8, 9]
+    assert [src for src in src] == [7, 8, 9]
+    data = [4, 5, 6]
+    assert [data for data in data] == [4, 5, 6]
+    # Nested comprehension: the inner clause still sees the outer loop variable.
+    grid = [[1, 2], [3, 4]]
+    assert [y for row in grid for y in row] == [1, 2, 3, 4]
+    # Same shape for set and dict comprehensions.
+    ks = [1, 2, 3]
+    assert {k for k in ks} == {1, 2, 3}
+    assert {k: k * k for k in ks} == {1: 1, 2: 4, 3: 9}
+
+
+_rvf_comp_scope()
+
+
 print("All iteration and comprehension tests passed!")

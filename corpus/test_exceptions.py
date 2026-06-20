@@ -2449,6 +2449,57 @@ _fold_test_multi_except()
 print("_fold_test_multi_except passed")
 
 
+# ===== SECTION: Runtime unpack arity raises ValueError =====
+# A runtime-value RHS (not a literal) is checked against the target pattern,
+# raising CPython's exact ValueError wording (was a silent wrong binding for
+# too-many and an IndexError for too-few; folded from test_review_fixes.py).
+
+
+def _rvf_src(items):
+    return items
+
+
+def _rvf_unpack(items):
+    try:
+        a, b = _rvf_src(items)
+        return ("ok", a, b)
+    except ValueError as e:
+        return str(e)
+
+
+assert _rvf_unpack([1, 2]) == ("ok", 1, 2)
+assert _rvf_unpack([1, 2, 3]) == "too many values to unpack (expected 2, got 3)"
+assert _rvf_unpack([9]) == "not enough values to unpack (expected 2, got 1)"
+
+
+def _rvf_unpack_star(items):
+    try:
+        a, *mid, b = _rvf_src(items)
+        return (a, mid, b)
+    except ValueError as e:
+        return str(e)
+
+
+assert _rvf_unpack_star([1, 2, 3, 4]) == (1, [2, 3], 4)
+assert _rvf_unpack_star([1, 2]) == (1, [], 2)
+assert _rvf_unpack_star([7]) == "not enough values to unpack (expected at least 2, got 1)"
+
+
+# for-loop unpack and nested destructuring share the same arity guard.
+def _rvf_for_unpack(pairs):
+    out = []
+    try:
+        for a, b in pairs:
+            out.append((a, b))
+        return out
+    except ValueError as e:
+        return str(e)
+
+
+assert _rvf_for_unpack([(1, 2), (3, 4)]) == [(1, 2), (3, 4)]
+assert _rvf_for_unpack([(1, 2), (3, 4, 5)]) == "too many values to unpack (expected 2, got 3)"
+
+
 # ===== SECTION: Out-of-range list subscript raises IndexError =====
 # (was a silent None; folded from test_review_fixes.py).
 

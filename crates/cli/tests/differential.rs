@@ -64,8 +64,9 @@ const PHASE_CORPUS: &[&str] = &[
     "test_generics.py",
     // ── Iteration & collections ──
     // for/comprehensions/iter-builtins/unpack/reduce/map/filter/tuple-cmp +
-    // cross-feature integration (folds p4_for_iter/unpack/comprehensions/
-    // iter_builtins/integration, p14_nested_unpack, p22/p23/p24/p25/p28).
+    // cross-feature integration + comprehension outermost-iterable scope (folds
+    // p4_for_iter/unpack/comprehensions/iter_builtins/integration,
+    // p14_nested_unpack, p22/p23/p24/p25/p28, test_review_fixes§comp-scope).
     "test_iteration.py",
     // list/tuple + dict/set/bytes + Counter/defaultdict/deque/OrderedDict +
     // container methods (merges test_collections_list_tuple.py and
@@ -83,10 +84,10 @@ const PHASE_CORPUS: &[&str] = &[
     // p49_str_method_args, p50_unicode_predicates, p8h_unicode, p29_format).
     "test_strings.py",
     // ── Exceptions & structural match ──
-    // raise/try/except/finally/custom/with/multi-except + list out-of-range
-    // IndexError + instance<op>immediate NotImplemented→TypeError (folds
-    // p7_raise_tryexcept, p7_finally, p7_custom_exc, p7_with, multi_except,
-    // test_review_fixes§indexerror+notimpl).
+    // raise/try/except/finally/custom/with/multi-except + runtime-unpack arity
+    // ValueError + list out-of-range IndexError + instance<op>immediate
+    // NotImplemented→TypeError (folds p7_raise_tryexcept, p7_finally,
+    // p7_custom_exc, p7_with, multi_except, test_review_fixes).
     "test_exceptions.py",
     // Real tracebacks — output-format suite, standalone (line markers + lazy
     // PC−1 resolution); kept print-based since the traceback text IS the output.

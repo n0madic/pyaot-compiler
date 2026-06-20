@@ -65,6 +65,11 @@ impl<'a> FnLowerer<'a> {
         if idx == generators.len() {
             return self.emit_comp_elem(kind, span);
         }
+        let gen = &generators[idx];
+        if gen.is_async {
+            return Err(parse_error("async comprehensions are out of scope", span));
+        }
+
         // Comprehension loop variables are scoped to the comprehension (CPython 3
         // runs each comprehension in its own function). List/set/dict comps lower
         // inline here, so shadow every target name with a fresh local for the
@@ -73,31 +78,34 @@ impl<'a> FnLowerer<'a> {
         // their own nested-function scope, so they need no shadowing). Pre-inserting
         // a fresh `Direct` binding (rather than removing the outer one) keeps writes
         // off a promoted global slot too.
-        let saved_targets: Vec<(InternedString, Option<Binding>)> = if idx == 0 {
-            let mut saved = Vec::new();
-            let mut raw_names = Vec::new();
-            for g in generators {
-                collect_target_names(&g.target, &mut raw_names);
-            }
-            for raw in raw_names {
-                let name = self.intern(raw);
-                let prev = self.scope.get(&name).copied();
-                let fresh = self.fresh_local(SemTy::Dyn);
-                self.scope.insert(name, Binding::Direct(fresh));
-                saved.push((name, prev));
-            }
-            saved
-        } else {
-            Vec::new()
-        };
+        //
+        // CPython evaluates ONLY the outermost (first) clause's iterable in the
+        // *enclosing* scope, before the comprehension scope exists. So at idx==0
+        // lower that iterable FIRST, then install the shadows; otherwise the outer
+        // iterable in `[x for x in x]` would resolve to the not-yet-assigned shadow
+        // and read uninitialized memory (a SIGSEGV). Inner clauses (idx>=1) lower
+        // their iterable AFTER the shadows so they can see earlier loop variables.
+        let (saved_targets, iterable): (Vec<(InternedString, Option<Binding>)>, Idx<HirExpr>) =
+            if idx == 0 {
+                let iterable = self.lower_iterable_expr(&gen.iter, span)?;
+                let mut saved = Vec::new();
+                let mut raw_names = Vec::new();
+                for g in generators {
+                    collect_target_names(&g.target, &mut raw_names);
+                }
+                for raw in raw_names {
+                    let name = self.intern(raw);
+                    let prev = self.scope.get(&name).copied();
+                    let fresh = self.fresh_local(SemTy::Dyn);
+                    self.scope.insert(name, Binding::Direct(fresh));
+                    saved.push((name, prev));
+                }
+                (saved, iterable)
+            } else {
+                (Vec::new(), self.lower_iterable_expr(&gen.iter, span)?)
+            };
 
-        let gen = &generators[idx];
-        if gen.is_async {
-            return Err(parse_error("async comprehensions are out of scope", span));
-        }
-
-        // it = iter(gen.iter)
-        let iterable = self.lower_iterable_expr(&gen.iter, span)?;
+        // it = iter(iterable)
         let it = self.fresh_local(SemTy::Dyn);
         let iter_expr = self.alloc(
             HirExprKind::ContainerExpr {
