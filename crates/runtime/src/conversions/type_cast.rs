@@ -219,9 +219,7 @@ pub fn rt_builtin_round(x: Value, ndigits: Value) -> *mut Obj {
             }
         }
         // `bool` rounds to its int value (`round(True) == 1`, an int).
-        Some(Num::Int(_)) if x.is_bool() => {
-            make_int_value(BigInt::from(x.unwrap_bool() as i64))
-        }
+        Some(Num::Int(_)) if x.is_bool() => make_int_value(BigInt::from(x.unwrap_bool() as i64)),
         // Int / bignum receiver: returned unchanged for absent / non-negative
         // ndigits (integer rounding to >= 0 places is the identity). Negative
         // ndigits on an int is an accepted divergence (unprobed) — returned as-is.

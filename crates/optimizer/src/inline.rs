@@ -350,9 +350,7 @@ fn emit_default_ret(insts: &mut Vec<MirInst>, caller: &mut MirFunction, d: Local
         Repr::Tagged => Const::None,
         _ => {
             let tmp = LocalId::new(caller.locals.len() as u32);
-            caller.locals.push(LocalDecl {
-                repr: Repr::Tagged,
-            });
+            caller.locals.push(LocalDecl { repr: Repr::Tagged });
             insts.push(MirInst::Const {
                 dst: tmp,
                 val: Const::None,
@@ -474,7 +472,11 @@ mod tests {
             locals: locals.into_iter().map(|repr| LocalDecl { repr }).collect(),
             blocks: blocks
                 .into_iter()
-                .map(|(insts, term)| MirBlock { insts, term, handler: None })
+                .map(|(insts, term)| MirBlock {
+                    insts,
+                    term,
+                    handler: None,
+                })
                 .collect(),
             entry: BlockId::new(0),
         }

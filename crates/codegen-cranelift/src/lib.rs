@@ -1165,13 +1165,21 @@ fn emit_exc_table(
                 let w = |b: &mut [u8], at: usize, v: u32| {
                     b[at..at + 4].copy_from_slice(&v.to_le_bytes())
                 };
-                w(&mut bytes, off + EXC_RECORD_SITE_OFF_OFFSET as usize, s.ret_off);
+                w(
+                    &mut bytes,
+                    off + EXC_RECORD_SITE_OFF_OFFSET as usize,
+                    s.ret_off,
+                );
                 w(
                     &mut bytes,
                     off + EXC_RECORD_HANDLER_OFF_OFFSET as usize,
                     s.handler_off,
                 );
-                w(&mut bytes, off + EXC_RECORD_FRAME_OFF_OFFSET as usize, s.frame_off);
+                w(
+                    &mut bytes,
+                    off + EXC_RECORD_FRAME_OFF_OFFSET as usize,
+                    s.frame_off,
+                );
                 off += rec;
             }
         }
@@ -1222,7 +1230,11 @@ fn emit_tb_table(
     let mut aux_str: HashMap<&str, u32> = HashMap::new();
     for (i, (_, name, file, tb)) in funcs.iter().enumerate() {
         let base = i * rec;
-        w32(&mut bytes, base + TB_RECORD_CODE_SIZE_OFFSET as usize, tb.code_size);
+        w32(
+            &mut bytes,
+            base + TB_RECORD_CODE_SIZE_OFFSET as usize,
+            tb.code_size,
+        );
         for (s, off_at, len_at) in [
             (name, TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET),
             (file, TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_FILE_LEN_OFFSET),
@@ -1251,7 +1263,11 @@ fn emit_tb_table(
             bytes.extend_from_slice(&line.to_le_bytes());
         }
         debug_assert_eq!(TB_LOC_ENTRY_SIZE, 12);
-        w32(&mut bytes, base + TB_RECORD_LOC_OFF_OFFSET as usize, loc_off);
+        w32(
+            &mut bytes,
+            base + TB_RECORD_LOC_OFF_OFFSET as usize,
+            loc_off,
+        );
     }
     let data_id = module
         .declare_data("pyaot_tb_table", Linkage::Local, false, false)
@@ -1485,8 +1501,8 @@ fn define_function(
                     let frame_off = site.frame_offset.ok_or_else(|| {
                         cg_error(
                             "call site with handler but no frame_offset \
-                             (preserve_frame_pointers must be on)"
-                                                        )
+                             (preserve_frame_pointers must be on)",
+                        )
                     })?;
                     sites.push(ExcSite {
                         ret_off: site.ret_addr,
@@ -1498,8 +1514,8 @@ fn define_function(
                 | FinalizedMachExceptionHandler::Context(_) => {
                     return Err(cg_error(
                         "unexpected tagged/context exception handler (codegen only \
-                         emits Default edges)"
-                                                ));
+                         emits Default edges)",
+                    ));
                 }
             }
         }
@@ -1802,9 +1818,8 @@ impl FnGen<'_, '_> {
             let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
             let mut targs = args.to_vec();
             targs.push(callee);
-            return self.emit_protected_call(tramp_sig_ref, h, |b, et| {
-                b.ins().try_call(tref, &targs, et)
-            });
+            return self
+                .emit_protected_call(tramp_sig_ref, h, |b, et| b.ins().try_call(tref, &targs, et));
         }
         let inst = self.builder.ins().call_indirect(sig_ref, callee, args);
         self.builder.inst_results(inst).first().copied()
@@ -1840,11 +1855,16 @@ impl FnGen<'_, '_> {
             pool,
         );
         let exceptional = BlockCall::new(handler_block, std::iter::empty::<BlockArg>(), pool);
-        let et = self.builder.func.dfg.exception_tables.push(ExceptionTableData::new(
-            sig_ref,
-            normal,
-            [ExceptionTableItem::Default(exceptional)],
-        ));
+        let et = self
+            .builder
+            .func
+            .dfg
+            .exception_tables
+            .push(ExceptionTableData::new(
+                sig_ref,
+                normal,
+                [ExceptionTableItem::Default(exceptional)],
+            ));
         emit(self.builder, et);
         self.builder.switch_to_block(cont);
         rets.first().copied()
@@ -2370,7 +2390,10 @@ impl FnGen<'_, '_> {
             }
             Const::None => self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
             // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
-            Const::Unbound => self.builder.ins().iconst(types::I64, tag::RESERVED_TAG as i64),
+            Const::Unbound => self
+                .builder
+                .ins()
+                .iconst(types::I64, tag::RESERVED_TAG as i64),
             Const::Float(f) => self.builder.ins().f64const(*f),
             Const::Str(id) => {
                 let (ptr, len) = self.str_data(*id)?;
@@ -2757,11 +2780,9 @@ impl FnGen<'_, '_> {
 
         // Indirect-call signature: (self: I64, args…) -> ret.
         let mut sig = Signature::new(self.cc);
-        sig.params
-            .push(abi_param(clif_ty(self.operand_repr(recv))));
+        sig.params.push(abi_param(clif_ty(self.operand_repr(recv))));
         for a in args {
-            sig.params
-                .push(abi_param(clif_ty(self.operand_repr(a))));
+            sig.params.push(abi_param(clif_ty(self.operand_repr(a))));
         }
         sig.returns.push(AbiParam::new(clif_ty(ret)));
         let sigref = self.builder.import_signature(sig);

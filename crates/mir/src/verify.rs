@@ -128,7 +128,9 @@ pub enum VerifyError {
     BadRaiseShape,
     /// A block whose `handler` annotation is the entry block (the entry has
     /// no predecessor frame state to land in) or is out of range.
-    BadHandler { block: usize },
+    BadHandler {
+        block: usize,
+    },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -1354,7 +1356,11 @@ mod tests {
                 })],
                 MirTerminator::Return(None),
             );
-            assert_eq!(verify(&ok, &[]), Ok(()), "checked Tagged -> {to:?} is legal");
+            assert_eq!(
+                verify(&ok, &[]),
+                Ok(()),
+                "checked Tagged -> {to:?} is legal"
+            );
         }
         // A `checked` pair the public constructor refuses — built directly
         // (in-crate field access) to prove the verifier's own re-check. The

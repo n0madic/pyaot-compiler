@@ -1242,17 +1242,33 @@ pub static RT_STR_ENDSWITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_st
 // semantics accept the Tagged recv/sub (the verifier's I64+Raw slot is lenient)
 // and the Raw bounds.
 /// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (find variant)
-pub static RT_STR_FIND: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+pub static RT_STR_FIND: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_str_search",
+    &[PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
 /// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (rfind variant)
-pub static RT_STR_RFIND: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+pub static RT_STR_RFIND: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_str_search",
+    &[PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
 /// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (index variant)
-pub static RT_STR_INDEX: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+pub static RT_STR_INDEX: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_str_search",
+    &[PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
 /// rt_str_search(s, sub, start: i64, end: i64, op_tag: i8) -> i64 (rindex variant)
-pub static RT_STR_RINDEX: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI64, PI64, PI8], Some(RI64), true);
+pub static RT_STR_RINDEX: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_str_search",
+    &[PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
 /// rt_str_rsplit(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj.
 /// `maxsplit` is read as a RAW machine integer (`-1` = unlimited), so the
 /// generic `ptr_ternary` all-Tagged default is wrong — see `STR_SPLIT_TERNARY`.

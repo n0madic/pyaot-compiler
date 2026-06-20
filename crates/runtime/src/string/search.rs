@@ -527,7 +527,13 @@ pub extern "C" fn rt_str_rfind_abi(str_obj: Value, sub: Value) -> i64 {
 /// common full-range case (`start == 0`, `end >= char_len`) delegates to the
 /// BMH-backed [`rt_str_find`]/[`rt_str_rfind`], so unbounded searches keep their
 /// fast path; only an explicit narrowing falls to the bounded byte scan.
-fn str_search_bounded(str_obj: *mut Obj, sub: *mut Obj, start: i64, end: i64, backward: bool) -> i64 {
+fn str_search_bounded(
+    str_obj: *mut Obj,
+    sub: *mut Obj,
+    start: i64,
+    end: i64,
+    backward: bool,
+) -> i64 {
     if str_obj.is_null() || sub.is_null() {
         return -1;
     }

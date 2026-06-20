@@ -1,9 +1,9 @@
 //! Dictionary get, set, delete, contains, update, merge, pop, setdefault operations
 
 #[allow(unused_imports)]
-use crate::debug_assert_type_tag;
-#[allow(unused_imports)]
 use crate::debug_assert_dict_family;
+#[allow(unused_imports)]
+use crate::debug_assert_type_tag;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictObj, Obj, StrObj, TypeTagKind};
 use crate::string::rt_make_str_interned;

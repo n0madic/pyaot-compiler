@@ -197,9 +197,7 @@ fn rejects_int_into_bool_parameter() {
         "static int into a bool parameter must stay rejected (bool seam is Dyn-only)"
     );
     // A matching `bool` arg still compiles.
-    assert!(
-        try_infer("def flag(a: bool) -> bool:\n    return a\n\n\nprint(flag(True))\n").is_ok()
-    );
+    assert!(try_infer("def flag(a: bool) -> bool:\n    return a\n\n\nprint(flag(True))\n").is_ok());
 }
 
 #[test]
@@ -221,10 +219,10 @@ fn accepts_int_into_float_local() {
     // only via repr-print.) Holds for both a `__main__` top-level local and a
     // function-body local.
     assert!(try_infer("x: float = 5\nprint(x + 0.0)\n").is_ok());
-    assert!(try_infer(
-        "def g() -> float:\n    y: float = 7\n    return y + 0.0\n\n\nprint(g())\n"
-    )
-    .is_ok());
+    assert!(
+        try_infer("def g() -> float:\n    y: float = 7\n    return y + 0.0\n\n\nprint(g())\n")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -243,10 +241,9 @@ fn accepts_int_into_float_global_and_field() {
     // `FloatObj` at the store — the slot's read stays sound (A2). A genuine
     // cross-function `float` GLOBAL (`x` is read inside `f`, so it lowers to a
     // tagged `GlobalSet` slot, not a `Raw(F64)` `__main__` local):
-    assert!(try_infer(
-        "x: float = 5\ndef f() -> float:\n    return x + 1.0\n\n\nprint(f())\n"
-    )
-    .is_ok());
+    assert!(
+        try_infer("x: float = 5\ndef f() -> float:\n    return x + 1.0\n\n\nprint(f())\n").is_ok()
+    );
     // A `float` FIELD written from an int (here via a `float` ctor param, the
     // store-side box):
     assert!(try_infer(

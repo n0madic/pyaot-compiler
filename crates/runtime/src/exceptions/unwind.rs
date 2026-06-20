@@ -117,16 +117,8 @@ pub(super) fn find_handler() -> Option<Handler> {
         if fp == 0 || fp & 0x7 != 0 {
             return None;
         }
-        let (caller_fp, ret_pc) = unsafe {
-            (
-                *(fp as *const usize),
-                *((fp + 8) as *const usize),
-            )
-        };
-        if let Ok(i) = table
-            .records
-            .binary_search_by_key(&ret_pc, |r| r.ret_pc)
-        {
+        let (caller_fp, ret_pc) = unsafe { (*(fp as *const usize), *((fp + 8) as *const usize)) };
+        if let Ok(i) = table.records.binary_search_by_key(&ret_pc, |r| r.ret_pc) {
             let rec = table.records[i];
             // `ret_pc` lies inside the protected caller, whose frame pointer
             // is the one we just loaded from this frame's back-link.

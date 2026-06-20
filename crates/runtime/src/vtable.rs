@@ -162,7 +162,8 @@ pub extern "C" fn rt_register_iternext(class_id: i64, thunk_ptr: i64) {
         return;
     }
     unsafe {
-        (*INSTANCE_ITERNEXT_REGISTRY.0.get())[class_id as usize] = VtablePtr(thunk_ptr as *const u8);
+        (*INSTANCE_ITERNEXT_REGISTRY.0.get())[class_id as usize] =
+            VtablePtr(thunk_ptr as *const u8);
     }
 }
 

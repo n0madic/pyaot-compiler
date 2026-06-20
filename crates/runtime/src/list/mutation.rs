@@ -583,9 +583,8 @@ pub fn rt_list_sort_by_keys(list: *mut Obj, keys: *mut Obj, reverse: i8) {
             return;
         }
 
-        let mut pairs: Vec<(Value, Value)> = (0..len)
-            .map(|i| (*kdata.add(i), *data.add(i)))
-            .collect();
+        let mut pairs: Vec<(Value, Value)> =
+            (0..len).map(|i| (*kdata.add(i), *data.add(i))).collect();
         timsort::timsort_with_cmp(&mut pairs, |(key_a, _), (key_b, _)| {
             let cmp = compare_objects(key_a.0 as *mut Obj, key_b.0 as *mut Obj);
             if reverse != 0 {

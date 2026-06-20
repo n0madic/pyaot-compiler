@@ -351,10 +351,7 @@ fn rt_check_bound_passes_through_a_bound_value() {
     // A real value flows through unchanged for every kind (no raise).
     for kind in [0i64, 1, 2] {
         let v = Value::from_int(42);
-        assert_eq!(
-            crate::ops::rt_check_bound(v, kind, std::ptr::null_mut()),
-            v
-        );
+        assert_eq!(crate::ops::rt_check_bound(v, kind, std::ptr::null_mut()), v);
     }
     // `None` is a bound value too — only the UNBOUND sentinel raises.
     assert_eq!(

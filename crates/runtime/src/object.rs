@@ -459,10 +459,10 @@ pub struct FilterIterObj {
 #[repr(C)]
 pub struct ChainIterObj {
     pub header: ObjHeader,
-    pub kind: u8,        // Always IteratorKind::Chain
-    pub exhausted: bool, // True when all iterables are exhausted
-    pub _pad: [u8; 6],   // Padding for alignment
-    pub iters: *mut Obj, // ListObj of the raw iterables (length read from it)
+    pub kind: u8,         // Always IteratorKind::Chain
+    pub exhausted: bool,  // True when all iterables are exhausted
+    pub _pad: [u8; 6],    // Padding for alignment
+    pub iters: *mut Obj,  // ListObj of the raw iterables (length read from it)
     pub current_idx: i64, // Index of the current iterable in the list
     // The active iterator for `iters[current_idx]`, produced lazily by
     // `iter()`-wrapping the iterable on first use (null at a boundary). Stored

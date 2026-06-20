@@ -203,7 +203,13 @@ unsafe fn kwarg_truthy(kwargs: Value, key: &[u8]) -> bool {
     crate::ops::rt_is_truthy(v) != 0
 }
 
-unsafe fn list_method(recv: *mut Obj, h: u64, at: *mut Obj, kwargs: Value, tag: TypeTagKind) -> Value {
+unsafe fn list_method(
+    recv: *mut Obj,
+    h: u64,
+    at: *mut Obj,
+    kwargs: Value,
+    tag: TypeTagKind,
+) -> Value {
     let n = argc(at);
     match h {
         H_APPEND if n == 1 => {
@@ -252,22 +258,29 @@ unsafe fn list_method(recv: *mut Obj, h: u64, at: *mut Obj, kwargs: Value, tag: 
 unsafe fn dict_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> Value {
     let n = argc(at);
     match h {
-        H_GET if n == 1 => {
-            Value(crate::dict::rt_dict_get_default(recv, bits(arg(at, 0)), Value::NONE.0 as *mut Obj) as u64)
-        }
+        H_GET if n == 1 => Value(crate::dict::rt_dict_get_default(
+            recv,
+            bits(arg(at, 0)),
+            Value::NONE.0 as *mut Obj,
+        ) as u64),
         H_GET if n == 2 => {
             Value(crate::dict::rt_dict_get_default(recv, bits(arg(at, 0)), bits(arg(at, 1))) as u64)
         }
-        H_SETDEFAULT if n == 1 => {
-            Value(crate::dict::rt_dict_setdefault(recv, bits(arg(at, 0)), Value::NONE.0 as *mut Obj) as u64)
-        }
+        H_SETDEFAULT if n == 1 => Value(crate::dict::rt_dict_setdefault(
+            recv,
+            bits(arg(at, 0)),
+            Value::NONE.0 as *mut Obj,
+        ) as u64),
         H_SETDEFAULT if n == 2 => {
             Value(crate::dict::rt_dict_setdefault(recv, bits(arg(at, 0)), bits(arg(at, 1))) as u64)
         }
         H_POP if n == 1 => {
             let r = crate::dict::rt_dict_pop(recv, bits(arg(at, 0)));
             if r.is_null() {
-                crate::raise_exc!(crate::exceptions::ExceptionType::KeyError, "pop(): key not found");
+                crate::raise_exc!(
+                    crate::exceptions::ExceptionType::KeyError,
+                    "pop(): key not found"
+                );
             }
             Value(r as u64)
         }
@@ -378,12 +391,7 @@ unsafe fn deque_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -
 /// parameters at run time (defaults, `*args`, the checked float/bool unbox) and
 /// makes ONE direct call to the native method, coercing `self` parent-first for
 /// an inherited method. A missing thunk ⇒ `AttributeError`.
-unsafe fn instance_method(
-    recv: Value,
-    name_hash: i64,
-    args_tuple: Value,
-    kwargs: Value,
-) -> Value {
+unsafe fn instance_method(recv: Value, name_hash: i64, args_tuple: Value, kwargs: Value) -> Value {
     let class_id = (*(recv.0 as *const crate::object::InstanceObj)).class_id;
     let ptr = lookup_method_uniform(class_id, name_hash as u64);
     if ptr.is_null() {

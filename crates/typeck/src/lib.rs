@@ -2019,10 +2019,7 @@ impl<'a> Sweeper<'a> {
                                 _ => None,
                             })
                             .unwrap_or(-1);
-                        return SemTy::defaultdict_of(
-                            SemTy::Dyn,
-                            SemTy::defaultdict_value_ty(tag),
-                        );
+                        return SemTy::defaultdict_of(SemTy::Dyn, SemTy::defaultdict_value_ty(tag));
                     }
                 }
                 let base = target.result_semty();
@@ -2697,9 +2694,9 @@ impl<'a> Sweeper<'a> {
             // UnaryNum(-5))`).
             K::Abs => match args.first().map(|a| self.ety(*a)) {
                 Some(SemTy::Float) => SemTy::Float,
-                Some(ref t) if class_of(t, self.classes).is_some() => self
-                    .class_dunder_ret(t, "__abs__")
-                    .unwrap_or(SemTy::Dyn),
+                Some(ref t) if class_of(t, self.classes).is_some() => {
+                    self.class_dunder_ret(t, "__abs__").unwrap_or(SemTy::Dyn)
+                }
                 _ => SemTy::Int,
             },
             K::Type => SemTy::Dyn,
@@ -2752,9 +2749,7 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
     // List receiver.
     if let Some(elem) = recv.list_elem() {
         return match method {
-            M::Append | M::Insert | M::Extend | M::Remove | M::Clear | M::Reverse | M::Sort => {
-                none
-            }
+            M::Append | M::Insert | M::Extend | M::Remove | M::Clear | M::Reverse | M::Sort => none,
             M::Pop => elem.clone(),
             M::Index | M::Count => SemTy::Int,
             M::Copy => recv.clone(),

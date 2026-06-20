@@ -36,7 +36,6 @@ const PHASE_CORPUS: &[&str] = &[
     // print() sep/end/flush/formatting — the one suite where stdout IS the
     // feature under test (kept print-based by design).
     "test_print_output.py",
-
     // ── Core language ──
     // Scalars/expressions/operators/bignum/numeric tower + raw-int loop & interproc
     // specialization (folds p2_bignum/expr/scalars_print, p3_numeric,
@@ -53,7 +52,6 @@ const PHASE_CORPUS: &[&str] = &[
     // Generators / send / close / generator expressions
     // (folds p6_generators, p6_send_close, p6_genexpr).
     "test_generators.py",
-
     // ── OOP / types ──
     // Classes: fields/methods/inherit/C3-MRO/dunders/iterator-protocol/gradual
     // dispatch/field inference/heap & numeric-tower seams (folds p5_class_basic/
@@ -64,7 +62,6 @@ const PHASE_CORPUS: &[&str] = &[
     // Generics + type system + dead-code narrowing (merges test_types_system.py
     // and test_dead_code_warnings.py; folds p5_generics).
     "test_generics.py",
-
     // ── Iteration & collections ──
     // for/comprehensions/iter-builtins/unpack/reduce/map/filter/tuple-cmp +
     // cross-feature integration (folds p4_for_iter/unpack/comprehensions/
@@ -75,7 +72,6 @@ const PHASE_CORPUS: &[&str] = &[
     // test_collections_dict_set_bytes.py; folds p4_methods, p15_tuple_slice_slot,
     // p21_container_methods, p35_counter, p51_container_aug_ops).
     "test_collections.py",
-
     // ── Builtins & strings ──
     // Scalar/introspection builtins, zip(N≥3), int methods, conversions,
     // isinstance-tuple, type(), builtins-as-values (folds p17_type_builtin,
@@ -86,7 +82,6 @@ const PHASE_CORPUS: &[&str] = &[
     // test_format_spec.py; folds p19_str_methods, p20_bytes_methods,
     // p49_str_method_args, p50_unicode_predicates, p8h_unicode, p29_format).
     "test_strings.py",
-
     // ── Exceptions & structural match ──
     // raise/try/except/finally/custom/with/multi-except (folds p7_raise_tryexcept,
     // p7_finally, p7_custom_exc, p7_with, multi_except).
@@ -97,7 +92,6 @@ const PHASE_CORPUS: &[&str] = &[
     // Structural `match` — literals/class-patterns/capture/guards/OR/sequence/
     // mapping (folds p7_match).
     "test_match.py",
-
     // ── Cross-cutting language gaps + GC soak ──
     // f-string specs/slicing/sum/comprehension-element inference/file iteration/
     // os.environ/module-level lambda defaults (folds p8e_language, p8h_lang,
@@ -108,23 +102,21 @@ const PHASE_CORPUS: &[&str] = &[
     // p9_*_gc_stress, gc_simple). Run under `RUSTFLAGS="--cfg gc_stress_test"` to
     // surface a missed root as a use-after-free.
     "test_gc_stress.py",
-
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",
     "test_import.py",
     "test_packages.py",
     "test_reexport.py",
     "test_future_annotations.py",
-
     // ── Stdlib (per module; fixtures, self-checking, and network modes differ) ──
     "test_stdlib_math.py",
     "test_stdlib_random.py",
     "test_stdlib_sys.py",
-    "test_stdlib_time.py",        // self-checking — live timestamps
+    "test_stdlib_time.py", // self-checking — live timestamps
     "test_stdlib_re.py",
     "test_stdlib_json.py",
     "test_stdlib_os.py",
-    "test_stdlib_subprocess.py",  // self-checking — subprocess stdout type differs
+    "test_stdlib_subprocess.py", // self-checking — subprocess stdout type differs
     "test_stdlib_itertools.py",
     "test_stdlib_urllib_core.py",
     // Cross-module stdlib edge-case parity: seam safety (join/dict.get/json/None),
@@ -132,11 +124,9 @@ const PHASE_CORPUS: &[&str] = &[
     // unbox at math/number raw-ABI boundaries (folds p8g_seam_safety,
     // p8h_stdlib_edges, p8h_checked_unbox, p8h_checked_unbox2).
     "test_stdlib_edges.py",
-
     // ── File I/O ──
     "test_file_io.py",
-    "test_file_io_core.py",       // self-checking — writes /tmp paths
-
+    "test_file_io_core.py", // self-checking — writes /tmp paths
     // ── Capstone ──
     // Karpathy's microgpt on real stdlib — byte-exact, exercises nearly every
     // front-half feature at once. Kept as its own standalone case.

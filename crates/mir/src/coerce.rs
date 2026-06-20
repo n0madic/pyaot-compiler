@@ -185,13 +185,10 @@ mod tests {
             );
         }
         // A guard-LESS Heap shape (no `dyn_check`) stays unchecked-only (B18).
-        assert!(CoerceInst::new_checked(
-            l(1),
-            op(0),
-            Repr::Tagged,
-            Repr::Heap(HeapShape::BigInt)
-        )
-        .is_none());
+        assert!(
+            CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Heap(HeapShape::BigInt))
+                .is_none()
+        );
         // Wrong source is unrepresentable.
         assert!(CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Tagged).is_none());
         assert!(CoerceInst::new_checked(

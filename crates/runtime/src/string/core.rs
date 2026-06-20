@@ -315,10 +315,7 @@ pub fn rt_str_encode(s: *mut Obj, encoding: *mut Obj) -> *mut Obj {
         let bytes = std::slice::from_raw_parts(data, len);
 
         match classify_encoding(encoding) {
-            Encoding::Unknown => raise_exc!(
-                ExceptionType::LookupError,
-                "unknown encoding"
-            ),
+            Encoding::Unknown => raise_exc!(ExceptionType::LookupError, "unknown encoding"),
             Encoding::Ascii => {
                 if bytes.iter().any(|&b| b >= 0x80) {
                     raise_exc!(

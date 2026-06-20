@@ -22,9 +22,7 @@ pub fn read_counts(f: &MirFunction) -> Vec<u32> {
         match &block.term {
             MirTerminator::Return(Some(op)) => bump(op),
             MirTerminator::Branch { cond, .. } => bump(cond),
-            MirTerminator::Return(None)
-            | MirTerminator::Jump(_)
-            | MirTerminator::Unreachable => {}
+            MirTerminator::Return(None) | MirTerminator::Jump(_) | MirTerminator::Unreachable => {}
         }
     }
     counts

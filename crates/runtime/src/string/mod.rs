@@ -281,15 +281,27 @@ mod char_len_tests {
         let _guard = lock_and_init();
         unsafe {
             let s = mk("abcabcabc");
-            assert_eq!(rt_str_search(s, mk("bc"), 2, i64::MAX, 0), 4, "find start=2");
+            assert_eq!(
+                rt_str_search(s, mk("bc"), 2, i64::MAX, 0),
+                4,
+                "find start=2"
+            );
             assert_eq!(rt_str_search(s, mk("bc"), 2, 4, 0), -1, "find [2,4)");
-            assert_eq!(rt_str_search(s, mk("abc"), -3, i64::MAX, 0), 6, "find neg start");
+            assert_eq!(
+                rt_str_search(s, mk("abc"), -3, i64::MAX, 0),
+                6,
+                "find neg start"
+            );
             assert_eq!(rt_str_search(s, mk("bc"), 0, 4, 1), 1, "rfind [0,4)");
             assert_eq!(rt_str_search(s, mk("bc"), 0, i64::MAX, 1), 7, "rfind full");
             assert_eq!(rt_str_search(s, mk("zz"), 0, i64::MAX, 0), -1, "find miss");
             // Codepoint bounds on a multi-byte string ("café"): absolute index.
             let cafe = mk("café");
-            assert_eq!(rt_str_search(cafe, mk("é"), 2, i64::MAX, 0), 3, "find é codepoint");
+            assert_eq!(
+                rt_str_search(cafe, mk("é"), 2, i64::MAX, 0),
+                3,
+                "find é codepoint"
+            );
             assert_eq!(rt_str_search(cafe, mk("f"), 0, 2, 0), -1, "find f [0,2)");
             assert_eq!(rt_str_search(cafe, mk("f"), 0, 3, 0), 2, "find f [0,3)");
         }

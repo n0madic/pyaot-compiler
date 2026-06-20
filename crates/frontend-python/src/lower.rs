@@ -14,9 +14,9 @@ use la_arena::{Arena, Idx};
 use rustpython_parser::ast::{
     BoolOp as PyBoolOp, CmpOp as PyCmpOp, Comprehension, Constant, Expr, ExprBinOp, ExprBoolOp,
     ExprCall, ExprCompare, ExprDictComp, ExprGeneratorExp, ExprIfExp, ExprLambda, ExprListComp,
-    ExprNamedExpr, ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator, Ranged,
-    Stmt,
-    StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom, UnaryOp as PyUnaryOp,
+    ExprNamedExpr, ExprSetComp, ExprSubscript, ExprUnaryOp, Keyword, Operator as PyOperator,
+    Ranged, Stmt, StmtClassDef, StmtDelete, StmtFunctionDef, StmtImport, StmtImportFrom,
+    UnaryOp as PyUnaryOp,
 };
 use rustpython_parser::text_size::TextRange;
 
@@ -1010,7 +1010,11 @@ impl<'a> ProgramLowerer<'a> {
                 name: orig_name,
                 ret,
                 pass_env: false,
-                fixed: parsed.fixed.iter().map(ThunkParam::from_param_info).collect(),
+                fixed: parsed
+                    .fixed
+                    .iter()
+                    .map(ThunkParam::from_param_info)
+                    .collect(),
                 kwonly: vec![],
                 varargs: false,
                 kwargs: false,
@@ -2420,7 +2424,10 @@ impl<'a> FnLowerer<'a> {
                 }
                 Ok(())
             }
-            other => Err(parse_error("unsupported del target", to_span(other.range()))),
+            other => Err(parse_error(
+                "unsupported del target",
+                to_span(other.range()),
+            )),
         }
     }
 
@@ -5240,7 +5247,15 @@ impl<'a> FnLowerer<'a> {
         }
         let l = self.lower_expr(&args[0])?;
         let r = self.lower_expr(&args[1])?;
-        Ok(self.alloc(HirExprKind::BinOp { op: BinOp::Pow, l, r }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::BinOp {
+                op: BinOp::Pow,
+                l,
+                r,
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// `divmod(a, b)` (PLAN §5) → the 2-tuple `(a // b, a % b)`. `a` and `b` are
@@ -5287,7 +5302,13 @@ impl<'a> FnLowerer<'a> {
             SemTy::Dyn,
             span,
         );
-        Ok(self.alloc(HirExprKind::TupleLit { elems: vec![q, rem] }, SemTy::Dyn, span))
+        Ok(self.alloc(
+            HirExprKind::TupleLit {
+                elems: vec![q, rem],
+            },
+            SemTy::Dyn,
+            span,
+        ))
     }
 
     /// `all(iterable)` / `any(iterable)` (PLAN §5) — an iterator loop mirroring
@@ -5299,10 +5320,7 @@ impl<'a> FnLowerer<'a> {
     /// runtime (reuses `Iter`/`IterNext`/`IterExhausted` + existing truthiness).
     fn lower_all_any(&mut self, args: &[Expr], span: Span, is_all: bool) -> Result<Idx<HirExpr>> {
         if args.len() != 1 {
-            return Err(parse_error(
-                "all()/any() take exactly one argument",
-                span,
-            ));
+            return Err(parse_error("all()/any() take exactly one argument", span));
         }
         let iterable = self.lower_expr(&args[0])?;
 
@@ -5348,11 +5366,7 @@ impl<'a> FnLowerer<'a> {
         self.switch(body_b);
         let hit = self.new_block();
         let elem_ref = self.local_ref(elem, span);
-        let (then_b, else_b) = if is_all {
-            (header, hit)
-        } else {
-            (hit, header)
-        };
+        let (then_b, else_b) = if is_all { (header, hit) } else { (hit, header) };
         self.seal(HirTerminator::Branch {
             cond: elem_ref,
             then: then_b,
@@ -5802,7 +5816,12 @@ impl<'a> FnLowerer<'a> {
                             kw.iter()
                                 .find(|(k, _)| *k == id)
                                 .map(|(_, l)| *l)
-                                .ok_or_else(|| parse_error(format!("missing keyword argument '{name}' for .format()"), span))?
+                                .ok_or_else(|| {
+                                    parse_error(
+                                        format!("missing keyword argument '{name}' for .format()"),
+                                        span,
+                                    )
+                                })?
                         }
                     };
                     let value = self.local_ref(value_local, span);
@@ -7574,7 +7593,11 @@ impl<'a> FnLowerer<'a> {
         let Some(km) = key_mode else {
             // No key: `sorted(xs, rev)` through the container builtin.
             let cname = self.intern("sorted");
-            let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+            let callee = self.alloc(
+                HirExprKind::Name(SymbolRef::Unresolved(cname)),
+                SemTy::Dyn,
+                span,
+            );
             let xs_ref = self.local_ref(xs, span);
             return Ok(self.alloc(
                 HirExprKind::Call {
@@ -7655,11 +7678,9 @@ impl<'a> FnLowerer<'a> {
         c: &ExprCall,
         span: Span,
     ) -> Result<Option<Idx<HirExpr>>> {
-        if !c
-            .keywords
-            .iter()
-            .any(|kw| kw.arg.as_ref().is_some_and(|a| a.as_str() == "key") && !is_none_lit(&kw.value))
-        {
+        if !c.keywords.iter().any(|kw| {
+            kw.arg.as_ref().is_some_and(|a| a.as_str() == "key") && !is_none_lit(&kw.value)
+        }) {
             return Ok(None);
         }
         if !c.args.is_empty() {
@@ -7767,7 +7788,11 @@ impl<'a> FnLowerer<'a> {
             }
         }
         let cname = self.intern("enumerate");
-        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(cname)),
+            SemTy::Dyn,
+            span,
+        );
         let it_ref = self.arg_src_value(it_src, span)?;
         let start_ref = match start {
             Some(s) => self.arg_src_value(s, span)?,
@@ -7824,7 +7849,11 @@ impl<'a> FnLowerer<'a> {
             kwargs.push((id, src));
         }
         let cname = self.intern("dict");
-        let callee = self.alloc(HirExprKind::Name(SymbolRef::Unresolved(cname)), SemTy::Dyn, span);
+        let callee = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(cname)),
+            SemTy::Dyn,
+            span,
+        );
         let pos_ref = self.local_ref(pos, span);
         let call = self.alloc(
             HirExprKind::Call {
@@ -7890,11 +7919,7 @@ impl<'a> FnLowerer<'a> {
     /// enclosing locals — which is why this is top-level-only and free of the
     /// free-var-capture trap) and stored into its synthetic global slot, so every
     /// defaulted call reads the same shared object (CPython aliasing semantics).
-    fn emit_default_slots(
-        &mut self,
-        f: &StmtFunctionDef,
-        slots: &DefaultSlotMap,
-    ) -> Result<()> {
+    fn emit_default_slots(&mut self, f: &StmtFunctionDef, slots: &DefaultSlotMap) -> Result<()> {
         let fname = self.intern(f.name.as_str());
         let args = f.args.as_ref();
         for awd in args
@@ -8742,7 +8767,12 @@ impl<'a> FnLowerer<'a> {
             }
             if info.varargs.is_some() {
                 let mut excess = Vec::new();
-                for p in positionals.iter().skip(n_fixed).copied().collect::<Vec<_>>() {
+                for p in positionals
+                    .iter()
+                    .skip(n_fixed)
+                    .copied()
+                    .collect::<Vec<_>>()
+                {
                     excess.push(self.arg_src_value(p, span)?);
                 }
                 Some(self.alloc(HirExprKind::TupleLit { elems: excess }, SemTy::Dyn, span))
@@ -8913,9 +8943,16 @@ impl<'a> FnLowerer<'a> {
                 // Required: `argv[i]`, in-bounds after the count guard.
                 let base = self.local_ref(argv, span);
                 let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-                self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
+                self.alloc(
+                    HirExprKind::Subscript { base, index: idx },
+                    SemTy::Dyn,
+                    span,
+                )
             } else {
-                let def = p.default.as_ref().expect("trailing fixed param has a default");
+                let def = p
+                    .default
+                    .as_ref()
+                    .expect("trailing fixed param has a default");
                 let default = self.lower_param_default(def, span);
                 self.emit_spread_default(argv, n_local, i, default, span)
             };
@@ -9054,7 +9091,11 @@ impl<'a> FnLowerer<'a> {
         self.switch(then_b);
         let base = self.local_ref(argv, span);
         let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-        let av = self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span);
+        let av = self.alloc(
+            HirExprKind::Subscript { base, index: idx },
+            SemTy::Dyn,
+            span,
+        );
         self.push_stmt(HirStmt::Assign {
             target: res,
             value: av,
@@ -9101,7 +9142,12 @@ impl<'a> FnLowerer<'a> {
     /// the soundness crux of the uniform value-call convention. `int` / `str` /
     /// container / `Dyn` params keep the value as-is (the existing tagged /
     /// gradual-heap seams).
-    fn bind_arg_checked(&mut self, value: Idx<HirExpr>, param_ty: &SemTy, span: Span) -> Idx<HirExpr> {
+    fn bind_arg_checked(
+        &mut self,
+        value: Idx<HirExpr>,
+        param_ty: &SemTy,
+        span: Span,
+    ) -> Idx<HirExpr> {
         if !matches!(param_ty, SemTy::Float | SemTy::Bool) {
             return value;
         }
@@ -9225,7 +9271,11 @@ impl<'a> FnLowerer<'a> {
             } else if i < req {
                 let base = self.local_ref(args_t, span);
                 let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
-                self.alloc(HirExprKind::Subscript { base, index: idx }, SemTy::Dyn, span)
+                self.alloc(
+                    HirExprKind::Subscript { base, index: idx },
+                    SemTy::Dyn,
+                    span,
+                )
             } else {
                 let def = p
                     .default
@@ -9350,11 +9400,7 @@ impl<'a> FnLowerer<'a> {
         let n_ref = self.local_ref(n_local, span);
         let b = self.alloc(HirExprKind::IntLit(bound as i64), SemTy::Int, span);
         let cond = self.alloc(
-            HirExprKind::Compare {
-                op,
-                l: n_ref,
-                r: b,
-            },
+            HirExprKind::Compare { op, l: n_ref, r: b },
             SemTy::Bool,
             span,
         );
@@ -9451,11 +9497,7 @@ impl<'a> FnLowerer<'a> {
     /// the call has no keywords (the indirect call site then passes the null
     /// sentinel, no allocation). The dict reaches the callee's keyword-only /
     /// `**kwargs` params via its uniform thunk.
-    fn build_indirect_kwargs(
-        &mut self,
-        c: &ExprCall,
-        span: Span,
-    ) -> Result<Option<Idx<HirExpr>>> {
+    fn build_indirect_kwargs(&mut self, c: &ExprCall, span: Span) -> Result<Option<Idx<HirExpr>>> {
         if c.keywords.is_empty() {
             return Ok(None);
         }
@@ -9507,11 +9549,17 @@ impl<'a> FnLowerer<'a> {
                 return self.alloc(HirExprKind::GlobalGet { var_id: *var_id }, SemTy::Dyn, span)
             }
             ParamDefault::Const(ClassAttrInit::Int(v)) => (HirExprKind::IntLit(*v), SemTy::Int),
-            ParamDefault::Const(ClassAttrInit::BigInt(s)) => (HirExprKind::BigIntLit(*s), SemTy::Int),
-            ParamDefault::Const(ClassAttrInit::Float(f)) => (HirExprKind::FloatLit(*f), SemTy::Float),
+            ParamDefault::Const(ClassAttrInit::BigInt(s)) => {
+                (HirExprKind::BigIntLit(*s), SemTy::Int)
+            }
+            ParamDefault::Const(ClassAttrInit::Float(f)) => {
+                (HirExprKind::FloatLit(*f), SemTy::Float)
+            }
             ParamDefault::Const(ClassAttrInit::Bool(b)) => (HirExprKind::BoolLit(*b), SemTy::Bool),
             ParamDefault::Const(ClassAttrInit::Str(s)) => (HirExprKind::StrLit(*s), SemTy::Str),
-            ParamDefault::Const(ClassAttrInit::Bytes(s)) => (HirExprKind::BytesLit(*s), SemTy::Bytes),
+            ParamDefault::Const(ClassAttrInit::Bytes(s)) => {
+                (HirExprKind::BytesLit(*s), SemTy::Bytes)
+            }
             ParamDefault::Const(ClassAttrInit::None) => (HirExprKind::NoneLit, SemTy::NoneTy),
             // `()` default → a fresh empty tuple (immutable, so per-call freshness
             // matches CPython's shared singleton observably).
@@ -9759,7 +9807,11 @@ impl UniformTarget {
             ret: info.ret.clone(),
             pass_env: false,
             fixed: info.fixed.iter().map(ThunkParam::from_param_info).collect(),
-            kwonly: info.kwonly.iter().map(ThunkParam::from_param_info).collect(),
+            kwonly: info
+                .kwonly
+                .iter()
+                .map(ThunkParam::from_param_info)
+                .collect(),
             varargs: info.varargs.is_some(),
             kwargs: info.kwargs.is_some(),
             kw_bindable: false,
@@ -10961,7 +11013,15 @@ fn build_iternext_thunk(
     let fid = shared.reserve();
     let base = interner.resolve(class_name).to_string();
     let tname = interner.intern(&format!("{base}.<iternext>"));
-    let mut fl = FnLowerer::new(interner, ctx, shared, tname, &base, SemTy::Dyn, Some(class_id));
+    let mut fl = FnLowerer::new(
+        interner,
+        ctx,
+        shared,
+        tname,
+        &base,
+        SemTy::Dyn,
+        Some(class_id),
+    );
     let self_name = fl.intern("self");
     let class_ty = SemTy::Class {
         class_id,
@@ -11183,8 +11243,7 @@ fn lower_class(
                 // class-id int) instead of emitting `MakeInstance`. The runtime
                 // allocation happens inside via `object.__new__(cls)`.
                 if m.name.as_str() == "__new__" && m.decorator_list.is_empty() {
-                    let (fid, _) =
-                        lower_method(interner, shared, m, "", FirstParam::Plain, None)?;
+                    let (fid, _) = lower_method(interner, shared, m, "", FirstParam::Plain, None)?;
                     static_methods.push((method_name, fid));
                     continue;
                 }
@@ -11463,7 +11522,9 @@ fn type_param_name(tp: &rustpython_parser::ast::TypeParam) -> String {
 fn class_def_is_protocol(cdef: &StmtClassDef) -> bool {
     cdef.bases.iter().any(|base| match base {
         Expr::Name(n) => n.id.as_str() == "Protocol",
-        Expr::Subscript(s) => matches!(s.value.as_ref(), Expr::Name(b) if b.id.as_str() == "Protocol"),
+        Expr::Subscript(s) => {
+            matches!(s.value.as_ref(), Expr::Name(b) if b.id.as_str() == "Protocol")
+        }
         _ => false,
     })
 }
@@ -11917,10 +11978,7 @@ fn parse_format_template(s: &str, span: Span) -> Result<Vec<FmtSeg>> {
                     lit.push('}');
                     continue;
                 }
-                return Err(parse_error(
-                    "single '}' encountered in format string",
-                    span,
-                ));
+                return Err(parse_error("single '}' encountered in format string", span));
             }
             _ => lit.push(ch),
         }
@@ -11968,7 +12026,10 @@ fn parse_format_field(body: &str, span: Span) -> Result<FmtSeg> {
         FmtFieldRef::Auto
     } else if name.bytes().all(|b| b.is_ascii_digit()) {
         let idx = name.parse::<usize>().map_err(|_| {
-            parse_error(format!("invalid field index '{name}' in format string"), span)
+            parse_error(
+                format!("invalid field index '{name}' in format string"),
+                span,
+            )
         })?;
         FmtFieldRef::Index(idx)
     } else {

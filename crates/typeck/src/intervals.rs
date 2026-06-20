@@ -288,7 +288,11 @@ struct CallSite {
 /// sets the eligibility flags — including raw params and a raw return for a
 /// *specializable* function. Infallible (any imprecision rides the always-sound
 /// tagged baseline; a non-converging function is simply not specialized).
-pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, classes: &ClassTable) {
+pub(crate) fn narrow_raw_ints(
+    module: &mut HirModule,
+    resolve: &ResolveResult,
+    classes: &ClassTable,
+) {
     let n = module.functions.len();
     let n_params: Vec<usize> = module.functions.iter().map(|f| f.params.len()).collect();
 
@@ -311,8 +315,10 @@ pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, c
     // is pinned to ⊤ (ineligible) so the ascending chain terminates — the same
     // widening discipline `infer` applies to its `ModuleVars`. Recursion needs no
     // special-casing (a self-call's arg climbs and is pinned like any other).
-    let mut entry_iv: Vec<Vec<Interval>> =
-        n_params.iter().map(|&np| vec![Interval::Bottom; np]).collect();
+    let mut entry_iv: Vec<Vec<Interval>> = n_params
+        .iter()
+        .map(|&np| vec![Interval::Bottom; np])
+        .collect();
     let mut moves: Vec<Vec<usize>> = n_params.iter().map(|&np| vec![0usize; np]).collect();
     let mut pinned: Vec<Vec<bool>> = n_params.iter().map(|&np| vec![false; np]).collect();
     // `contrib[caller]` = its arg intervals to each callee, recomputed only when
@@ -322,7 +328,9 @@ pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, c
     let mut dirty = vec![true; n];
 
     let total: usize = n_params.iter().sum();
-    let max_rounds = (total + n).saturating_mul(WIDEN_LIMIT + 1).clamp(8, 200_000);
+    let max_rounds = (total + n)
+        .saturating_mul(WIDEN_LIMIT + 1)
+        .clamp(8, 200_000);
     for _ in 0..max_rounds {
         // Recompute the dirty callers' contributions under the current seeds.
         for caller in 0..n {
@@ -351,8 +359,10 @@ pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, c
                 .collect();
         }
         // Rebuild every callee's entry join fresh from ALL cached contributions.
-        let mut fresh: Vec<Vec<Interval>> =
-            n_params.iter().map(|&np| vec![Interval::Bottom; np]).collect();
+        let mut fresh: Vec<Vec<Interval>> = n_params
+            .iter()
+            .map(|&np| vec![Interval::Bottom; np])
+            .collect();
         for sites in &contrib {
             for (callee, ivs) in sites {
                 for (p, iv) in ivs.iter().enumerate() {
@@ -416,7 +426,10 @@ pub(crate) fn narrow_raw_ints(module: &mut HirModule, resolve: &ResolveResult, c
 /// through a direct, resolvable `Call`. Exhaustive (A2.1): a missed holder would
 /// let an indirectly-called function be specialized and read a bignum through an
 /// unchecked untag. Default to membership when unsure.
-fn collect_address_taken(module: &HirModule, classes: &ClassTable) -> std::collections::HashSet<usize> {
+fn collect_address_taken(
+    module: &HirModule,
+    classes: &ClassTable,
+) -> std::collections::HashSet<usize> {
     let mut set = std::collections::HashSet::new();
     // Generator resume functions (tail-called by the dispatcher).
     for fid in &module.generators {
@@ -893,10 +906,7 @@ enum Edge {
 
 /// The successors of a block as `(dense_index, edge)`: the terminator's
 /// targets plus the handler edge for a protected block.
-fn successors(
-    block: &HirBlock,
-    index_of: &HashMap<Idx<HirBlock>, usize>,
-) -> Vec<(usize, Edge)> {
+fn successors(block: &HirBlock, index_of: &HashMap<Idx<HirBlock>, usize>) -> Vec<(usize, Edge)> {
     let mut succ = match &block.term {
         HirTerminator::Return(_) | HirTerminator::Unreachable => Vec::new(),
         HirTerminator::Jump(b) => vec![(index_of[b], Edge::Flow)],

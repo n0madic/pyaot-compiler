@@ -492,7 +492,8 @@ fn try_devirt_ci(
                 Some(*d)
             } else {
                 let r = fresh(target.f_ret.clone());
-                let rebox = CoerceInst::new(*d, Operand::Local(r), target.f_ret.clone(), Repr::Tagged)?;
+                let rebox =
+                    CoerceInst::new(*d, Operand::Local(r), target.f_ret.clone(), Repr::Tagged)?;
                 // The `Call` writes `r`; the re-box follows it (pushed after).
                 replacement.push(MirInst::Call {
                     dst: Some(r),
@@ -645,17 +646,17 @@ mod tests {
             Repr::Tagged,
             vec![
                 Repr::Closure(Box::new(generic_sig())), // 0
-                Repr::Raw(pyaot_types::RawKind::I64),    // 1 size
-                tup_repr,                                // 2 tup
-                Repr::Tagged,                            // 3 cT0 (tup->Tagged)
-                Repr::Raw(pyaot_types::RawKind::I64),    // 4 pos0
-                Repr::Tagged,                            // 5 val0
-                Repr::Tagged,                            // 6 cT1 (tup->Tagged)
-                Repr::Raw(pyaot_types::RawKind::I64),    // 7 pos1
-                Repr::Tagged,                            // 8 val1
-                Repr::Tagged,                            // 9 args_op (tup->Tagged)
-                Repr::Tagged,                            // 10 kwargs
-                Repr::Tagged,                            // 11 ci-dst
+                Repr::Raw(pyaot_types::RawKind::I64),   // 1 size
+                tup_repr,                               // 2 tup
+                Repr::Tagged,                           // 3 cT0 (tup->Tagged)
+                Repr::Raw(pyaot_types::RawKind::I64),   // 4 pos0
+                Repr::Tagged,                           // 5 val0
+                Repr::Tagged,                           // 6 cT1 (tup->Tagged)
+                Repr::Raw(pyaot_types::RawKind::I64),   // 7 pos1
+                Repr::Tagged,                           // 8 val1
+                Repr::Tagged,                           // 9 args_op (tup->Tagged)
+                Repr::Tagged,                           // 10 kwargs
+                Repr::Tagged,                           // 11 ci-dst
             ],
             vec![(
                 vec![
@@ -730,7 +731,9 @@ mod tests {
         let insts = &m.blocks[0].insts;
         // The CallIndirect is gone, replaced by a direct Call to F (fid 2).
         assert!(
-            !insts.iter().any(|i| matches!(i, MirInst::CallIndirect { .. })),
+            !insts
+                .iter()
+                .any(|i| matches!(i, MirInst::CallIndirect { .. })),
             "indirect call must be devirtualized"
         );
         let (args, dst) = insts
@@ -759,7 +762,9 @@ mod tests {
             "the dead args-tuple builder must be removed"
         );
         // The closure is still passed (MakeClosure stays).
-        assert!(insts.iter().any(|i| matches!(i, MirInst::MakeClosure { .. })));
+        assert!(insts
+            .iter()
+            .any(|i| matches!(i, MirInst::MakeClosure { .. })));
         verify_all(&p);
     }
 

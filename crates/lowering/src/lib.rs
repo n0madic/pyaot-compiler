@@ -77,7 +77,9 @@ pub fn lower(
             // .params` the callee declares — deriving all three from the same
             // `local_repr` keeps them in lockstep so the verifier never sees a
             // `Call.arg` ↔ `callee.params` mismatch (the ABI = f(Repr) seam).
-            params: (0..f.params.len()).map(|p| local_repr(&f.locals[p])).collect(),
+            params: (0..f.params.len())
+                .map(|p| local_repr(&f.locals[p]))
+                .collect(),
             param_names: f.params.iter().map(|p| p.name).collect(),
             defaults: f.params.iter().map(|p| p.default.clone()).collect(),
             ret: if dunder_funcs.contains(&FuncId::new(i as u32)) {
@@ -614,8 +616,10 @@ impl<'a> FnLower<'a> {
                 // real (checked) coercion, not a bit reinterpret. Float is the
                 // numeric tower (PLAN §8: int/bool/gradual → f64); bool is the
                 // Dyn→`Raw(I8)` checked unbox (`rt_unbox_bool`).
-                let raw_checked =
-                    matches!(target_repr, Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8));
+                let raw_checked = matches!(
+                    target_repr,
+                    Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I8)
+                );
                 // PLAN §1 read-back seam: a genuinely-`Dyn` value (a `Dyn` global
                 // / field / element read as `Tagged`) assigned into an annotated
                 // guard-backed `Heap` local (`list`/`str`/`dict`/…/class instance)
@@ -1674,7 +1678,11 @@ impl<'a> FnLower<'a> {
             let pos = self.raw_i64_const(i as i64);
             self.emit_container(
                 ContainerOp::TupleSet,
-                vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (al, ar)],
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (al, ar),
+                ],
                 None,
             )?;
         }
@@ -1881,7 +1889,11 @@ impl<'a> FnLower<'a> {
     /// `Dyn` / non-class receiver is a loud compile error (the same posture as
     /// [`Self::lower_isinstance_builtin`]: a runtime name-hash probe on a gradual
     /// value is out of scope). The receiver is still evaluated for side effects.
-    fn lower_hasattr(&mut self, value: Idx<HirExpr>, name: InternedString) -> Result<(LocalId, Repr)> {
+    fn lower_hasattr(
+        &mut self,
+        value: Idx<HirExpr>,
+        name: InternedString,
+    ) -> Result<(LocalId, Repr)> {
         let got = &self.func.exprs[value].ty;
         let span = self.func.exprs[value].span;
         let verdict = match class_of(got, self.classes) {
@@ -2325,12 +2337,20 @@ impl<'a> FnLower<'a> {
             // `lstrip`/`rstrip([chars])` — chars optional (null = whitespace).
             "lstrip" => Some((&rf::RT_STR_LSTRIP, &[TaggedArg], 0, None, TypeSpec::Str)),
             "rstrip" => Some((&rf::RT_STR_RSTRIP, &[TaggedArg], 0, None, TypeSpec::Str)),
-            "removeprefix" => {
-                Some((&rf::RT_STR_REMOVEPREFIX, &[TaggedArg], 1, None, TypeSpec::Str))
-            }
-            "removesuffix" => {
-                Some((&rf::RT_STR_REMOVESUFFIX, &[TaggedArg], 1, None, TypeSpec::Str))
-            }
+            "removeprefix" => Some((
+                &rf::RT_STR_REMOVEPREFIX,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Str,
+            )),
+            "removesuffix" => Some((
+                &rf::RT_STR_REMOVESUFFIX,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Str,
+            )),
             // `expandtabs([tabsize])` — tabsize a RAW i64 (default 8, A2).
             "expandtabs" => Some((&rf::RT_STR_EXPANDTABS, &[RawI64(8)], 0, None, TypeSpec::Str)),
             // `partition`/`rpartition(sep)` → a 3-tuple. Typed `Dyn` (a stdlib
@@ -2417,10 +2437,20 @@ impl<'a> FnLower<'a> {
             TypeSpec,
         );
         let plan: Option<BytesPlan> = match name {
-            "startswith" => {
-                Some((&rf::RT_BYTES_STARTS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool))
-            }
-            "endswith" => Some((&rf::RT_BYTES_ENDS_WITH, &[TaggedArg], 1, None, TypeSpec::Bool)),
+            "startswith" => Some((
+                &rf::RT_BYTES_STARTS_WITH,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Bool,
+            )),
+            "endswith" => Some((
+                &rf::RT_BYTES_ENDS_WITH,
+                &[TaggedArg],
+                1,
+                None,
+                TypeSpec::Bool,
+            )),
             // `find`/`rfind(sub[, start[, end]])` — dedicated 2-arg fns (no
             // op_tag); `start`/`end` ride RAW i64 slots (absent → 0 / i64::MAX,
             // clamped to len by the runtime).
@@ -2530,7 +2560,10 @@ impl<'a> FnLower<'a> {
             args: vec![Operand::Local(recv_tagged)],
         });
         if returns_count {
-            Ok(Some(self.normalize_container_result(dst, Repr::Raw(RawKind::I64))?))
+            Ok(Some(self.normalize_container_result(
+                dst,
+                Repr::Raw(RawKind::I64),
+            )?))
         } else {
             Ok(Some((dst, Repr::Tagged)))
         }
@@ -3571,7 +3604,11 @@ impl<'a> FnLower<'a> {
             let pos = self.raw_i64_const(i as i64);
             self.emit_container(
                 ContainerOp::TupleSet,
-                vec![(tup, tup_repr.clone()), (pos, Repr::Raw(RawKind::I64)), (al, ar)],
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (al, ar),
+                ],
                 None,
             )?;
         }
@@ -3588,8 +3625,10 @@ impl<'a> FnLower<'a> {
             });
             k
         } else {
-            let dict_repr =
-                Repr::Heap(HeapShape::Dict(Box::new(Repr::Tagged), Box::new(Repr::Tagged)));
+            let dict_repr = Repr::Heap(HeapShape::Dict(
+                Box::new(Repr::Tagged),
+                Box::new(Repr::Tagged),
+            ));
             let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
             for (kname, kexpr) in kwargs {
                 self.str_pool
@@ -3860,10 +3899,7 @@ impl<'a> FnLower<'a> {
                 "got multiple values for argument `{}`",
                 self.interner.resolve(n)
             ),
-            E::Missing(n) => format!(
-                "missing required argument `{}`",
-                self.interner.resolve(n)
-            ),
+            E::Missing(n) => format!("missing required argument `{}`", self.interner.resolve(n)),
             E::TooManyPositional { expected, got } => {
                 format!("takes {expected} positional argument(s) but {got} were given")
             }
@@ -5283,7 +5319,10 @@ impl<'a> FnLower<'a> {
             vec![(ll, lr.clone()), (rl, rr.clone())],
             Some(lr.clone()),
         )?;
-        Ok(Some((dst.expect("container binop produces a container"), ret)))
+        Ok(Some((
+            dst.expect("container binop produces a container"),
+            ret,
+        )))
     }
 
     fn lower_unary(&mut self, op: HUnaryOp, operand: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
@@ -5369,8 +5408,7 @@ impl<'a> FnLower<'a> {
         // yields NI → keep the existing devirtualized fast path. Enter the
         // protocol only for a Tagged-returning forward, or an absent forward
         // with a present reflected dunder.
-        let fwd_is_tagged =
-            fwd_fid.is_some_and(|f| self.sigs[f.index()].ret == Repr::Tagged);
+        let fwd_is_tagged = fwd_fid.is_some_and(|f| self.sigs[f.index()].ret == Repr::Tagged);
         let needs_protocol = fwd_is_tagged || (fwd_fid.is_none() && rev_fid.is_some());
         if !needs_protocol {
             return Ok(None);
