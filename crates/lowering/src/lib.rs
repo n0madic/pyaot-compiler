@@ -3683,25 +3683,21 @@ impl<'a> FnLower<'a> {
                 span,
             );
         }
-        // `dict.update(E?, name=val, ...)` — the plain-named-keyword form of
-        // `dict.update` (the `**`-spread form routes through `rt_obj_method`).
-        // Keyword args are a string-keyed mapping merged into the dict. Only a
-        // statically-`dict` receiver (Counter.update has add-semantics).
-        if !kwargs.is_empty()
-            && self.interner.resolve(method_name) == "update"
-            && recv_ty.dict_kv().is_some()
-        {
-            return self.lower_dict_update_kwargs(recv, args, kwargs, span);
-        }
-        // Keywords on non-class receivers (Phase 10): only `list.sort` consumes
-        // them (`reverse=` / a literal `key=None`; a real `key=` was desugared
-        // by the frontend). Every other container / str / file / stdlib-object
-        // method is a precise diagnostic — the mechanism is ready when those
-        // surfaces grow keyword parameters.
-        if !kwargs.is_empty()
-            && ContainerMethod::from_name(self.interner.resolve(method_name))
-                != Some(ContainerMethod::Sort)
-        {
+        // Keywords on a non-class receiver are accepted only by the container
+        // methods that genuinely take them, dispatched (like every container
+        // method) through the `ContainerMethod` enum — never a raw method-name
+        // string. Two methods qualify, both handled in `lower_container_method_call`:
+        //   • `list.sort` — `reverse=` / a literal `key=None` (a real `key=` was
+        //     frontend-desugared);
+        //   • `dict.update` — arbitrary keys, merged as a `{name: val}` mapping
+        //     (CPython's `update(**F)` semantics; the `**`-spread form instead
+        //     routes through `rt_obj_method`). Counter.update has add-semantics, so
+        //     only a statically-`dict` receiver qualifies.
+        // Every other method rejects keywords with a precise diagnostic.
+        let cm = ContainerMethod::from_name(self.interner.resolve(method_name));
+        let keywords_ok = cm == Some(ContainerMethod::Sort)
+            || (cm == Some(ContainerMethod::Update) && recv_ty.dict_kv().is_some());
+        if !kwargs.is_empty() && !keywords_ok {
             return Err(CompilerError::semantic_error(
                 format!(
                     "`.{}()` takes no keyword arguments",
@@ -4972,72 +4968,6 @@ impl<'a> FnLower<'a> {
         self.normalize_container_result(dst, ret)
     }
 
-    /// Lower `dict.update(E?, name=val, ...)` — the keyword-argument form of
-    /// `dict.update`. CPython treats `update(**F)` / `update(name=val)` as merging
-    /// the `{name: val}` mapping, applied AFTER an optional positional mapping `E`.
-    /// Reuses `ContainerOp::DictUpdate` (the same primitive the positional form
-    /// and `{**a, **b}` use); returns `None`. Only a statically-`dict` receiver
-    /// reaches here — `Counter.update` has add-semantics and is left out.
-    fn lower_dict_update_kwargs(
-        &mut self,
-        recv: Idx<HirExpr>,
-        args: &[Idx<HirExpr>],
-        kwargs: &[(InternedString, Idx<HirExpr>)],
-        span: pyaot_utils::Span,
-    ) -> Result<(LocalId, Repr)> {
-        if args.len() > 1 {
-            return Err(CompilerError::semantic_error(
-                "update expected at most 1 positional argument".to_string(),
-                span,
-            ));
-        }
-        let (rl, rr) = self.lower_expr(recv)?;
-        let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
-        // Positional mapping first (CPython order: `update(E)` then keywords).
-        if let Some(pos) = args.first() {
-            let (pl, pr) = self.lower_expr(*pos)?;
-            let pos_t = self.coerce(pl, pr, Repr::Tagged)?;
-            self.emit_container(
-                ContainerOp::DictUpdate,
-                vec![(recv_t, Repr::Tagged), (pos_t, Repr::Tagged)],
-                None,
-            )?;
-        }
-        // Build the keyword dict `{name: val, ...}`, then merge it.
-        let dict_repr = Repr::Heap(HeapShape::Dict(
-            Box::new(Repr::Tagged),
-            Box::new(Repr::Tagged),
-        ));
-        let (kd, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-        for (kname, kexpr) in kwargs {
-            self.str_pool
-                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-            self.emit(MirInst::Const {
-                dst: key,
-                val: Const::Str(*kname),
-            });
-            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-            let (vl, vr) = self.lower_expr(*kexpr)?;
-            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-            self.emit_container(
-                ContainerOp::DictSet,
-                vec![
-                    (kd, dict_repr.clone()),
-                    (key_t, Repr::Tagged),
-                    (val_t, Repr::Tagged),
-                ],
-                None,
-            )?;
-        }
-        self.emit_container(
-            ContainerOp::DictUpdate,
-            vec![(recv_t, Repr::Tagged), (kd, dict_repr)],
-            None,
-        )?;
-        self.none_value()
-    }
-
     /// Lower a container method call `recv.method(args)` (Phase 4D), dispatching
     /// the concrete runtime op from the receiver's static type. Args/values are
     /// coerced to `Tagged`; results are normalized from `Tagged`.
@@ -5051,19 +4981,24 @@ impl<'a> FnLower<'a> {
     ) -> Result<(LocalId, Repr)> {
         use ContainerMethod as M;
         let span = self.func.exprs[recv].span;
-        // Keywords reach the container path only for `list.sort` (`reverse=`,
-        // a literal `key=None`; a real key was frontend-desugared) — checked
-        // in `lower_method_call`. Extract the reverse expression here.
+        // Keywords reach the container path only for the two methods that accept
+        // them (gated in `lower_method_call`): `list.sort` and `dict.update`.
+        // `sort`'s keywords are NAMED params — extract `reverse=` here (a literal
+        // `key=None` is inert; a real `key=` was frontend-desugared). `update`'s
+        // keywords are arbitrary DATA (a `{name: val}` mapping), bound in its own
+        // arm below — so this named-param validation runs for `sort` only.
         let mut sort_reverse: Option<Idx<HirExpr>> = None;
-        for (kname, kexpr) in kwargs {
-            match self.interner.resolve(*kname) {
-                "reverse" => sort_reverse = Some(*kexpr),
-                "key" if matches!(self.func.exprs[*kexpr].kind, HirExprKind::NoneLit) => {}
-                other => {
-                    return Err(CompilerError::semantic_error(
-                        format!("sort() got an unexpected keyword argument `{other}`"),
-                        span,
-                    ))
+        if method == M::Sort {
+            for (kname, kexpr) in kwargs {
+                match self.interner.resolve(*kname) {
+                    "reverse" => sort_reverse = Some(*kexpr),
+                    "key" if matches!(self.func.exprs[*kexpr].kind, HirExprKind::NoneLit) => {}
+                    other => {
+                        return Err(CompilerError::semantic_error(
+                            format!("sort() got an unexpected keyword argument `{other}`"),
+                            span,
+                        ))
+                    }
                 }
             }
         }
@@ -5207,16 +5142,55 @@ impl<'a> FnLower<'a> {
                 M::Items if argn == 0 => {
                     self.method_heap(ContainerOp::DictItems, recv_arg, vec![], heap())
                 }
-                M::Update if argn == 1 => {
-                    self.emit_container(
-                        ContainerOp::DictUpdate,
-                        vec![recv_arg, a[0].clone()],
-                        None,
-                    )?;
+                // `dict.update(E?, name=val, ...)`: an optional positional mapping
+                // `E`, then the keyword args merged as a `{name: val}` mapping
+                // (CPython's `update(**F)` semantics — the non-spread sibling of
+                // the `**`-spread `rt_obj_method` path). Reuses `DictUpdate` (the
+                // `{**a, **b}` primitive); the zero-arg form is a no-op. → `None`.
+                M::Update if argn <= 1 => {
+                    if argn == 1 {
+                        self.emit_container(
+                            ContainerOp::DictUpdate,
+                            vec![recv_arg.clone(), a[0].clone()],
+                            None,
+                        )?;
+                    }
+                    if !kwargs.is_empty() {
+                        let dict_repr = Repr::Heap(HeapShape::Dict(
+                            Box::new(Repr::Tagged),
+                            Box::new(Repr::Tagged),
+                        ));
+                        let (kd, _) =
+                            self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+                        for (kname, kexpr) in kwargs {
+                            self.str_pool
+                                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
+                            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+                            self.emit(MirInst::Const {
+                                dst: key,
+                                val: Const::Str(*kname),
+                            });
+                            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+                            let (vl, vr) = self.lower_expr(*kexpr)?;
+                            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+                            self.emit_container(
+                                ContainerOp::DictSet,
+                                vec![
+                                    (kd, dict_repr.clone()),
+                                    (key_t, Repr::Tagged),
+                                    (val_t, Repr::Tagged),
+                                ],
+                                None,
+                            )?;
+                        }
+                        self.emit_container(
+                            ContainerOp::DictUpdate,
+                            vec![recv_arg.clone(), (kd, dict_repr)],
+                            None,
+                        )?;
+                    }
                     self.none_value()
                 }
-                // `d.update()` — a no-op (CPython allows the zero-argument form).
-                M::Update if argn == 0 => self.none_value(),
                 M::Clear if argn == 0 => {
                     self.emit_container(ContainerOp::DictClear, vec![recv_arg], None)?;
                     self.none_value()
