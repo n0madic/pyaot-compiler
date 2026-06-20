@@ -14,7 +14,8 @@
 use std::collections::HashSet;
 
 use rustpython_parser::ast::{
-    Comprehension, Expr, ExprGeneratorExp, ExprLambda, Stmt, StmtFunctionDef,
+    Comprehension, Expr, ExprGeneratorExp, ExprLambda, Stmt, StmtClassDef, StmtFunctionDef,
+    TypeParam,
 };
 
 /// The scoping facts of one function-like scope (a `def`, a lambda, a genexpr,
@@ -508,6 +509,53 @@ pub(crate) fn analyze_def(def: &StmtFunctionDef) -> ScopeFacts {
     w.finish()
 }
 
+/// The free names of a `class` body treated as a scope: class-body-level reads
+/// (base classes, decorators, class-attribute initializers) plus the bubbled-up
+/// free names of every method, minus the names the class binds (methods, class
+/// attributes, PEP 695 type params). Used for the nested-class capture check: a
+/// free name that is an enclosing-function local would silently resolve to the
+/// wrong global if the class were lifted to module scope, so it is rejected.
+///
+/// The `Walker`'s `ClassDef` arm deliberately does not descend into a nested
+/// class body (it is enough for the *enclosing* scope's analysis), so a
+/// `class`-in-`class`'s method captures are folded in here by recursion.
+pub(crate) fn class_method_free(c: &StmtClassDef) -> std::collections::HashSet<String> {
+    let mut w = Walker::default();
+    // Bases and decorators evaluate in the enclosing scope.
+    for deco in &c.decorator_list {
+        w.expr(deco);
+    }
+    for b in &c.bases {
+        w.expr(b);
+    }
+    // PEP 695 `class C[T]` type params bind in the class scope.
+    for tp in &c.type_params {
+        w.bind(&type_param_name(tp));
+    }
+    w.stmts(&c.body);
+    let facts = w.finish();
+    let mut free: std::collections::HashSet<String> = facts.free.into_iter().collect();
+    for s in &c.body {
+        if let Stmt::ClassDef(inner) = s {
+            for n in class_method_free(inner) {
+                if !facts.bound.contains(&n) {
+                    free.insert(n);
+                }
+            }
+        }
+    }
+    free
+}
+
+/// The bound name of a PEP 695 type parameter (`T`, `*Ts`, `**P`).
+fn type_param_name(tp: &TypeParam) -> String {
+    match tp {
+        TypeParam::TypeVar(t) => t.name.as_str().to_string(),
+        TypeParam::ParamSpec(t) => t.name.as_str().to_string(),
+        TypeParam::TypeVarTuple(t) => t.name.as_str().to_string(),
+    }
+}
+
 /// Analyze a lambda's scope.
 pub(crate) fn analyze_lambda(l: &ExprLambda) -> ScopeFacts {
     let mut w = Walker::default();
@@ -563,15 +611,16 @@ pub(crate) fn collect_promoted_globals(body: &[Stmt]) -> Vec<String> {
             }
             Stmt::ClassDef(c) => {
                 def_or_class.insert(c.name.as_str().to_string());
-                for m in &c.body {
-                    if let Stmt::FunctionDef(d) = m {
-                        fn_facts.push(analyze_def(d));
-                    }
-                }
             }
             other => top.push(other),
         }
     }
+    // Methods of every `class` anywhere — top-level OR nested below a function /
+    // class / control flow — contribute their reads. `analyze_def` bubbles a
+    // function's nested *defs* but the `Walker`'s `ClassDef` arm does not descend
+    // into class bodies, so a module global read only inside a (possibly nested)
+    // class method would never be promoted without this direct gather (FIX 2).
+    collect_class_method_facts(body, &mut fn_facts);
     let main_facts = analyze_module_body(&top);
 
     // Names assigned at module level (main's bound set, minus the pre-bound
@@ -606,6 +655,60 @@ pub(crate) fn collect_promoted_globals(body: &[Stmt]) -> Vec<String> {
         }
     }
     promoted
+}
+
+/// Push `analyze_def` of every method of every `class` reachable in `stmts`
+/// (descending into function bodies, class bodies, and control flow). A plain
+/// nested `def` is NOT pushed (its reads already bubble through the enclosing
+/// function's `analyze_def`); only class methods, whose reads do not bubble,
+/// are gathered here.
+fn collect_class_method_facts(stmts: &[Stmt], out: &mut Vec<ScopeFacts>) {
+    for s in stmts {
+        match s {
+            Stmt::ClassDef(c) => {
+                for m in &c.body {
+                    if let Stmt::FunctionDef(d) = m {
+                        out.push(analyze_def(d));
+                        // A class nested inside this method.
+                        collect_class_method_facts(&d.body, out);
+                    } else {
+                        // A class-in-class, or a class in the class body's
+                        // control flow.
+                        collect_class_method_facts(std::slice::from_ref(m), out);
+                    }
+                }
+            }
+            Stmt::FunctionDef(d) => collect_class_method_facts(&d.body, out),
+            Stmt::If(s) => {
+                collect_class_method_facts(&s.body, out);
+                collect_class_method_facts(&s.orelse, out);
+            }
+            Stmt::While(s) => {
+                collect_class_method_facts(&s.body, out);
+                collect_class_method_facts(&s.orelse, out);
+            }
+            Stmt::For(s) => {
+                collect_class_method_facts(&s.body, out);
+                collect_class_method_facts(&s.orelse, out);
+            }
+            Stmt::Try(t) => {
+                collect_class_method_facts(&t.body, out);
+                for h in &t.handlers {
+                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    collect_class_method_facts(&h.body, out);
+                }
+                collect_class_method_facts(&t.orelse, out);
+                collect_class_method_facts(&t.finalbody, out);
+            }
+            Stmt::With(w) => collect_class_method_facts(&w.body, out),
+            Stmt::Match(m) => {
+                for case in &m.cases {
+                    collect_class_method_facts(&case.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

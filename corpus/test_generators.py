@@ -1150,4 +1150,46 @@ def _fold_p6_genexpr() -> None:
 
 _fold_p6_genexpr()
 
+
+# =============================================================================
+# Nested generator defs (capture-free) — a `def` containing `yield` nested
+# inside another function. The wrapper crosses the one nested-call ABI.
+# =============================================================================
+
+def test_nested_generator():
+    # The original crash arity (a single-param nested generator).
+    def gen(n):
+        i = 0
+        while i < n:
+            yield i
+            i += 1
+
+    assert list(gen(3)) == [0, 1, 2], "nested generator list"
+
+    # The nested generator passed/called as a value.
+    g = gen
+    assert list(g(2)) == [0, 1], "nested generator as value"
+
+    # A nested generator with multiple params (arity > 1).
+    def pairs(a, b):
+        yield a
+        yield b
+        yield a + b
+
+    p = pairs(10, 20)
+    assert next(p) == 10, "nested gen multi-param 1"
+    assert next(p) == 20, "nested gen multi-param 2"
+    assert next(p) == 30, "nested gen multi-param 3"
+
+    # Driving a nested generator with a for-loop.
+    total = 0
+    for v in gen(5):
+        total += v
+    assert total == 10, "nested generator for-loop"
+
+    print("test_nested_generator passed")
+
+
+test_nested_generator()
+
 print("All generator tests passed!")

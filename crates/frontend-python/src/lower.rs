@@ -698,6 +698,76 @@ impl<'a> ProgramLowerer<'a> {
             }
         }
 
+        // ── Nested classes (FIX 2). A `class` below module top level (inside a
+        // function, another class, or module-level control flow) is registered
+        // here, alongside the top-level classes and BEFORE `class_map` is moved
+        // into the import collector, so every downstream name-resolution site
+        // (`AnnCtx::class_map`) sees it unchanged. The flat `class_map` keys on
+        // the bare name, so a nested class name must be program-unique. ──
+        let mut nested_classes: Vec<NestedClass> = Vec::new();
+        collect_nested_classdefs(&body, &mut nested_classes);
+        let mut nested_class_ids: Vec<ClassId> = Vec::with_capacity(nested_classes.len());
+        for nc in &nested_classes {
+            let cdef = nc.def;
+            if self.next_class_id > u8::MAX as u32 {
+                return Err(parse_error(
+                    "too many user-defined classes across all modules (the runtime \
+                     class_id is a u8, so at most 189 in [67, 255])",
+                    to_span(cdef.range()),
+                ));
+            }
+            if class_map.contains_key(cdef.name.as_str()) {
+                return Err(parse_error(
+                    format!(
+                        "nested class `{}` collides with another class of the same name \
+                         in this module; nested class names must be unique program-wide \
+                         (rename it)",
+                        cdef.name.as_str()
+                    ),
+                    to_span(cdef.range()),
+                ));
+            }
+            let class_id = ClassId::new(self.next_class_id);
+            self.next_class_id += 1;
+            let iname = self.interner.intern(cdef.name.as_str());
+            class_map.insert(cdef.name.as_str().to_string(), (class_id, iname));
+            nested_class_ids.push(class_id);
+            own_classes.push((cdef.name.as_str().to_string(), class_id, iname));
+            self.class_ns.insert(class_id, my_ns);
+            if class_def_is_protocol(cdef) {
+                proto_ids.insert(class_id);
+            }
+        }
+        // Capture check (A2) — runs once after every nested class is registered,
+        // so `class_map` holds every class name. A method (or class-body) free
+        // name that is an enclosing-function local is rejected (lifting the class
+        // to module scope would silently rebind it to a global). A reference to a
+        // *class* (a sibling/ancestor nested class or a top-level class) resolves
+        // statically through `class_map`, so it is excluded — it is not a capture.
+        for nc in &nested_classes {
+            if nc.enclosing_locals.is_empty() {
+                continue;
+            }
+            let free = freevars::class_method_free(nc.def);
+            let mut caps: Vec<&str> = free
+                .iter()
+                .filter(|n| nc.enclosing_locals.contains(*n) && !class_map.contains_key(*n))
+                .map(|s| s.as_str())
+                .collect();
+            if !caps.is_empty() {
+                caps.sort_unstable();
+                return Err(parse_error(
+                    format!(
+                        "a nested class whose method captures an enclosing-function \
+                         local is out of scope (captures: {}); reference module \
+                         globals or pass values explicitly",
+                        caps.join(", ")
+                    ),
+                    to_span(nc.def.range()),
+                ));
+            }
+        }
+
         // Module-level type variables (Phase 5E).
         let mut module_type_vars: TypeVarSet = HashMap::new();
         for stmt in &top {
@@ -1125,6 +1195,22 @@ impl<'a> ProgramLowerer<'a> {
                 &defs_ctx,
                 cdef,
                 class_ids[i],
+                &mut self.shared,
+            )?;
+            self.classes.push(hclass);
+        }
+
+        // Nested classes (FIX 2): registered above; lowered through the same
+        // `lower_class` path as the top-level classes (so fields ride the same
+        // field-type constraint solving, B10). The `lower_stmt` `ClassDef` arm
+        // for each only validates unsupported decoration/defaults — it emits no
+        // code, since use sites resolve through `class_map`, not local scope.
+        for (i, nc) in nested_classes.iter().enumerate() {
+            let hclass = lower_class(
+                &mut *self.interner,
+                &defs_ctx,
+                nc.def,
+                nested_class_ids[i],
                 &mut self.shared,
             )?;
             self.classes.push(hclass);
@@ -2186,6 +2272,14 @@ impl<'a> FnLowerer<'a> {
             // value bound to the def's name in this scope.
             Stmt::FunctionDef(d) => {
                 self.lower_nested_def(d)?;
+                Ok(false)
+            }
+            // Nested `class` (FIX 2): registered + lowered in the module pre-scan
+            // and resolved at use sites through `class_map`, so this arm only
+            // validates the decorations/defaults the nested path can't express
+            // and emits no code (no local binding needed).
+            Stmt::ClassDef(c) => {
+                self.lower_nested_classdef(c)?;
                 Ok(false)
             }
             // Binding-analysis inputs only (Phase 6B): the declarations were
@@ -6434,6 +6528,49 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    /// A nested `class` statement (FIX 2). The class was already registered in
+    /// `class_map` and lowered into `self.classes` by the module pre-scan, and
+    /// its name resolves at every use site (construction / `isinstance` /
+    /// annotation) through `ctx.class_map`, not `self.scope` — so this arm binds
+    /// nothing and emits no code. It only rejects the decorations / defaults the
+    /// nested class path cannot express (consistent with nested `def`s).
+    fn lower_nested_classdef(&mut self, c: &StmtClassDef) -> Result<()> {
+        let span = to_span(c.range());
+        // A decorated nested class is out of scope: class decorators run at
+        // module-init over the class-id int (`emit_class_decorators`), which the
+        // nested pre-scan path does not replay.
+        if !c.decorator_list.is_empty() {
+            return Err(parse_error(
+                "a decorated nested class is out of scope; define it at module level",
+                span,
+            ));
+        }
+        // A method default-slot (a non-literal default) is promoted to a global
+        // slot only for top-level classes (`emit_class_default_slots`); a nested
+        // class method with a non-literal default would silently read an
+        // uninitialized slot. A literal default folds to a `Const` and is fine.
+        for stmt in &c.body {
+            let Stmt::FunctionDef(m) = stmt else { continue };
+            for awd in m
+                .args
+                .posonlyargs
+                .iter()
+                .chain(&m.args.args)
+                .chain(&m.args.kwonlyargs)
+            {
+                let Some(dflt) = &awd.default else { continue };
+                if try_literal_default(&mut *self.interner, dflt).is_none() {
+                    return Err(parse_error(
+                        "a nested class method with a non-literal default is out of \
+                         scope; define the class at module level",
+                        to_span(m.range()),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Lower a lambda (Phase 6A): a synthetic single-`Return` nested function.
     fn lower_lambda(&mut self, l: &ExprLambda, span: Span) -> Result<Idx<HirExpr>> {
         let args = l.args.as_ref();
@@ -10395,11 +10532,19 @@ fn lower_callable(
     // (into `fid`) + a resume state machine instead of a plain body. Captures /
     // *args / **kwargs in a generator are out of scope.
     if body_has_yield(&def.body) {
-        if nested.is_some_and(|(caps, _)| !caps.is_empty()) {
-            return Err(parse_error(
-                "a generator that captures variables is out of scope (Phase 6E)",
-                span,
-            ));
+        if let Some((caps, _)) = nested {
+            if !caps.is_empty() {
+                let mut names: Vec<&str> = caps.iter().map(|(c, _)| c.as_str()).collect();
+                names.sort_unstable();
+                return Err(parse_error(
+                    format!(
+                        "a nested generator that captures an enclosing local is out of \
+                         scope (captures: {}); a capture-free nested generator is supported",
+                        names.join(", ")
+                    ),
+                    span,
+                ));
+            }
         }
         if varargs || kwargs {
             return Err(parse_error(
@@ -10408,7 +10553,17 @@ fn lower_callable(
             ));
         }
         lower_generator_def(
-            interner, ctx, shared, &def.body, name_str, name, fid, &parsed, ret_ty, enclosing,
+            interner,
+            ctx,
+            shared,
+            &def.body,
+            name_str,
+            name,
+            fid,
+            &parsed,
+            ret_ty,
+            enclosing,
+            nested.is_some(),
         )?;
         return Ok(fid);
     }
@@ -10518,6 +10673,7 @@ fn lower_generator_def(
     parsed: &ParsedParams,
     ret_ty: SemTy,
     enclosing: Option<ClassId>,
+    is_nested: bool,
 ) -> Result<()> {
     let span = Span::dummy();
     let n_params = parsed.fixed.len() + parsed.kwonly.len();
@@ -10566,7 +10722,20 @@ fn lower_generator_def(
 
     // ── wrapper: build the generator, seed param slots, return it ──
     let mut wl = FnLowerer::new(interner, ctx, shared, name, name_str, ret_ty, enclosing);
-    wl.install_params(parsed);
+    // A nested generator wrapper crosses the ONE nested-call ABI (PITFALLS A4):
+    // it gets a synthetic `__env__: Dyn` at param 0 (mirroring `lower_callable`'s
+    // non-generator nested branch), so `closure_sem_ty` (`params[1..]`) and
+    // `uniform_thunk_over_nested` (base = 1) are correct and the empty capture env
+    // from `make_closure_expr` lands harmlessly in `__env__`. A top-level
+    // generator (or a generator method) keeps base 0 (no env param).
+    let base = if is_nested {
+        let env = wl.intern("__env__");
+        wl.add_param(env, SemTy::Dyn); // LocalId(0)
+        1
+    } else {
+        0
+    };
+    wl.install_params(parsed); // Python params now at LocalId(base..)
     let g_local = wl.fresh_local(SemTy::Dyn);
     let mg = wl.alloc(
         HirExprKind::MakeGenerator { gen_id, num_locals },
@@ -10579,7 +10748,10 @@ fn lower_generator_def(
     });
     for i in 0..n_params {
         let gen = wl.local_ref(g_local, span);
-        let p = wl.local_ref(LocalId::new(i as u32), span);
+        // The gen slot index is unshifted (the resume state machine numbers its
+        // logical locals from 0); only the positional param *read* shifts past
+        // the synthetic `__env__`.
+        let p = wl.local_ref(LocalId::new((i + base) as u32), span);
         wl.push_stmt(HirStmt::GenSetLocal {
             gen,
             slot: i as u32,
@@ -10667,6 +10839,120 @@ fn parse_params(
         varargs,
         kwargs,
     })
+}
+
+/// A `class` defined below module top level (inside a function body, inside
+/// another class, or inside module-level control flow) — collected by the
+/// module pre-scan so it can be registered + lowered alongside the top-level
+/// classes (FIX 2). `enclosing_locals` is the union of every enclosing
+/// *function* scope's bound names (empty when the class is only nested in
+/// classes / module-level control flow); a method free name found in this set
+/// is an enclosing-local capture and is rejected up front (A2: never silently
+/// lift a capturing class to module scope).
+struct NestedClass<'a> {
+    def: &'a StmtClassDef,
+    enclosing_locals: HashSet<String>,
+}
+
+/// Collect every nested `class` reachable in the module `body`, in source order
+/// (so `class_id` assignment is deterministic). Direct module-level classes are
+/// NOT collected (the existing top-level loop owns them), but their bodies are
+/// descended for `class`-in-`class`. This is a single forward, read-only
+/// pre-scan (A3) that extends the existing top-level class collection.
+fn collect_nested_classdefs<'a>(body: &'a [Stmt], out: &mut Vec<NestedClass<'a>>) {
+    let empty = HashSet::new();
+    for s in body {
+        match s {
+            // A top-level class is not itself nested; its body may hold one.
+            Stmt::ClassDef(c) => collect_nested_in_body(&c.body, &empty, out),
+            // A top-level def's locals form the first enclosing scope.
+            Stmt::FunctionDef(f) => {
+                let enclosing = freevars::analyze_def(f).bound;
+                collect_nested_in_body(&f.body, &enclosing, out);
+            }
+            // Module-level control flow: a class in here IS nested (module scope,
+            // so no enclosing function locals).
+            Stmt::If(_)
+            | Stmt::While(_)
+            | Stmt::For(_)
+            | Stmt::Try(_)
+            | Stmt::With(_)
+            | Stmt::Match(_) => collect_nested_in_controlflow(s, &empty, out),
+            _ => {}
+        }
+    }
+}
+
+/// Collect nested classes appearing in `stmts`, where a `ClassDef` at this level
+/// IS nested. `enclosing` is the accumulated set of enclosing-function locals.
+fn collect_nested_in_body<'a>(
+    stmts: &'a [Stmt],
+    enclosing: &HashSet<String>,
+    out: &mut Vec<NestedClass<'a>>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::ClassDef(c) => {
+                out.push(NestedClass {
+                    def: c,
+                    enclosing_locals: enclosing.clone(),
+                });
+                // class-in-class: inner classes are nested under the same scope.
+                collect_nested_in_body(&c.body, enclosing, out);
+            }
+            Stmt::FunctionDef(f) => {
+                let mut e = enclosing.clone();
+                e.extend(freevars::analyze_def(f).bound);
+                collect_nested_in_body(&f.body, &e, out);
+            }
+            Stmt::If(_)
+            | Stmt::While(_)
+            | Stmt::For(_)
+            | Stmt::Try(_)
+            | Stmt::With(_)
+            | Stmt::Match(_) => collect_nested_in_controlflow(s, enclosing, out),
+            _ => {}
+        }
+    }
+}
+
+/// Descend the sub-bodies of a control-flow statement (which do not introduce a
+/// new function scope), collecting nested classes within them.
+fn collect_nested_in_controlflow<'a>(
+    s: &'a Stmt,
+    enclosing: &HashSet<String>,
+    out: &mut Vec<NestedClass<'a>>,
+) {
+    match s {
+        Stmt::If(s) => {
+            collect_nested_in_body(&s.body, enclosing, out);
+            collect_nested_in_body(&s.orelse, enclosing, out);
+        }
+        Stmt::While(s) => {
+            collect_nested_in_body(&s.body, enclosing, out);
+            collect_nested_in_body(&s.orelse, enclosing, out);
+        }
+        Stmt::For(s) => {
+            collect_nested_in_body(&s.body, enclosing, out);
+            collect_nested_in_body(&s.orelse, enclosing, out);
+        }
+        Stmt::Try(t) => {
+            collect_nested_in_body(&t.body, enclosing, out);
+            for h in &t.handlers {
+                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                collect_nested_in_body(&h.body, enclosing, out);
+            }
+            collect_nested_in_body(&t.orelse, enclosing, out);
+            collect_nested_in_body(&t.finalbody, enclosing, out);
+        }
+        Stmt::With(w) => collect_nested_in_body(&w.body, enclosing, out),
+        Stmt::Match(m) => {
+            for case in &m.cases {
+                collect_nested_in_body(&case.body, enclosing, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Lower a `class` definition: lower each method into `functions` (recording its
@@ -12184,6 +12470,95 @@ mod tests {
     fn rejects_bare_except_not_last() {
         let err = parse_err("try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n");
         assert!(err.contains("must be last"), "got: {err}");
+    }
+
+    // ── FIX 1 / FIX 2: nested generator + nested class restrictions ──
+
+    #[test]
+    fn rejects_capturing_nested_generator() {
+        let err = parse_err(
+            "def outer():\n    base = 10\n    def gen(n):\n        i = 0\n        \
+             while i < n:\n            yield i + base\n            i += 1\n    \
+             return list(gen(3))\n",
+        );
+        assert!(
+            err.contains("nested generator that captures an enclosing local"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_capture_free_nested_generator() {
+        // A capture-free nested generator (the original crash arity) lowers.
+        parsed(
+            "def outer():\n    def gen(n):\n        i = 0\n        while i < n:\n            \
+             yield i\n            i += 1\n    return list(gen(3))\n",
+        );
+    }
+
+    #[test]
+    fn rejects_capturing_nested_class() {
+        let err = parse_err(
+            "def outer():\n    x = 5\n    class C:\n        def m(self):\n            \
+             return x\n    return C().m()\n",
+        );
+        assert!(
+            err.contains("nested class whose method captures an enclosing-function local"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_nested_class_name_collision() {
+        let err = parse_err(
+            "def a():\n    class Helper:\n        def m(self):\n            return 1\n    \
+             return Helper().m()\ndef b():\n    class Helper:\n        def m(self):\n            \
+             return 2\n    return Helper().m()\n",
+        );
+        assert!(err.contains("collides with another class"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_decorated_nested_class() {
+        let err = parse_err(
+            "def deco(c):\n    return c\ndef outer():\n    @deco\n    class C:\n        \
+             pass\n    return C\n",
+        );
+        assert!(err.contains("decorated nested class"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_nested_class_nonliteral_default() {
+        let err = parse_err(
+            "def outer():\n    class C:\n        def __init__(self, x=[]):\n            \
+             self.x = x\n    return C().x\n",
+        );
+        assert!(
+            err.contains("nested class method with a non-literal default"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_capture_free_nested_class() {
+        // Methods using only `self` + a module global lower cleanly.
+        parsed(
+            "K = 100\ndef outer():\n    class C:\n        def __init__(self, v: int):\n            \
+             self.v = v\n        def g(self) -> int:\n            return self.v + K\n    \
+             return C(1).g()\n",
+        );
+    }
+
+    #[test]
+    fn accepts_nested_class_referencing_sibling() {
+        // A reference to a sibling/ancestor nested class (a base class, or a
+        // `super()` chain) resolves statically through `class_map` and is NOT a
+        // capture, even though the class name is bound in the enclosing function.
+        parsed(
+            "def builder():\n    class Base:\n        def kind(self) -> str:\n            \
+             return \"base\"\n    class Derived(Base):\n        def kind(self) -> str:\n            \
+             return super().kind() + \"+d\"\n    return Derived().kind()\n",
+        );
     }
 
     #[test]

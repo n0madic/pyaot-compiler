@@ -3570,4 +3570,79 @@ assert _pcd_b.k == 9
 assert _pcd_marks[0] != _pcd_marks[1]
 
 
+# =============================================================================
+# Nested classes (capture-free) — a `class` defined inside a function body.
+# Names are program-unique (the flat class map keys on the bare name). Assert
+# on values/behavior, not raw type()/repr() of nested instances.
+# =============================================================================
+
+_NC_GLOBAL = 1000
+
+
+def test_nested_class():
+    # A capture-free nested class: methods use only `self` + module globals.
+    class _NcAccu:
+        def __init__(self, start: int):
+            self.total = start
+
+        def add(self, x: int) -> int:
+            self.total += x
+            return self.total
+
+        def with_global(self) -> int:
+            return self.total + _NC_GLOBAL
+
+    a = _NcAccu(5)
+    assert a.add(3) == 8, "nested class method"
+    assert a.add(2) == 10, "nested class method 2"
+    assert a.with_global() == 1010, "nested class reads module global"
+
+    # isinstance against a nested class + a nested-class annotation.
+    class _NcBox:
+        def __init__(self, v: int):
+            self.v = v
+
+    def unwrap(b: _NcBox) -> int:
+        return b.v
+
+    box = _NcBox(42)
+    assert isinstance(box, _NcBox), "isinstance nested class"
+    assert unwrap(box) == 42, "nested-class annotation param"
+
+    # A nested exception subclass raised + caught.
+    class _NcErr(Exception):
+        pass
+
+    caught = ""
+    try:
+        raise _NcErr("nested boom")
+    except _NcErr as e:
+        caught = str(e)
+    assert caught == "nested boom", "nested exception subclass"
+
+    print("test_nested_class passed")
+
+
+def test_nested_class_generator_method():
+    # FIX 1 x FIX 2: a generator *method* inside a nested class.
+    class _NcSeq:
+        def __init__(self, n: int):
+            self.n = n
+
+        def each(self):
+            i = 0
+            while i < self.n:
+                yield i * 2
+                i += 1
+
+    s = _NcSeq(4)
+    assert list(s.each()) == [0, 2, 4, 6], "nested-class generator method"
+
+    print("test_nested_class_generator_method passed")
+
+
+test_nested_class()
+test_nested_class_generator_method()
+
+
 print("All function tests passed!")
