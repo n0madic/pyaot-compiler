@@ -199,10 +199,16 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
             // guard above — a documented gap.)
             TypeTagKind::Set | TypeTagKind::FrozenSet => crate::set::rt_set_eq(a, b),
             TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_eq(a, b),
-            // Class instances and other types: identity comparison. Class
-            // instances without `__eq__` use identity, matching Python's
-            // default object equality.
+            // Class instances: a gradual `Dyn == Dyn` over two instances reaches
+            // the runtime with no static type, so dispatch a user `__eq__`
+            // (registered in `DUNDER_FUNC_REGISTRY`) here — the typed path
+            // resolves it via `concrete_dunder` at lowering time. A class without
+            // `__eq__` falls through to identity (`object.__eq__`), matching
+            // Python's default object equality. Other heap types use identity.
             _ => {
+                if let Some(eq) = super::dunder_dispatch::try_instance_eq(a, b) {
+                    return eq;
+                }
                 if a == b {
                     1
                 } else {

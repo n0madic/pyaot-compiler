@@ -5035,6 +5035,17 @@ impl<'a> FnLower<'a> {
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
         }
+        // `len(obj)` on a class with `__len__` reached as a `ContainerExpr` (the
+        // tuple-unpacking arity guard stages `ContainerOp::Len`) — `rt_obj_len`
+        // does not dispatch instances, so route to the direct call, mirroring the
+        // `len()` builtin path in `lower_container_builtin`.
+        if op == ContainerOp::Len {
+            let at = self.func.exprs[args[0]].ty.clone();
+            if let Some(fid) = self.concrete_dunder(&at, "__len__") {
+                let (l, r) = self.lower_expr(args[0])?;
+                return self.emit_dunder_call(fid, vec![(l, r)]);
+            }
+        }
         // `for line in f:` where `f` is a File VARIABLE (Phase 8H): there is no
         // runtime File iterator kind, so materialize the lines list via
         // `rt_file_readlines` first, then iterate that list. (The syntactic

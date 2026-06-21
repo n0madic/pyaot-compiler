@@ -280,6 +280,12 @@ impl<'a> ProgramLowerer<'a> {
                 if name == "*" {
                     return Err(parse_error("`from … import *` is out of scope", span));
                 }
+                // `collections.namedtuple` is desugared syntactically (see
+                // `synth_class`); it has no runtime binding, so skip it (the rest
+                // of `collections` — Counter, deque, … — binds normally).
+                if dotted == "collections" && name == "namedtuple" {
+                    continue;
+                }
                 let bind = alias.asname.as_ref().map(|n| n.as_str()).unwrap_or(name);
                 bind_stdlib_item(bind, name, &dotted, module, &mut col.stdlib, span)?;
             }
@@ -408,11 +414,11 @@ impl<'a> ProgramLowerer<'a> {
         // defaults/kwargs adaptation).
         let mut body = body;
         desugar_module_lambda_defs(&mut body);
-        // `@dataclass`-decorated classes → synthesized `__init__`/`__repr__`/
-        // `__eq__` AST methods, BEFORE partitioning so the synthetic methods are
+        // `@dataclass` classes and `namedtuple` assignments → synthesized classes
+        // with AST dunders, BEFORE partitioning so the synthetic methods are
         // present everywhere the class is later scanned. Recurses into nested
-        // bodies to cover nested dataclasses.
-        desugar_dataclasses(&mut body)?;
+        // bodies to cover nested forms.
+        desugar_synthesized_classes(&mut body)?;
         // Partition top-level statements (as the single-module lowering did).
         let mut defs: Vec<&StmtFunctionDef> = Vec::new();
         let mut decorated: Vec<&StmtFunctionDef> = Vec::new();

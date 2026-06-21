@@ -66,6 +66,11 @@ const PHASE_CORPUS: &[&str] = &[
     // (frontend-only desugar): basic/default/zero-field/nested/ClassVar forms,
     // byte-exact !r reprs, cross-type __eq__, user-dunder preservation.
     "test_dataclasses.py",
+    // collections.namedtuple desugared into a synthesized class with positional
+    // fields (__init__/__repr__/__eq__/__len__/__getitem__/__iter__/__contains__):
+    // field access, indexing, len, unpacking, iteration, membership, `*` spread,
+    // byte-exact reprs, list/tuple/string field specs, nested namedtuples.
+    "test_namedtuple.py",
     // ── Iteration & collections ──
     // for/comprehensions/iter-builtins/unpack/reduce/map/filter/tuple-cmp +
     // cross-feature integration + comprehension outermost-iterable scope (folds

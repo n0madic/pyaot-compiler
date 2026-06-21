@@ -146,7 +146,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__copy__` / `__deepcopy__` hooks | ✅ | `copy.copy` / `copy.deepcopy` dispatch to the user dunder via a per-class thunk; `__deepcopy__` gets a fresh memo dict (not the runtime's cycle tracker) |
 | `@dataclass` | ✅ | Frontend-only desugar: synthesizes missing `__init__`/`__repr__`/`__eq__` from field annotations + literal defaults; `ClassVar` excluded. Out of scope: `@dataclass(frozen=/order=/…)` & kwargs, `field()`/`default_factory`, mutable defaults, inheritance, `InitVar`, `__hash__` |
 | `enum.Enum` | ❌ | Not implemented |
-| `NamedTuple` / `TypedDict` | ❌ | Not implemented |
+| `collections.namedtuple` | ✅ | Frontend-only desugar to a class with positional fields: synthesizes `__init__`/`__repr__`/`__eq__`/`__len__`/`__getitem__`/`__iter__`/`__contains__`. Supports field access, indexing, `len`, unpacking, iteration, membership, `*`-spread, list/tuple/space-or-comma-string field specs. Out of scope: `rename=`/`defaults=`/`module=`, the `_make`/`_asdict`/`_replace`/`_fields` API, equality vs a real `tuple`, negative indices/slices |
+| `typing.NamedTuple` / `TypedDict` | ❌ | Not implemented (the `class X(NamedTuple)` / functional `typing` forms; use `collections.namedtuple`) |
 
 ---
 
@@ -259,7 +260,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | `subprocess` | ✅ | |
 | `itertools` | ✅ | |
 | `functools` | ✅ | `reduce` (desugared accumulate-loop) |
-| `collections` | ✅ | `Counter`, `defaultdict`, `deque`, `OrderedDict` |
+| `collections` | ✅ | `Counter`, `defaultdict`, `deque`, `OrderedDict`, `namedtuple` (the last via the frontend class desugar — see OOP table) |
 | `urllib.parse` / `urllib.request` / `urllib.error` | ✅ | `urlopen`/`urlretrieve` gated `stdlib-network` (live-net tests opt-in) |
 | `hashlib` | ✅ | Gated `stdlib-crypto` |
 | `base64` | ✅ | Gated `stdlib-base64` |

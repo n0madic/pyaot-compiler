@@ -54,6 +54,7 @@ pub(super) const FNV_REPR: u64 = fnv1a(b"__repr__");
 pub(super) const FNV_STR: u64 = fnv1a(b"__str__");
 pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
+pub(super) const FNV_EQ: u64 = fnv1a(b"__eq__");
 pub(super) const FNV_HASH: u64 = fnv1a(b"__hash__");
 pub(super) const FNV_ITER: u64 = fnv1a(b"__iter__");
 pub(super) const FNV_BOOL: u64 = fnv1a(b"__bool__");
@@ -321,6 +322,28 @@ pub unsafe fn try_abs_dunder(obj: *mut Obj) -> Option<*mut Obj> {
 /// fn re-checks the `Instance` tag on `obj`.
 pub unsafe fn try_format_dunder(obj: *mut Obj, spec: *mut Obj) -> Option<*mut Obj> {
     try_class_dunder(obj, spec, FNV_FORMAT, 0)
+}
+
+/// Compare two class instances via their `__eq__` dunder. A gradual `==`
+/// (`Dyn == Dyn`, e.g. an untyped namedtuple field holding an instance) reaches
+/// the runtime with the operands' static types erased, so the comparison must
+/// dispatch `__eq__` here — the typed path resolves it via `concrete_dunder` at
+/// lowering time. Mirrors CPython: forward `a.__eq__(b)`, then reflected
+/// `b.__eq__(a)` (for `__eq__` the reflected slot is `__eq__` itself), honouring
+/// `NotImplemented`. Returns `None` when neither instance defines `__eq__`, so
+/// `rt_obj_eq` falls back to identity (`object.__eq__`).
+///
+/// Like every comparison dunder in `DUNDER_FUNC_REGISTRY`, `__eq__ -> bool`
+/// returns a TAGGED `Value` (a tagged bool, low byte `BOOL_TAG`), so the result's
+/// truthiness is read through [`rt_is_truthy`], exactly as
+/// [`try_instance_lt_ordering`] reads `__lt__`.
+///
+/// # Safety
+/// `a` and `b` must be valid object pointers; this fn re-checks the `Instance`
+/// type tag on both via [`try_class_dunder`].
+pub(super) unsafe fn try_instance_eq(a: *mut Obj, b: *mut Obj) -> Option<i8> {
+    let result = try_class_dunder(a, b, FNV_EQ, FNV_EQ)?;
+    Some((crate::ops::rt_is_truthy(result) != 0) as i8)
 }
 
 /// Order two class instances for sorting via their `__lt__` dunder. CPython

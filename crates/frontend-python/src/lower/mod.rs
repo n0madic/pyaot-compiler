@@ -40,7 +40,6 @@ mod builtins;
 mod calls;
 mod classes;
 mod closures;
-mod dataclass;
 mod comprehensions;
 mod exceptions;
 mod expressions;
@@ -49,18 +48,19 @@ mod patterns;
 mod program;
 mod statements;
 mod stdlib;
+mod synth_class;
 #[cfg(test)]
 mod tests;
 
 use annotations::*;
 use calls::*;
 use classes::*;
-use dataclass::*;
 use expressions::*;
 use generators::*;
 use program::*;
 use statements::*;
 use stdlib::*;
+use synth_class::*;
 
 /// Maps a user class *name* (as written in an annotation) to its assigned
 /// `ClassId` and interned name, so `def f() -> Widget` / `x: Widget` resolve to
