@@ -1515,6 +1515,8 @@ pub static RT_PRINT_SEP: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_sep", &
 pub static RT_PRINT_SET_STDERR: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_set_stderr", &[]);
 /// rt_print_set_stdout() -> void
 pub static RT_PRINT_SET_STDOUT: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_set_stdout", &[]);
+/// rt_print_flush() -> void — flush the current print target (`print(..., flush=True)`).
+pub static RT_PRINT_FLUSH: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_flush", &[]);
 /// rt_input(prompt: *mut Obj) -> *mut Obj
 pub static RT_INPUT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_input");
 /// rt_print_int_value(value: i64) -> void

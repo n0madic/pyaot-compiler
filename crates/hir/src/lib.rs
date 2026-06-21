@@ -1403,6 +1403,18 @@ impl ContainerOp {
 // Statements / terminators
 // ============================================================================
 
+/// The output stream a `print` writes to. `Stdout` is the default;
+/// `print(..., file=sys.stderr)` selects `Stderr`. Realized in `lowering` by
+/// toggling the runtime's global print target (`rt_print_set_stderr` /
+/// `rt_print_set_stdout`) around the line's writes — the runtime print surface
+/// itself stays one set of `rt_print_*` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintTarget {
+    #[default]
+    Stdout,
+    Stderr,
+}
+
 #[derive(Debug, Clone)]
 pub enum HirStmt {
     /// Source-line marker (real tracebacks): the statements that follow — up
@@ -1428,11 +1440,18 @@ pub enum HirStmt {
     /// the defaults (`' '` between args, `'\n'` trailing); `Some` carries an
     /// interned literal (possibly empty). `typeck` infers each arg's type, and
     /// `lowering` expands this into the `MirInst::Print` sequence with per-arg
-    /// `PrintKind` dispatch.
+    /// `PrintKind` dispatch. `file` selects the output stream
+    /// (`print(..., file=sys.stderr)`); lowering toggles the runtime's global
+    /// print target around the line's writes (after evaluating the args, so a
+    /// side-effecting argument's own output still goes to the current stream).
+    /// `flush` (`print(..., flush=True)`) emits a flush of the selected stream
+    /// after the line is written.
     Print {
         args: Vec<Idx<HirExpr>>,
         sep: Option<InternedString>,
         end: Option<InternedString>,
+        file: PrintTarget,
+        flush: bool,
     },
     /// Subscript write `base[index] = value` (Phase 4A). The runtime dispatch
     /// (`rt_list_set` / `rt_dict_set`) is selected at lowering from the `base`

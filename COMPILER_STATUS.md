@@ -198,7 +198,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 
 | Builtin(s) | Status | Notes |
 |---|---|---|
-| `print` | ✅ | `sep`/`end`/`flush`, byte-exact formatting |
+| `print` | ✅ | `sep`/`end`/`file=sys.stdout\|sys.stderr`/`flush=True\|False`, byte-exact formatting |
 | `len`, `range`, `enumerate`, `zip`, `reversed` | ✅ | `zip(N≥3)` supported |
 | `map`, `filter` | ✅ | Eager desugar (single iterable) |
 | `sorted`, `reversed`, `min`, `max`, `sum` | ✅ | `key=` / `reverse=` |

@@ -31,7 +31,7 @@ use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
     BinOp as HBinOp, ClassTable, CmpOp as HCmpOp, ContainerArg, ContainerMethod, ContainerOp,
     ContainerResult, HirBlock, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirStmt,
-    HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
+    HirTerminator, PrintTarget, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
     BinOp as MBinOp, CmpOp as MCmpOp, CoerceInst, Const, ExcQuery, GenOp, LocalDecl, MirBlock,
@@ -630,7 +630,13 @@ impl<'a> FnLower<'a> {
                 self.emit(MirInst::LineMarker(*line));
                 Ok(())
             }
-            HirStmt::Print { args, sep, end } => self.lower_print(args, *sep, *end),
+            HirStmt::Print {
+                args,
+                sep,
+                end,
+                file,
+                flush,
+            } => self.lower_print(args, *sep, *end, *file, *flush),
             HirStmt::Expr(idx) => {
                 // Evaluate for side effects; discard the result.
                 let _ = self.lower_expr(*idx)?;
@@ -1210,6 +1216,8 @@ impl<'a> FnLower<'a> {
         args: &[Idx<HirExpr>],
         sep: Option<pyaot_utils::InternedString>,
         end: Option<pyaot_utils::InternedString>,
+        file: PrintTarget,
+        flush: bool,
     ) -> Result<()> {
         // Evaluate ALL argument expressions before writing anything (CPython
         // order: a side-effecting argument's output precedes the whole line).
@@ -1219,6 +1227,14 @@ impl<'a> FnLower<'a> {
         for arg_idx in args {
             let (loc, repr) = self.lower_expr(*arg_idx)?;
             vals.push((*arg_idx, loc, repr));
+        }
+        // `file=sys.stderr` redirects only THIS line's writes: the runtime's
+        // print target is a sticky global, so switch it after the args are
+        // evaluated (their own output went to the prior target) and restore it
+        // after the trailing newline.
+        let redirected = file == PrintTarget::Stderr;
+        if redirected {
+            self.emit_print_set_target(PrintTarget::Stderr);
         }
         for (i, (arg_idx, loc, repr)) in vals.into_iter().enumerate() {
             if i > 0 {
@@ -1239,7 +1255,36 @@ impl<'a> FnLower<'a> {
             }),
             Some(id) => self.emit_print_str(id),
         }
+        // `flush=True` flushes the selected stream after the line is written —
+        // emitted while the redirected target is still active (the runtime's
+        // `rt_print_flush` routes by the current target) and before it is
+        // restored to stdout below.
+        if flush {
+            self.emit(MirInst::CallRuntime {
+                dst: None,
+                def: &pyaot_core_defs::runtime_func_def::RT_PRINT_FLUSH,
+                args: vec![],
+            });
+        }
+        if redirected {
+            self.emit_print_set_target(PrintTarget::Stdout);
+        }
         Ok(())
+    }
+
+    /// Emit the runtime call that switches the global print target. Stdout is the
+    /// default, so a `print(..., file=sys.stderr)` line brackets its writes with
+    /// `rt_print_set_stderr()` … `rt_print_set_stdout()`.
+    fn emit_print_set_target(&mut self, target: PrintTarget) {
+        let def = match target {
+            PrintTarget::Stdout => &pyaot_core_defs::runtime_func_def::RT_PRINT_SET_STDOUT,
+            PrintTarget::Stderr => &pyaot_core_defs::runtime_func_def::RT_PRINT_SET_STDERR,
+        };
+        self.emit(MirInst::CallRuntime {
+            dst: None,
+            def,
+            args: vec![],
+        });
     }
 
     /// Print one already-evaluated argument with the `PrintKind` selected from

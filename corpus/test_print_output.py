@@ -1,5 +1,6 @@
 # Test all print() functionality with output comparison
 # Each print() produces output that must match test_print_output.expected
+import sys
 
 # ===== Section 1: Basic types =====
 print(42)
@@ -80,3 +81,24 @@ def greet(name: str) -> str:
     return "Hello " + name
 
 print(greet("World"))
+
+# ===== Section 16: print(..., file=sys.stdout / sys.stderr) =====
+# file=sys.stdout is the explicit default — identical to a plain print, so it
+# contributes to the stdout the differential gate compares byte-for-byte.
+print("explicit stdout", file=sys.stdout)
+print("stdout", 1, 2.5, sep="|", file=sys.stdout)
+# file=sys.stderr writes to stderr; these lines must NOT appear on stdout. The
+# differential gate compares stdout only, so a leak (the pre-fix behavior, where
+# non-string print kinds ignored the target) would fail the diff here.
+print("to stderr — must not leak to stdout", file=sys.stderr)
+print("err", 7, True, None, sep=", ", end="!\n", file=sys.stderr)
+print("final stdout line")
+
+# ===== Section 17: print(..., flush=True/False) =====
+# flush controls only WHEN bytes leave the buffer, not WHAT is written, so the
+# byte-exact output is identical to CPython regardless.
+print("flushed", flush=True)
+print("not flushed", flush=False)
+print("flushed stderr", file=sys.stderr, flush=True)
+print("partial", end="", flush=True)
+print(" + rest")

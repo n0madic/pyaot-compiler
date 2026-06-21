@@ -1037,3 +1037,41 @@ pub(super) fn as_print_call(expr: &Expr) -> Option<&rustpython_parser::ast::Expr
     None
 }
 
+/// Parse a `print(..., file=…)` keyword value into a [`PrintTarget`]. Only the
+/// canonical `sys.stdout` / `sys.stderr` attribute forms are supported (the
+/// streams the runtime can target); anything else is a compile error. The
+/// stream objects themselves are never materialized — `file=` only selects which
+/// runtime print target lowering toggles.
+pub(super) fn parse_print_target(value: &Expr) -> Result<PrintTarget> {
+    if let Expr::Attribute(a) = value {
+        if let Expr::Name(base) = a.value.as_ref() {
+            if base.id.as_str() == "sys" {
+                match a.attr.as_str() {
+                    "stdout" => return Ok(PrintTarget::Stdout),
+                    "stderr" => return Ok(PrintTarget::Stderr),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Err(parse_error(
+        "print() file= must be sys.stdout or sys.stderr",
+        to_span(value.range()),
+    ))
+}
+
+/// Parse a `print(..., flush=…)` keyword value. Like `sep`/`end` (string
+/// literals), `flush` is a compile-time literal in our subset: a bare `True` /
+/// `False`. A non-literal flush flag is a compile error.
+pub(super) fn parse_flush_flag(value: &Expr) -> Result<bool> {
+    if let Expr::Constant(c) = value {
+        if let Constant::Bool(b) = &c.value {
+            return Ok(*b);
+        }
+    }
+    Err(parse_error(
+        "print() flush= must be True or False",
+        to_span(value.range()),
+    ))
+}
+

@@ -136,6 +136,24 @@ macro_rules! raise_exc_string {
     }};
 }
 
+/// Write formatted print output to the CURRENT print target. Every `rt_print_*`
+/// path routes through this so `print(..., file=sys.stderr)` redirects EVERY
+/// print kind — ints, floats, the separator, the newline, and nested container
+/// repr — not only string objects. The target is the sticky global toggled by
+/// `rt_print_set_stderr` / `rt_print_set_stdout` (default: stdout). `eprint!`
+/// (stderr) is unbuffered; `print!` (stdout) keeps its existing buffering, with
+/// the program-exit flush in `rt_shutdown`.
+#[macro_export]
+macro_rules! rt_emit {
+    ($($arg:tt)*) => {{
+        if $crate::print::is_stderr_target() {
+            ::std::eprint!($($arg)*);
+        } else {
+            ::std::print!($($arg)*);
+        }
+    }};
+}
+
 // Core modules
 pub mod exceptions;
 pub mod gc;

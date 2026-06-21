@@ -1400,15 +1400,20 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// `print(args, sep=…, end=…)` → [`HirStmt::Print`].
+    /// `print(args, sep=…, end=…, file=sys.stdout|sys.stderr)` →
+    /// [`HirStmt::Print`].
     pub(super) fn lower_print(&mut self, call: &rustpython_parser::ast::ExprCall) -> Result<()> {
         let mut sep: Option<InternedString> = None;
         let mut end: Option<InternedString> = None;
+        let mut file = PrintTarget::Stdout;
+        let mut flush = false;
         for kw in &call.keywords {
             let key = kw.arg.as_ref().map(|i| i.as_str());
             match key {
                 Some("sep") => sep = Some(self.kw_str_literal(kw, "sep")?),
                 Some("end") => end = Some(self.kw_str_literal(kw, "end")?),
+                Some("file") => file = parse_print_target(&kw.value)?,
+                Some("flush") => flush = parse_flush_flag(&kw.value)?,
                 Some(other) => {
                     return Err(parse_error(
                         format!("print() got an unexpected keyword argument '{other}'"),
@@ -1428,7 +1433,13 @@ impl<'a> FnLowerer<'a> {
         for arg in &call.args {
             args.push(self.lower_expr(arg)?);
         }
-        self.push_stmt(HirStmt::Print { args, sep, end });
+        self.push_stmt(HirStmt::Print {
+            args,
+            sep,
+            end,
+            file,
+            flush,
+        });
         Ok(())
     }
 

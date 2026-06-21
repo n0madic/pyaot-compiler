@@ -35,11 +35,7 @@ pub fn rt_print_str_obj(str_obj: *mut Obj) {
             && !v.is_bool()
             && unsafe { (*str_obj).header.type_tag == TypeTagKind::None });
     if is_none {
-        if is_stderr_target() {
-            eprint!("None");
-        } else {
-            print!("None");
-        }
+        rt_emit!("None");
         return;
     }
     unsafe {
@@ -48,11 +44,7 @@ pub fn rt_print_str_obj(str_obj: *mut Obj) {
         let data = (*str_obj).data.as_ptr();
         let bytes = std::slice::from_raw_parts(data, len);
         if let Ok(s) = std::str::from_utf8(bytes) {
-            if is_stderr_target() {
-                eprint!("{}", s);
-            } else {
-                print!("{}", s);
-            }
+            rt_emit!("{}", s);
         }
     }
 }
@@ -89,11 +81,7 @@ pub(crate) fn format_bytes_repr(data: *const u8, len: usize) -> String {
 /// Print a BytesObj (heap-allocated bytes)
 pub fn rt_print_bytes_obj(bytes: *mut Obj) {
     if bytes.is_null() {
-        if is_stderr_target() {
-            eprint!("b''");
-        } else {
-            print!("b''");
-        }
+        rt_emit!("b''");
         return;
     }
 
@@ -102,11 +90,7 @@ pub fn rt_print_bytes_obj(bytes: *mut Obj) {
         let len = (*bytes_obj).len;
         let data = (*bytes_obj).data.as_ptr();
         let repr = format_bytes_repr(data, len);
-        if is_stderr_target() {
-            eprint!("{}", repr);
-        } else {
-            print!("{}", repr);
-        }
+        rt_emit!("{}", repr);
     }
 }
 #[export_name = "rt_print_bytes_obj"]

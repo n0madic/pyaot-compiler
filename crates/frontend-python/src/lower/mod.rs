@@ -27,7 +27,7 @@ use pyaot_hir::{
     BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
     HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProgram,
     HirProperty, HirRaise, HirStmt, HirTerminator, NamespaceImports, NamespaceTable, ParamDefault,
-    SymbolRef, UnaryOp,
+    PrintTarget, SymbolRef, UnaryOp,
 };
 use pyaot_types::{SemTy, Sig};
 use pyaot_utils::{ClassId, FuncId, InternedString, LineMap, LocalId, Span, StringInterner};
