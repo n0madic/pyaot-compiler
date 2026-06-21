@@ -87,6 +87,37 @@ pub static BUILTIN_OCT: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::ptr_unary("rt_builtin_oct"),
 };
 
+/// `input([prompt])` — read one line from stdin (the trailing newline stripped),
+/// first writing `prompt` (if given) with no newline. Wraps the existing
+/// `rt_input` (a tagged `prompt` pointer → a fresh `str`); an absent prompt fills
+/// the null-pointer sentinel the runtime reads as "no prompt". Raises `EOFError`
+/// at end of input, matching CPython.
+pub static BUILTIN_INPUT: StdlibFunctionDef = StdlibFunctionDef {
+    name: "input",
+    runtime_name: "rt_input",
+    params: &[ParamDef::optional("prompt", TypeSpec::Str)],
+    return_type: TypeSpec::Str,
+    min_args: 0,
+    max_args: 1,
+    hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::ptr_unary("rt_input"),
+};
+
+/// `bytes.fromhex(string)` — parse a string of hex digit pairs (spaces allowed)
+/// into bytes. The classmethod on the `bytes` type; the frontend routes the
+/// `bytes.fromhex(...)` form here. Wraps `rt_bytes_fromhex` (a tagged `str` → a
+/// fresh `bytes`).
+pub static BYTES_FROMHEX: StdlibFunctionDef = StdlibFunctionDef {
+    name: "bytes.fromhex",
+    runtime_name: "rt_bytes_fromhex",
+    params: &[ParamDef::required("string", TypeSpec::Str)],
+    return_type: TypeSpec::Bytes,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::ptr_unary("rt_bytes_fromhex"),
+};
+
 // =============================================================================
 // frozenset — construction targets + read-only methods
 // =============================================================================

@@ -1753,6 +1753,30 @@ def _fold_container_methods():
     assert len(a) == 4
     assert len(c) == 5
 
+    # ----- set.pop(): removes and returns an arbitrary element -----
+    # Pop order is unspecified, so test it deterministically: drain the set and
+    # check the multiset of popped values + the final length.
+    pop_src = {10, 20, 30}
+    popped_total = 0
+    popped_count = 0
+    while pop_src:
+        popped_total += pop_src.pop()
+        popped_count += 1
+    assert popped_total == 60
+    assert popped_count == 3
+    assert len(pop_src) == 0
+    # pop() from an empty set raises KeyError.
+    pop_raised = False
+    try:
+        pop_src.pop()
+    except KeyError:
+        pop_raised = True
+    assert pop_raised
+    # The popped element is usable as the element type (int here).
+    single = {7}
+    got = single.pop()
+    assert got + 1 == 8
+
     # ----- methods feeding loops / comprehensions (p4) -----
     acc = []
     d2 = {"k1": 1, "k2": 2, "k3": 3}

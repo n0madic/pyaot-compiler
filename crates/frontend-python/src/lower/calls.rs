@@ -31,6 +31,23 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
+        // `bytes.fromhex("...")` — the classmethod on the `bytes` type. Routed to
+        // `rt_bytes_fromhex` through the stdlib-call adapter (gated on an
+        // unshadowed `bytes` name, like the `object.__new__` hook above).
+        if let Expr::Attribute(a) = c.func.as_ref() {
+            if a.attr.as_str() == "fromhex" {
+                if let Expr::Name(base) = a.value.as_ref() {
+                    let bytes_iname = self.intern("bytes");
+                    if base.id.as_str() == "bytes" && !self.scope.contains_key(&bytes_iname) {
+                        return self.lower_stdlib_call(
+                            &pyaot_stdlib_defs::modules::builtins::BYTES_FROMHEX,
+                            c,
+                            span,
+                        );
+                    }
+                }
+            }
+        }
         // `Cls[T](args)` → a subscripted generic construction (Phase 5E).
         if let Expr::Subscript(s) = c.func.as_ref() {
             if let Expr::Name(n) = s.value.as_ref() {
@@ -611,6 +628,14 @@ impl<'a> FnLowerer<'a> {
                     "oct" => {
                         reject_call_extras(c, span, "oct()")?;
                         return self.lower_stdlib_call(&bd::BUILTIN_OCT, c, span);
+                    }
+                    "input" => {
+                        reject_call_extras(c, span, "input()")?;
+                        return self.lower_stdlib_call(&bd::BUILTIN_INPUT, c, span);
+                    }
+                    "callable" => {
+                        reject_call_extras(c, span, "callable()")?;
+                        return self.lower_callable_builtin(&c.args, span);
                     }
                     _ => {}
                 }

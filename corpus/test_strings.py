@@ -1426,6 +1426,27 @@ def _fold_p20_bytes_methods() -> None:
     assert b"abcabc".rfind(b"b") == 4
     assert b"abcabc".find(b"z") == -1
     assert b"caf\xc3\xa9".find(b"\xc3\xa9") == 3
+    # index / rindex: like find/rfind but raise ValueError on a miss
+    assert b"abcabc".index(b"b") == 1
+    assert b"abcabc".rindex(b"b") == 4
+    assert b"hello world".index(b"world") == 6
+    _idx_raised = False
+    try:
+        b"abc".index(b"z")
+    except ValueError:
+        _idx_raised = True
+    assert _idx_raised
+    _ridx_raised = False
+    try:
+        b"abc".rindex(b"z")
+    except ValueError:
+        _ridx_raised = True
+    assert _ridx_raised
+    # bytes.fromhex (classmethod on the bytes type; spaces allowed)
+    assert bytes.fromhex("48656c6c6f") == b"Hello"
+    assert bytes.fromhex("00ff10") == b"\x00\xff\x10"
+    assert bytes.fromhex("48 65 6c") == b"Hel"
+    assert bytes.fromhex("") == b""
     # count
     assert b"abcabc".count(b"a") == 2
     assert b"aaaa".count(b"aa") == 2

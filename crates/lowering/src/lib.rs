@@ -1574,6 +1574,7 @@ impl<'a> FnLower<'a> {
                 default,
             } => self.lower_get_attr_by_name(idx, *value, *name, *default),
             HirExprKind::IsSubclass { sub, sup } => self.lower_issubclass(*sub, *sup),
+            HirExprKind::IsCallable { value } => self.lower_callable(*value),
             HirExprKind::IsNone { value } => {
                 // `value is None` → `rt_is_none(value)` (recognizes both the
                 // immediate None tag and a heap None object). Result is Raw(I8).
@@ -2118,6 +2119,46 @@ impl<'a> FnLower<'a> {
         Ok((dst, Repr::Raw(RawKind::I8)))
     }
 
+    /// `callable(value)` (§5): folded statically from `value`'s `SemTy`. A
+    /// [`SemTy::Callable`] (function / lambda / bound method) is callable; a class
+    /// instance is callable iff its class (via the MRO-merged `methods`) defines
+    /// `__call__`; every other concrete type is not. A `Dyn` / `Union` value is a
+    /// loud compile error (a runtime callability probe on a gradual value is out
+    /// of scope), the same posture as [`Self::lower_hasattr`]. (Bare class /
+    /// top-level-function names are folded to `True` in the frontend, so they never
+    /// reach here.) The receiver is still evaluated for side effects.
+    fn lower_callable(&mut self, value: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
+        let got = self.func.exprs[value].ty.clone();
+        let span = self.func.exprs[value].span;
+        let verdict = match &got {
+            SemTy::Callable(_) => true,
+            SemTy::Dyn | SemTy::Union(_) => {
+                return Err(CompilerError::type_error(
+                    "callable() requires a statically-typed value \
+                     (a runtime callability probe on a gradual value is out of scope)",
+                    span,
+                ));
+            }
+            _ => match class_of(&got, self.classes) {
+                Some(cid) => self.classes.get(cid).is_some_and(|info| {
+                    info.methods
+                        .iter()
+                        .any(|m| self.interner.resolve(m.name) == "__call__")
+                }),
+                None => false,
+            },
+        };
+        // Evaluate the receiver for side effects, then materialize the verdict.
+        let _ = self.lower_expr(value)?;
+        let tagged = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst: tagged,
+            val: Const::Bool(verdict),
+        });
+        let dst = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I8))?;
+        Ok((dst, Repr::Raw(RawKind::I8)))
+    }
+
     /// Lower a stdlib runtime call through its declarative descriptor (Phase
     /// 8B) — the ONE generic seam. Each provided arg is legalized to the repr
     /// its `(TypeSpec, ParamType)` pair demands via the standard `coerce` path;
@@ -2650,6 +2691,11 @@ impl<'a> FnLower<'a> {
                 TypeSpec::Int,
             )),
             "count" => Some((&rf::RT_BYTES_COUNT, &[TaggedArg], 1, None, TypeSpec::Int)),
+            // `index`/`rindex(sub)` — like `find`/`rfind` but raise ValueError on a
+            // miss. Both share `rt_bytes_search`, selected by the trailing op_tag
+            // (2 = index / forward, 3 = rindex / reverse), appended as `Raw(I8)`.
+            "index" => Some((&rf::RT_BYTES_INDEX, &[TaggedArg], 1, Some(2), TypeSpec::Int)),
+            "rindex" => Some((&rf::RT_BYTES_RINDEX, &[TaggedArg], 1, Some(3), TypeSpec::Int)),
             // `replace(old, new[, count])` — `count` rides a RAW i64 slot (absent
             // → -1 = replace all). min_args stays 2.
             "replace" => Some((
@@ -2715,7 +2761,11 @@ impl<'a> FnLower<'a> {
         let def: &'static pyaot_core_defs::RuntimeFuncDef = match name {
             "bit_length" => &rf::RT_INT_BIT_LENGTH,
             "bit_count" => &rf::RT_INT_BIT_COUNT,
-            "conjugate" | "__index__" => &rf::RT_INT_INDEX,
+            // `conjugate`/`__index__`/`__int__`/`__trunc__` all return the
+            // receiver's int value unchanged (an `int` is its own conjugate /
+            // index / int / truncation); `rt_int_index` widens a `bool` to 0/1 and
+            // preserves a bignum.
+            "conjugate" | "__index__" | "__int__" | "__trunc__" => &rf::RT_INT_INDEX,
             _ => return Ok(None),
         };
         if !args.is_empty() {
@@ -5412,6 +5462,14 @@ impl<'a> FnLower<'a> {
                         None,
                     )?;
                     self.none_value()
+                }
+                // `set.pop()` — remove and return an arbitrary element (KeyError on
+                // an empty set, raised by the runtime). The `Value` result is
+                // normalized to the tagged baseline.
+                M::Pop if argn == 0 => {
+                    let (d, r) =
+                        self.emit_container(ContainerOp::SetPop, vec![recv_arg], None)?;
+                    self.normalize_container_result(d.unwrap(), r)
                 }
                 M::Update if argn == 1 => {
                     self.emit_container(

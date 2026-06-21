@@ -2020,6 +2020,7 @@ impl<'a> Sweeper<'a> {
             HirExprKind::IsInstance { .. } => SemTy::Bool,
             HirExprKind::IsInstanceBuiltin { .. } => SemTy::Bool,
             HirExprKind::HasAttr { .. } | HirExprKind::IsSubclass { .. } => SemTy::Bool,
+            HirExprKind::IsCallable { .. } => SemTy::Bool,
             // `getattr` is a gradual by-name read — `Dyn`, like the 2-arg
             // `Attribute` read on a `Dyn` receiver.
             HirExprKind::GetAttrByName { .. } => SemTy::Dyn,
@@ -2246,7 +2247,7 @@ impl<'a> Sweeper<'a> {
         if matches!(recv, SemTy::Bytes) {
             match self.interner.resolve(method_name) {
                 "startswith" | "endswith" => return SemTy::Bool,
-                "find" | "rfind" | "count" => return SemTy::Int,
+                "find" | "rfind" | "count" | "index" | "rindex" => return SemTy::Int,
                 "replace" | "strip" | "lstrip" | "rstrip" | "upper" | "lower" | "join" => {
                     return SemTy::Bytes
                 }
@@ -2260,7 +2261,8 @@ impl<'a> Sweeper<'a> {
         // itself — bool widens to int, so the result is Int-typed not Bool).
         if matches!(recv, SemTy::Int | SemTy::Bool) {
             match self.interner.resolve(method_name) {
-                "bit_length" | "bit_count" | "conjugate" | "__index__" => return SemTy::Int,
+                "bit_length" | "bit_count" | "conjugate" | "__index__" | "__int__"
+                | "__trunc__" => return SemTy::Int,
                 _ => {}
             }
         }
@@ -2827,9 +2829,11 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
         };
     }
     // Set receiver.
-    if recv.set_elem().is_some() {
+    if let Some(elem) = recv.set_elem() {
         return match method {
             M::Add | M::Remove | M::Discard | M::Update | M::Clear => none,
+            // `set.pop()` removes and returns an arbitrary element.
+            M::Pop => elem.clone(),
             M::Union | M::Intersection | M::Difference | M::SymmetricDifference | M::Copy => {
                 recv.clone()
             }

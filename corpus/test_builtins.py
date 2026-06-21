@@ -94,6 +94,17 @@ assert True.bit_count() == 1, "bit_count(True)"
 assert True.__index__() == 1, "bool.__index__()"
 assert (True.conjugate() + 5) == 6, "conjugate(True) usable as int"
 
+# __int__() / __trunc__(): both return the int value unchanged.
+assert (5).__int__() == 5, "int.__int__()"
+assert (-3).__int__() == -3, "int.__int__() negative"
+assert (5).__trunc__() == 5, "int.__trunc__()"
+assert (-3).__trunc__() == -3, "int.__trunc__() negative"
+assert True.__int__() == 1, "bool.__int__() widens to int"
+assert False.__int__() == 0, "bool.__int__() widens to int"
+assert ((7).__int__() + 1) == 8, "int.__int__() usable as int"
+_int_dunder_n = 100
+assert _int_dunder_n.__trunc__() == 100, "int.__trunc__() on variable receiver"
+
 print("int method tests passed")
 
 
@@ -1675,6 +1686,22 @@ class _p30_HasAttrTest:
         return self.x
 
 
+# callable() helpers: a plain class (instances NOT callable) and a class with
+# __call__ (instances callable). Module scope so `callable(<class name>)` folds.
+class _CallablePlain:
+    def __init__(self) -> None:
+        self.x = 1
+
+
+class _CallableWithCall:
+    def __call__(self) -> int:
+        return 42
+
+
+def _callable_free_fn() -> int:
+    return 0
+
+
 class _p34_Animal:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -1836,6 +1863,34 @@ def _fold_p30_introspection() -> None:
         for a in animals:
             voices.append(f"{getattr(a, 'name')}: {a.speak()}")
     assert voices == ["D: woof", "C: meow"]
+
+
+def _fold_callable() -> None:
+    # Bare names: a top-level function and a class are callable (folded True in
+    # the frontend without a static type).
+    assert callable(_callable_free_fn) is True
+    assert callable(_CallablePlain) is True       # a class is callable (ctor)
+    assert callable(_CallableWithCall) is True
+
+    # A lambda is a Callable value.
+    f = lambda x: x + 1
+    assert callable(f) is True
+
+    # An instance is callable iff its class defines __call__.
+    wc = _CallableWithCall()
+    assert callable(wc) is True
+    plain = _CallablePlain()
+    assert callable(plain) is False
+
+    # Concrete non-callable values are not callable.
+    assert callable(42) is False
+    assert callable(3.14) is False
+    assert callable("hello") is False
+    assert callable(True) is False
+    nums = [1, 2, 3]
+    assert callable(nums) is False
+    d = {"a": 1}
+    assert callable(d) is False
 
 
 def _fold_p31_zip_multi() -> None:
@@ -2258,6 +2313,7 @@ def _fold_test_builtin_first_class() -> None:
 
 _fold_p18_scalar_builtins()
 _fold_p30_introspection()
+_fold_callable()
 _fold_p31_zip_multi()
 _fold_p32_int_methods()
 _fold_p33_zero_arg_conversions()

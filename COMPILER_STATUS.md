@@ -31,7 +31,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Augmented assignment `+= -= *= …` | ✅ | All operators, incl. `@=`, in-place container ops |
 | Tuple/list unpacking `a, b = …` | ✅ | |
 | Nested destructuring `(a, (b, c)) = …` | ✅ | Recursive, also in `for`/comprehension targets |
-| Starred assignment target `a, *rest = …` | ❌ | "starred unpacking targets are out of scope" (LHS only; `*seq` in calls is supported) |
+| Starred assignment target `a, *rest = …` | ✅ | Prefix/middle/suffix star (`*init, last`, `a, *mid, z`); also in `for` (`for h, *t in …`) and `with … as (h, *r)` targets |
 | `if` / `elif` / `else` | ✅ | |
 | `while` / `while … else` | ✅ | |
 | `for` / `for … else` | ✅ | `range` fast-path + general iterator protocol |
@@ -42,7 +42,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `async with` | ❌ | Out of scope |
 | `try` / `except` / `else` / `finally` | ✅ | Multi-except, exception binding, re-raise |
 | `except*` (exception groups) | ❌ | Not implemented |
-| `raise` / `raise … from …` | ✅ | Real tracebacks with line numbers |
+| `raise` / `raise … from …` | ✅ | Real tracebacks with line numbers. `… from <cause>` is supported for builtin-exception constructors; a custom/stdlib-exception or variable cause is out of scope |
 | `assert` | ✅ | |
 | `global` / `nonlocal` | ✅ | |
 | `import` / `from … import` | ✅ | Multi-module, packages, re-exports; conditional top-level imports in `if`/`try` (known modules only) |
@@ -53,7 +53,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `async def` | ❌ | Out of scope |
 | `class` | ✅ | Incl. nested (capture-free) classes |
 | Decorators `@…` | ✅ | Functions, classes, decorator factories |
-| `lambda` | ✅ | As first-class `Callable` values, with defaults |
+| `lambda` | ✅ | First-class `Callable` values. Default args only via the module-level `name = lambda …=…` → `def` desugar; a lambda with defaults / `*args` / `**kwargs` inside a function body is out of scope |
 | `yield` / `yield from` | ✅ | Generators (frontend state-machine desugar) |
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |
@@ -70,11 +70,11 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `float` | ✅ | IEEE-754 double; numeric-tower coercions |
 | `bool` | ✅ | Subtype of `int` semantics |
 | `str` | ✅ | Unicode, codepoint model (len/slice/iter/case/align) |
-| `bytes` | ✅ | Constructors, methods, slicing |
+| `bytes` | ✅ | Constructors (incl. `bytes.fromhex`), methods (find/rfind/index/rindex/count/replace/split/strip/case/join/decode/startswith/endswith), slicing |
 | `list` | ✅ | |
 | `tuple` | ✅ | Fixed-arity & homogeneous; lexicographic compare |
 | `dict` | ✅ | Insertion-ordered; merge `|`/`|=`, `fromkeys` |
-| `set` | ✅ | `\| & - ^` and update/relational methods |
+| `set` | ✅ | `\| & - ^`, `pop`, and update/relational methods |
 | `range` | ✅ | Lazy iterator, negative/variable step |
 | `NoneType` | ✅ | `None` sentinel, `is`/`is not` |
 | `frozenset` | ✅ | Pragmatic core: ctors, protocol, hashable (dict key/set elem), `\| & - ^`, union/intersection/difference/symmetric_difference/copy/issubset/issuperset/isdisjoint. Gap: ordering (`< <=`), multi-element repr order follows set model |
@@ -170,7 +170,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `raise` / `raise … from …` | ✅ | |
+| `raise` / `raise … from …` | ✅ | `… from <cause>` for builtin-exception constructors; custom/stdlib-exception or variable cause out of scope |
 | `try`/`except`/`else`/`finally` | ✅ | Table-based unwinding (no setjmp) |
 | Multiple `except` clauses | ✅ | |
 | Exception binding `except E as e` | ✅ | |
@@ -217,8 +217,9 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `super`, `staticmethod`, `classmethod`, `property` | ✅ | |
 | `frozenset` / `bytearray` | ✅ | Pragmatic core (see Built-in types) — `RuntimeObject`-modeled, byte-exact in the corpus gate |
 | `complex`, `memoryview` | ❌ | Backing types not implemented |
-| `input` | ❌ | Not implemented |
-| `vars`, `dir`, `callable`, `delattr` | ❌ | Not implemented / out of scope |
+| `input` | ✅ | Reads a line from stdin (optional prompt to stdout); `EOFError` at end of input |
+| `callable` | ✅ | Static fold from the value's type — a `Callable`, or a class instance whose class defines `__call__`; class / top-level-function names fold to `True`; a `Dyn`/`Union` value is rejected |
+| `vars`, `dir`, `delattr` | ❌ | Not implemented / out of scope |
 | `eval`, `exec`, `compile` | ❌ | Out of scope by design |
 | `globals`, `locals` | ❌ | Out of scope by design |
 | `type(name, bases, dict)` (3-arg / runtime class) | ❌ | Out of scope by design |

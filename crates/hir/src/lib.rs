@@ -529,6 +529,15 @@ pub enum HirExprKind {
         sub: ClassId,
         sup: ClassId,
     },
+    /// `callable(value)` (§5) → `Bool`. Folded statically at lowering from
+    /// `value`'s inferred `SemTy`: a [`SemTy::Callable`], or a class instance whose
+    /// class (via MRO) defines `__call__`, is callable; other concrete types are
+    /// not; a `Dyn` / `Union` value is a loud compile error (a runtime callability
+    /// probe is out of scope), mirroring [`Self::HasAttr`]. A bare name resolving
+    /// to a user class or top-level function folds to `True` in the frontend.
+    IsCallable {
+        value: Idx<HirExpr>,
+    },
     /// `getattr(value, "name"[, default])` (§5) → `Dyn`. Distinct from the
     /// 2-arg [`Self::Attribute`] desugar: it carries the explicit `getattr`
     /// fallback semantics so lowering can route a provably-absent field on a
@@ -1066,6 +1075,9 @@ pub enum ContainerOp {
     // set
     SetRemove,
     SetDiscard,
+    /// `set.pop()` → remove and return an arbitrary element (KeyError if empty);
+    /// the element is a `Value`/`Tagged` GC-rootable result (B5).
+    SetPop,
     SetUpdate,
     SetUnion,
     SetIntersection,
@@ -1262,6 +1274,7 @@ impl ContainerOp {
             | ContainerOp::DictCopy
             | ContainerOp::DictPopitem
             | ContainerOp::SetCopy
+            | ContainerOp::SetPop
             | ContainerOp::SetClear => &[Val],
             ContainerOp::DictGet
             | ContainerOp::Contains
@@ -1357,6 +1370,7 @@ impl ContainerOp {
             | ContainerOp::DictGetDefault
             | ContainerOp::DictPopM
             | ContainerOp::DictPopitem
+            | ContainerOp::SetPop
             | ContainerOp::DictSetdefault => ContainerResult::Value,
             ContainerOp::BytesGet
             | ContainerOp::Len

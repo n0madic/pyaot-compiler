@@ -785,6 +785,7 @@ fn record_all(
         | HirExprKind::IsInstance { value, .. }
         | HirExprKind::IsInstanceBuiltin { value, .. }
         | HirExprKind::HasAttr { value, .. }
+        | HirExprKind::IsCallable { value }
         | HirExprKind::IsNone { value }
         | HirExprKind::ExcInstanceStr { value } => {
             child(*value, rec);

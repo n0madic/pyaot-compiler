@@ -723,6 +723,29 @@ impl<'a> FnLowerer<'a> {
         Ok(self.alloc(HirExprKind::IsSubclass { sub, sup }, SemTy::Bool, span))
     }
 
+    /// `callable(obj)` (§5) → `Bool`. A bare unshadowed name resolving to a user
+    /// class (callable as a constructor) or a top-level function is callable
+    /// outright — folded to `True` here without needing the value's static type.
+    /// Otherwise lowering folds the verdict from the value's `SemTy` (a
+    /// `Callable`, or a class instance whose class defines `__call__`); a
+    /// `Dyn`/`Union` value is a loud error there.
+    pub(super) fn lower_callable_builtin(&mut self, args: &[Expr], span: Span) -> Result<Idx<HirExpr>> {
+        if args.len() != 1 {
+            return Err(parse_error("callable() takes exactly one argument", span));
+        }
+        if let Expr::Name(n) = &args[0] {
+            let iname = self.intern(n.id.as_str());
+            if !self.scope.contains_key(&iname)
+                && (self.ctx.class_map.contains_key(n.id.as_str())
+                    || self.ctx.top_defs.contains_key(n.id.as_str()))
+            {
+                return Ok(self.alloc(HirExprKind::BoolLit(true), SemTy::Bool, span));
+            }
+        }
+        let value = self.lower_expr(&args[0])?;
+        Ok(self.alloc(HirExprKind::IsCallable { value }, SemTy::Bool, span))
+    }
+
     /// `"literal".format(args, kwargs)` (§9) — a literal-receiver desugar onto the
     /// f-string field machinery. Each replacement field binds to a positional /
     /// keyword arg AT COMPILE TIME, so the runtime sees the same `FormatValue`
