@@ -1339,6 +1339,7 @@ fn check_reinterpret(
                 || value.ty.is_subtype_of(target, classes)
                 || (kind == ReinterpretKind::Gradual
                     && (value.ty == SemTy::Dyn
+                        || union_into_guarded_heap(&value.ty, target)
                         || tuple_store_repr_safe(&value.ty, target)
                         || same_user_class(&value.ty, target, classes)))
         }
@@ -1371,6 +1372,23 @@ fn check_reinterpret(
         ),
         value.span,
     ))
+}
+
+/// A `Union` value may flow into a typed `Heap(shape)` slot iff the shape has a
+/// matching runtime guard (`HeapShape::dyn_check().is_some()`): lowering's
+/// `coerce_value` emits a CHECKED `Tagged → Heap(shape)` coercion (the same
+/// path the gradual `Dyn` admission takes) that calls `rt_check_heap_kind` /
+/// `rt_check_instance` / `rt_check_runtime_obj` to raise `TypeError` at the
+/// boundary on a wrong shape, instead of an unchecked reinterpret that would
+/// SEGV at the first operation on the value. This is the union analogue of the
+/// `Dyn` admission — both defer to the same runtime guard. A guard-less `Heap`
+/// shape (`BigInt`/`Iterator`) keeps the static rejection: there is no guard to
+/// defer to (PITFALLS B18). Closes the `Union[stdlib-object, exc] -> typed
+/// stdlib-object` return seam (the bundled `requests` `-> HTTPResponse` facade)
+/// without collapsing the union or modeling a subclass.
+fn union_into_guarded_heap(value: &SemTy, target: &SemTy) -> bool {
+    matches!(value, SemTy::Union(_))
+        && matches!(repr_of(target), Repr::Heap(shape) if shape.dyn_check().is_some())
 }
 
 /// A short Python-facing name for a `SemTy` (best-effort, for diagnostics).

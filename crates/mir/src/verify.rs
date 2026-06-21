@@ -1344,6 +1344,9 @@ mod tests {
                 Box::new(Repr::Tagged),
             )),
             Repr::Heap(HeapShape::Class(pyaot_utils::ClassId::new(3))),
+            Repr::Heap(HeapShape::RuntimeObj(
+                pyaot_core_defs::TypeTagKind::HttpResponse,
+            )),
         ] {
             let ok = single_block(
                 vec![Repr::Tagged, to.clone()],

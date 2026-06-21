@@ -15,6 +15,8 @@ assert the caught outcome.
 import math
 import os
 import json
+import re
+from re import Match
 from urllib.parse import quote, urlencode
 from urllib.error import HTTPError, URLError
 
@@ -249,9 +251,61 @@ def _checked_unbox2():
     assert math.sqrt(2.25) == 1.5
 
 
+# Typed stdlib-object return fed from a gradual Union source — the bundled
+# `requests` `-> HTTPResponse` facade pattern. A `try: return <stdlib-obj>
+# except <Error> as e: return e` body is inferred as
+# `Union[RuntimeObject, BuiltinException]`; that Union flows into a typed
+# stdlib-object return slot. typeck admits it behind a runtime tag guard
+# (`rt_check_runtime_obj`) instead of an unchecked reinterpret (PITFALLS B18 /
+# invariant #2). `_tsr_pick` is unannotated, so its inferred return climbs to
+# the union; `_tsr_matched` pins the typed `re.Match` return the union flows into.
+
+
+def _tsr_pick(ok):
+    # Inferred return Union[re.Match, ValueError] (the join of the body returns).
+    try:
+        if not ok:
+            raise ValueError("boom")
+        m = re.match(r"(\d+)", "42")
+        if m is None:
+            raise ValueError("nomatch")
+        return m
+    except ValueError as e:
+        return e
+
+
+def _tsr_matched(ok) -> Match:
+    # The Union flows into the typed `re.Match` return slot — coerced behind the
+    # checked `Tagged -> Heap(RuntimeObj(Match))` runtime tag guard.
+    return _tsr_pick(ok)
+
+
+def _typed_stdlib_returns():
+    # Positive: the union resolves to the real Match; the typed-return guard
+    # passes and `.group()` dispatches as a typed `re.Match` method (NOT the
+    # gradual `rt_obj_method` path), proving the result kept its precise type.
+    good = _tsr_matched(True)
+    assert good.group(0) == "42"
+    assert good.group(1) == "42"
+
+    # Wrong-shape (the B18 mandatory path): the union resolves to the
+    # ValueError. pyaot's typed-return guard raises `TypeError` AT THE BOUNDARY;
+    # CPython (which ignores the annotation) raises `AttributeError` only when
+    # the value is used as a Match. Both are caught → identical outcome, and the
+    # pyaot guard fires instead of dereferencing a wrong-shape value (no SEGV).
+    rejected = False
+    try:
+        bad = _tsr_matched(False)
+        bad.group(0)
+    except (TypeError, AttributeError):
+        rejected = True
+    assert rejected
+
+
 _seam_safety()
 _stdlib_edges()
 _checked_unbox()
 _checked_unbox2()
+_typed_stdlib_returns()
 
 print("All stdlib edge tests passed!")

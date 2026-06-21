@@ -234,6 +234,65 @@ fn accepts_int_returned_as_float() {
 }
 
 #[test]
+fn accepts_union_into_guard_backed_heap_return() {
+    // The typed-stdlib-return seam (the bundled `requests` `-> HTTPResponse`
+    // facade pattern): a `Union[Heap, exc]` inferred from a
+    // `try: return <obj> except E as e: return e` body flows into a typed
+    // `Heap(shape)` return whose `dyn_check()` is `Some` — admitted behind a
+    // runtime tag guard (`rt_check_runtime_obj`/`rt_check_heap_kind`), the union
+    // analogue of the gradual `Dyn` admission. Previously a hard rejection.
+    let stdlib_seam = "import re\n\
+         from re import Match\n\
+         \n\
+         \n\
+         def _pick(ok):\n\
+         \x20   try:\n\
+         \x20       if not ok:\n\
+         \x20           raise ValueError(\"x\")\n\
+         \x20       m = re.match(r\"(\\d+)\", \"42\")\n\
+         \x20       if m is None:\n\
+         \x20           raise ValueError(\"x\")\n\
+         \x20       return m\n\
+         \x20   except ValueError as e:\n\
+         \x20       return e\n\
+         \n\
+         \n\
+         def matched(ok) -> Match:\n\
+         \x20   return _pick(ok)\n\
+         \n\
+         \n\
+         print(matched(True).group(0))\n";
+    assert!(
+        try_infer(stdlib_seam).is_ok(),
+        "Union[RuntimeObject, exc] into a typed stdlib-object return must be \
+         admitted behind the runtime tag guard"
+    );
+
+    // Same admission for a guard-backed builtin container target (`list`).
+    // `_pick` is unannotated so its inferred return climbs to
+    // `Union[list, ValueError]`, which then flows into `items`'s typed `list`.
+    let container_seam = "def _pick(ok):\n\
+         \x20   try:\n\
+         \x20       if not ok:\n\
+         \x20           raise ValueError(\"x\")\n\
+         \x20       return [1, 2, 3]\n\
+         \x20   except ValueError as e:\n\
+         \x20       return e\n\
+         \n\
+         \n\
+         def items(ok) -> list:\n\
+         \x20   return _pick(ok)\n\
+         \n\
+         \n\
+         print(len(items(True)))\n";
+    assert!(
+        try_infer(container_seam).is_ok(),
+        "Union[list, exc] into a typed list return must be admitted behind the \
+         runtime tag guard"
+    );
+}
+
+#[test]
 fn accepts_int_into_float_global_and_field() {
     // §8 numeric tower (global / field seams closed): a `float` global / field is
     // a tagged slot read back via an unchecked `UnboxFloat`, so lowering's

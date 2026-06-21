@@ -393,6 +393,38 @@ pub extern "C" fn rt_check_instance_abi(value: Value, class_id: i64) -> Value {
     }
 }
 
+/// The gradual stdlib runtime-object shape guard (third sibling of
+/// `rt_check_heap_kind` / `rt_check_instance`). A genuinely-`Dyn`/`Union` value
+/// flowing into a typed stdlib-object parameter / return / slot — e.g. a
+/// `-> HTTPResponse` return fed from a `Union[HttpResponse, OSError]` body — is
+/// routed here: it must be a heap object whose runtime `type_tag()` is exactly
+/// `tag` (a [`TypeTagKind`] discriminant). stdlib objects are subtype-free
+/// singletons (no user subclassing), so the exact-tag check is regression-safe.
+/// On a match the same tagged `Value` is returned untouched; otherwise a
+/// `TypeError` is raised AT THE BOUNDARY instead of a deferred SIGSEGV when the
+/// value is later dereferenced as that typed heap pointer. `is_ptr`-guarded via
+/// `heap_tag_is` (B12), so a tagged immediate slipping in raises rather than
+/// dereferences wild. An unrecognised `tag` raises too (defensive only;
+/// lowering never emits a checked coerce for a tag with no matching shape).
+#[export_name = "rt_check_runtime_obj"]
+pub extern "C" fn rt_check_runtime_obj_abi(value: Value, tag: i64) -> Value {
+    let expected = TypeTagKind::from_tag(tag as u8);
+    if let Some(kind) = expected {
+        if heap_tag_is(value, kind) {
+            return value;
+        }
+    }
+    let expected_name = expected.map(|k| k.type_name()).unwrap_or("object");
+    unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "expected {}, got {}",
+            expected_name,
+            value_type_name(value)
+        );
+    }
+}
+
 // =============================================================================
 // Class qualified-name registry (for the default object repr)
 // =============================================================================
@@ -569,5 +601,45 @@ mod plan1_guard_tests {
         );
 
         gc::gc_pop();
+    }
+
+    #[test]
+    fn check_runtime_obj_accepts_matching_tag() {
+        let _g = lock();
+        gc::init();
+        // A Counter is a runtime-backed object (tag `Counter`). The stdlib
+        // runtime-object guard accepts an exact tag match and returns the value
+        // untouched — the typed-stdlib-return seam's accept path.
+        let ctr = counter::rt_make_counter_empty();
+        let mut roots: [*mut Obj; 1] = [ctr];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        unsafe { gc::gc_push(&mut frame) };
+        let ctr_v = Value::from_ptr(roots[0]);
+        assert_eq!(
+            rt_check_runtime_obj_abi(ctr_v, TypeTagKind::Counter as i64),
+            ctr_v
+        );
+        gc::gc_pop();
+    }
+
+    #[test]
+    fn check_runtime_obj_decision_rejects_wrong_tag() {
+        let _g = lock();
+        gc::init();
+        // The predicate that drives the raise (`heap_tag_is`): a tagged
+        // immediate is never a heap runtime object (B12: `is_ptr`-guarded, so a
+        // wrong-shape value raises instead of a wild deref), `None` is not one
+        // either, and a real heap object with the WRONG tag fails the exact-tag
+        // check — so the guard WOULD raise `TypeError("expected …, got …")`.
+        let int_v = Value::from_int(42);
+        assert!(!heap_tag_is(int_v, TypeTagKind::Match));
+        assert!(!heap_tag_is(Value::NONE, TypeTagKind::Match));
+        let lst = Value::from_ptr(list::rt_make_list(0));
+        assert!(!heap_tag_is(lst, TypeTagKind::Match));
+        assert_eq!(value_type_name(int_v), "int");
     }
 }

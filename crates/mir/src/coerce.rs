@@ -47,10 +47,10 @@ impl CoerceInst {
     ///   `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool` (`runtime/src/boxing.rs`).
     /// - **Heap shape guard**: `Heap(shape)` for any `shape` whose
     ///   [`HeapShape::dyn_check`] is `Some` (builtin containers + class
-    ///   instances) — `rt_check_heap_kind` / `rt_check_instance`
-    ///   (`runtime/src/instance.rs`). The rare guard-less shapes
-    ///   (`BigInt`/`RuntimeObj`/`Iterator`) keep the unchecked `TaggedToHeap`
-    ///   reinterpret (`new`).
+    ///   instances + stdlib runtime objects) — `rt_check_heap_kind` /
+    ///   `rt_check_instance` / `rt_check_runtime_obj` (`runtime/src/instance.rs`).
+    ///   The rare guard-less shapes (`BigInt`/`Iterator`) keep the unchecked
+    ///   `TaggedToHeap` reinterpret (`new`).
     ///
     /// Each admitted shape has a matching runtime guard that raises `TypeError`
     /// instead of SEGV when a wrong-shape `Value` arrives. Never widen this set
@@ -166,8 +166,8 @@ mod tests {
                 .is_some_and(|c| c.checked())
         );
         // Heap-arg guard: guard-backed Heap shapes (builtin containers + class
-        // instances) are now also admissible — `rt_check_heap_kind` /
-        // `rt_check_instance`.
+        // instances + stdlib runtime objects) are now also admissible —
+        // `rt_check_heap_kind` / `rt_check_instance` / `rt_check_runtime_obj`.
         for shape in [
             HeapShape::Str,
             HeapShape::Bytes,
@@ -177,6 +177,7 @@ mod tests {
             HeapShape::Tuple(vec![Repr::Tagged]),
             HeapShape::TupleVar(Box::new(Repr::Tagged)),
             HeapShape::Class(pyaot_utils::ClassId::new(3)),
+            HeapShape::RuntimeObj(pyaot_core_defs::TypeTagKind::HttpResponse),
         ] {
             assert!(
                 CoerceInst::new_checked(l(1), op(0), Repr::Tagged, Repr::Heap(shape.clone()))

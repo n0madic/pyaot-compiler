@@ -78,6 +78,8 @@ struct RuntimeFns {
     /// `Dyn` value at the boundary instead of a deferred container-op crash).
     check_heap_kind: FuncId,
     check_instance: FuncId,
+    /// Stdlib runtime-object tag guard (third sibling: exact `type_tag()` match).
+    check_runtime_obj: FuncId,
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
@@ -320,6 +322,7 @@ impl RuntimeFns {
             // `never_raises`, so the TypeError edge auto-wires the handler.
             check_heap_kind: d("rt_check_heap_kind", &[ti, ti], &[ti])?,
             check_instance: d("rt_check_instance", &[ti, ti], &[ti])?,
+            check_runtime_obj: d("rt_check_runtime_obj", &[ti, ti], &[ti])?,
             // Raw i64 arithmetic (Phase 3c): used only on range-proven cursors.
             // These RAISE OverflowError on i64 overflow (unlike CPython's bignum
             // promotion), so they are correct only where overflow provably cannot
@@ -2552,7 +2555,9 @@ impl FnGen<'_, '_> {
     ) -> Result<()> {
         // A checked coercion validates the tag at runtime — the Raw unbox shapes
         // (`rt_unbox_float`/`rt_unbox_int`/`rt_unbox_bool`, Phase 8H D3) and the
-        // gradual Heap shape guards (`rt_check_heap_kind`/`rt_check_instance`) all raise `TypeError` on a wrong-shape value instead of SEGV.
+        // gradual Heap shape guards (`rt_check_heap_kind`/`rt_check_instance`/
+        // `rt_check_runtime_obj`) all raise `TypeError` on a wrong-shape value
+        // instead of SEGV.
         if checked {
             let s = self.use_operand(src);
             let v = match to {
@@ -2571,6 +2576,10 @@ impl FnGen<'_, '_> {
                     Some(HeapCheck::Class(cid)) => {
                         let class_id = self.builder.ins().iconst(types::I64, cid.0 as i64);
                         self.call(self.rt.check_instance, &[s, class_id]).unwrap()
+                    }
+                    Some(HeapCheck::RuntimeTag(tag)) => {
+                        let tag_imm = self.builder.ins().iconst(types::I64, tag.tag() as i64);
+                        self.call(self.rt.check_runtime_obj, &[s, tag_imm]).unwrap()
                     }
                     None => {
                         return Err(cg_error(format!(

@@ -4,5 +4,5 @@
 *.a
 Cargo.lock
 # Compiled corpus binaries (corpus/ holds .py sources only)
-/corpus/**/*.pyc
-/corpus/**/__pycache__
+**/*.pyc
+**/__pycache__

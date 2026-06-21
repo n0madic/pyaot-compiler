@@ -233,7 +233,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `from module import name` | ✅ | |
 | `import module as alias` / `from … as …` | ✅ | |
 | Multi-file projects / packages | ✅ | `--module-path`, `__init__.py` |
-| External `site-packages/` packages | ✅ | Pure-Python packages on the stdlib subset, compiled like user imports. Roots: `$PYAOT_SITE_PACKAGES`, `<exe_dir>/site-packages`, `<repo_root>/site-packages`. Bundled example: `requests` (urllib facade). |
+| External `site-packages/` packages | ✅ | Pure-Python packages on the stdlib subset, compiled like user imports. Roots: `$PYAOT_SITE_PACKAGES`, `<exe_dir>/site-packages`, `<repo_root>/site-packages`. Bundled example: `requests` (urllib facade, CPython-faithful `get`/`post`/`put`/`delete` typed `-> HTTPResponse`). |
 | Re-exports | ✅ | |
 | Conditional top-level import (`if`/`elif`/`else`, `try`/`except`/`else`/`finally`) | ✅ | Optional-dependency pattern. Module must be resolvable at compile time (stdlib or on-disk user module — known modules only); binding is module-wide (compile-time), the runtime `<init>`/snapshot runs only when the branch is taken. One import site per module recommended (init-once ordering). Imports in a function body / `while`/`for`/`with` stay out of scope. |
 | `__name__ == "__main__"` entry guard | ✅ | |
@@ -286,7 +286,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Gradual typing (`Dyn` / unannotated) | ✅ | Always-correct Tagged baseline |
 | Generics / monomorphization | ✅ | `Generic`, `TypeVar` |
 | `typing.Protocol` (structural) | ✅ | Instance-level |
-| `Optional[T]` / `Union[…]` | ✅ | Union → Tagged; `Union → Heap` rejected |
+| `Optional[T]` / `Union[…]` | ✅ | Union → Tagged; `Union → Heap` admitted behind a runtime tag guard for guard-backed shapes (containers / class / stdlib `RuntimeObj` via `rt_check_heap_kind`/`rt_check_instance`/`rt_check_runtime_obj`), still rejected for guard-less `BigInt`/`Iterator` |
 | `Callable[…]` | ✅ | Closures/lambdas as values |
 | Forward references / string annotations | ✅ | `from __future__ import annotations` |
 

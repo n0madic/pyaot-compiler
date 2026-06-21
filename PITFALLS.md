@@ -299,29 +299,45 @@ must run in BOTH debug and release (the register-state class of bug only
 reproduces against the optimized runtime).
 
 ### B18. Widening the checked-unbox shapes without a runtime guard
-**Trap:** the MIR verifier admits exactly three *checked* coercions —
-`Tagged → Raw(F64)`, `Tagged → Raw(I64)`, and `Tagged → Raw(I8)`
-(`mir/src/verify.rs`, `CoerceInst::new_checked`). Each is sound *only* because a
-matching runtime guard (`rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool`,
-`runtime/src/boxing.rs`) inspects the tag and raises `TypeError` on a wrong shape
-instead of casting blind. (`rt_unbox_bool` is the *sanctioned* way to widen the
-set: a new shape is admissible exactly when its raising `rt_*` guard lands with
-it — `Raw(I8)` joined the family in lockstep with `rt_unbox_bool`.) Adding a
-fourth checked shape — e.g. `Tagged → Heap(List)` — because "inference should
-prove it" silently extends the set to a pair with **no** runtime guard: the
-wrong-shape
-`Value` is then blind-cast to a typed heap pointer in an `rt_*` and
-dereferenced → **SEGV in the runtime, not a `TypeError`**. This is the same trust
-the proof-trusted `Tagged → Heap` no-op already places in `typeck` (A2, B5), and
-the same blind-unbox hazard B16 warns about for possibly-bignum ints. **Why it
-bites:** both `new_checked` and the verifier gate only test `from == Tagged`, so a
-newly-added shape is accepted with nothing failing at compile time; the SEGV
-appears at runtime on the gradual-seam path — the exact Phase 8B–8F family.
-**Avoided by:** treating the two-shape set as load-bearing — never widen it
-without first landing the matching `rt_unbox_*`-style guard that raises instead of
-dereferencing, plus corpus coverage that drives the wrong-shape path. The
-debug-only `debug_assert_type_tag!` guards at the string/iterator stdlib seam are
-the second layer behind this same seam, not a substitute for the raising guard.
+**Trap:** the MIR verifier admits a *bounded* set of *checked* coercions
+(`mir/src/verify.rs`, `CoerceInst::new_checked`), each sound **only** because a
+matching runtime guard inspects the tag and raises `TypeError` on a wrong shape
+instead of casting blind. The set has two families:
+- **Raw unbox** — `Tagged → Raw(F64)` / `Raw(I64)` / `Raw(I8)`, guarded by
+  `rt_unbox_float` / `rt_unbox_int` / `rt_unbox_bool` (`runtime/src/boxing.rs`).
+- **Heap shape guard** — `Tagged → Heap(shape)` for every `shape` whose
+  `HeapShape::dyn_check()` returns `Some`: the builtin containers
+  (`str`/`bytes`/`list`/`dict`/`set`/`tuple`, guard `rt_check_heap_kind`), user
+  class instances (`rt_check_instance`, subclass-aware), and stdlib
+  runtime-backed objects (`RuntimeObj`, guard `rt_check_runtime_obj`,
+  exact-tag). The guard-LESS shapes `BigInt`/`Iterator` (`dyn_check() == None`)
+  keep the *unchecked* `TaggedToHeap` reinterpret and are NOT admissible as
+  checked coercions.
+
+(An earlier version of this entry said "exactly three checked coercions" — that
+predates the Heap-guard family and is stale; `dyn_check` is the single source of
+truth for which shapes are checkable, read generically by `new_checked`, the
+verifier, lowering's `coerce_value`, and codegen's `lower_coerce`.) The
+*sanctioned* way to widen the set: a new shape is admissible exactly when its
+raising `rt_*` guard lands **with** it — `Raw(I8)` joined in lockstep with
+`rt_unbox_bool`; `RuntimeObj` joined in lockstep with `rt_check_runtime_obj`.
+Adding a checked shape with **no** runtime guard because "inference should prove
+it" — e.g. flipping `Tagged → Heap(BigInt)`/`Heap(Iterator)` to checked, or a
+brand-new heap shape — blind-casts a wrong-shape `Value` to a typed heap pointer
+in an `rt_*` that then dereferences it → **SEGV in the runtime, not a
+`TypeError`**. This is the same trust the proof-trusted `Tagged → Heap` no-op
+already places in `typeck` (A2, B5), and the same blind-unbox hazard B16 warns
+about for possibly-bignum ints. **Why it bites:** both `new_checked` and the
+verifier gate only test `from == Tagged` and `dyn_check().is_some()`, so a
+newly-added guard-less shape is the danger; the SEGV appears at runtime on the
+gradual-seam path — the exact Phase 8B–8F family. **Avoided by:** treating the
+guarded set as load-bearing — never widen it (a new shape, or flipping a
+guard-less shape's `dyn_check` to `Some`) without first landing the matching
+raising `rt_*` guard, plus corpus coverage that drives the wrong-shape path
+(`test_stdlib_edges.py`'s typed-stdlib-return seam feeds a non-`Match` value and
+asserts the `TypeError`). The debug-only `debug_assert_type_tag!` guards at the
+string/iterator stdlib seam are the second layer behind this same seam, not a
+substitute for the raising guard.
 
 ---
 

@@ -58,11 +58,12 @@ pub enum HeapShape {
 }
 
 /// The runtime shape-guard a gradual `Tagged → Heap(shape)` coercion needs to
-/// stay safe: when a genuinely-`Dyn` value flows into a typed heap
+/// stay safe: when a genuinely-`Dyn`/`Union` value flows into a typed heap
 /// slot, lowering emits a CHECKED coercion that calls one of these guards
-/// (`rt_check_heap_kind` / `rt_check_instance`) to raise `TypeError` at the
-/// boundary instead of crashing later at the first container op. This is the
-/// `Heap` analogue of the `Raw` checked-unbox family (`rt_unbox_float`/…).
+/// (`rt_check_heap_kind` / `rt_check_instance` / `rt_check_runtime_obj`) to
+/// raise `TypeError` at the boundary instead of crashing later at the first
+/// operation on the value. This is the `Heap` analogue of the `Raw`
+/// checked-unbox family (`rt_unbox_float`/…).
 /// See PITFALLS B18: a checked `Heap` coercion is admissible ONLY for the
 /// shapes with a matching raising guard — exactly the set
 /// [`HeapShape::dyn_check`] returns `Some` for.
@@ -78,13 +79,21 @@ pub enum HeapCheck {
     /// A user-class instance check — subclass-aware (`rt_class_inherits_from`),
     /// so a `Dog` value passes an `Animal` param.
     Class(ClassId),
+    /// A stdlib runtime-backed object tag check — an exact `type_tag()` match
+    /// against the runtime tag (`rt_check_runtime_obj`). stdlib objects are
+    /// subtype-free singletons (no user subclassing), so an exact-tag check is
+    /// regression-safe. This admits a gradual `Dyn`/`Union` value into a typed
+    /// stdlib-object slot (e.g. a `-> HTTPResponse` return fed from a
+    /// `Union[HttpResponse, OSError]` body) behind a runtime guard instead of an
+    /// unchecked reinterpret.
+    RuntimeTag(TypeTagKind),
 }
 
 impl HeapShape {
     /// The runtime guard a gradual `Tagged → Heap(self)` coercion must call, or
     /// `None` for the rare shapes that keep the unchecked reinterpret
-    /// (`BigInt`/`RuntimeObj`/`Iterator` — no isinstance code and no nominal
-    /// class to check against).
+    /// (`BigInt`/`Iterator` — no isinstance code, no nominal class, and no exact
+    /// runtime tag to check against).
     ///
     /// This single mapping is the source of truth consumed by `mir`'s checked
     /// admission ([`crate`]-external `CoerceInst::new_checked`), `lowering`'s
@@ -100,7 +109,11 @@ impl HeapShape {
             HeapShape::Set(_) => Some(HeapCheck::Kind(k::SET as u8)),
             HeapShape::Tuple(_) | HeapShape::TupleVar(_) => Some(HeapCheck::Kind(k::TUPLE as u8)),
             HeapShape::Class(cid) => Some(HeapCheck::Class(*cid)),
-            HeapShape::BigInt | HeapShape::RuntimeObj(_) | HeapShape::Iterator(_) => None,
+            // stdlib runtime-backed objects gain an exact runtime-tag guard
+            // (`rt_check_runtime_obj`), so a gradual value can flow into a typed
+            // stdlib-object slot soundly instead of via an unchecked reinterpret.
+            HeapShape::RuntimeObj(tag) => Some(HeapCheck::RuntimeTag(*tag)),
+            HeapShape::BigInt | HeapShape::Iterator(_) => None,
         }
     }
 }
