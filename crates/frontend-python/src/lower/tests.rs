@@ -98,6 +98,41 @@
         assert!(err.contains("must be last"), "got: {err}");
     }
 
+    // ── `raise … from …` exception chaining (PEP 3134) ──
+
+    #[test]
+    fn accepts_raise_custom_from() {
+        // A custom-class target with a constructed builtin cause.
+        let (_m, _i) = parsed(
+            "class MyError(Exception):\n    pass\ntry:\n    raise MyError(\"x\") from ValueError(\"c\")\nexcept MyError:\n    pass\n",
+        );
+    }
+
+    #[test]
+    fn accepts_raise_instance_from_var() {
+        // An instance target (`raise e`) with a caught-variable cause.
+        let (_m, _i) = parsed(
+            "try:\n    raise ValueError(\"v\")\nexcept ValueError as e:\n    try:\n        raise TypeError(\"t\")\n    except TypeError as cause:\n        raise e from cause\n",
+        );
+    }
+
+    #[test]
+    fn accepts_raise_from_variable() {
+        // A builtin target with a caught-variable cause.
+        let (_m, _i) = parsed(
+            "try:\n    raise TypeError(\"t\")\nexcept TypeError as cause:\n    raise ValueError(\"v\") from cause\n",
+        );
+    }
+
+    #[test]
+    fn rejects_raise_from_bare_class() {
+        // A bare custom *class* cause (no parens) has no instance to introspect.
+        let err = parse_err(
+            "class MyError(Exception):\n    pass\nraise ValueError(\"x\") from MyError\n",
+        );
+        assert!(err.contains("bare class cause"), "got: {err}");
+    }
+
     // ── FIX 1 / FIX 2: nested generator + nested class restrictions ──
 
     #[test]

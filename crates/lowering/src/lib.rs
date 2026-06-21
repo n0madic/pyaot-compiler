@@ -34,9 +34,9 @@ use pyaot_hir::{
     HirTerminator, PrintTarget, ResolveResult, Symbol, SymbolRef, UnaryOp as HUnaryOp,
 };
 use pyaot_mir::{
-    BinOp as MBinOp, CmpOp as MCmpOp, CoerceInst, Const, ExcQuery, GenOp, LocalDecl, MirBlock,
-    MirClass, MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand, PrintKind,
-    StrPool, UnaryOp as MUnaryOp,
+    BinOp as MBinOp, CmpOp as MCmpOp, CoerceInst, Const, ExcQuery, GenOp, LocalDecl, MirArmCause,
+    MirBlock, MirClass, MirFunction, MirInst, MirProgram, MirRaise, MirTerminator, Operand,
+    PrintKind, StrPool, UnaryOp as MUnaryOp,
 };
 use pyaot_types::{
     generic_sig, repr_of, HeapShape, RawKind, Repr, SemTy, SigRepr, RAW_I64_NARROW_BOUND,
@@ -805,6 +805,7 @@ impl<'a> FnLower<'a> {
                 self.emit(MirInst::ExcOp(*op));
                 Ok(())
             }
+            HirStmt::ArmCause(c) => self.lower_arm_cause(c),
             HirStmt::Raise(r) => self.lower_raise(r),
         }
     }
@@ -818,25 +819,6 @@ impl<'a> FnLower<'a> {
             H::Builtin { tag, msg } => {
                 let msg = self.lower_exc_msg(*msg)?;
                 self.emit(MirInst::Raise(MirRaise::Builtin { tag: *tag, msg }));
-            }
-            H::BuiltinFromNone { tag, msg } => {
-                let msg = self.lower_exc_msg(*msg)?;
-                self.emit(MirInst::Raise(MirRaise::BuiltinFromNone { tag: *tag, msg }));
-            }
-            H::BuiltinFrom {
-                tag,
-                msg,
-                cause_tag,
-                cause_msg,
-            } => {
-                let msg = self.lower_exc_msg(*msg)?;
-                let cause_msg = self.lower_exc_msg(*cause_msg)?;
-                self.emit(MirInst::Raise(MirRaise::BuiltinFrom {
-                    tag: *tag,
-                    msg,
-                    cause_tag: *cause_tag,
-                    cause_msg,
-                }));
             }
             H::Custom { class_id, args } => {
                 let span = args
@@ -898,6 +880,34 @@ impl<'a> FnLower<'a> {
             }
             H::Reraise => self.emit(MirInst::Raise(MirRaise::Reraise)),
         }
+        Ok(())
+    }
+
+    /// Lower a `from CAUSE` arm (PEP 3134). Stashes the pending cause into
+    /// runtime exception state; the immediately-following raise consumes it.
+    /// Message / value operands route through the same Tagged-coercion as a
+    /// raise so the runtime reads a `StrObj` message / a Tagged instance value.
+    fn lower_arm_cause(&mut self, c: &pyaot_hir::ArmCause) -> Result<()> {
+        use pyaot_hir::ArmCause as A;
+        let arm = match c {
+            A::Suppress => MirArmCause::Suppress,
+            A::Builtin {
+                cause_tag,
+                cause_msg,
+            } => {
+                let cause_msg = self.lower_exc_msg(*cause_msg)?;
+                MirArmCause::Builtin {
+                    cause_tag: *cause_tag,
+                    cause_msg,
+                }
+            }
+            A::Value(v) => {
+                let (vl, vr) = self.lower_expr(*v)?;
+                let vt = self.coerce(vl, vr, Repr::Tagged)?;
+                MirArmCause::Value(Operand::Local(vt))
+            }
+        };
+        self.emit(MirInst::ArmCause(arm));
         Ok(())
     }
 

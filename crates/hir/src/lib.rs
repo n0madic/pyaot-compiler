@@ -788,15 +788,6 @@ pub enum ExcQuery {
 pub enum HirRaise {
     /// `raise ValueError("msg")` / `raise ValueError`.
     Builtin { tag: u8, msg: Option<Idx<HirExpr>> },
-    /// `raise X("m") from Y("c")` — both builtin.
-    BuiltinFrom {
-        tag: u8,
-        msg: Option<Idx<HirExpr>>,
-        cause_tag: u8,
-        cause_msg: Option<Idx<HirExpr>>,
-    },
-    /// `raise X("m") from None`.
-    BuiltinFromNone { tag: u8, msg: Option<Idx<HirExpr>> },
     /// `raise MyError(args…)` for a user exception class. Lowering constructs
     /// the instance (running `__init__` when the class has one; a single arg
     /// becomes the message operand otherwise so `str(e)` works).
@@ -818,6 +809,29 @@ pub enum HirRaise {
     Instance { value: Idx<HirExpr> },
     /// Bare `raise` — re-raise the exception being handled.
     Reraise,
+}
+
+/// The explicit cause of a `raise TARGET from CAUSE` (PEP 3134), decoupled from
+/// the raise target. Lowered to an [`HirStmt::ArmCause`] emitted immediately
+/// before the target's [`HirStmt::Raise`]: it stashes the pending cause into
+/// runtime exception state, which the next raise builder consumes when it
+/// constructs its `ExceptionObject`. This avoids a per-target cause-variant
+/// explosion — every target shape gets `from` support for free.
+#[derive(Debug, Clone)]
+pub enum ArmCause {
+    /// `from None` — suppress the implicit `__context__` chain (cause stays
+    /// `None`, `suppress_context = true`).
+    Suppress,
+    /// `from <builtin name / Builtin(msg)>` — a scalar builtin-exception cause
+    /// encoded as `(tag, message)`, with no value→cause path needed.
+    Builtin {
+        cause_tag: u8,
+        cause_msg: Option<Idx<HirExpr>>,
+    },
+    /// `from <value expr>` — a caught variable or a constructed custom/stdlib
+    /// exception. The runtime extracts `(class_id, message)` from the Tagged
+    /// instance value (raising `TypeError` for a non-exception).
+    Value(Idx<HirExpr>),
 }
 
 /// A generator state-machine operation (Phase 6E) — the runtime-backed surface
@@ -1550,6 +1564,10 @@ pub enum HirStmt {
     // ── exceptions (Phase 7) ──
     /// Exception-frame bookkeeping (pop / start-handling / end-handling).
     ExcOp(ExcOp),
+    /// Stash a pending `from CAUSE` for the immediately-following [`Raise`]
+    /// (PEP 3134). Emitted right before the raise in the same block so the
+    /// runtime sets and consumes the pending slot synchronously.
+    ArmCause(ArmCause),
     /// `raise …` — must be the last statement of its block, followed by an
     /// [`HirTerminator::Unreachable`] (the AssertFail shape).
     Raise(HirRaise),

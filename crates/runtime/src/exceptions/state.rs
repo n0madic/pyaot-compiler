@@ -15,6 +15,14 @@ pub(super) struct ExceptionState {
     /// When we enter an except handler, we save the current exception here.
     /// If a new exception is raised during handling, this becomes its __context__.
     pub handling_exception: Option<Box<ExceptionObject>>,
+    /// Pending explicit cause armed by `rt_exc_arm_cause_*` (`raise X from Y`,
+    /// PEP 3134). The next raise builder takes this and attaches it as the new
+    /// exception's `__cause__`. Live only on the straight-line arm→raise edge
+    /// (no safepoint between), but scanned for GC roots defensively.
+    pub pending_cause: Option<Box<ExceptionObject>>,
+    /// Pending `suppress_context` armed by `rt_exc_arm_suppress` (`raise X from
+    /// None`). The next raise builder applies it (cause stays `None`).
+    pub pending_suppress: bool,
 }
 
 impl ExceptionState {
@@ -22,6 +30,8 @@ impl ExceptionState {
         Self {
             current_exception: None,
             handling_exception: None,
+            pending_cause: None,
+            pending_suppress: false,
         }
     }
 }

@@ -322,30 +322,72 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower a `raise` statement. Always terminates the block.
+    ///
+    /// `raise TARGET from CAUSE` lowers to: stage the target's scalar
+    /// message/value operand (so it evaluates before the cause, matching
+    /// CPython's target-first order), emit an [`HirStmt::ArmCause`] that stashes
+    /// the explicit cause, then the unchanged [`HirStmt::Raise`] for TARGET. The
+    /// next raise builder consumes the pending cause — no per-target cause
+    /// variant.
     pub(super) fn lower_raise(&mut self, r: &rustpython_parser::ast::StmtRaise) -> Result<bool> {
         let span = to_span(r.range());
-        let raise = match &r.exc {
+        match &r.exc {
             // Bare `raise` — re-raise the exception being handled.
             None => {
                 if r.cause.is_some() {
                     return Err(parse_error("bare raise cannot carry a cause", span));
                 }
-                HirRaise::Reraise
+                self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
             }
-            Some(exc) => self.classify_raise_target(exc, r.cause.as_deref(), span)?,
-        };
-        self.push_stmt(HirStmt::Raise(raise));
+            Some(exc) => {
+                let mut raise = self.classify_raise_target(exc, span)?;
+                self.stage_raise_target_operands(&mut raise, span);
+                self.emit_cause_arm(r.cause.as_deref(), span)?;
+                self.push_stmt(HirStmt::Raise(raise));
+            }
+        }
         self.seal(HirTerminator::Unreachable);
         Ok(true)
     }
 
-    /// Classify a `raise EXPR [from CAUSE]` target. Builtin-exception name
+    /// Stage the target's scalar message/value operand into a temp so its side
+    /// effects happen before the cause arm (CPython evaluates the raise target
+    /// first). A `Custom` target's `__init__` body still runs at lowering after
+    /// the arm — documented as a boundary; absent from realistic code.
+    fn stage_raise_target_operands(&mut self, raise: &mut HirRaise, span: Span) {
+        match raise {
+            HirRaise::Builtin { msg, .. } | HirRaise::Stdlib { msg, .. } => {
+                if let Some(m) = msg {
+                    *m = self.stage_hir_temp(*m, span);
+                }
+            }
+            HirRaise::Instance { value } => {
+                *value = self.stage_hir_temp(*value, span);
+            }
+            HirRaise::Custom { .. } | HirRaise::Reraise => {}
+        }
+    }
+
+    /// Assign an already-lowered HIR expression to a fresh temp (preserving its
+    /// static type) and return a read of that temp. Pins the expression's side
+    /// effects to the current statement position.
+    fn stage_hir_temp(&mut self, e: Idx<HirExpr>, span: Span) -> Idx<HirExpr> {
+        let ty = self.exprs[e].ty.clone();
+        let tmp = self.fresh_local(ty);
+        self.push_stmt(HirStmt::Assign {
+            target: tmp,
+            value: e,
+        });
+        self.local_ref(tmp, span)
+    }
+
+    /// Classify a `raise EXPR` target (the `from CAUSE`, if any, is handled
+    /// separately by [`Self::emit_cause_arm`]). Builtin-exception name
     /// resolution is frontend-local: scope binding → `Instance`; class map →
     /// `Custom`; `exception_name_to_tag` → builtin; else an error.
     pub(super) fn classify_raise_target(
         &mut self,
         exc: &Expr,
-        cause: Option<&Expr>,
         span: Span,
     ) -> Result<HirRaise> {
         // `raise Name(...)` — a constructed exception.
@@ -360,12 +402,6 @@ impl<'a> FnLowerer<'a> {
                 let iname = self.intern(n.id.as_str());
                 if !self.scope.contains_key(&iname) {
                     if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
-                        if cause.is_some() {
-                            return Err(parse_error(
-                                "`raise CustomError(...) from ...` is out of scope for this milestone",
-                                span,
-                            ));
-                        }
                         let args = self.lower_expr_list(&c.args)?;
                         return Ok(HirRaise::Custom {
                             class_id: cid,
@@ -375,12 +411,6 @@ impl<'a> FnLowerer<'a> {
                     if let Some((class_id, parent_tag)) =
                         self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
                     {
-                        if cause.is_some() {
-                            return Err(parse_error(
-                                "`raise StdlibError(...) from ...` is out of scope",
-                                span,
-                            ));
-                        }
                         // Synthesize the CPython __str__ for the exceptions
                         // whose message is not the first positional arg:
                         // HTTPError(url, code, msg, hdrs, fp) prints
@@ -427,7 +457,7 @@ impl<'a> FnLowerer<'a> {
                             Some(a) => Some(self.lower_expr(a)?),
                             None => None,
                         };
-                        return self.attach_cause(tag, msg, cause, span);
+                        return Ok(HirRaise::Builtin { tag, msg });
                     }
                 }
             }
@@ -437,21 +467,9 @@ impl<'a> FnLowerer<'a> {
             let iname = self.intern(n.id.as_str());
             if self.scope.contains_key(&iname) {
                 let value = self.lower_expr(exc)?;
-                if cause.is_some() {
-                    return Err(parse_error(
-                        "`raise e from ...` is out of scope for this milestone",
-                        span,
-                    ));
-                }
                 return Ok(HirRaise::Instance { value });
             }
             if let Some((cid, _)) = self.ctx.class_map.get(n.id.as_str()).copied() {
-                if cause.is_some() {
-                    return Err(parse_error(
-                        "`raise CustomError from ...` is out of scope for this milestone",
-                        span,
-                    ));
-                }
                 return Ok(HirRaise::Custom {
                     class_id: cid,
                     args: vec![],
@@ -460,12 +478,6 @@ impl<'a> FnLowerer<'a> {
             if let Some((class_id, parent_tag)) =
                 self.ctx.stdlib.exceptions.get(n.id.as_str()).copied()
             {
-                if cause.is_some() {
-                    return Err(parse_error(
-                        "`raise StdlibError from ...` is out of scope",
-                        span,
-                    ));
-                }
                 return Ok(HirRaise::Stdlib {
                     class_id,
                     exc_type_tag: parent_tag,
@@ -473,7 +485,7 @@ impl<'a> FnLowerer<'a> {
                 });
             }
             if let Some(tag) = pyaot_core_defs::exception_name_to_tag(n.id.as_str()) {
-                return self.attach_cause(tag, None, cause, span);
+                return Ok(HirRaise::Builtin { tag, msg: None });
             }
         }
         Err(parse_error(
@@ -483,75 +495,77 @@ impl<'a> FnLowerer<'a> {
         ))
     }
 
-    /// Attach a `from CAUSE` clause to a builtin raise.
-    pub(super) fn attach_cause(
-        &mut self,
-        tag: u8,
-        msg: Option<Idx<HirExpr>>,
-        cause: Option<&Expr>,
-        span: Span,
-    ) -> Result<HirRaise> {
-        let Some(cause) = cause else {
-            return Ok(HirRaise::Builtin { tag, msg });
-        };
-        // `from None` suppresses the context chain.
+    /// Emit the `from CAUSE` arm for a `raise TARGET from CAUSE`, if present.
+    /// The cause has exactly three shapes (mirroring CPython's accepted
+    /// causes): `from None` → suppress; a builtin exception (bare or
+    /// constructed) → a scalar `(tag, msg)`; any other value expression (a
+    /// caught variable, a constructed custom/stdlib exception) → a Tagged
+    /// instance value the runtime introspects. A bare custom/stdlib *class*
+    /// cause is a clean compile error.
+    fn emit_cause_arm(&mut self, cause: Option<&Expr>, span: Span) -> Result<()> {
+        let Some(cause) = cause else { return Ok(()) };
+
+        // `from None` → suppress the implicit `__context__` chain.
         if matches!(cause, Expr::Constant(c) if matches!(c.value, Constant::None)) {
-            return Ok(HirRaise::BuiltinFromNone { tag, msg });
+            self.push_stmt(HirStmt::ArmCause(ArmCause::Suppress));
+            return Ok(());
         }
-        // `from Builtin(...)` / `from Builtin`.
-        let (cname, cargs): (&str, &[Expr]) = match cause {
+
+        // Resolve the "head name" of a bare name or a `Name(...)` constructor.
+        let head: Option<(&str, &[Expr])> = match cause {
+            Expr::Name(n) => Some((n.id.as_str(), &[])),
             Expr::Call(c) => match c.func.as_ref() {
-                Expr::Name(n) if c.keywords.is_empty() => (n.id.as_str(), &c.args),
-                _ => {
-                    return Err(parse_error(
-                        "a raise cause must be a builtin exception or None",
-                        span,
-                    ))
-                }
+                Expr::Name(n) if c.keywords.is_empty() => (n.id.as_str(), c.args.as_slice()).into(),
+                _ => None,
             },
-            Expr::Name(n) => (n.id.as_str(), &[]),
-            _ => {
-                return Err(parse_error(
-                    "a raise cause must be a builtin exception or None",
-                    span,
-                ))
-            }
+            _ => None,
         };
-        // The PEP-3134 `from <caught variable>` idiom needs an instance-cause
-        // runtime entry point — out of scope for this milestone; say so
-        // clearly instead of "unknown exception type".
-        {
-            let iname = self.intern(cname);
-            if self.scope.contains_key(&iname) {
-                return Err(parse_error(
-                    "`raise ... from <variable>` is out of scope for this milestone \
-                     (use a builtin exception constructor or `from None`)",
-                    span,
-                ));
+
+        if let Some((name, cargs)) = head {
+            let iname = self.intern(name);
+            // An in-scope name is a runtime value (a caught variable / a
+            // local holding an exception) → value path.
+            if !self.scope.contains_key(&iname) {
+                // A builtin exception name (bare class or constructor) → the
+                // scalar builtin cause (no builtin-exception-as-value needed).
+                if let Some(cause_tag) = pyaot_core_defs::exception_name_to_tag(name) {
+                    if cargs.len() > 1 {
+                        return Err(parse_error(
+                            "multi-argument builtin exceptions are out of scope",
+                            span,
+                        ));
+                    }
+                    let cause_msg = match cargs.first() {
+                        Some(a) => Some(self.lower_expr(a)?),
+                        None => None,
+                    };
+                    self.push_stmt(HirStmt::ArmCause(ArmCause::Builtin {
+                        cause_tag,
+                        cause_msg,
+                    }));
+                    return Ok(());
+                }
+                // A bare custom/stdlib *class* cause (no parens) has no instance
+                // to introspect — reject cleanly. A constructor call falls
+                // through to the value path.
+                let is_class = self.ctx.class_map.contains_key(name)
+                    || self.ctx.stdlib.exceptions.contains_key(name);
+                if is_class && matches!(cause, Expr::Name(_)) {
+                    return Err(parse_error(
+                        "a bare class cause (`raise ... from SomeError`) is out of scope; \
+                         construct it (`from SomeError(...)`) or use a caught variable",
+                        span,
+                    ));
+                }
             }
         }
-        let Some(cause_tag) = pyaot_core_defs::exception_name_to_tag(cname) else {
-            return Err(parse_error(
-                format!("unknown exception type `{cname}` in raise cause"),
-                span,
-            ));
-        };
-        if cargs.len() > 1 {
-            return Err(parse_error(
-                "multi-argument builtin exceptions are out of scope",
-                span,
-            ));
-        }
-        let cause_msg = match cargs.first() {
-            Some(a) => Some(self.lower_expr(a)?),
-            None => None,
-        };
-        Ok(HirRaise::BuiltinFrom {
-            tag,
-            msg,
-            cause_tag,
-            cause_msg,
-        })
+
+        // Value path: a caught variable, a constructed custom/stdlib exception,
+        // or any other value expression. A non-exception value raises TypeError
+        // at runtime (`rt_exc_arm_cause_value`), matching CPython.
+        let v = self.lower_expr(cause)?;
+        self.push_stmt(HirStmt::ArmCause(ArmCause::Value(v)));
+        Ok(())
     }
 
     // ── with (Phase 7D) ──────────────────────────────────────────────────────

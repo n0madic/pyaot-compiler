@@ -6,10 +6,10 @@
 use pyaot_core_defs::BuiltinExceptionKind;
 
 use super::core::{
-    copy_message_to_owned, create_builtin_exception_instance, dispatch_existing_exception,
-    dispatch_to_handler, exception_type_from_tag, get_custom_exception_name,
-    print_unhandled_exception_full, raise_with_owned_message, register_class_name, ExceptionObject,
-    ExceptionType, NOT_CUSTOM_CLASS,
+    apply_pending, build_builtin_cause, copy_message_to_owned, create_builtin_exception_instance,
+    dispatch_existing_exception, dispatch_to_handler, exc_object_from_value, exception_type_from_tag,
+    get_custom_exception_name, print_unhandled_exception_full, raise_with_owned_message,
+    register_class_name, ExceptionObject, ExceptionType, NOT_CUSTOM_CLASS,
 };
 use super::state::with_exception_state;
 
@@ -55,101 +55,52 @@ pub unsafe fn rt_exc_raise_owned(
     raise_with_owned_message(exc_type, ptr, len, cap)
 }
 
-/// Raise an exception with a cause (`raise X from Y`)
-/// When an explicit cause is provided, suppress_context is set to True.
-///
-/// # Safety
-/// If message/cause_message lengths are non-zero, their pointers must be valid.
+/// Arm a `from None` for the immediately-following raise (`raise X from None`,
+/// PEP 3134): suppress the implicit `__context__` chain without an explicit
+/// cause. The next raise builder consumes this via `apply_pending`.
 #[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_from(
-    exc_type_tag: u8,
-    message: *const u8,
-    len: usize,
-    cause_type_tag: u8,
-    cause_message: *const u8,
-    cause_len: usize,
-) -> ! {
-    // Convert type tags to ExceptionType using macro-generated from_tag
-    let exc_type = exception_type_from_tag(exc_type_tag);
-    let cause_type = exception_type_from_tag(cause_type_tag);
-
-    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
-    let (cause_msg_ptr, cause_msg_len, cause_msg_capacity) =
-        copy_message_to_owned(cause_message, cause_len);
-
-    // Capture implicit context (may still be relevant for debugging)
-    let context = with_exception_state(|state| state.handling_exception.take());
-
-    // Build cause exception object (no traceback of its own)
-    let cause_obj = Box::new(ExceptionObject {
-        exc_type: cause_type,
-        custom_class_id: NOT_CUSTOM_CLASS,
-        message: cause_msg_ptr,
-        message_len: cause_msg_len,
-        message_capacity: cause_msg_capacity,
-        cause: None,
-        context: None,
-        suppress_context: false,
-        traceback: None,
-        instance: std::ptr::null_mut(),
+pub extern "C" fn rt_exc_arm_suppress() {
+    with_exception_state(|state| {
+        state.pending_suppress = true;
     });
-
-    // Capture traceback at the point of raise
-    let traceback = Some(crate::traceback::capture_traceback());
-
-    // Build main exception object with cause
-    // When explicit cause is provided, suppress_context = true
-    let exc_obj = Box::new(ExceptionObject {
-        exc_type,
-        custom_class_id: NOT_CUSTOM_CLASS,
-        message: msg_ptr,
-        message_len: msg_len,
-        message_capacity: msg_capacity,
-        cause: Some(cause_obj),
-        context,
-        suppress_context: true, // Explicit cause suppresses context display
-        traceback,
-        instance: std::ptr::null_mut(),
-    });
-
-    dispatch_to_handler(exc_obj)
 }
 
-/// Raise an exception with context suppressed (`raise X from None`)
-/// This sets suppress_context = true and cause = None, effectively hiding the context chain.
+/// Arm a builtin-exception cause for the immediately-following raise
+/// (`raise X from BuiltinError(...)` / `from BuiltinError`). Stores a scalar
+/// `(tag, message)` cause object; the next raise consumes it via
+/// `apply_pending`.
 ///
 /// # Safety
 /// If `len > 0`, `message` must be a valid pointer to `len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_from_none(
-    exc_type_tag: u8,
-    message: *const u8,
-    len: usize,
-) -> ! {
-    let exc_type = exception_type_from_tag(exc_type_tag);
-    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
-
-    // Still capture context for debugging (it's stored but not displayed)
-    let context = with_exception_state(|state| state.handling_exception.take());
-
-    // Capture traceback at the point of raise
-    let traceback = Some(crate::traceback::capture_traceback());
-
-    // Build exception with suppressed context (no cause, context suppressed)
-    let exc_obj = Box::new(ExceptionObject {
-        exc_type,
-        custom_class_id: NOT_CUSTOM_CLASS,
-        message: msg_ptr,
-        message_len: msg_len,
-        message_capacity: msg_capacity,
-        cause: None,
-        context,
-        suppress_context: true, // "from None" suppresses context display
-        traceback,
-        instance: std::ptr::null_mut(),
+pub unsafe extern "C" fn rt_exc_arm_cause_builtin(cause_tag: u8, message: *const u8, len: usize) {
+    let cause = build_builtin_cause(cause_tag, message, len);
+    with_exception_state(|state| {
+        state.pending_cause = Some(Box::new(cause));
     });
+}
 
-    dispatch_to_handler(exc_obj)
+/// Arm an arbitrary value cause for the immediately-following raise
+/// (`raise X from <value>` — a caught variable or a constructed custom/stdlib
+/// exception). Reads `(class_id, message)` from the Tagged instance; a
+/// non-exception value raises `TypeError` ("exception causes must derive from
+/// BaseException"), matching CPython.
+///
+/// # Safety
+/// `cause`'s bits must be a valid Tagged `Value`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_arm_cause_value(cause: pyaot_core_defs::Value) {
+    match exc_object_from_value(cause) {
+        Ok(obj) => {
+            with_exception_state(|state| {
+                state.pending_cause = Some(Box::new(obj));
+            });
+        }
+        Err(()) => {
+            let msg = b"exception causes must derive from BaseException";
+            rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        }
+    }
 }
 
 /// Called when entering an except handler block.
@@ -680,7 +631,7 @@ pub unsafe extern "C" fn rt_exc_raise_stdlib(
     let context = with_exception_state(|state| state.handling_exception.take());
     let traceback = Some(crate::traceback::capture_traceback());
 
-    let exc_obj = Box::new(ExceptionObject {
+    let mut exc_obj = Box::new(ExceptionObject {
         exc_type,
         custom_class_id: class_id,
         message: msg_ptr,
@@ -692,6 +643,9 @@ pub unsafe extern "C" fn rt_exc_raise_stdlib(
         traceback,
         instance: std::ptr::null_mut(),
     });
+
+    // Attach any pending `from CAUSE` / `from None` (PEP 3134).
+    apply_pending(&mut exc_obj);
 
     dispatch_to_handler(exc_obj)
 }
@@ -715,7 +669,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
     let context = with_exception_state(|state| state.handling_exception.take());
     let traceback = Some(crate::traceback::capture_traceback());
 
-    let exc_obj = Box::new(ExceptionObject {
+    let mut exc_obj = Box::new(ExceptionObject {
         exc_type: ExceptionType::Exception,
         custom_class_id: class_id,
         message: msg_ptr,
@@ -727,6 +681,9 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
         traceback,
         instance, // Store pre-created instance
     });
+
+    // Attach any pending `from CAUSE` / `from None` (PEP 3134).
+    apply_pending(&mut exc_obj);
 
     dispatch_to_handler(exc_obj)
 }
@@ -791,7 +748,7 @@ pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj
         class_id
     };
 
-    let exc_obj = Box::new(ExceptionObject {
+    let mut exc_obj = Box::new(ExceptionObject {
         exc_type,
         custom_class_id,
         message: msg_ptr,
@@ -803,6 +760,9 @@ pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj
         traceback,
         instance, // Preserve the original instance
     });
+
+    // Attach any pending `from CAUSE` / `from None` (PEP 3134).
+    apply_pending(&mut exc_obj);
 
     dispatch_to_handler(exc_obj)
 }

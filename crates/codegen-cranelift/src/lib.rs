@@ -272,8 +272,11 @@ struct RuntimeFns {
     /// traceback table (real tracebacks), registered alongside.
     tb_register_table: FuncId,
     exc_raise: FuncId,
-    exc_raise_from: FuncId,
-    exc_raise_from_none: FuncId,
+    /// PEP 3134 `from CAUSE` arming — stash a pending cause/suppress that the
+    /// next raise consumes. Decoupled from the raise target's ABI.
+    exc_arm_suppress: FuncId,
+    exc_arm_cause_builtin: FuncId,
+    exc_arm_cause_value: FuncId,
     exc_raise_stdlib: FuncId,
     exc_raise_custom_with_instance: FuncId,
     exc_raise_instance: FuncId,
@@ -529,8 +532,9 @@ impl RuntimeFns {
             exc_register_table: d("rt_exc_register_table", &[ptr, ti], &[])?,
             tb_register_table: d("rt_tb_register_table", &[ptr, ti], &[])?,
             exc_raise: d("rt_exc_raise", &[t8, ptr, ti], &[])?,
-            exc_raise_from: d("rt_exc_raise_from", &[t8, ptr, ti, t8, ptr, ti], &[])?,
-            exc_raise_from_none: d("rt_exc_raise_from_none", &[t8, ptr, ti], &[])?,
+            exc_arm_suppress: d("rt_exc_arm_suppress", &[], &[])?,
+            exc_arm_cause_builtin: d("rt_exc_arm_cause_builtin", &[t8, ptr, ti], &[])?,
+            exc_arm_cause_value: d("rt_exc_arm_cause_value", &[ti], &[])?,
             exc_raise_stdlib: d("rt_exc_raise_stdlib", &[t8, t8, ptr, ti], &[])?,
             exc_raise_custom_with_instance: d(
                 "rt_exc_raise_custom_with_instance",
@@ -2230,6 +2234,26 @@ impl FnGen<'_, '_> {
                 self.call(fid, &[]);
                 Ok(())
             }
+            MirInst::ArmCause(arm) => {
+                match arm {
+                    pyaot_mir::MirArmCause::Suppress => {
+                        self.call(self.rt.exc_arm_suppress, &[]);
+                    }
+                    pyaot_mir::MirArmCause::Builtin {
+                        cause_tag,
+                        cause_msg,
+                    } => {
+                        let (ptr, len) = self.msg_ptr_len(cause_msg);
+                        let t = self.builder.ins().iconst(types::I8, *cause_tag as i64);
+                        self.call(self.rt.exc_arm_cause_builtin, &[t, ptr, len]);
+                    }
+                    pyaot_mir::MirArmCause::Value(v) => {
+                        let val = self.use_operand(v);
+                        self.call(self.rt.exc_arm_cause_value, &[val]);
+                    }
+                }
+                Ok(())
+            }
             MirInst::ExcQuery { dst, query } => {
                 let v = match query {
                     pyaot_mir::ExcQuery::Current => {
@@ -2290,23 +2314,6 @@ impl FnGen<'_, '_> {
                 let (ptr, len) = self.msg_ptr_len(msg);
                 let t = self.builder.ins().iconst(types::I8, *tag as i64);
                 self.call(self.rt.exc_raise, &[t, ptr, len]);
-            }
-            R::BuiltinFromNone { tag, msg } => {
-                let (ptr, len) = self.msg_ptr_len(msg);
-                let t = self.builder.ins().iconst(types::I8, *tag as i64);
-                self.call(self.rt.exc_raise_from_none, &[t, ptr, len]);
-            }
-            R::BuiltinFrom {
-                tag,
-                msg,
-                cause_tag,
-                cause_msg,
-            } => {
-                let (ptr, len) = self.msg_ptr_len(msg);
-                let (cptr, clen) = self.msg_ptr_len(cause_msg);
-                let t = self.builder.ins().iconst(types::I8, *tag as i64);
-                let ct = self.builder.ins().iconst(types::I8, *cause_tag as i64);
-                self.call(self.rt.exc_raise_from, &[t, ptr, len, ct, cptr, clen]);
             }
             R::CustomWithInstance {
                 class_id,

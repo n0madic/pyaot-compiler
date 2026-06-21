@@ -31,13 +31,14 @@ pub use core::{
 };
 
 pub use ffi::{
-    rt_exc_class_name, rt_exc_clear, rt_exc_end_handling, rt_exc_get_class_id, rt_exc_get_current,
+    rt_exc_arm_cause_builtin, rt_exc_arm_cause_value, rt_exc_arm_suppress, rt_exc_class_name,
+    rt_exc_clear, rt_exc_end_handling, rt_exc_get_class_id, rt_exc_get_current,
     rt_exc_get_current_message, rt_exc_get_message, rt_exc_get_type, rt_exc_has_exception,
     rt_exc_instance_str, rt_exc_isinstance, rt_exc_isinstance_class, rt_exc_print_current,
     rt_exc_raise, rt_exc_raise_attr_error, rt_exc_raise_custom, rt_exc_raise_custom_with_instance,
-    rt_exc_raise_from, rt_exc_raise_from_none, rt_exc_raise_index_error, rt_exc_raise_instance,
-    rt_exc_raise_key_error, rt_exc_raise_owned, rt_exc_raise_type_error, rt_exc_raise_value_error,
-    rt_exc_register_class_name, rt_exc_reraise, rt_exc_start_handling,
+    rt_exc_raise_index_error, rt_exc_raise_instance, rt_exc_raise_key_error, rt_exc_raise_owned,
+    rt_exc_raise_type_error, rt_exc_raise_value_error, rt_exc_register_class_name, rt_exc_reraise,
+    rt_exc_start_handling,
 };
 
 pub use unwind::rt_exc_register_table;

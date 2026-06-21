@@ -7,7 +7,7 @@
 
 use std::ptr;
 
-use pyaot_core_defs::BuiltinExceptionKind;
+use pyaot_core_defs::{BuiltinExceptionKind, Value};
 use std::cell::UnsafeCell;
 
 use super::state::{with_exception_state, with_exception_state_ref};
@@ -122,6 +122,12 @@ pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
         if let Some(ref exc) = state.handling_exception {
             collect_from(exc, &mut ptrs);
         }
+        // A pending `from CAUSE` value (`raise X from caught_var`) holds the
+        // only reference to its instance until the next raise consumes it
+        // (B5/B15) — scan it like the current/handling exceptions.
+        if let Some(ref exc) = state.pending_cause {
+            collect_from(exc, &mut ptrs);
+        }
         ptrs
     })
 }
@@ -161,7 +167,7 @@ pub(super) unsafe fn raise_with_owned_message(
     // Capture traceback at the point of raise
     let traceback = Some(crate::traceback::capture_traceback());
 
-    let exc_obj = Box::new(ExceptionObject {
+    let mut exc_obj = Box::new(ExceptionObject {
         exc_type,
         custom_class_id: NOT_CUSTOM_CLASS,
         message: msg_ptr,
@@ -174,7 +180,150 @@ pub(super) unsafe fn raise_with_owned_message(
         instance: std::ptr::null_mut(),
     });
 
+    // Attach any pending `from CAUSE` / `from None` (PEP 3134).
+    apply_pending(&mut exc_obj);
+
     dispatch_to_handler(exc_obj)
+}
+
+// ==================== Pending cause (PEP 3134 `from`) ====================
+
+/// Build a cause `ExceptionObject` for a builtin-exception cause (`raise X from
+/// BuiltinError(...)` / `from BuiltinError`). Builtin-only: `instance` is null,
+/// no traceback of its own. Extracted from the former `rt_exc_raise_from`
+/// cause builder so the pending-cause mechanism reuses it.
+///
+/// # Safety
+/// `msg_ptr`/`len` must form a valid owned-able buffer or be `(null, 0)`.
+pub(super) unsafe fn build_builtin_cause(
+    cause_tag: u8,
+    msg_ptr: *const u8,
+    len: usize,
+) -> ExceptionObject {
+    let cause_type = exception_type_from_tag(cause_tag);
+    let (cause_msg_ptr, cause_msg_len, cause_msg_capacity) = copy_message_to_owned(msg_ptr, len);
+    ExceptionObject {
+        exc_type: cause_type,
+        custom_class_id: NOT_CUSTOM_CLASS,
+        message: cause_msg_ptr,
+        message_len: cause_msg_len,
+        message_capacity: cause_msg_capacity,
+        cause: None,
+        context: None,
+        suppress_context: false,
+        traceback: None,
+        instance: std::ptr::null_mut(),
+    }
+}
+
+/// Copy the message of an exception instance — `.args[0]` when field 0 is an
+/// args tuple whose first element is a string — into an owned buffer. Returns
+/// `(null, 0, 0)` when there is no recoverable string message (a custom
+/// instance without an `.args` tuple included: its cause *type name* still
+/// renders correctly — documented boundary). Reads bytes directly (no
+/// allocation), unlike `rt_exc_instance_str`.
+///
+/// # Safety
+/// `instance` must be a valid non-null `InstanceObj` pointer.
+unsafe fn instance_message_owned(
+    instance: *mut crate::object::Obj,
+) -> (*const u8, usize, usize) {
+    let args_raw = crate::instance::rt_instance_get_field(instance, 0);
+    let args_tuple = args_raw as *mut crate::object::Obj;
+    if args_tuple.is_null() {
+        return (ptr::null(), 0, 0);
+    }
+    let header = &*(args_tuple as *const crate::object::ObjHeader);
+    if header.type_tag != crate::object::TypeTagKind::Tuple {
+        return (ptr::null(), 0, 0);
+    }
+    let tuple_obj = args_tuple as *mut crate::object::TupleObj;
+    if (*tuple_obj).len == 0 {
+        return (ptr::null(), 0, 0);
+    }
+    let first_elem = *(*tuple_obj).data.as_ptr();
+    if first_elem.0 == 0 {
+        return (ptr::null(), 0, 0);
+    }
+    let elem_ptr = first_elem.0 as *const crate::object::ObjHeader;
+    if (*elem_ptr).type_tag != crate::object::TypeTagKind::Str {
+        return (ptr::null(), 0, 0);
+    }
+    let str_obj = elem_ptr as *mut crate::object::Obj;
+    let data = crate::string::rt_str_data(str_obj);
+    let len = crate::string::rt_str_len(str_obj);
+    copy_message_to_owned(data, len)
+}
+
+/// Build a cause `ExceptionObject` from a Tagged exception-instance value
+/// (`raise X from <value>`). Derives `exc_type`/`custom_class_id` from the
+/// instance's `class_id` exactly as `rt_exc_raise_instance` does, and recovers
+/// the message from `.args[0]`. Returns `Err(())` for a non-exception value —
+/// the caller raises `TypeError` ("exception causes must derive from
+/// BaseException"), matching CPython.
+///
+/// # Safety
+/// `value`'s bits must be a valid Tagged `Value`.
+pub(super) unsafe fn exc_object_from_value(value: Value) -> Result<ExceptionObject, ()> {
+    // An immediate (int/bool/None) or a null pointer is never an exception.
+    if !value.is_ptr() {
+        return Err(());
+    }
+    let obj = value.unwrap_ptr::<crate::object::Obj>();
+    if obj.is_null() {
+        return Err(());
+    }
+    // Only an `InstanceObj` carries a `class_id` / `.args`; reject str/list/etc.
+    let header = &*(obj as *const crate::object::ObjHeader);
+    if header.type_tag != crate::object::TypeTagKind::Instance {
+        return Err(());
+    }
+    let inst = obj as *const crate::object::InstanceObj;
+    let class_id = (*inst).class_id;
+    // The class must derive from BaseException (tag 28).
+    let is_exc = BuiltinExceptionKind::from_tag(class_id).is_some()
+        || crate::vtable::rt_class_inherits_from(
+            class_id,
+            BuiltinExceptionKind::BaseException.tag(),
+        ) != 0;
+    if !is_exc {
+        return Err(());
+    }
+    let exc_type = exception_type_from_tag(class_id);
+    let custom_class_id = if BuiltinExceptionKind::from_tag(class_id).is_some() {
+        NOT_CUSTOM_CLASS
+    } else {
+        class_id
+    };
+    let (msg_ptr, msg_len, msg_capacity) = instance_message_owned(obj);
+    Ok(ExceptionObject {
+        exc_type,
+        custom_class_id,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: msg_capacity,
+        cause: None,
+        context: None,
+        suppress_context: false,
+        traceback: None,
+        instance: obj,
+    })
+}
+
+/// Apply any pending `from CAUSE` (armed by `rt_exc_arm_*`) to a freshly-built
+/// exception object: attach the explicit cause (suppressing the implicit
+/// `__context__` chain) or apply a bare `from None` suppression. Every raise
+/// builder calls this AFTER capturing `context` and BEFORE dispatching.
+pub(super) fn apply_pending(exc_obj: &mut ExceptionObject) {
+    with_exception_state(|state| {
+        if let Some(cause) = state.pending_cause.take() {
+            exc_obj.cause = Some(cause);
+            exc_obj.suppress_context = true;
+        }
+        if std::mem::take(&mut state.pending_suppress) {
+            exc_obj.suppress_context = true;
+        }
+    });
 }
 
 /// Copy a message to an owned buffer, returning (ptr, len, capacity)

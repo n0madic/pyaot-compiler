@@ -1247,9 +1247,9 @@ fn record_stmt_exprs(
             e(*value, rec);
         }
         HirStmt::GenSetState { gen, .. } | HirStmt::GenSetExhausted { gen } => e(*gen, rec),
-        // `Raise` / `ExcOp` operands never hold a hot raw-int BinOp; leaving them
-        // unrecorded just keeps them tagged (sound).
-        HirStmt::Raise(_) | HirStmt::ExcOp(_) => {}
+        // `Raise` / `ExcOp` / `ArmCause` operands never hold a hot raw-int
+        // BinOp; leaving them unrecorded just keeps them tagged (sound).
+        HirStmt::Raise(_) | HirStmt::ExcOp(_) | HirStmt::ArmCause(_) => {}
     }
 }
 

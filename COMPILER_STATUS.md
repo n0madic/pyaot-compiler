@@ -42,7 +42,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `async with` | ❌ | Out of scope |
 | `try` / `except` / `else` / `finally` | ✅ | Multi-except, exception binding, re-raise |
 | `except*` (exception groups) | ❌ | Not implemented |
-| `raise` / `raise … from …` | ✅ | Real tracebacks with line numbers. `… from <cause>` is supported for builtin-exception constructors; a custom/stdlib-exception or variable cause is out of scope |
+| `raise` / `raise … from …` | ✅ | Real tracebacks with line numbers. `… from <cause>` works for every target (builtin / custom / stdlib / caught-instance) and every accepted cause (`None`, a builtin exception, a caught variable, a constructed custom/stdlib exception); a bare custom/stdlib *class* cause is a clean error. Boundaries: the `__cause__`/`__context__` chain prints only in the unhandled traceback (stderr) — `e.__cause__` attribute access is unsupported; a *custom*-class cause's message is recovered from `.args[0]` (empty for a custom instance without `.args`; the cause type name is always correct) |
 | `assert` | ✅ | |
 | `global` / `nonlocal` | ✅ | |
 | `import` / `from … import` | ✅ | Multi-module, packages, re-exports; conditional top-level imports in `if`/`try` (known modules only) |

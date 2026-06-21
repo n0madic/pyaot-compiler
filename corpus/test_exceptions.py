@@ -602,6 +602,42 @@ def test_raise_from_no_message():
         caught = True
     assert caught, "caught should be True"
 
+def test_raise_from_caught_variable():
+    # A builtin target with a *value* cause (a caught variable, PEP 3134).
+    caught: bool = False
+    try:
+        raise TypeError("cause")
+    except TypeError as cause:
+        try:
+            raise ValueError("main") from cause
+        except ValueError:
+            caught = True
+    assert caught, "outer ValueError should be caught"
+
+def test_raise_instance_from_variable():
+    # An instance target (`raise e`) with a caught-variable cause.
+    caught: bool = False
+    try:
+        raise KeyError("k")
+    except KeyError as cause:
+        try:
+            raise ValueError("inst")
+        except ValueError as e:
+            try:
+                raise e from cause
+            except ValueError:
+                caught = True
+    assert caught, "re-raised instance with cause should be caught"
+
+def test_raise_from_bare_builtin_class():
+    # A bare builtin-exception *class* cause (no parens).
+    caught: bool = False
+    try:
+        raise RuntimeError("x") from KeyError
+    except RuntimeError:
+        caught = True
+    assert caught, "outer RuntimeError should be caught"
+
 # Run all tests
 test_basic()
 print("test_basic passed")
@@ -692,6 +728,15 @@ print("test_raise_from_different_types passed")
 
 test_raise_from_no_message()
 print("test_raise_from_no_message passed")
+
+test_raise_from_caught_variable()
+print("test_raise_from_caught_variable passed")
+
+test_raise_instance_from_variable()
+print("test_raise_instance_from_variable passed")
+
+test_raise_from_bare_builtin_class()
+print("test_raise_from_bare_builtin_class passed")
 
 # ===== SECTION: Variable preservation across exception unwinding =====
 
@@ -1079,6 +1124,36 @@ def test_custom_exception_not_caught_by_wrong_type():
     assert not caught_wrong, "MyError should NOT be caught by ValueError"
     assert caught_correct, "MyError should be caught by outer MyError handler"
 
+def test_custom_raise_from_builtin():
+    """A custom-class target with a constructed builtin cause (PEP 3134)."""
+    caught: bool = False
+    try:
+        raise MyError("wrapped") from ValueError("cause")
+    except MyError:
+        caught = True
+    assert caught, "custom-from-builtin outer should be caught"
+
+def test_custom_raise_from_none():
+    """A custom-class target with `from None` (context suppressed)."""
+    caught: bool = False
+    try:
+        raise MyError("x") from None
+    except MyError:
+        caught = True
+    assert caught, "custom-from-None outer should be caught"
+
+def test_custom_raise_from_variable():
+    """A custom-class target with a caught-variable cause."""
+    caught: bool = False
+    try:
+        raise ValueError("cause")
+    except ValueError as cause:
+        try:
+            raise MyError("wrapped") from cause
+        except MyError:
+            caught = True
+    assert caught, "custom-from-variable outer should be caught"
+
 # Run custom exception tests
 test_custom_exception_basic()
 print("test_custom_exception_basic passed")
@@ -1103,6 +1178,15 @@ print("test_custom_ioerror_inheritance passed")
 
 test_custom_exception_not_caught_by_wrong_type()
 print("test_custom_exception_not_caught_by_wrong_type passed")
+
+test_custom_raise_from_builtin()
+print("test_custom_raise_from_builtin passed")
+
+test_custom_raise_from_none()
+print("test_custom_raise_from_none passed")
+
+test_custom_raise_from_variable()
+print("test_custom_raise_from_variable passed")
 
 # ===== SECTION: New Exception Type Variants =====
 # Tests for AssertionError, StopIteration, GeneratorExit, MemoryError

@@ -420,6 +420,11 @@ pub enum MirInst {
     /// `rt_exc_start_handling` / `rt_exc_end_handling`. Opaque side-effecting
     /// barrier for the optimizer.
     ExcOp(ExcOp),
+    /// Stash the pending `from CAUSE` for the immediately-following [`Raise`]
+    /// (PEP 3134) — `rt_exc_arm_suppress` / `rt_exc_arm_cause_builtin` /
+    /// `rt_exc_arm_cause_value`. A side-effecting barrier; all operands are
+    /// `Tagged` (a `StrObj` message / a Tagged exception-instance value).
+    ArmCause(MirArmCause),
     /// A query against the current exception. `Current` → `dst` is `Tagged`
     /// (B5: rooted); `Matches*` → `dst` is `Raw(I8)`.
     ExcQuery { dst: LocalId, query: ExcQuery },
@@ -540,6 +545,9 @@ impl MirInst {
             },
             // Frame bookkeeping — no allocation.
             MirInst::ExcOp(_) => false,
+            // Stashing the pending cause builds a Rust-heap `ExceptionObject`
+            // (no `gc_alloc`), like the frame bookkeeping above.
+            MirInst::ArmCause(_) => false,
             // `Current` (`rt_exc_get_current`) LAZILY materializes the
             // exception instance (rt_make_instance/str/tuple) on first query;
             // the `Matches*` forms are pure class-hierarchy walks.
@@ -679,6 +687,8 @@ impl MirInst {
             },
             // Exception-frame bookkeeping mutates the runtime frame stack.
             MirInst::ExcOp(_) => true,
+            // Arming a pending cause mutates thread-local exception state.
+            MirInst::ArmCause(_) => true,
             // `Current` lazily materializes + caches the exception instance
             // (a store into runtime state); `Matches*` are pure walks.
             MirInst::ExcQuery { dst: _, query } => match query {
@@ -733,6 +743,7 @@ impl MirInst {
             | MirInst::AssertFail
             | MirInst::Print { .. }
             | MirInst::ExcOp(_)
+            | MirInst::ArmCause(_)
             | MirInst::Raise(_)
             | MirInst::LineMarker(_) => None,
         }
@@ -842,22 +853,23 @@ impl MirInst {
                 }
             }
             MirInst::ExcOp(_) => {}
+            MirInst::ArmCause(arm) => match arm {
+                MirArmCause::Suppress => {}
+                MirArmCause::Builtin { cause_msg, .. } => {
+                    if let Some(m) = cause_msg {
+                        map_op(m, &mut f);
+                    }
+                }
+                MirArmCause::Value(v) => map_op(v, &mut f),
+            },
             MirInst::ExcQuery { dst, .. } => *dst = f(*dst),
             MirInst::ExcInstanceStr { dst, value } => {
                 *dst = f(*dst);
                 map_op(value, &mut f);
             }
             MirInst::Raise(raise) => match raise {
-                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
+                MirRaise::Builtin { msg, .. } => {
                     if let Some(m) = msg {
-                        map_op(m, &mut f);
-                    }
-                }
-                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
-                    if let Some(m) = msg {
-                        map_op(m, &mut f);
-                    }
-                    if let Some(m) = cause_msg {
                         map_op(m, &mut f);
                     }
                 }
@@ -935,18 +947,19 @@ impl MirInst {
                 }
             }
             MirInst::ExcOp(_) => {}
-            MirInst::ExcQuery { .. } => {}
-            MirInst::Raise(raise) => match raise {
-                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
-                    if let Some(m) = msg {
+            MirInst::ArmCause(arm) => match arm {
+                MirArmCause::Suppress => {}
+                MirArmCause::Builtin { cause_msg, .. } => {
+                    if let Some(m) = cause_msg {
                         f(m);
                     }
                 }
-                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
+                MirArmCause::Value(v) => f(v),
+            },
+            MirInst::ExcQuery { .. } => {}
+            MirInst::Raise(raise) => match raise {
+                MirRaise::Builtin { msg, .. } => {
                     if let Some(m) = msg {
-                        f(m);
-                    }
-                    if let Some(m) = cause_msg {
                         f(m);
                     }
                 }
@@ -975,15 +988,6 @@ impl MirInst {
 pub enum MirRaise {
     /// `rt_exc_raise(tag, msg, len)`.
     Builtin { tag: u8, msg: Option<Operand> },
-    /// `rt_exc_raise_from(tag, msg, len, cause_tag, cause_msg, cause_len)`.
-    BuiltinFrom {
-        tag: u8,
-        msg: Option<Operand>,
-        cause_tag: u8,
-        cause_msg: Option<Operand>,
-    },
-    /// `rt_exc_raise_from_none(tag, msg, len)`.
-    BuiltinFromNone { tag: u8, msg: Option<Operand> },
     /// `rt_exc_raise_custom_with_instance(class_id, msg, len, instance)` — the
     /// instance was constructed (and `__init__` run) at the raise site.
     CustomWithInstance {
@@ -1003,6 +1007,23 @@ pub enum MirRaise {
     Instance { value: Operand },
     /// `rt_exc_reraise()` — bare `raise`.
     Reraise,
+}
+
+/// The resolved shape of a `from CAUSE` arm (PEP 3134). Mirrors the
+/// `rt_exc_arm_*` entry points one-to-one; consumed by the immediately
+/// following [`MirRaise`] when the runtime builds its `ExceptionObject`.
+#[derive(Debug, Clone)]
+pub enum MirArmCause {
+    /// `rt_exc_arm_suppress()` — `from None` (cause `None`, suppress context).
+    Suppress,
+    /// `rt_exc_arm_cause_builtin(tag, msg, len)` — a scalar builtin cause.
+    Builtin {
+        cause_tag: u8,
+        cause_msg: Option<Operand>,
+    },
+    /// `rt_exc_arm_cause_value(value)` — an arbitrary Tagged exception-instance
+    /// value (raises `TypeError` at runtime if it is not an exception).
+    Value(Operand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,8 +11,8 @@
 
 use crate::{
     classify_coercion, is_heap_str, BinOp, Const, ContainerArg, ContainerOp, ContainerResult,
-    ExcQuery, GenOp, GenResult, MirFunction, MirInst, MirRaise, MirTerminator, Operand, PrintKind,
-    UnaryOp,
+    ExcQuery, GenOp, GenResult, MirArmCause, MirFunction, MirInst, MirRaise, MirTerminator, Operand,
+    PrintKind, UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -824,6 +824,15 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
         MirInst::AssertFail => {}
         // ── exceptions (Phase 7) ──
         MirInst::ExcOp(_) => {}
+        MirInst::ArmCause(arm) => match arm {
+            MirArmCause::Suppress => {}
+            MirArmCause::Builtin { cause_msg, .. } => {
+                if let Some(op) = cause_msg {
+                    want(f, op, &TAGGED, "ArmCause.cause_msg")?;
+                }
+            }
+            MirArmCause::Value(v) => want(f, v, &TAGGED, "ArmCause.value")?,
+        },
         MirInst::ExcQuery { dst, query } => match query {
             ExcQuery::Current => want_local(f, *dst, &TAGGED, "ExcQuery(Current).dst")?,
             ExcQuery::MatchesBuiltin(_) | ExcQuery::MatchesClass(_) => {
@@ -842,12 +851,8 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 Ok(())
             };
             match r {
-                MirRaise::Builtin { msg, .. } | MirRaise::BuiltinFromNone { msg, .. } => {
+                MirRaise::Builtin { msg, .. } => {
                     tagged(msg, "Raise.msg")?;
-                }
-                MirRaise::BuiltinFrom { msg, cause_msg, .. } => {
-                    tagged(msg, "Raise.msg")?;
-                    tagged(cause_msg, "Raise.cause_msg")?;
                 }
                 MirRaise::CustomWithInstance { msg, instance, .. } => {
                     tagged(msg, "Raise.msg")?;

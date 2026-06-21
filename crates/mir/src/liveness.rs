@@ -30,7 +30,7 @@
 
 use pyaot_utils::LocalId;
 
-use crate::{MirFunction, MirInst, MirRaise, MirTerminator, Operand};
+use crate::{MirArmCause, MirFunction, MirInst, MirRaise, MirTerminator, Operand};
 
 /// For each local (by index): must it get a GC root slot? `true` only for
 /// locals whose `Repr::is_gc_root()` holds AND whose liveness crosses an
@@ -221,6 +221,7 @@ fn inst_def(inst: &MirInst) -> Option<LocalId> {
         | MirInst::CellSet { .. }
         | MirInst::GlobalSet { .. }
         | MirInst::ExcOp(_)
+        | MirInst::ArmCause(_)
         | MirInst::Raise(_)
         | MirInst::LineMarker(_) => None,
     }
@@ -390,25 +391,24 @@ fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
             }
         }
         MirInst::ExcOp(_) => {}
+        MirInst::ArmCause(arm) => match arm {
+            MirArmCause::Suppress => {}
+            MirArmCause::Builtin {
+                cause_tag: _,
+                cause_msg,
+            } => {
+                if let Some(m) = cause_msg {
+                    one(m);
+                }
+            }
+            MirArmCause::Value(v) => one(v),
+        },
         MirInst::LineMarker(_) => {}
         MirInst::ExcQuery { dst: _, query: _ } => {}
         MirInst::ExcInstanceStr { dst: _, value } => one(value),
         MirInst::Raise(r) => match r {
-            MirRaise::Builtin { tag: _, msg } | MirRaise::BuiltinFromNone { tag: _, msg } => {
+            MirRaise::Builtin { tag: _, msg } => {
                 if let Some(m) = msg {
-                    one(m);
-                }
-            }
-            MirRaise::BuiltinFrom {
-                tag: _,
-                msg,
-                cause_tag: _,
-                cause_msg,
-            } => {
-                if let Some(m) = msg {
-                    one(m);
-                }
-                if let Some(m) = cause_msg {
                     one(m);
                 }
             }

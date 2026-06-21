@@ -24,7 +24,7 @@ use rustpython_parser::text_size::TextRange;
 use pyaot_core_defs::FIRST_USER_CLASS_ID;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
+    ArmCause, BinOp, ClassAttrInit, CmpOp, ContainerOp, ExcOp, ExcQuery, GenOp, HirBlock, HirClass,
     HirClassAttr, HirExpr, HirExprKind, HirFunction, HirLocal, HirModule, HirParam, HirProgram,
     HirProperty, HirRaise, HirStmt, HirTerminator, NamespaceImports, NamespaceTable, ParamDefault,
     PrintTarget, SymbolRef, UnaryOp,
