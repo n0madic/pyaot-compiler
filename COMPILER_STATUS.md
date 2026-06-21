@@ -54,7 +54,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `class` | ✅ | Incl. nested (capture-free) classes |
 | Decorators `@…` | ✅ | Functions, classes, decorator factories |
 | `lambda` | ✅ | First-class `Callable` values; full parameter forms (literal defaults, keyword-only, `*args`, `**kwargs`) everywhere — module-level, nested, and in expression position. A *mutable/computed* default is only supported via the module-level `name = lambda …=…` → `def` desugar (once-eval slot); elsewhere it is a clean error (no per-closure default slot), as for a nested `def` |
-| `yield` / `yield from` | ✅ | Generators (frontend state-machine desugar) |
+| `yield` / `yield from` | ✅ | Generators (frontend state-machine desugar). `yield` is supported inside a `try` body (incl. `try/except/else/finally`) and a `with` body — `finally`/`__exit__` cleanups run at exhaustion and on `close()` of a suspended yield. Boundaries: a `yield` directly inside an `except`/`finally` body is a clean compile error; `close()` only cleans up a *started* generator; `__exit__` on close receives `(None, None, None)` (not `GeneratorExit`), so a CM that suppresses GeneratorExit diverges; GC-finalization of an abandoned generator does not run `finally`/`__exit__` |
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |
 | f-strings | ✅ | Conversions, nested fields, dynamic format specs |

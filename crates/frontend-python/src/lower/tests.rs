@@ -20,18 +20,45 @@
     // ── Phase 7 lexical restrictions ──
 
     #[test]
-    fn rejects_yield_inside_try() {
-        // A suspended frame would dangle its stack-allocated ExceptionFrame.
-        let err = parse_err(
+    fn accepts_yield_inside_try() {
+        // A `yield` in a `try` body is supported (table-based unwinding has no
+        // per-frame state for a cross-stack resume to dangle).
+        let (_m, _i) = parsed(
             "def g():\n    try:\n        yield 1\n    except ValueError:\n        pass\n",
         );
-        assert!(err.contains("yield inside try/with"), "got: {err}");
     }
 
     #[test]
-    fn rejects_yield_inside_with() {
-        let err = parse_err("def g():\n    with ctx() as c:\n        yield c\n");
-        assert!(err.contains("yield inside try/with"), "got: {err}");
+    fn accepts_yield_inside_with() {
+        // A `yield` in a `with` body is supported (the `__exit__` cleanup runs on
+        // close via the generator unwind path).
+        let (_m, _i) = parsed("def g():\n    with ctx() as c:\n        yield c\n");
+    }
+
+    #[test]
+    fn rejects_yield_inside_except() {
+        // A yield in an `except` handler body would suspend with the runtime's
+        // `handling_exception` thread-local still set — out of scope.
+        let err = parse_err(
+            "def g():\n    try:\n        yield 1\n    except ValueError:\n        yield 2\n",
+        );
+        assert!(
+            err.contains("yield inside an `except` or `finally` block"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_yield_inside_finally() {
+        // A yield in a `finally` block would be duplicated across the per-edge
+        // re-lowering of the finalbody — out of scope.
+        let err = parse_err(
+            "def g():\n    try:\n        yield 1\n    finally:\n        yield 2\n",
+        );
+        assert!(
+            err.contains("yield inside an `except` or `finally` block"),
+            "got: {err}"
+        );
     }
 
     #[test]

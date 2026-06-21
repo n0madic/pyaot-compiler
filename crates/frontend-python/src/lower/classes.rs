@@ -213,6 +213,14 @@ pub(super) fn collect_calls_stmt(s: &Stmt, out: &mut HashSet<String>) {
             }
         }
         Stmt::With(w) => {
+            // A `with` desugars to synthetic `mgr.__enter__()` / `mgr.__exit__(...)`
+            // method calls (exceptions.rs). When `mgr` is a `Dyn` receiver — most
+            // notably a generator gen-slot, where it can never be narrowed — those
+            // calls route through gradual dispatch, so the context manager's
+            // `__enter__`/`__exit__` need uniform thunks. They are not in the AST,
+            // so register them here.
+            out.insert("__enter__".to_string());
+            out.insert("__exit__".to_string());
             for item in &w.items {
                 e(&item.context_expr, out);
                 if let Some(t) = &item.optional_vars {

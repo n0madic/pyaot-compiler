@@ -197,19 +197,14 @@ impl<'a> FnLowerer<'a> {
         want_sent: bool,
         span: Span,
     ) -> Result<Option<Idx<HirExpr>>> {
-        // A suspended frame would dangle its stack-allocated ExceptionFrame
-        // (the frame registers a stack address with the runtime, and the
-        // resume call runs on a different stack) — reject lexically (Phase 7).
-        if self
-            .scope_stack
-            .iter()
-            .any(|s| !matches!(s, ScopeCtx::Loop { .. }))
-        {
-            return Err(parse_error(
-                "yield inside try/with is unsupported in this milestone",
-                span,
-            ));
-        }
+        // A `yield` inside a `try`/`with` is supported: the project unwinds via
+        // table-based metadata (PC→handler), not a per-frame stack structure, so
+        // a suspended frame has no live try-region state for a cross-stack resume
+        // to dangle. Handler coverage falls out for free — the resume/`cont`
+        // blocks below are created (and stamped) while `cur_handler` still names
+        // the enclosing try handler, so an exception raised after resume unwinds
+        // to it. A `yield` lexically inside an `except`/`finally` body is the one
+        // rejected case (see `yield_in_except_or_finally`).
         let value = value.unwrap_or_else(|| self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span));
         let k = {
             let g = self.gen.as_mut().expect("generator mode");
@@ -225,8 +220,10 @@ impl<'a> FnLowerer<'a> {
         self.gen.as_mut().unwrap().resume_targets.push((k, resume));
         self.switch(resume);
 
-        // `close()` resumes with `closing` set: exhaust and return None (no
-        // try/finally pre-Phase-7, so exhaust is the correct unwind).
+        // `close()` resumes with `closing` set: unwind via GeneratorExit, then
+        // exhaust and return None. The unwind runs the enclosing try-finally /
+        // with cleanups (finally bodies, `__exit__`) before exhausting — see the
+        // close path below.
         let gen2 = self.gen_ref(span);
         let closing = self.alloc(
             HirExprKind::GenQuery {
@@ -246,7 +243,14 @@ impl<'a> FnLowerer<'a> {
             else_: cont,
         });
         self.switch(close_b);
-        self.emit_gen_exhaust(span);
+        // close() unwinds via GeneratorExit: run enclosing try-finally / with
+        // cleanups (finally bodies, __exit__), then exhaust — mirrors the
+        // generator `return` path. With no protected scopes this is exactly
+        // emit_gen_exhaust, so plain generators are unaffected.
+        self.with_exit_cleanups(0, span, |this| {
+            this.emit_gen_exhaust(span);
+            Ok(())
+        })?;
         self.switch(cont);
 
         if want_sent {
@@ -418,6 +422,44 @@ pub(super) fn expr_has_yield(e: &Expr) -> bool {
     matches!(e, Expr::Yield(_) | Expr::YieldFrom(_))
 }
 
+/// True if a `yield` appears lexically inside an `except` handler body or a
+/// `finally` block (not descending into nested def/lambda/class). Out of scope:
+/// a yield in an `except` body would suspend with the runtime's
+/// `handling_exception` thread-local still set; a yield in a `finally` body
+/// would be duplicated across the per-edge re-lowering of the finalbody. A
+/// yield in a `try` body, `else` clause, or `with` body IS supported.
+pub(super) fn yield_in_except_or_finally(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_yield_in_except_or_finally)
+}
+
+fn stmt_yield_in_except_or_finally(s: &Stmt) -> bool {
+    match s {
+        Stmt::Try(t) => {
+            // A `yield` ANYWHERE inside a handler body or the finalbody is the
+            // rejected case; the try body and `else` clause descend normally.
+            t.handlers.iter().any(|h| {
+                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                body_has_yield(&h.body)
+            }) || body_has_yield(&t.finalbody)
+                || yield_in_except_or_finally(&t.body)
+                || yield_in_except_or_finally(&t.orelse)
+        }
+        Stmt::If(s) => {
+            yield_in_except_or_finally(&s.body) || yield_in_except_or_finally(&s.orelse)
+        }
+        Stmt::While(s) => {
+            yield_in_except_or_finally(&s.body) || yield_in_except_or_finally(&s.orelse)
+        }
+        Stmt::For(s) => {
+            yield_in_except_or_finally(&s.body) || yield_in_except_or_finally(&s.orelse)
+        }
+        Stmt::With(w) => yield_in_except_or_finally(&w.body),
+        Stmt::Match(m) => m.cases.iter().any(|c| yield_in_except_or_finally(&c.body)),
+        // A nested def/lambda/class is its own scope — its yields don't count.
+        _ => false,
+    }
+}
+
 /// Lower a generator `def` (Phase 6E): a wrapper (`fid`) building the generator
 /// and storing its params/captures into slots, plus a `<resume>` state machine
 /// registered in `shared.generators`.
@@ -436,6 +478,16 @@ pub(super) fn lower_generator_def(
     is_nested: bool,
 ) -> Result<()> {
     let span = Span::dummy();
+    // A `yield` in the body of an `except` handler or a `finally` block is out
+    // of scope (a try/with body or `else` clause is supported) — reject cleanly
+    // rather than miscompile.
+    if yield_in_except_or_finally(body) {
+        return Err(parse_error(
+            "yield inside an `except` or `finally` block of a generator is out of \
+             scope (Phase 6E); yield in a `try` body or `with` body is supported",
+            span,
+        ));
+    }
     let n_params = parsed.fixed.len() + parsed.kwonly.len();
 
     // ── resume function: the state machine ──

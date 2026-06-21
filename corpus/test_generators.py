@@ -1192,4 +1192,187 @@ def test_nested_generator():
 
 test_nested_generator()
 
+# =============================================================================
+# yield inside try / with (Phase 6E): table-based unwinding makes a suspended
+# frame safe inside a protected region. The try/with body and `else` clause
+# support yield; a yield in an `except`/`finally` body is a clean compile error.
+# Coverage: try/except (exception after resume is caught + normal flow),
+# try/finally (exhaust + close()), with (enter/exit ordering vs next()/close()),
+# yield in a try nested in a loop, `x = yield` (send) in a try, `yield from` in
+# a try. Only STARTED generators are closed (no GC-triggered cleanup is relied
+# on), and `__exit__` args / tracebacks are not asserted (documented boundaries).
+# =============================================================================
+
+# try/except: an exception raised after resume is caught by the same handler;
+# the normal flow just yields.
+def _tg_try_except(do_raise):
+    try:
+        x = yield 1
+        if do_raise:
+            raise ValueError("boom")
+        yield 2
+    except ValueError:
+        print("caught")
+
+
+def test_yield_try_except():
+    g = _tg_try_except(False)
+    assert next(g) == 1, "first yield"
+    assert g.send(0) == 2, "second yield"
+    stopped: bool = False
+    try:
+        next(g)
+    except StopIteration:
+        stopped = True
+    assert stopped, "exhausts after the try body"
+
+    g2 = _tg_try_except(True)
+    assert next(g2) == 1, "first yield (raising)"
+    stopped2: bool = False
+    try:
+        g2.send(1)
+    except StopIteration:
+        stopped2 = True
+    assert stopped2, "handler runs then exhausts"
+    print("test_yield_try_except passed")
+
+
+test_yield_try_except()
+
+
+# try/finally: finally runs at exhaustion AND on close() of a suspended yield.
+def _tg_try_finally():
+    try:
+        yield 1
+        yield 2
+    finally:
+        print("finally ran")
+
+
+def test_yield_try_finally_exhaust():
+    collected: list[int] = []
+    for v in _tg_try_finally():
+        collected.append(v)
+    assert collected == [1, 2], "yields 1, 2"
+    print("test_yield_try_finally_exhaust passed")
+
+
+def test_yield_try_finally_close():
+    g = _tg_try_finally()
+    assert next(g) == 1, "first yield"
+    g.close()  # finally must run during close
+    print("test_yield_try_finally_close passed")
+
+
+test_yield_try_finally_exhaust()
+test_yield_try_finally_close()
+
+
+# with: __enter__ on first next(), __exit__ on normal exit AND on close().
+class _TgCM:
+    def __init__(self, tag: str):
+        self.tag = tag
+
+    def __enter__(self):
+        print("enter " + self.tag)
+        return self.tag
+
+    def __exit__(self, et, ev, tb):
+        print("exit " + self.tag)
+        return False
+
+
+def _tg_with():
+    with _TgCM("A") as c:
+        yield c
+        yield c + "2"
+
+
+def test_yield_with_exhaust():
+    out: list[str] = []
+    for v in _tg_with():
+        out.append(v)
+    assert out == ["A", "A2"], "with yields"
+    print("test_yield_with_exhaust passed")
+
+
+def test_yield_with_close():
+    g = _tg_with()
+    assert next(g) == "A", "enter then first yield"
+    g.close()  # __exit__ must run on close
+    print("test_yield_with_close passed")
+
+
+test_yield_with_exhaust()
+test_yield_with_close()
+
+
+# yield in a try nested inside a for-loop; the post-resume raise is handled.
+def _tg_loop_try():
+    for i in range(3):
+        try:
+            yield i
+            if i == 1:
+                raise ValueError("at one")
+        except ValueError:
+            print("handled " + str(i))
+
+
+def test_yield_try_in_loop():
+    out: list[int] = []
+    for v in _tg_loop_try():
+        out.append(v)
+    assert out == [0, 1, 2], "loop yields"
+    print("test_yield_try_in_loop passed")
+
+
+test_yield_try_in_loop()
+
+
+# x = yield (send) inside a try; the finally runs at exhaustion.
+def _tg_send_in_try():
+    try:
+        a = yield 10
+        b = yield a + 1
+        yield b + 1
+    finally:
+        print("send finally")
+
+
+def test_send_in_try():
+    g = _tg_send_in_try()
+    assert next(g) == 10, "first"
+    assert g.send(100) == 101, "a + 1"
+    assert g.send(200) == 201, "b + 1"
+    stopped: bool = False
+    try:
+        g.send(0)
+    except StopIteration:
+        stopped = True
+    assert stopped, "exhausts"
+    print("test_send_in_try passed")
+
+
+test_send_in_try()
+
+
+# yield from inside a try body.
+def _tg_yieldfrom_in_try():
+    try:
+        yield from [1, 2, 3]
+        yield 4
+    except RuntimeError:
+        print("rt")
+
+
+def test_yieldfrom_in_try():
+    out: list[int] = []
+    for v in _tg_yieldfrom_in_try():
+        out.append(v)
+    assert out == [1, 2, 3, 4], "yield from in try"
+    print("test_yieldfrom_in_try passed")
+
+
+test_yieldfrom_in_try()
+
 print("All generator tests passed!")
