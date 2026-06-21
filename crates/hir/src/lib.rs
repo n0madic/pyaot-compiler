@@ -108,6 +108,15 @@ pub struct HirModule {
     /// entry reuses the base's FuncId) resolves the base's thunk — lowering
     /// registers it under the subclass id.
     pub iternext_thunks: HashMap<FuncId, FuncId>,
+    /// Per-class **copy thunk** FuncIds for `__copy__` / `__deepcopy__`:
+    /// `dunder_method_FuncId → thunk_FuncId`. The frontend builds a thunk
+    /// `Cls.<__copy__>(self) → Value` ≡ `return self.__copy__()` (and the
+    /// `__deepcopy__` analogue, passing a fresh memo dict) for each class that
+    /// defines either, so `copy.copy` / `copy.deepcopy` dispatch to the user
+    /// method. One map holds both dunders — keyed by each method's OWN `FuncId`,
+    /// so an inherited dunder resolves the base's thunk (lowering registers it
+    /// under the subclass id, like `iternext_thunks`).
+    pub copy_thunks: HashMap<FuncId, FuncId>,
 }
 
 impl HirModule {

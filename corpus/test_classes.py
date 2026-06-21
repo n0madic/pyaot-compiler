@@ -1866,11 +1866,13 @@ class CopyPoint:
         return CopyPoint(self.x * 10, self.y * 10, self.label)
 
 cp_orig = CopyPoint(1, 2, "origin")
+# copy.copy(obj) dispatches to the user __copy__ (returns Any → gradual access).
 cp_raw = copy.copy(cp_orig)
-# The __copy__ method returns CopyPoint, but copy.copy returns Any.
-# Test via the __copy__ method directly to verify it works.
+assert cp_raw.x == 10, f"copy.copy __copy__ x failed: {cp_raw.x}"
+assert cp_raw.y == 20, f"copy.copy __copy__ y failed: {cp_raw.y}"
+assert cp_raw.label == "origin", f"copy.copy __copy__ label failed"
+# The direct dunder call works too (typed CopyPoint).
 cp_copy = cp_orig.__copy__()
-# __copy__ multiplies coords by 10
 assert cp_copy.x == 10, f"__copy__ x failed: {cp_copy.x}"
 assert cp_copy.y == 20, f"__copy__ y failed: {cp_copy.y}"
 assert cp_copy.label == "origin", f"__copy__ label failed"
@@ -1884,21 +1886,24 @@ class DeepContainer:
     def __init__(self, items: list[int], tag: str):
         self.items = items
         self.tag = tag
-    def __deepcopy__(self) -> DeepContainer:
-        # Custom deep copy: copy list manually, transform tag
+    def __deepcopy__(self, memo) -> DeepContainer:
+        # Custom deep copy: copy list manually, transform tag. CPython passes a
+        # memo dict here; the compiler's <__deepcopy__> thunk passes a fresh one.
         new_items: list[int] = []
         for item in self.items:
             new_items.append(item)
         return DeepContainer(new_items, self.tag + "_copy")
 
 dc_orig = DeepContainer([1, 2, 3], "original")
-# Test via __deepcopy__ directly to verify (copy.deepcopy returns Any)
-dc_deep = dc_orig.__deepcopy__()
-# __deepcopy__ appends "_copy" to tag
-assert dc_deep.tag == "original_copy", f"__deepcopy__ tag failed: {dc_deep.tag}"
-assert dc_deep.items[0] == 1 and dc_deep.items[1] == 2 and dc_deep.items[2] == 3
-# Verify independence
-dc_deep.items.append(4)
+# copy.deepcopy(obj) dispatches to the user __deepcopy__ (returns Any).
+dc_deep = copy.deepcopy(dc_orig)
+assert dc_deep.tag == "original_copy", f"copy.deepcopy __deepcopy__ tag failed: {dc_deep.tag}"
+# Direct dunder call (typed DeepContainer) for the detailed independence checks.
+dc_direct = dc_orig.__deepcopy__({})
+assert dc_direct.tag == "original_copy", f"__deepcopy__ tag failed: {dc_direct.tag}"
+assert dc_direct.items[0] == 1 and dc_direct.items[1] == 2 and dc_direct.items[2] == 3
+# Verify independence (mutating the copy doesn't touch the original).
+dc_direct.items.append(4)
 assert len(dc_orig.items) == 3, f"deepcopy independence failed"
 
 print("__deepcopy__ dunder: PASS")

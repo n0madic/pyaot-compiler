@@ -1747,12 +1747,12 @@ pub static RT_OBJECT_NEW: RuntimeFuncDef = RuntimeFuncDef::new_typed(
     &[MirSemantic::Raw],
     Some(MirSemantic::Tagged),
 );
-/// rt_register_copy_func(class_id: i8, func_ptr: i64) -> void
+/// rt_register_copy_func(class_id: i64, func_ptr: i64) -> void
 pub static RT_REGISTER_COPY_FUNC: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_register_copy_func", &[PI8, PI64]);
-/// rt_register_deepcopy_func(class_id: i8, func_ptr: i64) -> void
+    RuntimeFuncDef::void("rt_register_copy_func", &[PI64, PI64]);
+/// rt_register_deepcopy_func(class_id: i64, func_ptr: i64) -> void
 pub static RT_REGISTER_DEEPCOPY_FUNC: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_register_deepcopy_func", &[PI8, PI64]);
+    RuntimeFuncDef::void("rt_register_deepcopy_func", &[PI64, PI64]);
 /// rt_issubclass(child_tag: i64, parent_tag: i64) -> i8
 pub static RT_ISSUBCLASS: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_issubclass", &[PI64, PI64], Some(RI8), false);

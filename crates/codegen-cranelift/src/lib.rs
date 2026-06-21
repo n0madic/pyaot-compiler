@@ -238,6 +238,9 @@ struct RuntimeFns {
     register_method_uniform: FuncId,
     // ── lazy user-class iterator protocol ──
     register_iternext: FuncId,
+    // ── copy.copy / copy.deepcopy → user __copy__ / __deepcopy__ ──
+    register_copy_func: FuncId,
+    register_deepcopy_func: FuncId,
     // ── class attributes (Phase 5D) ──
     class_attr_get_ptr: FuncId,
     class_attr_set_ptr: FuncId,
@@ -487,6 +490,11 @@ impl RuntimeFns {
             register_dunder_func: d("rt_register_dunder_func", &[ti, ti, ti], &[])?,
             register_method_uniform: d("rt_register_method_uniform", &[ti, ti, ti], &[])?,
             register_iternext: d("rt_register_iternext", &[ti, ti], &[])?,
+            // copy / deepcopy thunk registration — same `(class_id, addr)` shape
+            // as `rt_register_iternext`; consulted by `rt_copy_copy` /
+            // `rt_copy_deepcopy` when an instance flows through `copy.*`.
+            register_copy_func: d("rt_register_copy_func", &[ti, ti], &[])?,
+            register_deepcopy_func: d("rt_register_deepcopy_func", &[ti, ti], &[])?,
             // Class attributes by (class_id: u8, attr_idx: u32) → tagged Value.
             class_attr_get_ptr: d("rt_class_attr_get_ptr", &[t8, t32], &[ti])?,
             class_attr_set_ptr: d("rt_class_attr_set_ptr", &[t8, t32, ti], &[])?,
@@ -1092,6 +1100,26 @@ fn emit_classinit(
                 let addr = builder.ins().func_addr(_ptr_ty, fref);
                 let rit = module.declare_func_in_func(rt.register_iternext, builder.func);
                 builder.ins().call(rit, &[cidi, addr]);
+            }
+
+            // `__copy__` / `__deepcopy__` thunk registration: the class's compiled
+            // thunk address keyed by class id, so `copy.copy(inst)` /
+            // `copy.deepcopy(inst)` dispatch to the user dunder. Same shape as the
+            // iternext block. An inherited dunder registers the base's thunk under
+            // this subclass id.
+            if let Some(thunk_fid) = &c.copy_thunk {
+                let cidc = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
+                let addr = builder.ins().func_addr(_ptr_ty, fref);
+                let rcf = module.declare_func_in_func(rt.register_copy_func, builder.func);
+                builder.ins().call(rcf, &[cidc, addr]);
+            }
+            if let Some(thunk_fid) = &c.deepcopy_thunk {
+                let cidc = builder.ins().iconst(types::I64, c.class_id.0 as i64);
+                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
+                let addr = builder.ins().func_addr(_ptr_ty, fref);
+                let rdf = module.declare_func_in_func(rt.register_deepcopy_func, builder.func);
+                builder.ins().call(rdf, &[cidc, addr]);
             }
 
             // Class-attribute initializers (Phase 5D): materialize each literal and

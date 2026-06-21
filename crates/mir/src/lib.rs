@@ -115,6 +115,16 @@ pub struct MirClass {
     /// in `__pyaot_classinit`. An inherited `__next__` reuses the base's thunk
     /// (keyed by the base's `__next__` FuncId). `None` for non-iterator classes.
     pub iternext_thunk: Option<FuncId>,
+    /// The compiled `<__copy__>` thunk for this class, when it defines (own or
+    /// inherited) `__copy__`. Codegen registers it via
+    /// `rt_register_copy_func(class_id, addr)` in `__pyaot_classinit`, so
+    /// `copy.copy(instance)` dispatches to the user method. `None` otherwise.
+    pub copy_thunk: Option<FuncId>,
+    /// The compiled `<__deepcopy__>` thunk for this class, when it defines (own
+    /// or inherited) `__deepcopy__`. Codegen registers it via
+    /// `rt_register_deepcopy_func(class_id, addr)` in `__pyaot_classinit`, so
+    /// `copy.deepcopy(instance)` dispatches to the user method. `None` otherwise.
+    pub deepcopy_thunk: Option<FuncId>,
 }
 
 /// A function. `locals` is the Repr table; every [`LocalId`] indexes it.

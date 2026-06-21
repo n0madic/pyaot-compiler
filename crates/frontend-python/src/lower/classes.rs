@@ -530,6 +530,87 @@ pub(super) fn build_iternext_thunk(
     Ok(fid)
 }
 
+/// Build the per-class **copy thunk** `Cls.<dunder>(self: Cls) → Value` for
+/// `__copy__` / `__deepcopy__`, consulted by `copy.copy` / `copy.deepcopy`:
+///   `__copy__`     ≡ `return self.__copy__()`
+///   `__deepcopy__` ≡ `return self.__deepcopy__({})`  (fresh memo dict)
+///
+/// The runtime (`rt_copy_copy` / `rt_copy_deepcopy`) calls the registered thunk
+/// as `extern "C" fn(i64 /*self*/) -> *mut Obj` with NO memo argument, so the
+/// `__deepcopy__` thunk supplies the memo itself. `self` is typed `Class{cid}`
+/// so `self.<dunder>()` devirtualizes precisely; inheritance reuses the base's
+/// thunk (keyed by the base's dunder FuncId in `build_mir_classes`). Modeled on
+/// [`build_iternext_thunk`], minus the `try/except` (no `StopIteration` here).
+///
+/// NOTE (memo caveat): the `__deepcopy__` memo is a fresh empty dict, NOT the
+/// runtime's cycle tracker. A user `__deepcopy__` that relies on `memo` to break
+/// reference cycles across nested `copy.deepcopy()` calls is unsupported; the
+/// common "rebuild from deep-copied fields" pattern works.
+pub(super) fn build_copy_dunder_thunk(
+    interner: &mut StringInterner,
+    ctx: &AnnCtx,
+    shared: &mut Shared,
+    class_id: ClassId,
+    class_name: InternedString,
+    dunder: &str,
+    pass_memo: bool,
+) -> Result<FuncId> {
+    let span = Span::dummy();
+    let fid = shared.reserve();
+    let base = interner.resolve(class_name).to_string();
+    let tname = interner.intern(&format!("{base}.<{dunder}>"));
+    let mut fl = FnLowerer::new(
+        interner,
+        ctx,
+        shared,
+        tname,
+        &base,
+        SemTy::Dyn,
+        Some(class_id),
+    );
+    let self_name = fl.intern("self");
+    let class_ty = SemTy::Class {
+        class_id,
+        name: class_name,
+    };
+    fl.add_param(self_name, class_ty);
+    let self_lid = LocalId::new(0);
+
+    let dunder_name = fl.intern(dunder);
+    let body_b = fl.new_block();
+    fl.seal(HirTerminator::Jump(body_b));
+    fl.switch(body_b);
+
+    let self_ref = fl.local_ref(self_lid, span);
+    // `__deepcopy__(self, memo)` needs a memo dict; `__copy__(self)` takes none.
+    let args = if pass_memo {
+        vec![fl.alloc(HirExprKind::DictLit { pairs: vec![] }, SemTy::Dyn, span)]
+    } else {
+        vec![]
+    };
+    let call = fl.alloc(
+        HirExprKind::MethodCall {
+            recv: self_ref,
+            method_name: dunder_name,
+            args,
+            kwargs: vec![],
+        },
+        SemTy::Dyn,
+        span,
+    );
+    let result = fl.fresh_local(SemTy::Dyn);
+    fl.push_stmt(HirStmt::Assign {
+        target: result,
+        value: call,
+    });
+    let rref = fl.local_ref(result, span);
+    fl.seal(HirTerminator::Return(Some(rref)));
+
+    let f = fl.finish(HirTerminator::Return(None));
+    shared.fill(fid, f);
+    Ok(fid)
+}
+
 pub(super) fn lower_class(
     interner: &mut StringInterner,
     ctx: &AnnCtx,
@@ -710,6 +791,22 @@ pub(super) fn lower_class(
                             let thunk =
                                 build_iternext_thunk(interner, &cctx, shared, class_id, name)?;
                             shared.iternext_thunks.insert(fid, thunk);
+                        }
+                        // `__copy__` / `__deepcopy__`: build a thunk so the
+                        // runtime's `copy.copy` / `copy.deepcopy` dispatch to the
+                        // user method (registered into COPY/DEEPCOPY_FUNC_REGISTRY
+                        // in `__pyaot_classinit`). Keyed by the dunder's own
+                        // FuncId — an inherited dunder reuses the base's thunk.
+                        if m.name.as_str() == "__copy__" {
+                            let thunk = build_copy_dunder_thunk(
+                                interner, &cctx, shared, class_id, name, "__copy__", false,
+                            )?;
+                            shared.copy_thunks.insert(fid, thunk);
+                        } else if m.name.as_str() == "__deepcopy__" {
+                            let thunk = build_copy_dunder_thunk(
+                                interner, &cctx, shared, class_id, name, "__deepcopy__", true,
+                            )?;
+                            shared.copy_thunks.insert(fid, thunk);
                         }
                     }
                     MethodDecor::Static => {

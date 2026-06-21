@@ -120,6 +120,7 @@ pub fn lower(
         &mut str_pool,
         &module.method_uniform_thunks,
         &module.iternext_thunks,
+        &module.copy_thunks,
     );
     Ok(MirProgram {
         funcs,
@@ -140,6 +141,7 @@ fn build_mir_classes(
     str_pool: &mut StrPool,
     method_uniform_thunks: &std::collections::HashMap<FuncId, FuncId>,
     iternext_thunks: &std::collections::HashMap<FuncId, FuncId>,
+    copy_thunks: &std::collections::HashMap<FuncId, FuncId>,
 ) -> Vec<MirClass> {
     let mut out = Vec::new();
     for info in classes.iter() {
@@ -212,6 +214,19 @@ fn build_mir_classes(
             .iter()
             .find(|m| interner.resolve(m.name) == "__next__")
             .and_then(|m| iternext_thunks.get(&m.func_id).copied());
+        // `__copy__` / `__deepcopy__` thunks (consulted by `copy.copy` /
+        // `copy.deepcopy`). Same shape as `iternext_thunk`: keyed by the
+        // method's FuncId, so an inherited dunder reuses the base's thunk.
+        let copy_thunk = info
+            .methods
+            .iter()
+            .find(|m| interner.resolve(m.name) == "__copy__")
+            .and_then(|m| copy_thunks.get(&m.func_id).copied());
+        let deepcopy_thunk = info
+            .methods
+            .iter()
+            .find(|m| interner.resolve(m.name) == "__deepcopy__")
+            .and_then(|m| copy_thunks.get(&m.func_id).copied());
         out.push(MirClass {
             class_id: info.class_id,
             name: info.name,
@@ -226,6 +241,8 @@ fn build_mir_classes(
             method_uniforms,
             class_attr_inits,
             iternext_thunk,
+            copy_thunk,
+            deepcopy_thunk,
         });
     }
     // Deterministic order (the table is a HashMap) so codegen output is stable.

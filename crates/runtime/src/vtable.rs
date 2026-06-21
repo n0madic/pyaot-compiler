@@ -102,25 +102,46 @@ pub extern "C" fn rt_object_new(class_id: i64) -> *mut crate::object::Obj {
     crate::instance::rt_make_instance(cid, field_count)
 }
 
-/// Register __copy__ function pointer for a class
+/// Register the compiled `<__copy__>` thunk pointer for a class (consulted by
+/// `copy.copy()` → `rt_copy_copy`). ABI matches `rt_register_iternext`:
+/// `(class_id: i64, func_ptr: i64)`. The thunk's own ABI is
+/// `extern "C" fn(i64 /*self*/) -> *mut Obj` — it calls `self.__copy__()`.
 #[no_mangle]
-pub extern "C" fn rt_register_copy_func(class_id: u8, func_ptr: *const u8) {
+pub extern "C" fn rt_register_copy_func(class_id: i64, func_ptr: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_copy_func: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
     unsafe {
-        (*COPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
+        (*COPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr as *const u8);
     }
 }
 
-/// Get __copy__ function pointer for a class
+/// Get `<__copy__>` thunk pointer for a class
 #[inline]
 pub fn get_copy_func(class_id: u8) -> *const u8 {
     unsafe { (*COPY_FUNC_REGISTRY.0.get())[class_id as usize].0 }
 }
 
-/// Register __deepcopy__ function pointer for a class
+/// Register the compiled `<__deepcopy__>` thunk pointer for a class (consulted
+/// by `copy.deepcopy()` → `rt_copy_deepcopy`). ABI matches `rt_register_iternext`:
+/// `(class_id: i64, func_ptr: i64)`. The thunk's own ABI is
+/// `extern "C" fn(i64 /*self*/) -> *mut Obj` — it calls `self.__deepcopy__({})`
+/// with a fresh memo dict (see the thunk builder for the memo-sharing caveat).
 #[no_mangle]
-pub extern "C" fn rt_register_deepcopy_func(class_id: u8, func_ptr: *const u8) {
+pub extern "C" fn rt_register_deepcopy_func(class_id: i64, func_ptr: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_deepcopy_func: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
     unsafe {
-        (*DEEPCOPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
+        (*DEEPCOPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr as *const u8);
     }
 }
 

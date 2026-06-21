@@ -44,6 +44,7 @@ impl<'a> ProgramLowerer<'a> {
         let deletable_fields = self.shared.deletable_fields.clone();
         let method_uniform_thunks = self.shared.method_uniform_thunks.clone();
         let iternext_thunks = self.shared.iternext_thunks.clone();
+        let copy_thunks = self.shared.copy_thunks.clone();
         let functions = self.shared.finish();
         let module = HirModule {
             functions,
@@ -55,6 +56,7 @@ impl<'a> ProgramLowerer<'a> {
             deletable_fields,
             method_uniform_thunks,
             iternext_thunks,
+            copy_thunks,
         };
         let namespaces = NamespaceTable {
             func_ns,

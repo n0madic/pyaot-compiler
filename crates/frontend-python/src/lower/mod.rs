@@ -235,6 +235,12 @@ pub(crate) struct Shared {
     /// [`HirModule::iternext_thunks`] for the codegen `rt_register_iternext`
     /// registrations (lazy user-class iterator protocol).
     iternext_thunks: HashMap<FuncId, FuncId>,
+    /// `dunder_method_FuncId → copy_thunk_FuncId` built during class lowering for
+    /// each class that defines `__copy__` and/or `__deepcopy__`; flows into
+    /// [`HirModule::copy_thunks`] for the codegen `rt_register_copy_func` /
+    /// `rt_register_deepcopy_func` registrations. One map holds both dunders
+    /// (keyed by each method's own FuncId).
+    copy_thunks: HashMap<FuncId, FuncId>,
     /// `@staticmethod`/`@classmethod` shapes for the spread-call desugar:
     /// synthetic name `"Cls.method"` → (`is_classmethod`, raw AST args). Recorded
     /// in a pre-pass BEFORE bodies are lowered (classes are lowered last), so a
@@ -261,6 +267,7 @@ impl Shared {
             dyn_method_names: HashSet::new(),
             method_uniform_thunks: HashMap::new(),
             iternext_thunks: HashMap::new(),
+            copy_thunks: HashMap::new(),
             static_method_shapes: HashMap::new(),
         }
     }

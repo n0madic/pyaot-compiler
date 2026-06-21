@@ -143,7 +143,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__dict__` mutation / dynamic attributes | ❌ | Out of scope |
 | Metaclasses | ❌ | Out of scope |
 | `__del__` finalizers | ❌ | Out of scope — tracing GC can't match CPython's deterministic finalization timing; use `with` |
-| `__copy__` / `__deepcopy__` hooks | 🟡 | Runtime dispatch wired; per-class registration not yet emitted by the compiler |
+| `__copy__` / `__deepcopy__` hooks | ✅ | `copy.copy` / `copy.deepcopy` dispatch to the user dunder via a per-class thunk; `__deepcopy__` gets a fresh memo dict (not the runtime's cycle tracker) |
 | `@dataclass` | ❌ | Not implemented |
 | `enum.Enum` | ❌ | Not implemented |
 | `NamedTuple` / `TypedDict` | ❌ | Not implemented |
