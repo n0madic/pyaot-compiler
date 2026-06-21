@@ -178,6 +178,14 @@ pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         if tag_a == TypeTagKind::Bytes && tag_b == TypeTagKind::Bytes {
             return crate::bytes::rt_bytes_concat(a, b);
         }
+        // `bytearray + bytes-like` → bytearray (also backs `ba += x`, which
+        // desugars to `ba = ba + x` and reaches this gradual path when the
+        // augmented-assign read rides Tagged).
+        if tag_a == TypeTagKind::ByteArray
+            && (tag_b == TypeTagKind::ByteArray || tag_b == TypeTagKind::Bytes)
+        {
+            return crate::bytearray::rt_bytearray_concat(a, b);
+        }
         match (
             crate::bigint::classify_num(va),
             crate::bigint::classify_num(vb),

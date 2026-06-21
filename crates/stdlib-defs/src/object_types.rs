@@ -27,6 +27,7 @@
 //! }
 //! ```
 
+use crate::modules::builtins as builtin_objs;
 use crate::modules::collections;
 use crate::modules::hashlib;
 use crate::modules::io;
@@ -596,6 +597,57 @@ pub static DEQUE: ObjectTypeDef = ObjectTypeDef {
     display_format: DisplayFormat::Custom("rt_deque_repr"),
 };
 
+// =============================================================================
+// frozenset object (builtin)
+// =============================================================================
+
+static FROZENSET_FIELDS: &[ObjectFieldDef] = &[];
+
+static FROZENSET_METHODS: &[&StdlibMethodDef] = &[
+    &builtin_objs::FROZENSET_UNION,
+    &builtin_objs::FROZENSET_INTERSECTION,
+    &builtin_objs::FROZENSET_DIFFERENCE,
+    &builtin_objs::FROZENSET_SYMMETRIC_DIFFERENCE,
+    &builtin_objs::FROZENSET_COPY,
+    &builtin_objs::FROZENSET_ISSUBSET,
+    &builtin_objs::FROZENSET_ISSUPERSET,
+    &builtin_objs::FROZENSET_ISDISJOINT,
+];
+
+pub static FROZENSET: ObjectTypeDef = ObjectTypeDef {
+    type_tag: TypeTagKind::FrozenSet,
+    name: "frozenset",
+    fields: FROZENSET_FIELDS,
+    methods: FROZENSET_METHODS,
+    display_format: DisplayFormat::Custom("rt_frozenset_repr"),
+};
+
+// =============================================================================
+// bytearray object (builtin)
+// =============================================================================
+
+static BYTEARRAY_FIELDS: &[ObjectFieldDef] = &[];
+
+static BYTEARRAY_METHODS: &[&StdlibMethodDef] = &[
+    &builtin_objs::BYTEARRAY_APPEND,
+    &builtin_objs::BYTEARRAY_EXTEND,
+    &builtin_objs::BYTEARRAY_HEX,
+    &builtin_objs::BYTEARRAY_DECODE,
+    &builtin_objs::BYTEARRAY_FIND,
+    &builtin_objs::BYTEARRAY_RFIND,
+    &builtin_objs::BYTEARRAY_COUNT,
+    &builtin_objs::BYTEARRAY_STARTSWITH,
+    &builtin_objs::BYTEARRAY_ENDSWITH,
+];
+
+pub static BYTEARRAY: ObjectTypeDef = ObjectTypeDef {
+    type_tag: TypeTagKind::ByteArray,
+    name: "bytearray",
+    fields: BYTEARRAY_FIELDS,
+    methods: BYTEARRAY_METHODS,
+    display_format: DisplayFormat::Custom("rt_bytearray_repr"),
+};
+
 /// All defined object types
 pub static ALL_OBJECT_TYPES: &[&ObjectTypeDef] = &[
     &COMPLETED_PROCESS,
@@ -610,6 +662,8 @@ pub static ALL_OBJECT_TYPES: &[&ObjectTypeDef] = &[
     &BYTESIO,
     &COUNTER,
     &DEQUE,
+    &FROZENSET,
+    &BYTEARRAY,
 ];
 
 /// Look up an object type definition by TypeTagKind

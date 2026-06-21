@@ -291,7 +291,9 @@ fn mark_object(root: Value) {
                         }
                     }
                 }
-                TypeTagKind::Set => {
+                // FrozenSet shares `SetObj` layout — trace its element pointers
+                // identically to `Set`.
+                TypeTagKind::Set | TypeTagKind::FrozenSet => {
                     let st = obj as *mut SetObj;
                     for i in 0..(*st).capacity {
                         let e = (*st).entries.add(i);

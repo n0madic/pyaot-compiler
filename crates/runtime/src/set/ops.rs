@@ -1,6 +1,8 @@
 //! Set element operations: add, remove, discard, contains, pop, clear, copy, update
 
 #[allow(unused_imports)]
+use crate::debug_assert_set_family;
+#[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::hash_table_utils::hash_hashable_obj;
 use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
@@ -76,7 +78,7 @@ pub fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
     }
 
     unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_contains");
+        debug_assert_set_family!(set, "rt_set_contains");
         let set_obj = set as *mut SetObj;
         let hash = hash_hashable_obj(elem);
         let slot = find_set_slot(set_obj, elem, hash, false);
@@ -197,7 +199,7 @@ pub fn rt_set_copy(set: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_copy");
+        debug_assert_set_family!(set, "rt_set_copy");
         let src = set as *mut SetObj;
         // Size the new set based on the number of live elements rather than the
         // source capacity. This eliminates tombstones and avoids copying a

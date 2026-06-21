@@ -358,8 +358,14 @@ unsafe fn finalize_object_by_tag(obj_ptr: *mut Obj, tag: TypeTagKind) {
         TypeTagKind::Deque => {
             crate::deque::deque_finalize(obj_ptr);
         }
-        TypeTagKind::Set => {
+        // FrozenSet shares `SetObj` layout — its `entries` array is a separate
+        // allocation that `set_finalize` frees, identical to `Set`.
+        TypeTagKind::Set | TypeTagKind::FrozenSet => {
             crate::set::set_finalize(obj_ptr);
+        }
+        // ByteArray's `data` buffer is a separate allocation — free it.
+        TypeTagKind::ByteArray => {
+            crate::bytearray::bytearray_finalize(obj_ptr);
         }
         TypeTagKind::Generator => {
             // §F.7b: no per-slot tag array to free; GeneratorObj is fully GC-managed.

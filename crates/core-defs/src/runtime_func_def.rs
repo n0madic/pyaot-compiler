@@ -695,6 +695,46 @@ pub static RT_MAKE_DEQUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_make_de
 pub static RT_MAKE_DEQUE_FROM_ITER: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_deque_from_iter");
 
+// ===== frozenset operators (`| & - ^`) =====
+// Each returns a NEW frozenset (the result of the corresponding set algebra,
+// retagged `FrozenSet`). Methods reuse the same `rt_frozenset_*` symbols via the
+// `object_types` method registry.
+/// rt_frozenset_union(a, b) -> frozenset
+pub static RT_FROZENSET_UNION: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_frozenset_union");
+/// rt_frozenset_intersection(a, b) -> frozenset
+pub static RT_FROZENSET_INTERSECTION: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_binary("rt_frozenset_intersection");
+/// rt_frozenset_difference(a, b) -> frozenset
+pub static RT_FROZENSET_DIFFERENCE: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_binary("rt_frozenset_difference");
+/// rt_frozenset_symmetric_difference(a, b) -> frozenset
+pub static RT_FROZENSET_SYMMETRIC_DIFFERENCE: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_binary("rt_frozenset_symmetric_difference");
+
+// ===== bytearray subscript / slice / concat =====
+/// rt_bytearray_get(ba, index) -> tagged int. A tagged receiver + RAW i64 index
+/// (like list/deque get); the byte is returned as a boxed int Value.
+pub static RT_BYTEARRAY_GET: RuntimeFuncDef = RuntimeFuncDef::new_typed(
+    "rt_bytearray_get",
+    &[PI64, PI64],
+    Some(RI64),
+    true,
+    &[MirSemantic::Tagged, MirSemantic::Raw],
+    Some(MirSemantic::Tagged),
+);
+/// rt_bytearray_set(ba, index, value) -> void. `ba[i] = v`; RAW i64 index,
+/// tagged int value (0-255, else ValueError).
+pub static RT_BYTEARRAY_SET: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_bytearray_set", &[PI64, PI64, PI64]);
+/// rt_bytearray_slice(ba, start, stop) -> bytearray
+pub static RT_BYTEARRAY_SLICE: RuntimeFuncDef = RuntimeFuncDef::slice_ternary("rt_bytearray_slice");
+/// rt_bytearray_slice_step(ba, start, stop, step) -> bytearray
+pub static RT_BYTEARRAY_SLICE_STEP: RuntimeFuncDef =
+    RuntimeFuncDef::slice_quaternary("rt_bytearray_slice_step");
+/// rt_bytearray_concat(a, b) -> bytearray (`ba + bytes-like`)
+pub static RT_BYTEARRAY_CONCAT: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_binary("rt_bytearray_concat");
+
 // ===== List operations =====
 
 /// rt_make_list(capacity: i64) -> *mut Obj

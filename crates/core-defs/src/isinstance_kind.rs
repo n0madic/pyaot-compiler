@@ -29,3 +29,7 @@ pub const DICT: i64 = 6;
 pub const SET: i64 = 7;
 /// `tuple`
 pub const TUPLE: i64 = 8;
+/// `frozenset`
+pub const FROZENSET: i64 = 9;
+/// `bytearray`
+pub const BYTEARRAY: i64 = 10;

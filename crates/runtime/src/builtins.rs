@@ -70,8 +70,9 @@ pub fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
                 crate::dict::rt_dict_len(obj)
             }
             TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj),
-            TypeTagKind::Set => crate::set::rt_set_len(obj),
+            TypeTagKind::Set | TypeTagKind::FrozenSet => crate::set::rt_set_len(obj),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_len(obj),
             _ => raise_type_error("object of this type has no len()"),
         }
     };
@@ -311,6 +312,12 @@ pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
                 }
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
                 TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
+                // A frozenset is hashable: normalize its order-independent
+                // content hash through `rt_hash_int` into the valid Py_hash_t
+                // domain (mirrors how str/tuple hashes are boxed).
+                TypeTagKind::FrozenSet => {
+                    crate::hash::rt_hash_int(crate::frozenset::rt_frozenset_hash(obj))
+                }
                 TypeTagKind::None => HASH_NONE,
                 // A class instance hashes via its `__hash__` dunder (CPython:
                 // `hash(obj)` = `type(obj).__hash__(obj)`); a class without one

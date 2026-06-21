@@ -1,9 +1,11 @@
 //! Set comparison operations: issubset, issuperset, isdisjoint
 
 #[allow(unused_imports)]
+use crate::debug_assert_set_family;
+#[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::hash_table_utils::hash_hashable_obj;
-use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use crate::object::{Obj, SetObj, TOMBSTONE};
 use pyaot_core_defs::Value;
 
 use super::core::find_set_slot;
@@ -16,8 +18,8 @@ pub fn rt_set_issubset(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_issubset");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_issubset");
+        debug_assert_set_family!(a, "rt_set_issubset");
+        debug_assert_set_family!(b, "rt_set_issubset");
 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
@@ -66,8 +68,8 @@ pub fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_isdisjoint");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_isdisjoint");
+        debug_assert_set_family!(a, "rt_set_isdisjoint");
+        debug_assert_set_family!(b, "rt_set_isdisjoint");
 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;

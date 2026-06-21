@@ -87,6 +87,9 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
             }
         }
         TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj) as u64,
+        // A frozenset is hashable (unlike a set): order-independent content
+        // hash so two equal frozensets hash equal as dict keys / set elements.
+        TypeTagKind::FrozenSet => crate::frozenset::frozenset_content_hash(obj),
         TypeTagKind::None => 0, // CPython: hash(None) == 0
         // Identity-equality heap objects (class instances, files, closures,
         // …): `eq_hashable_obj` compares them by pointer (its `_ => a == b`
@@ -230,6 +233,9 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             }
             true
         }
+        // frozenset == frozenset by VALUE (set equality), so two equal
+        // frozensets used as dict keys / set elements collide correctly.
+        TypeTagKind::FrozenSet => crate::set::rt_set_eq(a, b) != 0,
         TypeTagKind::None => true, // None singleton — always equal
         _ => a == b,               // Pointer equality for other types
     }

@@ -1,10 +1,12 @@
 //! Core set operations: creation, find_slot, resize, finalization, min/max
 
 #[allow(unused_imports)]
+use crate::debug_assert_set_family;
+#[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::hash_table_utils::find_slot_generic;
-use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use crate::object::{Obj, SetObj, TOMBSTONE};
 use pyaot_core_defs::Value;
 
 /// Round up to the next power of 2 (required for mask-based probing).
@@ -165,7 +167,7 @@ pub fn rt_set_len(set: *mut Obj) -> i64 {
     }
 
     unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_len");
+        debug_assert_set_family!(set, "rt_set_len");
         let set_obj = set as *mut SetObj;
         (*set_obj).len as i64
     }
@@ -214,7 +216,7 @@ pub fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     }
 
     unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_minmax");
+        debug_assert_set_family!(set, "rt_set_minmax");
         let set_obj = set as *mut SetObj;
         let len = (*set_obj).len;
         let capacity = (*set_obj).capacity;

@@ -554,6 +554,18 @@ impl<'a> FnLowerer<'a> {
                         reject_call_extras(c, span, "format()")?;
                         return self.lower_format_builtin(&c.args, span);
                     }
+                    // `frozenset(...)` / `bytearray(...)` — bare builtins modeled
+                    // as `RuntimeObject` (like `set`/`Counter`), constructed by
+                    // arity / arg type. Unshadowed-gated (a local `frozenset = …`
+                    // keeps winning).
+                    "frozenset" => {
+                        reject_call_extras(c, span, "frozenset()")?;
+                        return self.lower_frozenset_construct(c, span);
+                    }
+                    "bytearray" => {
+                        reject_call_extras(c, span, "bytearray()")?;
+                        return self.lower_bytearray_construct(c, span);
+                    }
                     // `str()` with no args → the empty string. Interned HERE (the
                     // frontend owns the mutable interner; lowering's is immutable
                     // and cannot mint the `""` literal). The one-arg `str(x)` form

@@ -44,6 +44,11 @@ pub enum IteratorKind {
     /// bridging the user iterator's exception protocol to the runtime's
     /// `exhausted`-flag protocol.
     Instance = 17,
+    /// A `bytearray` iterator — `source` is the `ByteArrayObj`; `IterNext`
+    /// yields each byte as a tagged int. A distinct kind from `Bytes` because
+    /// `ByteArrayObj`'s buffer is a separate allocation (not the inline FAM
+    /// `BytesObj` layout `iter_next_bytes` reads).
+    ByteArray = 18,
 }
 
 impl TryFrom<u8> for IteratorKind {
@@ -69,6 +74,7 @@ impl TryFrom<u8> for IteratorKind {
             15 => Ok(IteratorKind::MapTagged),
             16 => Ok(IteratorKind::FilterTagged),
             17 => Ok(IteratorKind::Instance),
+            18 => Ok(IteratorKind::ByteArray),
             _ => Err(value),
         }
     }
@@ -189,6 +195,21 @@ pub struct ListObj {
     pub len: usize,
     pub capacity: usize,
     pub data: *mut pyaot_core_defs::Value,
+}
+
+/// Bytearray object — a MUTABLE byte sequence. Mirrors [`ListObj`]'s growable
+/// shape (header + len + capacity + separately-allocated buffer), but the buffer
+/// is raw `u8` rather than tagged `Value`s. Because the buffer is a separate
+/// allocation it must be finalized (freed) before the object is collected, and
+/// because it holds no `Value`s the GC does not trace into it (a leaf, like
+/// `BytesObj`). The separate buffer is what lets `append`/`extend`/`+=` grow in
+/// place without moving the object (an inline-FAM `BytesObj` cannot grow).
+#[repr(C)]
+pub struct ByteArrayObj {
+    pub header: ObjHeader,
+    pub len: usize,
+    pub capacity: usize,
+    pub data: *mut u8,
 }
 
 /// Tuple object (immutable, inline data).

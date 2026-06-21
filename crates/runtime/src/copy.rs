@@ -15,13 +15,14 @@ pub unsafe fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
 
     let header = &(*obj).header;
     match header.type_tag {
-        // Immutable types - return as-is
+        // Immutable types - return as-is (CPython `copy.copy(fs) is fs`)
         TypeTagKind::Int
         | TypeTagKind::Float
         | TypeTagKind::Bool
         | TypeTagKind::Str
         | TypeTagKind::None
         | TypeTagKind::Bytes
+        | TypeTagKind::FrozenSet
         | TypeTagKind::Tuple => obj,
 
         // List - shallow copy
@@ -38,6 +39,9 @@ pub unsafe fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
 
             new_list as *mut Obj
         }
+
+        // ByteArray is MUTABLE — a full-range slice clones the buffer.
+        TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_slice(obj, i64::MIN, i64::MAX),
 
         // Dict - shallow copy (preserves insertion order)
         TypeTagKind::Dict => {
@@ -202,13 +206,20 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
 
     let header = &(*obj).header;
     match header.type_tag {
-        // Immutable types - return as-is
+        // Immutable types - return as-is. (frozenset deep-copy of MUTABLE
+        // elements is a documented gap — for the common immutable-element case
+        // the result is value-equal to the original, which is byte-exact.)
         TypeTagKind::Int
         | TypeTagKind::Float
         | TypeTagKind::Bool
         | TypeTagKind::Str
         | TypeTagKind::None
+        | TypeTagKind::FrozenSet
         | TypeTagKind::Bytes => obj,
+
+        // ByteArray is MUTABLE — clone its buffer (bytes are values, so a
+        // buffer clone is a full deep copy).
+        TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_slice(obj, i64::MIN, i64::MAX),
 
         // Tuple - deep copy each element
         TypeTagKind::Tuple => {

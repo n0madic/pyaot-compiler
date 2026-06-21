@@ -135,6 +135,8 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
 
             IteratorKind::Bytes => iter_next_bytes(iter, reversed, raise_on_exhausted),
 
+            IteratorKind::ByteArray => iter_next_bytearray(iter, reversed, raise_on_exhausted),
+
             IteratorKind::Enumerate => iter_next_enumerate(iter, raise_on_exhausted),
 
             IteratorKind::Zip => iter_next_zip(iter_obj, raise_on_exhausted),
@@ -402,6 +404,39 @@ unsafe fn iter_next_bytes(
         (*iter).index += 1;
     }
     // After §F.7c BigBang: tag the byte so all iter_next_* return tagged Values.
+    pyaot_core_defs::Value::from_int(byte_val).0 as *mut Obj
+}
+
+/// Next for a bytearray iterator — like `iter_next_bytes` but reads the
+/// `ByteArrayObj`'s separately-allocated buffer; yields each byte as a tagged
+/// int.
+unsafe fn iter_next_bytearray(
+    iter: *mut crate::object::IteratorObj,
+    reversed: bool,
+    raise_on_exhausted: bool,
+) -> *mut Obj {
+    use crate::object::ByteArrayObj;
+
+    let ba = (*iter).source as *mut ByteArrayObj;
+    let len = (*ba).len as i64;
+    let idx = (*iter).index;
+
+    let out_of_bounds = if reversed { idx < 0 } else { idx >= len };
+
+    if out_of_bounds {
+        (*iter).exhausted = true;
+        if raise_on_exhausted {
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
+        }
+        return EXHAUSTED_SENTINEL;
+    }
+
+    let byte_val = *(*ba).data.add(idx as usize) as i64;
+    if reversed {
+        (*iter).index -= 1;
+    } else {
+        (*iter).index += 1;
+    }
     pyaot_core_defs::Value::from_int(byte_val).0 as *mut Obj
 }
 

@@ -65,6 +65,10 @@ pub enum TypeSpec {
     Deque,
     /// Counter object (from collections module)
     Counter,
+    /// frozenset object (builtin) — immutable hashable set
+    FrozenSet,
+    /// bytearray object (builtin) — mutable byte sequence
+    ByteArray,
 }
 
 /// Reference to another TypeSpec (used for nested types)

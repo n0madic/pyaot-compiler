@@ -185,6 +185,15 @@ define_tag_kinds! {
     // `rt_call_check` accepts only `Closure`, closing the `(1, 2)()` SEGV. The GC
     // traces it exactly like `Tuple` (same layout). type() reports `function`.
     Closure = 30 => "Closure" => "<class 'function'>" => "function",
+    // An immutable hashable set. Physically a `SetObj` (same memory layout), so
+    // the runtime's set primitives operate on it unchanged via the set-family
+    // seam guard; only the tag differs (and `frozenset` is hashable, unlike
+    // `set`). Modeled as a `RuntimeObject` — no element-type precision.
+    FrozenSet = 31 => "FrozenSet" => "<class 'frozenset'>" => "frozenset",
+    // A mutable byte sequence. A growing heap object (`ByteArrayObj`, mirroring
+    // `ListObj`: header + len + capacity + separately-allocated `*mut u8`
+    // buffer). Modeled as a `RuntimeObject` — no element-type precision.
+    ByteArray = 32 => "ByteArray" => "<class 'bytearray'>" => "bytearray",
 }
 
 #[cfg(test)]
@@ -247,7 +256,9 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(28), Some(TypeTagKind::NotImplemented));
         assert_eq!(TypeTagKind::from_tag(29), Some(TypeTagKind::BigInt));
         assert_eq!(TypeTagKind::from_tag(30), Some(TypeTagKind::Closure));
-        assert_eq!(TypeTagKind::from_tag(31), None);
+        assert_eq!(TypeTagKind::from_tag(31), Some(TypeTagKind::FrozenSet));
+        assert_eq!(TypeTagKind::from_tag(32), Some(TypeTagKind::ByteArray));
+        assert_eq!(TypeTagKind::from_tag(33), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 
@@ -329,6 +340,8 @@ mod tests {
         assert_eq!(TypeTagKind::Dict.type_name(), "dict");
         assert_eq!(TypeTagKind::Set.type_name(), "set");
         assert_eq!(TypeTagKind::Bytes.type_name(), "bytes");
+        assert_eq!(TypeTagKind::FrozenSet.type_name(), "frozenset");
+        assert_eq!(TypeTagKind::ByteArray.type_name(), "bytearray");
         assert_eq!(TypeTagKind::Instance.type_name(), "object");
         assert_eq!(TypeTagKind::Iterator.type_name(), "iterator");
         assert_eq!(TypeTagKind::Generator.type_name(), "generator");

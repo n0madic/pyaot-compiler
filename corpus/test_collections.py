@@ -2226,4 +2226,146 @@ def _fold_p1_displays_slices():
 
 _fold_p1_displays_slices()
 
+
+# =============================================================================
+# frozenset (builtin) — immutable, hashable set
+# =============================================================================
+# Multi-element repr ordering follows the (hash-table) set model, which differs
+# from CPython's iteration order, so content is asserted via `sorted(...)`;
+# `repr` is asserted only for the deterministic empty / single-element forms.
+def _fold_frozenset():
+    # construction + protocol
+    fs = frozenset([1, 2, 3, 2, 1])
+    assert len(fs) == 3
+    assert sorted(fs) == [1, 2, 3]
+    assert 2 in fs
+    assert 5 not in fs
+    assert bool(fs) is True
+    assert bool(frozenset()) is False
+    assert sorted(x for x in fs) == [1, 2, 3]
+    assert frozenset(range(4)) == frozenset([0, 1, 2, 3])
+
+    # equality (order-independent)
+    assert frozenset([1, 2]) == frozenset([2, 1])
+    assert frozenset([1, 2]) != frozenset([1, 3])
+
+    # repr / str (deterministic forms only)
+    assert repr(frozenset()) == "frozenset()"
+    assert str(frozenset()) == "frozenset()"
+    assert repr(frozenset([5])) == "frozenset({5})"
+
+    # isinstance
+    assert isinstance(fs, frozenset)
+    assert not isinstance(set([1]), frozenset)
+
+    # operators (→ frozenset)
+    a = frozenset([1, 2, 3])
+    b = frozenset([2, 3, 4])
+    assert sorted(a | b) == [1, 2, 3, 4]
+    assert sorted(a & b) == [2, 3]
+    assert sorted(a - b) == [1]
+    assert sorted(a ^ b) == [1, 4]
+    assert isinstance(a | b, frozenset)
+
+    # methods (read-only)
+    assert sorted(a.union(b)) == [1, 2, 3, 4]
+    assert sorted(a.intersection(b)) == [2, 3]
+    assert sorted(a.difference(b)) == [1]
+    assert sorted(a.symmetric_difference(b)) == [1, 4]
+    assert a.issubset(frozenset([1, 2, 3, 4])) is True
+    assert a.issuperset(frozenset([1, 2])) is True
+    assert a.isdisjoint(frozenset([9, 10])) is True
+    assert a.isdisjoint(frozenset([3, 9])) is False
+    assert a.copy() == a
+    assert isinstance(a.copy(), frozenset)
+
+    # hashable: frozenset as a dict key / set element / frozenset element
+    d = {frozenset([1, 2]): "a", frozenset([3, 4]): "b"}
+    assert d[frozenset([2, 1])] == "a"
+    assert d[frozenset([4, 3])] == "b"
+    seen = {frozenset([1, 2]), frozenset([2, 1]), frozenset([3])}
+    assert len(seen) == 2
+    nested = frozenset([frozenset([1]), frozenset([1]), frozenset([2])])
+    assert len(nested) == 2
+
+
+_fold_frozenset()
+
+
+# =============================================================================
+# bytearray (builtin) — mutable byte sequence
+# =============================================================================
+def _fold_bytearray():
+    # constructors
+    assert bytes(bytearray()) == b""
+    assert bytearray(3) == bytearray(b"\x00\x00\x00")
+    assert bytearray(b"hello") == bytearray(b"hello")
+    assert bytearray("hi", "utf-8") == bytearray(b"hi")
+    assert bytearray([65, 66, 67]) == bytearray(b"ABC")
+    assert bytearray(range(5)) == bytearray(b"\x00\x01\x02\x03\x04")
+
+    # protocol
+    ba = bytearray(b"hello")
+    assert len(ba) == 5
+    assert ba[0] == 104
+    assert ba[-1] == 111
+    assert ba[1:4] == bytearray(b"ell")
+    assert isinstance(ba[1:4], bytearray)
+    assert 104 in ba
+    assert 200 not in ba
+    assert b"ell" in ba
+    assert bool(ba) is True
+    assert bool(bytearray()) is False
+    collected = []
+    for x in bytearray(b"abc"):
+        collected.append(x)
+    assert collected == [97, 98, 99]
+    assert ba == bytearray(b"hello")
+    assert ba != bytearray(b"world")
+    assert isinstance(ba, bytearray)
+
+    # repr / str (deterministic — byte order preserved)
+    assert repr(bytearray(b"abc")) == "bytearray(b'abc')"
+    assert str(bytearray(b"abc")) == "bytearray(b'abc')"
+    assert repr(bytearray()) == "bytearray(b'')"
+
+    # mutators
+    ba2 = bytearray(b"abc")
+    ba2.append(100)
+    assert ba2 == bytearray(b"abcd")
+    ba2.extend([101, 102])
+    assert ba2 == bytearray(b"abcdef")
+    ba2[0] = 122
+    assert ba2 == bytearray(b"zbcdef")
+    ba3 = bytearray(b"ab")
+    ba3 += b"cd"
+    assert ba3 == bytearray(b"abcd")
+    ba3 += bytearray(b"ef")
+    assert ba3 == bytearray(b"abcdef")
+
+    # append byte-range guard
+    raised = False
+    try:
+        bytearray(b"x").append(256)
+    except ValueError:
+        raised = True
+    assert raised
+
+    # read methods
+    m = bytearray(b"hello world")
+    assert m.hex() == "68656c6c6f20776f726c64"
+    assert m.decode("utf-8") == "hello world"
+    assert m.decode() == "hello world"
+    assert m.find(b"world") == 6
+    assert m.find(b"xyz") == -1
+    assert m.rfind(b"o") == 7
+    assert m.count(b"o") == 2
+    assert m.count(b"l") == 3
+    assert m.startswith(b"hello") is True
+    assert m.endswith(b"world") is True
+    assert m.startswith(b"world") is False
+
+
+_fold_bytearray()
+
 print("All collections tests passed!")

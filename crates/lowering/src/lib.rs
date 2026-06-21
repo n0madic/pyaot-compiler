@@ -976,6 +976,28 @@ impl<'a> FnLower<'a> {
             });
             return Ok(());
         }
+        // bytearray item assignment (`ba[i] = v`): RAW i64 index, tagged int
+        // value (0-255 → else ValueError inside `rt_bytearray_set`). Handled
+        // before `sub_kind` (which would reject a `RuntimeObject`).
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::ByteArray) {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let idx = self.coerce_to_i64(il, ir)?;
+            let (vl, vr) = self.lower_expr(value)?;
+            let val = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit(MirInst::CallRuntime {
+                dst: None,
+                def: &rf::RT_BYTEARRAY_SET,
+                args: vec![
+                    Operand::Local(recv),
+                    Operand::Local(idx),
+                    Operand::Local(val),
+                ],
+            });
+            return Ok(());
+        }
         let kind = sub_kind(
             &self.func.exprs[base].ty,
             &repr_of(&self.func.exprs[base].ty),
@@ -4773,6 +4795,23 @@ impl<'a> FnLower<'a> {
             });
             return self.normalize_container_result(dst, Repr::Tagged);
         }
+        // bytearray subscript (`ba[i]`) → the byte as a tagged int. RAW i64 index
+        // (negative + bounds checks inside `rt_bytearray_get`). Like deque,
+        // handled before `sub_kind` (which would reject a `RuntimeObject`).
+        if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::ByteArray) {
+            use pyaot_core_defs::runtime_func_def as rf;
+            let (bl, br) = self.lower_expr(base)?;
+            let recv = self.coerce(bl, br, Repr::Tagged)?;
+            let (il, ir) = self.lower_expr(index)?;
+            let idx = self.coerce_to_i64(il, ir)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &rf::RT_BYTEARRAY_GET,
+                args: vec![Operand::Local(recv), Operand::Local(idx)],
+            });
+            return self.normalize_container_result(dst, Repr::Tagged);
+        }
         let kind = sub_kind(
             &self.func.exprs[base].ty,
             &repr_of(&self.func.exprs[base].ty),
@@ -4857,6 +4896,14 @@ impl<'a> FnLower<'a> {
                 &rf::RT_TUPLE_SLICE_STEP
             } else {
                 &rf::RT_TUPLE_SLICE
+            }
+        } else if matches!(&bt, SemTy::RuntimeObject(t) if *t == pyaot_core_defs::TypeTagKind::ByteArray)
+        {
+            // `ba[i:j]` → a new bytearray.
+            if stepped {
+                &rf::RT_BYTEARRAY_SLICE_STEP
+            } else {
+                &rf::RT_BYTEARRAY_SLICE
             }
         } else if stepped {
             &rf::RT_OBJ_SLICE_STEP
@@ -5552,7 +5599,36 @@ impl<'a> FnLower<'a> {
         rl: LocalId,
         rr: &Repr,
     ) -> Result<Option<(LocalId, Repr)>> {
-        use HeapShape::{Bytes, Dict, List, Set, Tuple, TupleVar};
+        use pyaot_core_defs::runtime_func_def as rf;
+        use pyaot_core_defs::TypeTagKind;
+        use HeapShape::{Bytes, Dict, List, RuntimeObj, Set, Tuple, TupleVar};
+        // frozenset algebra (`| & - ^`) — both operands statically `frozenset`,
+        // returning a NEW frozenset (`rt_frozenset_*`). A `RuntimeObj` is not a
+        // `ContainerOp`, so emit the `CallRuntime` directly.
+        if let (Repr::Heap(RuntimeObj(TypeTagKind::FrozenSet)), Repr::Heap(RuntimeObj(TypeTagKind::FrozenSet))) =
+            (lr, rr)
+        {
+            let def: Option<&'static rf::RuntimeFuncDef> = match op {
+                MBinOp::BitOr => Some(&rf::RT_FROZENSET_UNION),
+                MBinOp::BitAnd => Some(&rf::RT_FROZENSET_INTERSECTION),
+                MBinOp::Sub => Some(&rf::RT_FROZENSET_DIFFERENCE),
+                MBinOp::BitXor => Some(&rf::RT_FROZENSET_SYMMETRIC_DIFFERENCE),
+                _ => None,
+            };
+            if let Some(def) = def {
+                return Ok(Some(self.emit_runtime_binop(def, ll, lr, rl, rr)?));
+            }
+        }
+        // `bytearray + bytes-like` → a new bytearray (`rt_bytearray_concat`).
+        if op == MBinOp::Add
+            && matches!(lr, Repr::Heap(RuntimeObj(TypeTagKind::ByteArray)))
+            && matches!(
+                rr,
+                Repr::Heap(RuntimeObj(TypeTagKind::ByteArray)) | Repr::Heap(Bytes)
+            )
+        {
+            return Ok(Some(self.emit_runtime_binop(&rf::RT_BYTEARRAY_CONCAT, ll, lr, rl, rr)?));
+        }
         match op {
             MBinOp::Add => {
                 let cop = match (lr, rr) {
@@ -5627,6 +5703,28 @@ impl<'a> FnLower<'a> {
             },
             _ => Ok(None),
         }
+    }
+
+    /// Emit a binary `CallRuntime` whose result is a fresh GC-managed container
+    /// (frozenset algebra / bytearray concat). Both operands are coerced to
+    /// `Tagged`; the result is a `Tagged` heap pointer normalized to a GC root.
+    fn emit_runtime_binop(
+        &mut self,
+        def: &'static pyaot_core_defs::RuntimeFuncDef,
+        ll: LocalId,
+        lr: &Repr,
+        rl: LocalId,
+        rr: &Repr,
+    ) -> Result<(LocalId, Repr)> {
+        let a = self.coerce(ll, lr.clone(), Repr::Tagged)?;
+        let b = self.coerce(rl, rr.clone(), Repr::Tagged)?;
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::CallRuntime {
+            dst: Some(dst),
+            def,
+            args: vec![Operand::Local(a), Operand::Local(b)],
+        });
+        self.normalize_container_result(dst, Repr::Tagged)
     }
 
     /// Emit a binary container op (set algebra / dict merge) whose result is a
@@ -6583,6 +6681,8 @@ fn builtin_isinstance_kind(target: &SemTy) -> Option<i64> {
         SemTy::Float => Some(k::FLOAT),
         SemTy::Bool => Some(k::BOOL),
         SemTy::Bytes => Some(k::BYTES),
+        SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::FrozenSet) => Some(k::FROZENSET),
+        SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray) => Some(k::BYTEARRAY),
         _ => None,
     }
 }

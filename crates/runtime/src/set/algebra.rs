@@ -1,9 +1,11 @@
 //! Set algebra operations: union, intersection, difference, symmetric_difference
 
 #[allow(unused_imports)]
+use crate::debug_assert_set_family;
+#[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::hash_table_utils::hash_hashable_obj;
-use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use crate::object::{Obj, SetObj, TOMBSTONE};
 use pyaot_core_defs::Value;
 
 use super::core::{find_set_slot, rt_make_set};
@@ -24,8 +26,8 @@ pub fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_union");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_union");
+        debug_assert_set_family!(a, "rt_set_union");
+        debug_assert_set_family!(b, "rt_set_union");
 
         let b_obj = b as *mut SetObj;
 
@@ -76,8 +78,8 @@ pub fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_intersection");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_intersection");
+        debug_assert_set_family!(a, "rt_set_intersection");
+        debug_assert_set_family!(b, "rt_set_intersection");
 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
@@ -134,8 +136,8 @@ pub fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_difference");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_difference");
+        debug_assert_set_family!(a, "rt_set_difference");
+        debug_assert_set_family!(b, "rt_set_difference");
 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
@@ -192,8 +194,8 @@ pub fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
-        debug_assert_type_tag!(a, TypeTagKind::Set, "rt_set_symmetric_difference");
-        debug_assert_type_tag!(b, TypeTagKind::Set, "rt_set_symmetric_difference");
+        debug_assert_set_family!(a, "rt_set_symmetric_difference");
+        debug_assert_set_family!(b, "rt_set_symmetric_difference");
 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;

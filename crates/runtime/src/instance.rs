@@ -301,6 +301,8 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
         k::DICT => heap_tag_is(obj, TypeTagKind::Dict),
         k::SET => heap_tag_is(obj, TypeTagKind::Set),
         k::TUPLE => heap_tag_is(obj, TypeTagKind::Tuple),
+        k::FROZENSET => heap_tag_is(obj, TypeTagKind::FrozenSet),
+        k::BYTEARRAY => heap_tag_is(obj, TypeTagKind::ByteArray),
         _ => false,
     };
     verdict as i8

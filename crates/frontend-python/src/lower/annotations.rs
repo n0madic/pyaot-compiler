@@ -110,7 +110,14 @@ pub(super) fn named_annotation(name: &str, ctx: &AnnCtx) -> SemTy {
         "None" | "NoneType" => SemTy::NoneTy,
         "list" | "List" => SemTy::list_of(SemTy::Dyn),
         "dict" | "Dict" => SemTy::dict_of(SemTy::Dyn, SemTy::Dyn),
-        "set" | "Set" | "frozenset" => SemTy::set_of(SemTy::Dyn),
+        "set" | "Set" => SemTy::set_of(SemTy::Dyn),
+        // `frozenset` / `bytearray` are modeled as `RuntimeObject` (no element
+        // precision), so the annotation maps to the runtime-object type, not a
+        // generic `set`/`bytes`.
+        "frozenset" | "FrozenSet" => {
+            SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::FrozenSet)
+        }
+        "bytearray" => SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray),
         "tuple" | "Tuple" => SemTy::tuple_var_of(SemTy::Dyn),
         other => {
             // An in-scope type variable (Phase 5E) → `SemTy::Var`.
@@ -165,7 +172,11 @@ pub(super) fn annotation_subscript(base: &Expr, slice: &Expr, ctx: &AnnCtx) -> S
     };
     match n.id.as_str() {
         "list" | "List" => SemTy::list_of(annotation_to_semty(slice, ctx)),
-        "set" | "Set" | "frozenset" => SemTy::set_of(annotation_to_semty(slice, ctx)),
+        "set" | "Set" => SemTy::set_of(annotation_to_semty(slice, ctx)),
+        // `frozenset[T]` keeps no element precision (RuntimeObject model).
+        "frozenset" | "FrozenSet" => {
+            SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::FrozenSet)
+        }
         "dict" | "Dict" => match slice {
             Expr::Tuple(t) if t.elts.len() == 2 => SemTy::dict_of(
                 annotation_to_semty(&t.elts[0], ctx),
@@ -522,7 +533,7 @@ pub(super) fn parse_error(msg: impl Into<String>, span: Span) -> CompilerError {
 /// Container builtins carry a canonical (Dyn-element) target; the static fold
 /// in `lowering::lower_isinstance_builtin` matches by KIND (isinstance ignores
 /// element types), so the concrete element types are irrelevant. `None` for a
-/// name with no canonical mapping (e.g. `frozenset`) — a loud error upstream.
+/// name with no canonical mapping — a loud error upstream.
 pub(super) fn isinstance_builtin_target(name: &str) -> Option<SemTy> {
     match name {
         "str" => Some(SemTy::Str),
@@ -534,6 +545,8 @@ pub(super) fn isinstance_builtin_target(name: &str) -> Option<SemTy> {
         "dict" => Some(SemTy::dict_of(SemTy::Dyn, SemTy::Dyn)),
         "set" => Some(SemTy::set_of(SemTy::Dyn)),
         "tuple" => Some(SemTy::tuple_var_of(SemTy::Dyn)),
+        "frozenset" => Some(SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::FrozenSet)),
+        "bytearray" => Some(SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray)),
         _ => None,
     }
 }

@@ -734,6 +734,8 @@ pub fn semty_from_typespec(spec: &pyaot_stdlib_defs::TypeSpec) -> SemTy {
         TypeSpec::BytesIO => SemTy::RuntimeObject(TypeTagKind::BytesIO),
         TypeSpec::Deque => SemTy::RuntimeObject(TypeTagKind::Deque),
         TypeSpec::Counter => SemTy::RuntimeObject(TypeTagKind::Counter),
+        TypeSpec::FrozenSet => SemTy::RuntimeObject(TypeTagKind::FrozenSet),
+        TypeSpec::ByteArray => SemTy::RuntimeObject(TypeTagKind::ByteArray),
     }
 }
 

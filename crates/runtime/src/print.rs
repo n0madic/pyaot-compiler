@@ -63,7 +63,8 @@ pub extern "C" fn rt_print_str_obj_abi(str_obj: Value) {
 }
 
 /// Format a bytes slice as a Python bytes literal (e.g. `b'hello\n'`).
-fn format_bytes_repr(data: *const u8, len: usize) -> String {
+/// Shared by bytes printing and `bytearray`'s `bytearray(b'...')` repr.
+pub(crate) fn format_bytes_repr(data: *const u8, len: usize) -> String {
     let mut s = String::with_capacity(len + 3); // b'' + escapes
     s.push_str("b'");
     for i in 0..len {

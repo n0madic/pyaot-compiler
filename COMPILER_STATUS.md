@@ -77,8 +77,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `set` | ✅ | `\| & - ^` and update/relational methods |
 | `range` | ✅ | Lazy iterator, negative/variable step |
 | `NoneType` | ✅ | `None` sentinel, `is`/`is not` |
-| `frozenset` | ❌ | Not implemented |
-| `bytearray` | ❌ | Not implemented |
+| `frozenset` | ✅ | Pragmatic core: ctors, protocol, hashable (dict key/set elem), `\| & - ^`, union/intersection/difference/symmetric_difference/copy/issubset/issuperset/isdisjoint. Gap: ordering (`< <=`), multi-element repr order follows set model |
+| `bytearray` | ✅ | Pragmatic core: ctors, len/in/iter/index/slice/`==`, mutators append/extend/`ba[i]=v`/`+=`, hex/decode/find/rfind/count/startswith/endswith. Gap: insert/pop/remove/reverse/clear, slice-assign/`del`, `*`/`*=`, split/strip/replace/case |
 | `complex` | ❌ | Not implemented |
 | `memoryview` | ❌ | Not implemented |
 
@@ -214,7 +214,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `iter` / `next` | ✅ | |
 | `open` | ✅ | File I/O (text), iteration over lines |
 | `super`, `staticmethod`, `classmethod`, `property` | ✅ | |
-| `frozenset`, `bytearray`, `complex`, `memoryview` | ❌ | Backing types not implemented |
+| `frozenset` / `bytearray` | ✅ | Pragmatic core (see Built-in types) — `RuntimeObject`-modeled, byte-exact in the corpus gate |
+| `complex`, `memoryview` | ❌ | Backing types not implemented |
 | `input` | ❌ | Not implemented |
 | `vars`, `dir`, `callable`, `delattr` | ❌ | Not implemented / out of scope |
 | `eval`, `exec`, `compile` | ❌ | Out of scope by design |

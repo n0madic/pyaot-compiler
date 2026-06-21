@@ -137,7 +137,9 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Tuple => print_tuple_repr(obj),
         TypeTagKind::Dict => print_dict_repr(obj),
         TypeTagKind::Set => print_set_repr(obj),
+        TypeTagKind::FrozenSet => print_frozenset_repr(obj),
         TypeTagKind::Bytes => rt_print_bytes_obj(obj),
+        TypeTagKind::ByteArray => print!("{}", crate::bytearray::bytearray_repr_string(obj)),
         TypeTagKind::Instance => print_instance_repr(obj),
         TypeTagKind::Iterator => print!("<iterator>"),
         TypeTagKind::Cell => print!("<cell>"),
@@ -323,6 +325,36 @@ unsafe fn print_set_repr(obj: *mut Obj) {
     print!("}}");
 }
 
+/// Print frozenset repr: `frozenset({elem, ...})` or `frozenset()` for empty
+/// (distinct from `set`'s `{…}` / `set()`). Shares `SetObj` layout.
+unsafe fn print_frozenset_repr(obj: *mut Obj) {
+    let set = obj as *mut SetObj;
+    let len = (*set).len;
+    let capacity = (*set).capacity;
+    let entries = (*set).entries;
+    use crate::object::TOMBSTONE;
+
+    if len == 0 {
+        print!("frozenset()");
+        return;
+    }
+
+    print!("frozenset({{");
+    let mut first = true;
+    for i in 0..capacity {
+        let entry = entries.add(i);
+        let elem = (*entry).elem;
+        if elem.0 != 0 && elem != TOMBSTONE {
+            if !first {
+                print!(", ");
+            }
+            first = false;
+            print_obj_repr(elem.0 as *mut Obj);
+        }
+    }
+    print!("}})");
+}
+
 /// Print any heap object with runtime type dispatch
 /// Used for Union types where the actual type is determined at runtime
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -371,6 +403,10 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Tuple => print_tuple_repr(obj),
             TypeTagKind::Dict => print_dict_repr(obj),
             TypeTagKind::Set => print_set_repr(obj),
+            TypeTagKind::FrozenSet => print_frozenset_repr(obj),
+            TypeTagKind::ByteArray => {
+                print!("{}", crate::bytearray::bytearray_repr_string(obj))
+            }
             TypeTagKind::Instance => {
                 // CPython's `print(instance)` renders `str(instance)`: dispatch
                 // the user `__str__` (falling back to `__repr__`) via the dunder

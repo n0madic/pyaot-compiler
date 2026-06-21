@@ -2569,6 +2569,21 @@ impl<'a> Sweeper<'a> {
         if let Some(t) = self.class_dunder_ret(&l, dunder) {
             return t;
         }
+        // bytearray concatenation: `ba + bytes-like` → bytearray. `+=` desugars
+        // to `ba = ba + x`, so preserving the static `ByteArray` type here keeps
+        // the variable on the typed path for subsequent append/index/slice.
+        // (`ba + ba` already types via the covariant `join` below, but
+        // `ba + bytes` would otherwise widen to `Dyn`.)
+        if op == BinOp::Add {
+            if let SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray) = &l {
+                if matches!(
+                    &r,
+                    SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray) | SemTy::Bytes
+                ) {
+                    return l;
+                }
+            }
+        }
         match op {
             // Arithmetic follows the numeric tower via `join` (Bool ⊂ Int ⊂ Float;
             // same-type stays; mixed non-numerics → a tagged union). `**` is also

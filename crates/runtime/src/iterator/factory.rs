@@ -466,7 +466,8 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
         // The dict family (Dict / DefaultDict / Counter) shares `DictObj` layout;
         // iterating any of them yields its keys.
         TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => rt_iter_dict(obj),
-        TypeTagKind::Set => rt_iter_set(obj),
+        // FrozenSet shares `SetObj` layout, so the set iterator drives it too.
+        TypeTagKind::Set | TypeTagKind::FrozenSet => rt_iter_set(obj),
         // A deque is a ring buffer, not an `IteratorObj`; `rt_iter_deque`
         // materializes a left-to-right list snapshot and iterates that (the same
         // derived-list strategy set/dict use), so `for`/`list`/`sum`/`",".join`
@@ -474,6 +475,7 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
         TypeTagKind::Deque => rt_iter_deque(obj),
         TypeTagKind::Str => rt_iter_str(obj),
         TypeTagKind::Bytes => rt_iter_bytes(obj),
+        TypeTagKind::ByteArray => crate::bytearray::rt_iter_bytearray(obj),
         TypeTagKind::Iterator | TypeTagKind::Generator => obj,
         // A user-class instance: `for x in inst` / `iter(inst)` where the class
         // defines `__iter__`. Dispatch `__iter__()` to obtain the iterator, then

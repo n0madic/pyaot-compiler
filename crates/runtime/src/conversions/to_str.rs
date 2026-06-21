@@ -320,6 +320,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             s.push('\'');
             s
         }
+        TypeTagKind::ByteArray => crate::bytearray::bytearray_repr_string(obj),
         TypeTagKind::Bytes => {
             let src = obj as *mut BytesObj;
             let len = (*src).len;
@@ -393,15 +394,21 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             s
         }
         TypeTagKind::Counter => counter_repr_string(obj),
-        TypeTagKind::Set => {
+        TypeTagKind::Set | TypeTagKind::FrozenSet => {
             let set = obj as *mut SetObj;
             let len = (*set).len;
+            let frozen = (*obj).type_tag() == TypeTagKind::FrozenSet;
             if len == 0 {
-                return "set()".to_string();
+                return if frozen {
+                    "frozenset()".to_string()
+                } else {
+                    "set()".to_string()
+                };
             }
             let capacity = (*set).capacity;
             let entries = (*set).entries;
-            let mut s = String::from("{");
+            // `frozenset({…})` vs `{…}`.
+            let mut s = String::from(if frozen { "frozenset({" } else { "{" });
             let mut first = true;
             for i in 0..capacity {
                 let entry = entries.add(i);
@@ -414,7 +421,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
                     obj_repr_string(&mut s, elem.0 as *mut Obj);
                 }
             }
-            s.push('}');
+            s.push_str(if frozen { "})" } else { "}" });
             s
         }
         TypeTagKind::Deque => {

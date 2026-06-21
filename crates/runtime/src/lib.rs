@@ -59,6 +59,31 @@ macro_rules! debug_assert_dict_family {
     }};
 }
 
+/// Seam guard for the set FAMILY: `Set` and `FrozenSet` share the `SetObj`
+/// memory layout, so the same read-only `rt_set_*` primitives (len, contains,
+/// copy, union/intersection/difference/symmetric_difference, issubset/
+/// issuperset/isdisjoint, eq) operate on either of them. Use this at those
+/// shared seams instead of [`debug_assert_type_tag`] (which pins a single tag) —
+/// e.g. `rt_obj_len`'s `FrozenSet` arm calls `rt_set_len`. The MUTATING set
+/// primitives (add/discard/remove/clear/pop/*_update) keep the strict `Set`
+/// assert: frozenset never calls them, and construction builds a `Set` first
+/// and only retags to `FrozenSet` as the final step (so the mutators see `Set`).
+#[macro_export]
+macro_rules! debug_assert_set_family {
+    ($obj:expr, $func_name:expr) => {{
+        let tag = (*$obj).header.type_tag;
+        debug_assert!(
+            matches!(
+                tag,
+                $crate::object::TypeTagKind::Set | $crate::object::TypeTagKind::FrozenSet
+            ),
+            "{}: expected a set-family tag (Set/FrozenSet), got {:?}",
+            $func_name,
+            tag
+        );
+    }};
+}
+
 /// Raise a runtime exception with a formatted message without leaking memory.
 ///
 /// Creates a formatted String, transfers ownership of its buffer to the exception
@@ -129,8 +154,10 @@ pub mod instance;
 pub mod math_ops;
 
 // Collection types
+pub mod bytearray;
 pub mod bytes;
 pub mod dict;
+pub mod frozenset;
 pub mod hash_table_utils;
 pub mod list;
 pub mod minmax_utils;

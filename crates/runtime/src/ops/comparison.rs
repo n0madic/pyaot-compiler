@@ -194,7 +194,11 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 crate::dict::rt_dict_eq(a, b)
             }
-            TypeTagKind::Set => crate::set::rt_set_eq(a, b),
+            // FrozenSet shares `SetObj` layout, so set equality applies. (A
+            // mixed `frozenset == set` is rejected by the `tag_a != tag_b`
+            // guard above — a documented gap.)
+            TypeTagKind::Set | TypeTagKind::FrozenSet => crate::set::rt_set_eq(a, b),
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_eq(a, b),
             // Class instances and other types: identity comparison. Class
             // instances without `__eq__` use identity, matching Python's
             // default object equality.
@@ -651,9 +655,10 @@ pub fn rt_obj_len(obj: *mut Obj) -> i64 {
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 crate::dict::rt_dict_len(obj)
             }
-            TypeTagKind::Set => crate::set::rt_set_len(obj),
+            TypeTagKind::Set | TypeTagKind::FrozenSet => crate::set::rt_set_len(obj),
             TypeTagKind::Str => crate::string::rt_str_len_int(obj),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_len(obj),
             TypeTagKind::Deque => crate::deque::rt_deque_len(obj),
             _ => 0,
         }
@@ -707,7 +712,9 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 crate::dict::rt_dict_contains(container, elem)
             }
-            TypeTagKind::Set => crate::set::rt_set_contains(container, elem),
+            TypeTagKind::Set | TypeTagKind::FrozenSet => {
+                crate::set::rt_set_contains(container, elem)
+            }
             TypeTagKind::List => {
                 // Use linear search with value equality
                 rt_list_contains_value(container, elem)
@@ -724,6 +731,7 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
                 // Check if integer is in bytes
                 rt_bytes_contains_value(container, elem)
             }
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_contains(container, elem),
             _ => {
                 let tag_str = type_name((*container).type_tag());
                 crate::raise_exc!(
@@ -1043,9 +1051,16 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
                     0
                 }
             }
-            TypeTagKind::Set => {
+            TypeTagKind::Set | TypeTagKind::FrozenSet => {
                 let set_obj = obj as *mut SetObj;
                 if (*set_obj).len > 0 {
+                    1
+                } else {
+                    0
+                }
+            }
+            TypeTagKind::ByteArray => {
+                if crate::bytearray::rt_bytearray_len(obj) > 0 {
                     1
                 } else {
                     0

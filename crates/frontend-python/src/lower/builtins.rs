@@ -990,6 +990,97 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// `frozenset(...)` construction — a pure-frontend intercept (mirroring
+    /// [`Self::lower_counter_construct`]) typing the result
+    /// `RuntimeObject(FrozenSet)`:
+    ///   * `frozenset()`         → `rt_make_frozenset_empty()`.
+    ///   * `frozenset(iterable)` → `rt_make_frozenset_from_iter(iterable)` (the
+    ///     runtime normalizes the iterable to an iterator and freezes it).
+    pub(super) fn lower_frozenset_construct(
+        &mut self,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        use pyaot_stdlib_defs::modules::builtins as bd;
+        let cty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::FrozenSet);
+        match c.args.len() {
+            0 => Ok(self.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(&bd::FROZENSET_EMPTY),
+                    args: vec![],
+                    provided: 0,
+                },
+                cty,
+                span,
+            )),
+            1 => {
+                let iterable = self.lower_expr(&c.args[0])?;
+                Ok(self.alloc(
+                    HirExprKind::CallRuntime {
+                        target: pyaot_hir::RuntimeCallTarget::Func(&bd::FROZENSET_FROM_ITER),
+                        args: vec![Some(iterable)],
+                        provided: 1,
+                    },
+                    cty,
+                    span,
+                ))
+            }
+            _ => Err(parse_error("frozenset() takes at most 1 argument", span)),
+        }
+    }
+
+    /// `bytearray(...)` construction — a pure-frontend intercept typing the
+    /// result `RuntimeObject(ByteArray)`:
+    ///   * `bytearray()`               → `rt_make_bytearray_empty()`.
+    ///   * `bytearray(source)`         → `rt_make_bytearray(source)` (the unified
+    ///     runtime dispatcher: int → zeros, bytes → copy, iterable → elements).
+    ///   * `bytearray(str, encoding)`  → `rt_make_bytearray_from_str(str, enc)`.
+    pub(super) fn lower_bytearray_construct(
+        &mut self,
+        c: &ExprCall,
+        span: Span,
+    ) -> Result<Idx<HirExpr>> {
+        use pyaot_stdlib_defs::modules::builtins as bd;
+        let bty = SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::ByteArray);
+        match c.args.len() {
+            0 => Ok(self.alloc(
+                HirExprKind::CallRuntime {
+                    target: pyaot_hir::RuntimeCallTarget::Func(&bd::BYTEARRAY_EMPTY),
+                    args: vec![],
+                    provided: 0,
+                },
+                bty,
+                span,
+            )),
+            1 => {
+                let source = self.lower_expr(&c.args[0])?;
+                Ok(self.alloc(
+                    HirExprKind::CallRuntime {
+                        target: pyaot_hir::RuntimeCallTarget::Func(&bd::BYTEARRAY_NEW),
+                        args: vec![Some(source)],
+                        provided: 1,
+                    },
+                    bty,
+                    span,
+                ))
+            }
+            2 => {
+                let s = self.lower_expr(&c.args[0])?;
+                let enc = self.lower_expr(&c.args[1])?;
+                Ok(self.alloc(
+                    HirExprKind::CallRuntime {
+                        target: pyaot_hir::RuntimeCallTarget::Func(&bd::BYTEARRAY_FROM_STR),
+                        args: vec![Some(s), Some(enc)],
+                        provided: 2,
+                    },
+                    bty,
+                    span,
+                ))
+            }
+            _ => Err(parse_error("bytearray() takes at most 2 arguments", span)),
+        }
+    }
+
     /// `collections.deque(...)` construction (§10) — a pure-frontend intercept
     /// (mirroring [`Self::lower_counter_construct`]) that picks the runtime symbol
     /// by arity and types the result `RuntimeObject(Deque)`:
