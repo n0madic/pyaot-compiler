@@ -216,12 +216,6 @@ pub unsafe extern "C" fn rt_vtable_lookup(vtable_ptr: *const u8, slot: usize) ->
     *methods_ptr.add(slot)
 }
 
-/// Get the parent class ID for a given class
-#[no_mangle]
-pub extern "C" fn rt_get_parent_class(class_id: u8) -> u8 {
-    unsafe { (*CLASS_REGISTRY.0.get())[class_id as usize].parent_class_id }
-}
-
 /// Check if a class inherits from another class (directly or indirectly)
 /// Returns 1 if child_class_id is or inherits from target_class_id, 0 otherwise
 #[no_mangle]

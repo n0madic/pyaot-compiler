@@ -267,15 +267,6 @@ pub extern "C" fn rt_generator_is_exhausted_abi(gen: Value) -> i8 {
     unsafe { rt_generator_is_exhausted(gen.unwrap_ptr()) }
 }
 
-/// Raise StopIteration exception (called when generator is exhausted)
-///
-/// # Safety
-/// This function will not return normally.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_stop_iteration() -> ! {
-    raise_exc!(ExceptionType::StopIteration, "")
-}
-
 /// Send a value to a generator and resume execution
 ///
 /// `send(value)` resumes the generator and "sends" a value that becomes

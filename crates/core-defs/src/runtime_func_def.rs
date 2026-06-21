@@ -1753,9 +1753,6 @@ pub static RT_REGISTER_COPY_FUNC: RuntimeFuncDef =
 /// rt_register_deepcopy_func(class_id: i64, func_ptr: i64) -> void
 pub static RT_REGISTER_DEEPCOPY_FUNC: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_deepcopy_func", &[PI64, PI64]);
-/// rt_issubclass(child_tag: i64, parent_tag: i64) -> i8
-pub static RT_ISSUBCLASS: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_issubclass", &[PI64, PI64], Some(RI8), false);
 /// rt_obj_has_method(obj: *mut u8, name_hash: i64) -> i8
 /// Returns 1 if the object has a method with the given name hash, 0 otherwise.
 /// Used for structural Protocol isinstance checks.

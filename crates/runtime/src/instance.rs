@@ -391,15 +391,6 @@ pub extern "C" fn rt_check_instance_abi(value: Value, class_id: i64) -> Value {
     }
 }
 
-/// Check if child_vtable is a subclass of parent_vtable
-/// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_issubclass(child_vtable: i64, parent_vtable: i64) -> i8 {
-    // Use the vtable module to check inheritance
-    // vtable IDs are class IDs as u8
-    crate::vtable::rt_class_inherits_from(child_vtable as u8, parent_vtable as u8)
-}
-
 // =============================================================================
 // Class qualified-name registry (for the default object repr)
 // =============================================================================
