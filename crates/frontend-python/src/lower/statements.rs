@@ -14,6 +14,27 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    /// Handle a module-level CONDITIONAL import reached during body lowering: if
+    /// the import scan visited this statement's offset (so the module is loaded
+    /// and bound module-wide), replay its runtime effect (`<init>` call +
+    /// snapshots) HERE, in position, and return `true`. Returns `false` for an
+    /// offset the scan never saw (an import in a function body / `while`/`for`/
+    /// `with`), leaving the caller to reject it. Empty `import_actions` /
+    /// `scanned_import_offsets` (every non-`main` lowerer) always returns `false`.
+    fn try_emit_scanned_import(&mut self, range: TextRange) -> bool {
+        let key = range.start().to_u32();
+        if !self.scanned_import_offsets.contains(&key) {
+            return false;
+        }
+        // Clone the action before emitting: `emit_import_action` borrows `self`
+        // mutably, and the action lives in `self.import_actions`. Stdlib / typing
+        // imports have no action (compile-time bindings only) — nothing to emit.
+        if let Some(action) = self.import_actions.get(&key).cloned() {
+            self.emit_import_action(&action);
+        }
+        true
+    }
+
     /// Lower one statement. Returns `true` if it terminated the current block
     /// (`break` / `continue` / `return`).
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<bool> {
@@ -89,36 +110,46 @@ impl<'a> FnLowerer<'a> {
             Stmt::Pass(_) => Ok(false),
             // `from typing import ...` / `from __future__ import ...` are
             // type-level only (no runtime effect in our subset) — accept as no-ops
-            // so generics (TypeVar/Generic) compile. Real imports are processed at
-            // module top level (`lower_module_into`'s import scan); reaching here
-            // means the import is nested — inside a function body or a top-level
-            // `if`/`try` block. Those are rejected: the load DFS precomputes each
-            // module's `<init>` order in source order, so a conditionally-executed
-            // import has no place in that schedule yet (Phase 8 limitation — a
-            // top-level guarded `import` / optional-dependency pattern must be
-            // hoisted to an unconditional top-level import).
+            // anywhere so generics (TypeVar/Generic) compile.
+            //
+            // Real imports are loaded + bound by the module import scan
+            // (`ProgramLowerer::scan_imports`), which descends into module-level
+            // `if`/`try` branches. So reaching here with an offset the scan
+            // visited means this is a module-level CONDITIONAL import: the module
+            // is already loaded and its bindings are module-wide (like the `typing`
+            // carve-out); replay its runtime effect (`<init>` call + snapshots)
+            // here, IN POSITION, so it runs only if the branch is taken.
+            //
+            // An offset the scan never visited is an import in a function body /
+            // `while`/`for`/`with` — still out of scope (rejected below).
             Stmt::ImportFrom(i) => {
+                // Type-only imports are no-ops anywhere; a scanned (module-level
+                // conditional) import replays its effect in position. `||`
+                // short-circuits so a `typing` import never reaches the scan
+                // lookup (it may not be in the scanned set — e.g. inside a body).
                 let module = i.module.as_ref().map(|m| m.as_str()).unwrap_or("");
-                if matches!(module, "typing" | "__future__" | "typing_extensions") {
+                let is_type_only = matches!(module, "typing" | "__future__" | "typing_extensions");
+                if is_type_only || self.try_emit_scanned_import(i.range()) {
                     Ok(false)
                 } else {
                     Err(parse_error(
                         "only module-top-level imports are supported (an import inside \
-                         a function or a conditional block is out of scope)",
+                         a function or a non-`if`/`try` block is out of scope)",
                         to_span(i.range()),
                     ))
                 }
             }
             Stmt::Import(i) => {
-                if i.names
+                let is_type_only = i
+                    .names
                     .iter()
-                    .all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions"))
-                {
+                    .all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions"));
+                if is_type_only || self.try_emit_scanned_import(i.range()) {
                     Ok(false)
                 } else {
                     Err(parse_error(
                         "only module-top-level imports are supported (an import inside \
-                         a function or a conditional block is out of scope)",
+                         a function or a non-`if`/`try` block is out of scope)",
                         to_span(i.range()),
                     ))
                 }

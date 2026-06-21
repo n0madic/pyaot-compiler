@@ -339,8 +339,16 @@ struct ImportCollect {
     /// Stdlib bindings (Phase 8B), populated when the loader has no user
     /// module for an imported name.
     stdlib: StdlibBindings,
-    /// Import-statement body index → its precomputed runtime effect.
-    actions: HashMap<usize, ImportAction>,
+    /// Import-statement START OFFSET → its precomputed runtime effect. The key is
+    /// the statement's source-text start (`range().start().to_u32()`), not a flat
+    /// body index, so a conditionally-nested import (inside an `if`/`try` at
+    /// module level) can be located from `lower_stmt` and replayed in position.
+    actions: HashMap<u32, ImportAction>,
+    /// Start offsets of EVERY import the scan visited (including stdlib/typing
+    /// no-ops). Lets `lower_stmt` tell a module-level conditional import (the scan
+    /// loaded + bound it, so it is allowed) from an import in a function body /
+    /// `while`/`for`/`with` (never scanned, still rejected).
+    scanned_imports: HashSet<u32>,
 }
 
 /// The shared program-lowering context (Phase 8). Owns the global allocators and
@@ -502,6 +510,16 @@ pub(crate) struct FnLowerer<'a> {
     /// True for `__main__`: every promoted name lives in its global slot (the
     /// single storage), so main's own accesses rewrite to GlobalGet/GlobalSet.
     is_main: bool,
+    /// Import-statement start offset → its runtime effect (`<init>` calls +
+    /// `from M import VAR` snapshots). Empty except on the module-init lowerer
+    /// (`main`), where it carries `ImportCollect::actions` so a module-level
+    /// CONDITIONAL import (inside an `if`/`try`) can replay its action in position
+    /// from `lower_stmt`. Top-level imports replay from the Phase B loop instead.
+    import_actions: HashMap<u32, ImportAction>,
+    /// Start offsets of every import the module scan visited. Empty except on
+    /// `main`; lets `lower_stmt` accept a module-level conditional import (scanned
+    /// → loaded + bound) and still reject one in a function body / loop / `with`.
+    scanned_import_offsets: HashSet<u32>,
     entry: Idx<HirBlock>,
     cur: Idx<HirBlock>,
     /// Blocks already sealed with a real terminator. Open-ness is tracked here,

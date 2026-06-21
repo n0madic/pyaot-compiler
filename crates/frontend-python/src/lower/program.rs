@@ -179,14 +179,14 @@ impl<'a> ProgramLowerer<'a> {
     }
 
     /// Process `import a.b.c [as x]` (Phase 8).
-    fn handle_import(
-        &mut self,
-        i: &StmtImport,
-        my_ns: u32,
-        idx: usize,
-        col: &mut ImportCollect,
-    ) -> Result<()> {
+    fn handle_import(&mut self, i: &StmtImport, my_ns: u32, col: &mut ImportCollect) -> Result<()> {
         let span = to_span(i.range());
+        // Key on the statement's source start so a conditionally-nested import is
+        // locatable from `lower_stmt`. Recorded for EVERY scanned import (incl.
+        // typing-only / stdlib), so `lower_stmt` distinguishes a module-level
+        // conditional import from one in a function body / loop / `with`.
+        let key = i.range().start().to_u32();
+        col.scanned_imports.insert(key);
         for alias in &i.names {
             let dotted_name = alias.name.as_str();
             if matches!(dotted_name, "typing" | "__future__" | "typing_extensions") {
@@ -219,7 +219,7 @@ impl<'a> ProgramLowerer<'a> {
                 None => (target[0].clone(), target[..1].to_vec()),
             };
             self.register_alias(&bind, &bound, my_ns, col);
-            let entry = col.actions.entry(idx).or_default();
+            let entry = col.actions.entry(key).or_default();
             entry.init_calls.extend(action.init_calls);
             entry.snapshots.extend(action.snapshots);
         }
@@ -233,10 +233,12 @@ impl<'a> ProgramLowerer<'a> {
         importer: &[String],
         is_package: bool,
         my_ns: u32,
-        idx: usize,
         col: &mut ImportCollect,
     ) -> Result<()> {
         let span = to_span(i.range());
+        // Statement start offset — see `handle_import`.
+        let key = i.range().start().to_u32();
+        col.scanned_imports.insert(key);
         let level = i.level.map(|l| l.to_u32() as usize).unwrap_or(0);
         let module_name = i.module.as_ref().map(|m| m.as_str());
         if level == 0 {
@@ -320,9 +322,61 @@ impl<'a> ProgramLowerer<'a> {
                 ));
             }
         }
-        let entry = col.actions.entry(idx).or_default();
+        let entry = col.actions.entry(key).or_default();
         entry.init_calls.extend(action.init_calls);
         entry.snapshots.extend(action.snapshots);
+        Ok(())
+    }
+
+    /// Recursively scan a statement list for imports, descending only into
+    /// module-level `if`/`try` branches (the conditional-import forms). Bodies of
+    /// functions, classes, `while`/`for`/`with` are NOT entered: their imports are
+    /// rejected later in `lower_stmt`. Each import loads + binds its module
+    /// unconditionally (load has no runtime effect — like the `typing` carve-out);
+    /// only the `<init>` call / snapshots are positional, replayed where the
+    /// import textually sits.
+    fn scan_imports(
+        &mut self,
+        stmts: &[Stmt],
+        mod_path: &[String],
+        is_package: bool,
+        my_ns: u32,
+        col: &mut ImportCollect,
+    ) -> Result<()> {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Import(im) => self.handle_import(im, my_ns, col)?,
+                Stmt::ImportFrom(im) => {
+                    self.handle_import_from(im, mod_path, is_package, my_ns, col)?
+                }
+                Stmt::If(s) => {
+                    self.scan_imports(&s.body, mod_path, is_package, my_ns, col)?;
+                    // `orelse` covers both `elif` (a nested `If`) and `else`.
+                    self.scan_imports(&s.orelse, mod_path, is_package, my_ns, col)?;
+                }
+                Stmt::Try(t) => {
+                    self.scan_imports(&t.body, mod_path, is_package, my_ns, col)?;
+                    for h in &t.handlers {
+                        let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                        self.scan_imports(&h.body, mod_path, is_package, my_ns, col)?;
+                    }
+                    self.scan_imports(&t.orelse, mod_path, is_package, my_ns, col)?;
+                    self.scan_imports(&t.finalbody, mod_path, is_package, my_ns, col)?;
+                }
+                Stmt::TryStar(t) => {
+                    self.scan_imports(&t.body, mod_path, is_package, my_ns, col)?;
+                    for h in &t.handlers {
+                        let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                        self.scan_imports(&h.body, mod_path, is_package, my_ns, col)?;
+                    }
+                    self.scan_imports(&t.orelse, mod_path, is_package, my_ns, col)?;
+                    self.scan_imports(&t.finalbody, mod_path, is_package, my_ns, col)?;
+                }
+                // Other statement kinds (function/class bodies, `while`/`for`/
+                // `with`) are not descended — their imports stay out of scope.
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -531,16 +585,13 @@ impl<'a> ProgramLowerer<'a> {
             reexport_classes: Vec::new(),
             stdlib: StdlibBindings::default(),
             actions: HashMap::new(),
+            scanned_imports: HashSet::new(),
         };
-        for (idx, stmt) in body.iter().enumerate() {
-            match stmt {
-                Stmt::Import(im) => self.handle_import(im, my_ns, idx, &mut col)?,
-                Stmt::ImportFrom(im) => {
-                    self.handle_import_from(im, mod_path, is_package, my_ns, idx, &mut col)?
-                }
-                _ => {}
-            }
-        }
+        // Recursive scan: top-level imports plus those nested in module-level
+        // `if`/`try` branches (conditional / optional-dependency imports). Each is
+        // loaded + bound unconditionally; its runtime `<init>`/snapshot effect is
+        // keyed by source offset and replayed where the import textually sits.
+        self.scan_imports(&body, mod_path, is_package, my_ns, &mut col)?;
         // Restore the namespace for this module's own function reservations.
         self.shared.current_ns = my_ns;
 
@@ -834,18 +885,27 @@ impl<'a> ProgramLowerer<'a> {
                 None,
             );
             main.is_main = true;
+            // Hand the import actions + scanned offsets to the module-init lowerer
+            // so a module-level CONDITIONAL import (inside an `if`/`try`) replays
+            // its `<init>`/snapshot effect in position from `lower_stmt`.
+            main.import_actions = col.actions.clone();
+            main.scanned_import_offsets = col.scanned_imports.clone();
             main.set_scope_facts(&main_facts);
             main.init_cells();
             let dunder_name = main.intern("__name__");
             let name_lit = main.intern(&name_value);
             let name_val = main.alloc(HirExprKind::StrLit(name_lit), SemTy::Str, Span::dummy());
             main.write_named(dunder_name, SemTy::Str, name_val);
-            for (idx, stmt) in body.iter().enumerate() {
+            for stmt in &body {
                 match stmt {
-                    // Module-level imports replay their precomputed init-calls +
-                    // snapshots here (typing-only imports have no action).
+                    // Top-level imports replay their precomputed init-calls +
+                    // snapshots here, keyed by source offset (typing-only imports
+                    // have no action). Imports nested in module-level `if`/`try`
+                    // replay from `lower_stmt` (the `other` arm below) instead, so
+                    // their effect runs only when the branch is taken.
                     Stmt::Import(_) | Stmt::ImportFrom(_) => {
-                        if let Some(action) = col.actions.get(&idx) {
+                        let key = stmt.range().start().to_u32();
+                        if let Some(action) = col.actions.get(&key) {
                             main.emit_import_action(action);
                         }
                     }

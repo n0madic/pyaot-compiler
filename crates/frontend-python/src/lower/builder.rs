@@ -35,6 +35,8 @@ impl<'a> FnLowerer<'a> {
             global_decls: HashSet::new(),
             bound_names: HashSet::new(),
             is_main: false,
+            import_actions: HashMap::new(),
+            scanned_import_offsets: HashSet::new(),
             entry,
             cur: entry,
             sealed: HashSet::new(),

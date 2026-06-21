@@ -45,7 +45,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `raise` / `raise … from …` | ✅ | Real tracebacks with line numbers |
 | `assert` | ✅ | |
 | `global` / `nonlocal` | ✅ | |
-| `import` / `from … import` | ✅ | Multi-module, packages, re-exports |
+| `import` / `from … import` | ✅ | Multi-module, packages, re-exports; conditional top-level imports in `if`/`try` (known modules only) |
 | `import *` | ❌ | Out of scope |
 | `match` / `case` | ✅ | Literal/class/capture/guard/OR/sequence/mapping patterns |
 | `type X = T` (PEP 695 alias) | ✅ | Compile-time annotation binding |
@@ -233,6 +233,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `import module as alias` / `from … as …` | ✅ | |
 | Multi-file projects / packages | ✅ | `--module-path`, `__init__.py` |
 | Re-exports | ✅ | |
+| Conditional top-level import (`if`/`elif`/`else`, `try`/`except`/`else`/`finally`) | ✅ | Optional-dependency pattern. Module must be resolvable at compile time (stdlib or on-disk user module — known modules only); binding is module-wide (compile-time), the runtime `<init>`/snapshot runs only when the branch is taken. One import site per module recommended (init-once ordering). Imports in a function body / `while`/`for`/`with` stay out of scope. |
 | `__name__ == "__main__"` entry guard | ✅ | |
 | `from __future__ import annotations` | ✅ | |
 | `import *` | ❌ | Out of scope |

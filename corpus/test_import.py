@@ -264,4 +264,65 @@ for _rv_imp_w in _rv_squares(5):
     _rv_imp_b.append(_rv_imp_w)
 print(_rv_imp_b)
 
+# ============================================================
+# SECTION 9: Conditional top-level imports (`if`/`try`)
+# An import nested in a module-level `if`/`try` is LOADED + BOUND at
+# compile time (module-wide, like the `typing` carve-out); only its
+# runtime `<init>` call / `from M import VAR` snapshots run in-position,
+# so they execute only when the branch is taken. Conditions are
+# runtime-computed (not const-folded), so both branches lower but the
+# taken branch matches CPython.
+# ============================================================
+
+# A runtime-computed flag the optimizer cannot fold (list length after
+# appends), so the branch selection is genuinely dynamic.
+_cond_src: list[int] = []
+_cond_src.append(10)
+_cond_src.append(20)
+_cond_src.append(30)
+_cond_count: int = len(_cond_src)
+
+# (a) stdlib import in a taken `if` branch. `json` has no runtime
+# `<init>` — it is a pure compile-time binding (like `typing`).
+if _cond_count == 3:
+    import json
+    _cond_json: str = json.dumps([1, 2])
+    assert _cond_json == "[1, 2]", "conditional json.dumps in if-branch"
+    print(_cond_json)
+else:
+    print("json branch skipped")
+
+# (b) stdlib import in a NOT-taken branch — must still compile (the
+# binding is module-wide) but must not run at runtime.
+if _cond_count == 0:
+    import math
+    _cond_unused: float = math.sqrt(16.0)
+    print(_cond_unused)
+else:
+    print("math if-branch not taken")
+
+# (c) optional-dependency pattern: stdlib import in a `try` body with an
+# `ImportError` fallback. `math` is resolvable, so the try body runs.
+try:
+    import math
+    _cond_sqrt: float = math.sqrt(9.0)
+    assert _cond_sqrt == 3.0, "conditional math.sqrt in try-body"
+    print(_cond_sqrt)
+except ImportError:
+    print("math unavailable")
+
+# (d) conditional USER-module import — `condmod`'s first (and only)
+# import is inside this branch, so its `<init>` (setting FACTOR) is
+# emitted in-position and runs only because the branch is taken. Tests
+# both the conditional `<init>` and the `from M import VAR` snapshot.
+if _cond_count > 1:
+    from condmod import scale, FACTOR
+    _cond_scaled: int = scale(5)
+    assert _cond_scaled == 15, "conditional user-module function call"
+    assert FACTOR == 3, "conditional user-module variable snapshot"
+    print(_cond_scaled)
+    print(FACTOR)
+else:
+    print("condmod branch skipped")
+
 print("All import tests passed!")
