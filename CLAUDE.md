@@ -51,6 +51,12 @@ modes they prevent are catalogued in `PITFALLS.md`).
   coverage. The one thing that stays forbidden is papering over a front-half
   bug in the runtime instead of fixing the front-half.
 - `#![forbid(unsafe_code)]` in every compiler crate; only `runtime` uses unsafe.
+- **Keep `COMPILER_STATUS.md` current.** It is the Python-feature coverage map
+  (statements, types, operators, builtins, stdlib, …) keyed to the `corpus/`
+  differential gate. Whenever a change adds, completes, or drops support for a
+  Python feature — a new builtin, stdlib surface, syntax form, type, or a
+  feature moving ❌→🟡→✅ — update the relevant row(s) in the same commit. A
+  feature only earns ✅ once it is in `PHASE_CORPUS` and byte-exact vs CPython.
 - After any change: `cargo check --workspace --exclude pyaot-runtime`, and
   `cargo build -p pyaot-runtime` if the runtime was touched.
 
