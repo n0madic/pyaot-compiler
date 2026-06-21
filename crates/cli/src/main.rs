@@ -26,7 +26,9 @@ use pyaot_utils::StringInterner;
 /// Resolves `import` targets against a list of search roots (Phase 8): a dotted
 /// module `a.b.c` is `root/a/b/c.py`, else the package `root/a/b/c/__init__.py`.
 /// Roots are tried in order — `roots[0]` is the entry script's directory,
-/// followed by any `--module-path` directories — and the first match wins.
+/// followed by any `--module-path` directories, then the bundled / external
+/// `site-packages/` roots (see [`site_packages_roots`]) — and the first match
+/// wins.
 struct DirModuleSource {
     roots: Vec<PathBuf>,
 }
@@ -51,6 +53,36 @@ impl ModuleSource for DirModuleSource {
         }
         None
     }
+}
+
+/// Resolve the bundled / external `site-packages/` search roots. These are
+/// appended *after* the entry script's directory and any `--module-path`s, so a
+/// same-named user module always shadows a bundled package.
+///
+/// Candidates (kept only if the directory exists), in priority order:
+///   1. `$PYAOT_SITE_PACKAGES` — `PATH`-style list override (each entry honoured).
+///   2. `<exe_dir>/site-packages` — next to an installed / copied binary.
+///   3. `<repo_root>/site-packages` — dev fallback, baked in at compile time.
+///
+/// Packages here are pure-Python modules written against the supported stdlib
+/// subset (e.g. the bundled `requests`); they are discovered and compiled
+/// exactly like a user `.py` import — there is no separate native-package path.
+fn site_packages_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(env) = std::env::var_os("PYAOT_SITE_PACKAGES") {
+        roots.extend(std::env::split_paths(&env));
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("site-packages")))
+    {
+        roots.push(dir);
+    }
+    roots.push(PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../site-packages"
+    )));
+    roots.into_iter().filter(|p| p.is_dir()).collect()
 }
 
 /// Static AOT compiler for a typed subset of Python 3 → native (Cranelift).
@@ -215,6 +247,9 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))];
     roots.extend(cli.module_path.iter().cloned());
+    // Bundled / external `site-packages/` packages (e.g. `requests`) are added
+    // last so user code and `--module-path` always win on a name clash.
+    roots.extend(site_packages_roots());
     let mut loader = DirModuleSource { roots };
     timer.step("Parsing");
     let program = pyaot_frontend_python::parse_program(

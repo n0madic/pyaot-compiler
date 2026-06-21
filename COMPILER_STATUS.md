@@ -233,6 +233,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `from module import name` | ✅ | |
 | `import module as alias` / `from … as …` | ✅ | |
 | Multi-file projects / packages | ✅ | `--module-path`, `__init__.py` |
+| External `site-packages/` packages | ✅ | Pure-Python packages on the stdlib subset, compiled like user imports. Roots: `$PYAOT_SITE_PACKAGES`, `<exe_dir>/site-packages`, `<repo_root>/site-packages`. Bundled example: `requests` (urllib facade). |
 | Re-exports | ✅ | |
 | Conditional top-level import (`if`/`elif`/`else`, `try`/`except`/`else`/`finally`) | ✅ | Optional-dependency pattern. Module must be resolvable at compile time (stdlib or on-disk user module — known modules only); binding is module-wide (compile-time), the runtime `<init>`/snapshot runs only when the branch is taken. One import site per module recommended (init-once ordering). Imports in a function body / `while`/`for`/`with` stay out of scope. |
 | `__name__ == "__main__"` entry guard | ✅ | |

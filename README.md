@@ -205,6 +205,29 @@ Common flags (`pyaot --help` for the full list):
 | `-v, --verbose` | Print each pipeline stage, its duration, and the total to stderr. |
 | `--runtime-lib <PATH>` | Path to `libpyaot_runtime.a` (overrides auto-detection). |
 
+### External packages (`site-packages/`)
+
+Pure-Python packages written against the supported stdlib subset can be dropped
+into a `site-packages/` directory and imported like any third-party library —
+they are discovered and compiled exactly like a user `.py` import (no separate
+native-package path). The repo bundles a `requests` facade
+(`site-packages/requests`, a thin wrapper over `urllib.request`) as a worked
+example:
+
+```python
+import requests
+resp = requests.get("https://api.example.com/items", params={"q": "x"})
+print(resp.status_code, resp.text)
+```
+
+Search roots are tried in this order, first match wins (so a user module always
+shadows a same-named package):
+
+1. the entry script's directory, then any `--module-path <DIR>`;
+2. `$PYAOT_SITE_PACKAGES` — a `PATH`-style (`:`-separated) list of extra roots;
+3. `<exe_dir>/site-packages` next to the `pyaot` binary;
+4. `<repo_root>/site-packages` (the bundled packages, baked in for dev builds).
+
 ## Slim runtime (binary size)
 
 The runtime's stdlib surface is feature-gated. The default build enables
