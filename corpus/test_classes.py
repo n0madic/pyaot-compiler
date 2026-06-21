@@ -4466,9 +4466,44 @@ def _gm_scalar_methods():
     assert box["lst"] == [1, 2, 3, 4, 5]
 
 
+def _gm_str_methods():
+    # str methods on a `Dyn` receiver — the gradual sibling of the typed
+    # `lower_str_method` path (routes through `rt_obj_method`'s `Str` arm to the
+    # same `rt_str_*` family). `box[k]` is `Dyn` because the dict is heterogeneous.
+    box = {}
+    box["n"] = 0  # keep the dict's value type `Dyn`
+
+    box["s"] = "Hello, World"
+    assert box["s"].upper() == "HELLO, WORLD"
+    assert box["s"].lower() == "hello, world"
+    assert box["s"].replace("o", "0") == "Hell0, W0rld"
+    assert box["s"].startswith("Hello")
+    assert box["s"].endswith("World")
+    assert box["s"].find("World") == 7
+    assert box["s"].count("l") == 3
+    assert box["s"].split(", ") == ["Hello", "World"]
+
+    # `encode()` — the gap that broke `requests._prepare_body("raw", ...)`: a
+    # `data.encode()` on a gradual `data` parameter. ASCII + multi-byte.
+    assert box["s"].encode() == b"Hello, World"
+    box["u"] = "caféX"
+    assert box["u"].encode() == "caféX".encode()
+    assert box["u"].encode("utf-8") == "caféX".encode("utf-8")
+
+    box["t"] = "  trim  "
+    assert box["t"].strip() == "trim"
+    box["j"] = "-"
+    assert box["j"].join(["x", "y", "z"]) == "x-y-z"
+    box["d"] = "42"
+    assert box["d"].isdigit()
+    assert box["d"].rjust(5) == "   42"
+    assert box["d"].zfill(5) == "00042"
+
+
 _gm_container_methods()
 _gm_user_methods()
 _gm_scalar_methods()
+_gm_str_methods()
 
 
 # --- folded from b10_field_inference.py: cross-instance field-type inference ---

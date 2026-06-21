@@ -137,7 +137,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Abstract base classes (`abc.ABC`, `@abstractmethod`) | ✅ | Recognized at parse time |
 | `typing.Protocol` / structural `isinstance` | ✅ | Instance-only via `rt_obj_has_method` |
 | Nested classes | ✅ | Capture-free only; capturing enclosing locals rejected |
-| Gradual / `Dyn`-receiver method dispatch | ✅ | Tag-dispatch `rt_obj_method` |
+| Gradual / `Dyn`-receiver method dispatch | ✅ | Tag-dispatch `rt_obj_method` — list/dict/set/deque/tuple/int + **str** (case/strip/split/replace/find/encode/join/predicates/…) + user instances |
 | Class attribute access by literal name | ✅ | |
 | Dynamic attribute by variable name `getattr(o, var)` | ❌ | Out of scope |
 | `__dict__` mutation / dynamic attributes | ❌ | Out of scope |
