@@ -128,7 +128,8 @@ impl<'a> FnLowerer<'a> {
                 // short-circuits so a `typing` import never reaches the scan
                 // lookup (it may not be in the scanned set — e.g. inside a body).
                 let module = i.module.as_ref().map(|m| m.as_str()).unwrap_or("");
-                let is_type_only = matches!(module, "typing" | "__future__" | "typing_extensions");
+                let is_type_only =
+                    matches!(module, "typing" | "__future__" | "typing_extensions" | "dataclasses");
                 if is_type_only || self.try_emit_scanned_import(i.range()) {
                     Ok(false)
                 } else {
@@ -143,7 +144,7 @@ impl<'a> FnLowerer<'a> {
                 let is_type_only = i
                     .names
                     .iter()
-                    .all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions"));
+                    .all(|n| matches!(n.name.as_str(), "typing" | "typing_extensions" | "dataclasses"));
                 if is_type_only || self.try_emit_scanned_import(i.range()) {
                     Ok(false)
                 } else {

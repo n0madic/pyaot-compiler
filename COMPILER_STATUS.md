@@ -144,7 +144,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Metaclasses | ❌ | Out of scope |
 | `__del__` finalizers | ❌ | Out of scope — tracing GC can't match CPython's deterministic finalization timing; use `with` |
 | `__copy__` / `__deepcopy__` hooks | ✅ | `copy.copy` / `copy.deepcopy` dispatch to the user dunder via a per-class thunk; `__deepcopy__` gets a fresh memo dict (not the runtime's cycle tracker) |
-| `@dataclass` | ❌ | Not implemented |
+| `@dataclass` | ✅ | Frontend-only desugar: synthesizes missing `__init__`/`__repr__`/`__eq__` from field annotations + literal defaults; `ClassVar` excluded. Out of scope: `@dataclass(frozen=/order=/…)` & kwargs, `field()`/`default_factory`, mutable defaults, inheritance, `InitVar`, `__hash__` |
 | `enum.Enum` | ❌ | Not implemented |
 | `NamedTuple` / `TypedDict` | ❌ | Not implemented |
 
@@ -268,7 +268,8 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | `abc` | ✅ | `ABC` / `@abstractmethod` |
 | `copy` | ✅ | |
 | `typing` | ✅ | `Protocol`, `Generic`, `TypeVar`, type aliases, `Optional`/`Union` |
-| `datetime`, `decimal`, `fractions`, `enum`, `dataclasses` | ❌ | Not implemented |
+| `datetime`, `decimal`, `fractions`, `enum` | ❌ | Not implemented |
+| `dataclasses` | 🟡 | `@dataclass` decorator only (frontend desugar — see OOP table); `field()`/`default_factory`/`fields()`/`asdict()` out of scope |
 | `asyncio` | ❌ | Out of scope (no `async`/`await`) |
 | `gc` (manual GC control) | ❌ | Out of scope — tracing collector; `gc.collect()` count can't match CPython |
 

@@ -62,6 +62,10 @@ const PHASE_CORPUS: &[&str] = &[
     // Generics + type system + dead-code narrowing (merges test_types_system.py
     // and test_dead_code_warnings.py; folds p5_generics).
     "test_generics.py",
+    // @dataclass synthesis of __init__/__repr__/__eq__ from field annotations
+    // (frontend-only desugar): basic/default/zero-field/nested/ClassVar forms,
+    // byte-exact !r reprs, cross-type __eq__, user-dunder preservation.
+    "test_dataclasses.py",
     // ── Iteration & collections ──
     // for/comprehensions/iter-builtins/unpack/reduce/map/filter/tuple-cmp +
     // cross-feature integration + comprehension outermost-iterable scope (folds

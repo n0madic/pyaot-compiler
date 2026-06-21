@@ -189,7 +189,14 @@ impl<'a> ProgramLowerer<'a> {
         col.scanned_imports.insert(key);
         for alias in &i.names {
             let dotted_name = alias.name.as_str();
-            if matches!(dotted_name, "typing" | "__future__" | "typing_extensions") {
+            // `dataclasses` is recognized syntactically (the `@dataclass`
+            // decorator desugar runs in the frontend); no runtime binding needed,
+            // so the import is a no-op like `typing` (no `field()` surface — that
+            // is out of scope).
+            if matches!(
+                dotted_name,
+                "typing" | "__future__" | "typing_extensions" | "dataclasses"
+            ) {
                 continue;
             }
             let target: Vec<String> = dotted_name.split('.').map(|s| s.to_string()).collect();
@@ -243,7 +250,12 @@ impl<'a> ProgramLowerer<'a> {
         let module_name = i.module.as_ref().map(|m| m.as_str());
         if level == 0 {
             if let Some(m) = module_name {
-                if matches!(m, "typing" | "__future__" | "typing_extensions") {
+                // `from dataclasses import dataclass` is a no-op: `@dataclass` is
+                // desugared syntactically in the frontend (see [`dataclass`]).
+                if matches!(
+                    m,
+                    "typing" | "__future__" | "typing_extensions" | "dataclasses"
+                ) {
                     return Ok(());
                 }
             }
@@ -396,6 +408,11 @@ impl<'a> ProgramLowerer<'a> {
         // defaults/kwargs adaptation).
         let mut body = body;
         desugar_module_lambda_defs(&mut body);
+        // `@dataclass`-decorated classes → synthesized `__init__`/`__repr__`/
+        // `__eq__` AST methods, BEFORE partitioning so the synthetic methods are
+        // present everywhere the class is later scanned. Recurses into nested
+        // bodies to cover nested dataclasses.
+        desugar_dataclasses(&mut body)?;
         // Partition top-level statements (as the single-module lowering did).
         let mut defs: Vec<&StmtFunctionDef> = Vec::new();
         let mut decorated: Vec<&StmtFunctionDef> = Vec::new();
