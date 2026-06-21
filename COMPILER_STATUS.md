@@ -14,6 +14,11 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 > `compile`, metaclasses, `__dict__` mutation, dynamic `getattr(obj, name_var)`
 > with a non-literal name, `globals()` / `locals()`, `inspect`, `import *`,
 > runtime class creation, `async` / `await`. See `ARCHITECTURE.md`.
+>
+> Also out of scope for a **GC-model** reason (tracing collector ≠ CPython's
+> deterministic refcount finalization): `__del__` finalizers and manual GC
+> control (`gc.collect()`, the `gc` module). Use `with` / context managers for
+> deterministic cleanup.
 
 ---
 
@@ -137,6 +142,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Dynamic attribute by variable name `getattr(o, var)` | ❌ | Out of scope |
 | `__dict__` mutation / dynamic attributes | ❌ | Out of scope |
 | Metaclasses | ❌ | Out of scope |
+| `__del__` finalizers | ❌ | Out of scope — tracing GC can't match CPython's deterministic finalization timing; use `with` |
+| `__copy__` / `__deepcopy__` hooks | 🟡 | Runtime dispatch wired; per-class registration not yet emitted by the compiler |
 | `@dataclass` | ❌ | Not implemented |
 | `enum.Enum` | ❌ | Not implemented |
 | `NamedTuple` / `TypedDict` | ❌ | Not implemented |
@@ -261,6 +268,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | `typing` | ✅ | `Protocol`, `Generic`, `TypeVar`, type aliases, `Optional`/`Union` |
 | `datetime`, `decimal`, `fractions`, `enum`, `dataclasses` | ❌ | Not implemented |
 | `asyncio` | ❌ | Out of scope (no `async`/`await`) |
+| `gc` (manual GC control) | ❌ | Out of scope — tracing collector; `gc.collect()` count can't match CPython |
 
 ---
 

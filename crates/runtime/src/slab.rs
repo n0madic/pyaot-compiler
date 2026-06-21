@@ -379,18 +379,13 @@ unsafe fn finalize_object_by_tag(obj_ptr: *mut Obj, tag: TypeTagKind) {
             std::ptr::drop_in_place(&mut (*(obj_ptr as *mut crate::object::BigIntObj)).value);
         }
         TypeTagKind::Instance => {
-            // Call __del__ if registered for this class.
-            // Use catch_unwind to prevent panics from corrupting the slab free list.
-            let instance = obj_ptr as *mut crate::object::InstanceObj;
-            let class_id = (*instance).class_id;
-            let del_fn = crate::vtable::get_del_func(class_id);
-            if !del_fn.is_null() {
-                let del_fn: extern "C" fn(i64) -> i64 = std::mem::transmute(del_fn);
-                let obj_i64 = obj_ptr as i64;
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    del_fn(obj_i64);
-                }));
-            }
+            // No per-instance finalization: `__del__` is out of scope by design.
+            // A tracing GC reclaims instances at a nondeterministic time, so it
+            // cannot reproduce CPython's deterministic refcount finalization
+            // order — the parity gap is fundamental, not an implementation gap.
+            // Idiomatic deterministic cleanup uses `with`/context managers, which
+            // are supported. The instance's field slots are plain GC-managed
+            // `Value`s with no owned Rust allocation to drop here.
         }
         _ => {}
     }

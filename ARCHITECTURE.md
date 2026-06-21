@@ -9,6 +9,13 @@ minimal changes *within standard Python syntax*. Consciously **out of scope**
 dynamic `getattr(obj, name_var)`, `globals()`/`locals()`, `inspect`,
 `import *`, runtime class creation. `int` is **arbitrary precision** (bignum).
 
+Also out of scope, this time for a **GC-model** reason rather than a dynamism
+one: `__del__` finalizers and manual GC control (`gc.collect()`, the `gc`
+module). The runtime uses a tracing (mark-sweep) collector, so it reclaims
+objects at a nondeterministic time and cannot reproduce CPython's deterministic
+refcount finalization order — the parity gap is fundamental. Deterministic
+cleanup is expressed with `with` / context managers, which are supported.
+
 ## The seam: the runtime contract
 
 The compiler's type/IR layer is entirely *upstream* of the runtime. The runtime

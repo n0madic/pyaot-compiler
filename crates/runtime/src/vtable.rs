@@ -58,10 +58,6 @@ impl VtablePtr {
 static VTABLE_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
 
-/// Registry for __del__ function pointers (called during GC finalization)
-static DEL_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
-    RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
-
 /// Registry for __copy__ function pointers (called by copy.copy())
 static COPY_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
@@ -104,20 +100,6 @@ pub extern "C" fn rt_object_new(class_id: i64) -> *mut crate::object::Obj {
     let cid = class_id as u8;
     let field_count = unsafe { (*CLASS_REGISTRY.0.get())[cid as usize].field_count as i64 };
     crate::instance::rt_make_instance(cid, field_count)
-}
-
-/// Register __del__ function pointer for a class
-#[no_mangle]
-pub extern "C" fn rt_register_del_func(class_id: u8, func_ptr: *const u8) {
-    unsafe {
-        (*DEL_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
-    }
-}
-
-/// Get __del__ function pointer for a class (used by GC finalizer)
-#[inline]
-pub fn get_del_func(class_id: u8) -> *const u8 {
-    unsafe { (*DEL_FUNC_REGISTRY.0.get())[class_id as usize].0 }
 }
 
 /// Register __copy__ function pointer for a class

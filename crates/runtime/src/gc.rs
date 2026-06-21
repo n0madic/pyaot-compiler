@@ -34,7 +34,6 @@ struct GcState {
     objects: Vec<*mut Obj>,
     total_allocated: usize,
     threshold: usize,
-    stack_depth: usize,
     collecting: bool,
 }
 unsafe impl Send for GcState {}
@@ -57,7 +56,6 @@ pub fn init() {
         objects: Vec::new(),
         total_allocated: 0,
         threshold: 1024 * 1024,
-        stack_depth: 0,
         collecting: false,
     }));
     if GC_STATE_PTR
@@ -93,7 +91,6 @@ pub unsafe extern "C" fn gc_push(frame: *mut ShadowFrame) {
         return;
     }
     let s = gc_state();
-    s.stack_depth += 1;
     (*frame).prev = s.stack_top;
     s.stack_top = frame;
 }
@@ -104,15 +101,10 @@ pub extern "C" fn gc_pop() {
         let s = gc_state();
         if !s.stack_top.is_null() {
             s.stack_top = (*s.stack_top).prev;
-            s.stack_depth = s.stack_depth.saturating_sub(1);
         }
     }
 }
 
-#[no_mangle]
-pub extern "C" fn gc_get_stack_depth() -> usize {
-    unsafe { gc_state().stack_depth }
-}
 pub fn get_stack_top() -> *mut ShadowFrame {
     unsafe { gc_state().stack_top }
 }
@@ -127,14 +119,11 @@ pub fn get_stack_top() -> *mut ShadowFrame {
 pub fn unwind_below(sp: usize) {
     unsafe {
         let s = gc_state();
-        let mut popped = 0;
         let mut cur = s.stack_top;
         while !cur.is_null() && (cur as usize) < sp {
-            popped += 1;
             cur = (*cur).prev;
         }
         s.stack_top = cur;
-        s.stack_depth = s.stack_depth.saturating_sub(popped);
     }
 }
 
@@ -177,13 +166,6 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
         );
         s.total_allocated = s.total_allocated.saturating_add(size);
         p
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn gc_collect() {
-    unsafe {
-        collect_impl(gc_state());
     }
 }
 

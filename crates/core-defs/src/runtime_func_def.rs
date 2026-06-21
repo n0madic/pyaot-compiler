@@ -1039,12 +1039,6 @@ pub static RT_BYTES_FROM_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_byt
 /// rt_pow_float(base: f64, exp: f64) -> f64
 pub static RT_POW_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_pow_float", &[PF64, PF64], Some(RF64), false);
-/// rt_round_to_int(x: f64) -> i64
-pub static RT_ROUND_TO_INT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_round_to_int", &[PF64], Some(RI64), false);
-/// rt_round_to_digits(x: f64, ndigits: i64) -> f64
-pub static RT_ROUND_TO_DIGITS: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_round_to_digits", &[PF64, PI64], Some(RF64), false);
 /// rt_int_to_chr(code: i64) -> *mut Obj
 pub static RT_INT_TO_CHR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_chr");
 /// rt_chr_to_int(s: *mut Obj) -> i64
@@ -1477,8 +1471,6 @@ pub static RT_STRING_BUILDER_TO_STR: RuntimeFuncDef =
 pub static RT_PRINT_NEWLINE: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_newline", &[]);
 /// rt_print_sep() -> void
 pub static RT_PRINT_SEP: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_sep", &[]);
-/// rt_print_flush() -> void
-pub static RT_PRINT_FLUSH: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_flush", &[]);
 /// rt_print_set_stderr() -> void
 pub static RT_PRINT_SET_STDERR: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_set_stderr", &[]);
 /// rt_print_set_stdout() -> void
@@ -1497,8 +1489,6 @@ pub static RT_PRINT_STR_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_str
 pub static RT_PRINT_BYTES_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_bytes_obj", &[PI64]);
 /// rt_print_obj(obj: *mut Obj) -> void
 pub static RT_PRINT_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_obj", &[PI64]);
-/// rt_assert_fail_obj(msg: *mut Obj) -> void (diverges, but declared void for codegen)
-pub static RT_ASSERT_FAIL_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_assert_fail_obj", &[PI64]);
 
 // ===== Iterator operations =====
 
@@ -1670,42 +1660,20 @@ pub static RT_GENERATOR_IS_CLOSING: RuntimeFuncDef =
     RuntimeFuncDef::unary_to_i8("rt_generator_is_closing");
 
 // ===== Global variable storage =====
-// rt_global_get_{int,float,bool,ptr}(var_id: i32) -> value
-pub static RT_GLOBAL_GET_INT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_global_get_int", &[PI32], Some(RI64), false);
-pub static RT_GLOBAL_GET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_global_get_float", &[PI32], Some(RF64), false);
-pub static RT_GLOBAL_GET_BOOL: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_global_get_bool", &[PI32], Some(RI8), false);
+// Promoted module-globals use one uniform tagged slot ABI (invariant 2); the
+// typed `_int`/`_float`/`_bool` accessors were superseded by `_ptr` and removed.
+// rt_global_get_ptr(var_id: i32) -> value ; rt_global_set_ptr(var_id, value)
 pub static RT_GLOBAL_GET_PTR: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_global_get_ptr", &[PI32], Some(RI64), true);
-// rt_global_set_{int,float,bool,ptr}(var_id: i32, value) -> void
-pub static RT_GLOBAL_SET_INT: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_global_set_int", &[PI32, PI64]);
-pub static RT_GLOBAL_SET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_global_set_float", &[PI32, PF64]);
-pub static RT_GLOBAL_SET_BOOL: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_global_set_bool", &[PI32, PI8]);
 pub static RT_GLOBAL_SET_PTR: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_global_set_ptr", &[PI32, PI64]);
 
 // ===== Class attribute storage =====
-// rt_class_attr_get_{int,float,bool,ptr}(class_id: i8, attr_idx: i32) -> value
-pub static RT_CLASS_ATTR_GET_INT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_class_attr_get_int", &[PI8, PI32], Some(RI64), false);
-pub static RT_CLASS_ATTR_GET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_class_attr_get_float", &[PI8, PI32], Some(RF64), false);
-pub static RT_CLASS_ATTR_GET_BOOL: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_class_attr_get_bool", &[PI8, PI32], Some(RI8), false);
+// Class attributes use one uniform tagged slot ABI (invariant 2); the typed
+// `_int`/`_float`/`_bool` accessors were superseded by `_ptr` and removed.
+// rt_class_attr_get_ptr(class_id, attr_idx) ; rt_class_attr_set_ptr(…, value)
 pub static RT_CLASS_ATTR_GET_PTR: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_class_attr_get_ptr", &[PI8, PI32], Some(RI64), true);
-// rt_class_attr_set_{int,float,bool,ptr}(class_id: i8, attr_idx: i32, value) -> void
-pub static RT_CLASS_ATTR_SET_INT: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_class_attr_set_int", &[PI8, PI32, PI64]);
-pub static RT_CLASS_ATTR_SET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_class_attr_set_float", &[PI8, PI32, PF64]);
-pub static RT_CLASS_ATTR_SET_BOOL: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_class_attr_set_bool", &[PI8, PI32, PI8]);
 pub static RT_CLASS_ATTR_SET_PTR: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_class_attr_set_ptr", &[PI8, PI32, PI64]);
 
@@ -1779,9 +1747,6 @@ pub static RT_OBJECT_NEW: RuntimeFuncDef = RuntimeFuncDef::new_typed(
     &[MirSemantic::Raw],
     Some(MirSemantic::Tagged),
 );
-/// rt_register_del_func(class_id: i8, func_ptr: i64) -> void
-pub static RT_REGISTER_DEL_FUNC: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_register_del_func", &[PI8, PI64]);
 /// rt_register_copy_func(class_id: i8, func_ptr: i64) -> void
 pub static RT_REGISTER_COPY_FUNC: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_copy_func", &[PI8, PI64]);

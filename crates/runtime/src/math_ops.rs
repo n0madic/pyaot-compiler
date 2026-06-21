@@ -183,89 +183,6 @@ pub extern "C" fn rt_int_rshift(left: i64, right: i64) -> i64 {
     left >> right
 }
 
-/// Round float to nearest integer using banker's rounding (round half to even): round(x) -> i64
-/// Returns: rounded value as integer
-#[no_mangle]
-pub extern "C" fn rt_round_to_int(x: f64) -> i64 {
-    if x.is_nan() {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::ValueError,
-                "cannot convert float NaN to integer"
-            )
-        }
-    }
-    if x.is_infinite() || x > i64::MAX as f64 || x < i64::MIN as f64 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::OverflowError,
-                "cannot convert float infinity to integer"
-            )
-        }
-    }
-    // Banker's rounding: round half to even
-    let floor = x.floor();
-    let ceil = x.ceil();
-    let diff_floor = (x - floor).abs();
-    let diff_ceil = (ceil - x).abs();
-
-    if diff_floor < diff_ceil {
-        floor as i64
-    } else if diff_ceil < diff_floor {
-        ceil as i64
-    } else {
-        // Exactly halfway - round to even
-        let floor_int = floor as i64;
-        if floor_int % 2 == 0 {
-            floor_int
-        } else {
-            ceil as i64
-        }
-    }
-}
-
-/// Round float to N decimal places using banker's rounding: round(x, ndigits) -> f64
-/// Returns: rounded value as float
-#[no_mangle]
-pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
-    if ndigits == 0 {
-        // Use banker's rounding for ndigits=0 too
-        return rt_round_to_int(x) as f64;
-    }
-    // Validate ndigits fits in i32 range (CPython raises OverflowError for extreme values)
-    if ndigits > i32::MAX as i64 || ndigits < i32::MIN as i64 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::OverflowError,
-                "ndigits out of range for round()"
-            )
-        }
-    }
-    let multiplier = 10_f64.powi(ndigits as i32);
-    let scaled = x * multiplier;
-
-    // Apply banker's rounding to scaled value
-    let floor = scaled.floor();
-    let ceil = scaled.ceil();
-    let diff_floor = (scaled - floor).abs();
-    let diff_ceil = (ceil - scaled).abs();
-
-    let rounded = if diff_floor < diff_ceil {
-        floor
-    } else if diff_ceil < diff_floor {
-        ceil
-    } else {
-        // Exactly halfway - round to even
-        let floor_int = floor as i64;
-        if floor_int % 2 == 0 {
-            floor
-        } else {
-            ceil
-        }
-    };
-
-    rounded / multiplier
-}
 
 /// Safe float-to-int conversion: int(x) where x is float.
 /// Raises ValueError for NaN, OverflowError for infinity or out-of-range values.
@@ -739,18 +656,6 @@ mod tests {
         assert_eq!(rt_pow_int(1, -5), 1);
         assert_eq!(rt_pow_int(-1, -3), -1);
         assert_eq!(rt_pow_int(-1, -4), 1);
-    }
-
-    #[test]
-    fn test_round_to_int_bankers() {
-        assert_eq!(rt_round_to_int(0.5), 0);
-        assert_eq!(rt_round_to_int(1.5), 2);
-        assert_eq!(rt_round_to_int(2.5), 2);
-        assert_eq!(rt_round_to_int(3.5), 4);
-        assert_eq!(rt_round_to_int(1.3), 1);
-        assert_eq!(rt_round_to_int(1.7), 2);
-        assert_eq!(rt_round_to_int(-1.3), -1);
-        assert_eq!(rt_round_to_int(-1.7), -2);
     }
 
     #[test]

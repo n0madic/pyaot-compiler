@@ -21,16 +21,6 @@ pub extern "C" fn rt_print_set_stdout() {
     PRINT_TARGET.store(0, Ordering::Relaxed);
 }
 
-#[no_mangle]
-pub extern "C" fn rt_print_flush() {
-    use std::io::Write;
-    if is_stderr_target() {
-        let _ = std::io::stderr().flush();
-    } else {
-        let _ = std::io::stdout().flush();
-    }
-}
-
 /// Print a StrObj (heap-allocated string).
 /// A `None` value (immediate tag or heap None object) prints "None" — an
 /// `Optional[str]` narrowed to `str` for static dispatch (Phase 8C) routes a

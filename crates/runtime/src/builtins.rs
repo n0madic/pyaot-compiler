@@ -434,32 +434,6 @@ fn get_builtin_func_ptr_impl(builtin_id: i64) -> i64 {
     }
 }
 
-/// Get function pointer for a builtin by its ID.
-/// Called from codegen via BuiltinAddr instruction.
-/// Raises a RuntimeError (via the exception unwinder) if `builtin_id` is out of range.
-#[no_mangle]
-pub extern "C" fn rt_get_builtin_func_ptr(builtin_id: i64) -> i64 {
-    match builtin_id {
-        0 => rt_builtin_len as *const () as usize as i64,
-        1 => rt_builtin_str as *const () as usize as i64,
-        2 => rt_builtin_int as *const () as usize as i64,
-        3 => rt_builtin_float as *const () as usize as i64,
-        4 => rt_builtin_bool as *const () as usize as i64,
-        5 => rt_builtin_abs as *const () as usize as i64,
-        6 => rt_builtin_hash as *const () as usize as i64,
-        7 => rt_builtin_ord as *const () as usize as i64,
-        8 => rt_builtin_chr as *const () as usize as i64,
-        9 => rt_builtin_repr as *const () as usize as i64,
-        10 => rt_builtin_type as *const () as usize as i64,
-        11 => rt_builtin_ascii as *const () as usize as i64,
-        _ => unsafe {
-            raise_exc!(
-                pyaot_core_defs::BuiltinExceptionKind::RuntimeError,
-                "invalid builtin function ID"
-            )
-        },
-    }
-}
 
 // =============================================================================
 // COMPILE-TIME VERIFICATION

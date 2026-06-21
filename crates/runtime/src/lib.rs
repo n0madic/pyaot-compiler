@@ -257,27 +257,3 @@ pub unsafe extern "C" fn rt_assert_fail(msg_ptr: *const i8) -> ! {
         exceptions::rt_exc_raise(1, bytes.as_ptr(), bytes.len())
     }
 }
-
-/// Assertion failure with string object - called when assert condition is false
-/// str_obj is a pointer to a StrObj, or null if no message
-///
-/// Raises an AssertionError through the exception handling system so it can be caught.
-///
-/// # Safety
-/// `str_obj` must be null or a valid pointer to a StrObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_assert_fail_obj(str_obj: *const object::Obj) -> ! {
-    // Type tag 1 = AssertionError
-    if str_obj.is_null() {
-        exceptions::rt_exc_raise(1, std::ptr::null(), 0)
-    } else {
-        let str_obj = str_obj as *const object::StrObj;
-        let len = (*str_obj).len;
-        if len > 0 {
-            let data = (*str_obj).data.as_ptr();
-            exceptions::rt_exc_raise(1, data, len)
-        } else {
-            exceptions::rt_exc_raise(1, std::ptr::null(), 0)
-        }
-    }
-}
