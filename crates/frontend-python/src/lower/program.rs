@@ -1135,13 +1135,21 @@ pub(super) fn bind_stdlib_item(
     stdlib: &mut StdlibBindings,
     span: Span,
 ) -> Result<()> {
+    // A name can be BOTH a constructor function and a class with the same name
+    // — e.g. `io.StringIO`: `StringIO(...)` constructs (the function, in
+    // `funcs`), while `x: StringIO` annotates (the class type_spec, in
+    // `classes`). The two live in separate binding maps, so bind each
+    // independently rather than first-match-wins: otherwise the constructor
+    // shadows the class and `x: StringIO` / `-> StringIO` silently degrades to
+    // `Dyn` (treated as unannotated). For a class-only name (`re.Match` — no
+    // constructor) the class binding is the sole one. The whole-module
+    // (`import io`) path in `register_stdlib_items` already binds both.
+    let mut bound = false;
     if let Some(f) = module.functions.iter().find(|f| f.name == name) {
         stdlib.funcs.insert(bind.to_string(), f);
-    } else if let Some(c) = module.constants.iter().find(|c| c.name == name) {
-        stdlib.consts.insert(bind.to_string(), c);
-    } else if let Some(a) = module.attrs.iter().find(|a| a.name == name) {
-        stdlib.attrs.insert(bind.to_string(), a);
-    } else if let Some(spec) = module
+        bound = true;
+    }
+    if let Some(spec) = module
         .classes
         .iter()
         .find(|c| c.name == name)
@@ -1150,14 +1158,26 @@ pub(super) fn bind_stdlib_item(
         stdlib
             .classes
             .insert(bind.to_string(), pyaot_hir::semty_from_typespec(spec));
-    } else if let Some(exc) = module.exceptions.iter().find(|e| e.name == name) {
+        bound = true;
+    }
+    if let Some(c) = module.constants.iter().find(|c| c.name == name) {
+        stdlib.consts.insert(bind.to_string(), c);
+        bound = true;
+    }
+    if let Some(a) = module.attrs.iter().find(|a| a.name == name) {
+        stdlib.attrs.insert(bind.to_string(), a);
+        bound = true;
+    }
+    if let Some(exc) = module.exceptions.iter().find(|e| e.name == name) {
         // A stdlib exception class (`from urllib.error import HTTPError`,
         // Phase 8D): record its reserved id + builtin parent tag for
         // `except`/`raise` resolution.
         stdlib
             .exceptions
             .insert(bind.to_string(), (exc.class_id, exc.parent.tag()));
-    } else {
+        bound = true;
+    }
+    if !bound {
         return Err(parse_error(
             format!("cannot import name `{name}` from `{module_dotted}`"),
             span,

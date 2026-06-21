@@ -6,6 +6,7 @@ stdlib modules into one file:
   - p8h_stdlib_edges.py   (urlencode str()-ify, posixpath basename/dirname, quote safe=, json ensure_ascii, slice step=0 ValueError, int/bool float-format, HTTPError/URLError __str__)
   - p8h_checked_unbox.py   (checked Dyn->raw unbox at math.* raw-ABI boundaries)
   - p8h_checked_unbox2.py  (checked-unbox seams: Optional/None->f64 TypeError, raw-i64 gcd/comb/factorial/perm from Dyn)
+  - _typed_stdlib_returns  (typed stdlib-object return fed from a gradual Union: the checked `Tagged/Union -> Heap(RuntimeObj)` seam via `rt_check_runtime_obj`, plus bare-name `from io import StringIO` annotation resolution)
 
 Each source body is wrapped in a `def _<sourcename>()` and called below. All
 checks are asserts; several seams legitimately raise TypeError/ValueError and
@@ -17,6 +18,7 @@ import os
 import json
 import re
 from re import Match
+from io import StringIO
 from urllib.parse import quote, urlencode
 from urllib.error import HTTPError, URLError
 
@@ -280,6 +282,24 @@ def _tsr_matched(ok) -> Match:
     return _tsr_pick(ok)
 
 
+def _tsr_sbuf_pick(ok):
+    # Inferred return Union[io.StringIO, ValueError].
+    try:
+        if not ok:
+            raise ValueError("boom")
+        return StringIO("io-hi")
+    except ValueError as e:
+        return e
+
+
+def _tsr_sbuf(ok) -> StringIO:
+    # `-> StringIO` is a BARE-name `from io import StringIO` annotation: the name
+    # is BOTH a constructor function and a class, and both must bind so the
+    # annotation resolves to `RuntimeObject(StringIO)` (not silently `Dyn`). The
+    # union then flows into it behind the same runtime tag guard.
+    return _tsr_sbuf_pick(ok)
+
+
 def _typed_stdlib_returns():
     # Positive: the union resolves to the real Match; the typed-return guard
     # passes and `.group()` dispatches as a typed `re.Match` method (NOT the
@@ -300,6 +320,18 @@ def _typed_stdlib_returns():
     except (TypeError, AttributeError):
         rejected = True
     assert rejected
+
+    # The bare-name `from io import StringIO` annotation resolves: `.getvalue()`
+    # typed-dispatches on the result (constructor + class share the name, both
+    # bound). Construction via the same name still works.
+    assert StringIO("direct").getvalue() == "direct"
+    assert _tsr_sbuf(True).getvalue() == "io-hi"
+    sbuf_rejected = False
+    try:
+        _tsr_sbuf(False).getvalue()
+    except (TypeError, AttributeError):
+        sbuf_rejected = True
+    assert sbuf_rejected
 
 
 _seam_safety()
