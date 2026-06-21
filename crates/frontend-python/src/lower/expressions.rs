@@ -188,6 +188,14 @@ impl<'a> FnLowerer<'a> {
                         }
                     }
                 }
+                // `Cls.staticmethod` / `Cls.classmethod` referenced as a VALUE
+                // (not called): the same receiver-less uniform-thunk closure the
+                // spread-call path builds (`try_static_method_callee`). `None`
+                // for a class variable / instance method → the generic attribute
+                // read below.
+                if let Some(callee) = self.try_static_method_callee(a, span)? {
+                    return Ok(callee);
+                }
                 let value = self.lower_expr(a.value.as_ref())?;
                 let name = self.intern(a.attr.as_str());
                 Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))

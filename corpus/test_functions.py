@@ -3726,6 +3726,35 @@ def test_static_method_spread():
     print("test_static_method_spread passed")
 
 
+def test_static_method_value():
+    # `Cls.staticmethod` / `Cls.classmethod` referenced as a VALUE (bound to a
+    # variable, then called through the uniform indirect ABI) — the same
+    # receiver-less thunk the spread-call path builds.
+    g = _P1Static.add3
+    assert g(1, 2, 3) == 6, "staticmethod value positional"
+
+    # value carrying defaults
+    gr = _P1Static.greet
+    assert gr() == "hi world!", "staticmethod value defaults"
+    assert gr("bob", "?") == "hi bob?", "staticmethod value supplied"
+
+    # value carrying *args
+    tot = _P1Static.total
+    assert tot(1, 2, 3, 4) == 10, "staticmethod value *args"
+    assert tot() == 0, "staticmethod value *args empty"
+
+    # classmethod as a value
+    mk = _P1Static.make
+    assert mk(6, 7) == 42, "classmethod value"
+
+    # passed straight into a higher-order builtin
+    assert list(map(_P1Static.greet, ["a", "b"])) == ["hi a!", "hi b!"], (
+        "staticmethod value into map"
+    )
+
+    print("test_static_method_value passed")
+
+
 # ===== SECTION: Lambda with defaults / *args / **kwargs =====
 # A lambda is lowered as a def whose body is one `return`, so it reuses the
 # same parameter machinery — defaults, keyword-only, `*args`, `**kwargs` —
@@ -3809,6 +3838,7 @@ test_nested_class()
 test_nested_class_generator_method()
 test_method_spread()
 test_static_method_spread()
+test_static_method_value()
 test_lambda_variadic()
 
 

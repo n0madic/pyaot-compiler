@@ -2244,7 +2244,7 @@ impl<'a> FnLowerer<'a> {
     /// is a recorded `@staticmethod`/`@classmethod`, return its receiver-less
     /// uniform-thunk closure (the `CallValue` callee for a spread call). `None`
     /// otherwise — the caller then falls to the dynamic `MethodCallValue` path.
-    fn try_static_method_callee(
+    pub(super) fn try_static_method_callee(
         &mut self,
         attr: &ExprAttribute,
         span: Span,
