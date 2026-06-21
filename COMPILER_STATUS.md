@@ -53,7 +53,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `async def` | ❌ | Out of scope |
 | `class` | ✅ | Incl. nested (capture-free) classes |
 | Decorators `@…` | ✅ | Functions, classes, decorator factories |
-| `lambda` | ✅ | First-class `Callable` values. Default args only via the module-level `name = lambda …=…` → `def` desugar; a lambda with defaults / `*args` / `**kwargs` inside a function body is out of scope |
+| `lambda` | ✅ | First-class `Callable` values; full parameter forms (literal defaults, keyword-only, `*args`, `**kwargs`) everywhere — module-level, nested, and in expression position. A *mutable/computed* default is only supported via the module-level `name = lambda …=…` → `def` desugar (once-eval slot); elsewhere it is a clean error (no per-closure default slot), as for a nested `def` |
 | `yield` / `yield from` | ✅ | Generators (frontend state-machine desugar) |
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |

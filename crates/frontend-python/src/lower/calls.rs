@@ -1936,13 +1936,62 @@ impl<'a> FnLowerer<'a> {
             );
             out.push(rest);
         }
-        // `**kwargs` slot: forward the whole `__kwargs__` dict (the value-call
-        // path supplies no separate keywords, so leftover == the full dict).
+        // `**kwargs` slot: forward the LEFTOVER keywords — the `__kwargs__` dict
+        // minus every key already consumed by a keyword-only param (and, in a
+        // method thunk, by a keyword-bindable fixed param). CPython binds those
+        // out of the keyword mapping first, so they must not reappear in
+        // `**kwargs` (`lambda x, *a, sep="-", **kw: ...` called `sep="|"` leaves
+        // `kw` without `sep`). Copy the materialized dict and pop each consumed
+        // key from the copy — `rt_dict_pop` is a no-op when the key is absent (a
+        // defaulted keyword-only param that was not passed), and copying keeps
+        // the keyword-only binds above (which read the original dict lazily as
+        // call arguments) evaluation-order-independent of this removal.
         if target.kwargs {
-            out.push(self.local_ref(
-                kwargs_dict.expect("kwargs_dict is Some when **kwargs is present"),
-                span,
-            ));
+            let kd = kwargs_dict.expect("kwargs_dict is Some when **kwargs is present");
+            let consumed: Vec<InternedString> = target
+                .kwonly
+                .iter()
+                .map(|p| p.name)
+                .chain(
+                    target
+                        .kw_bindable
+                        .then(|| target.fixed.iter().map(|p| p.name))
+                        .into_iter()
+                        .flatten(),
+                )
+                .collect();
+            if consumed.is_empty() {
+                out.push(self.local_ref(kd, span));
+            } else {
+                let leftover = self.fresh_local(SemTy::dict_of(SemTy::Str, SemTy::Dyn));
+                let src = self.local_ref(kd, span);
+                let copy = self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::DictCopy,
+                        args: vec![src],
+                    },
+                    SemTy::dict_of(SemTy::Str, SemTy::Dyn),
+                    span,
+                );
+                self.push_stmt(HirStmt::Assign {
+                    target: leftover,
+                    value: copy,
+                });
+                for name in consumed {
+                    let lref = self.local_ref(leftover, span);
+                    let key = self.alloc(HirExprKind::StrLit(name), SemTy::Str, span);
+                    let pop = self.alloc(
+                        HirExprKind::ContainerExpr {
+                            op: ContainerOp::DictPopM,
+                            args: vec![lref, key],
+                        },
+                        SemTy::Dyn,
+                        span,
+                    );
+                    self.push_stmt(HirStmt::Expr(pop));
+                }
+                out.push(self.local_ref(leftover, span));
+            }
         }
 
         let callee = self.alloc(

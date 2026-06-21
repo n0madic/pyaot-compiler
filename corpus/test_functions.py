@@ -3726,10 +3726,90 @@ def test_static_method_spread():
     print("test_static_method_spread passed")
 
 
+# ===== SECTION: Lambda with defaults / *args / **kwargs =====
+# A lambda is lowered as a def whose body is one `return`, so it reuses the
+# same parameter machinery — defaults, keyword-only, `*args`, `**kwargs` —
+# and is called through the single uniform indirect ABI (as a value or
+# immediately). A keyword-only param consumed from the keyword mapping must
+# NOT reappear in `**kwargs` (the leftover-forwarding fix).
+
+# Module-level capture default goes through the once-eval def desugar.
+_fold_n = 5
+_fold_default = lambda x, y=_fold_n: x + y
+
+
+def test_lambda_variadic():
+    # literal default, via a value (indirect path) and called immediately
+    f = lambda x, y=10: x + y
+    assert f(5) == 15, "lambda default omitted"
+    assert f(5, 1) == 6, "lambda default supplied"
+    assert (lambda x, y=10: x + y)(7) == 17, "immediate lambda default"
+
+    # *args
+    g = lambda *a: sum(a)
+    assert g(1, 2, 3) == 6, "lambda *args"
+    assert g() == 0, "lambda *args empty"
+
+    # **kwargs
+    h = lambda **kw: len(kw)
+    assert h(a=1, b=2) == 2, "lambda **kwargs"
+    assert h() == 0, "lambda **kwargs empty"
+
+    # mixed: fixed + *args + keyword-only default + **kwargs — the consumed
+    # keyword-only `sep` must be bound out of the keyword mapping, so `**kw`
+    # holds only {q, r} (len 2), NOT {sep, q, r} (len 3).
+    k = lambda x, *a, sep="-", **kw: sep.join(
+        [str(x)] + [str(v) for v in a] + [str(len(kw))]
+    )
+    assert k(1, 2, 3, sep="|", q=9, r=8) == "1|2|3|2", "lambda mixed kwonly leftover"
+    assert k(1, 2, 3) == "1-2-3-0", "lambda mixed defaults"
+
+    # keyword-only with and without default
+    m = lambda x, *, kk=1: x + kk
+    assert m(1) == 2, "kwonly default"
+    assert m(1, kk=2) == 3, "kwonly supplied"
+    req = lambda x, *, k: x * k
+    assert req(3, k=4) == 12, "kwonly required by keyword"
+
+    # literal defaults of various non-int types
+    n = lambda a, b=True, c=(), d="z": (a, b, c, d)
+    assert n(1) == (1, True, (), "z"), "varied literal defaults"
+    assert n(1, False, (5,), "q") == (1, False, (5,), "q"), "varied defaults supplied"
+
+    # lambda in expression context (list of lambdas)
+    fns = [lambda x, y=1: x + y, lambda x, y=2: x * y]
+    assert fns[0](10) == 11, "list-of-lambda 0"
+    assert fns[1](10) == 20, "list-of-lambda 1"
+
+    # capture + defaults in a nested context
+    def outer():
+        b = 100
+        return lambda x, y=1: x + y + b
+
+    assert outer()(5) == 106, "nested capture + default omitted"
+    assert outer()(5, 2) == 107, "nested capture + default supplied"
+
+    # module-level capture default (def-desugar path)
+    assert _fold_default(1) == 6, "module capture default omitted"
+    assert _fold_default(1, 20) == 21, "module capture default supplied"
+
+    # lambda as map / sorted key
+    assert list(map(lambda v: v * 2, [1, 2, 3])) == [2, 4, 6], "lambda map"
+    assert sorted([3, 1, 2], key=lambda v: -v) == [3, 2, 1], "lambda sorted key"
+
+    # nested lambda capturing the enclosing lambda's parameter, with a default
+    comp = lambda a: (lambda b=10: a + b)
+    assert comp(5)() == 15, "nested-lambda capture default omitted"
+    assert comp(5)(2) == 7, "nested-lambda capture default supplied"
+
+    print("test_lambda_variadic passed")
+
+
 test_nested_class()
 test_nested_class_generator_method()
 test_method_spread()
 test_static_method_spread()
+test_lambda_variadic()
 
 
 print("All function tests passed!")

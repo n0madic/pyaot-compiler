@@ -151,26 +151,37 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower a lambda (Phase 6A): a synthetic single-`Return` nested function.
+    /// A lambda is a `def` whose body is one `Return`, so it reuses the exact
+    /// parameter machinery of `lower_nested_def`/`lower_callable` —
+    /// `parse_params` + `install_params` lay out fixed → keyword-only → `*args`
+    /// tuple → `**kwargs` dict in MIR order, so defaults, keyword-only, `*args`
+    /// and `**kwargs` all work. The closure value is still erased to
+    /// `Repr::Closure(generic_sig())` and called through the single uniform
+    /// `(args, kwargs) → Value` indirect ABI (Invariant 3 / PITFALLS A4 — no
+    /// per-function ABI flag). The only inherited constraint: a non-literal /
+    /// mutable default is a clean error (a lambda has no global default slot —
+    /// see `resolve_param_default`), unless the module-level `name = lambda …`
+    /// desugar already rewrote it into a real `def` (`desugar_module_lambda_defs`).
     pub(super) fn lower_lambda(&mut self, l: &ExprLambda, span: Span) -> Result<Idx<HirExpr>> {
-        let args = l.args.as_ref();
-        if args.vararg.is_some() || args.kwarg.is_some() || !args.kwonlyargs.is_empty() {
-            return Err(parse_error("lambda *args/**kwargs are out of scope", span));
-        }
-        if args
-            .posonlyargs
-            .iter()
-            .chain(args.args.iter())
-            .any(|a| a.default.is_some())
-        {
-            return Err(parse_error(
-                "lambda default arguments are out of scope",
-                span,
-            ));
-        }
         let facts = freevars::analyze_lambda(l);
         let captures = self.capture_list(&facts.free);
         let synth = self.synth_name("<lambda>");
         let name = self.interner.intern(&synth);
+
+        // Like a nested def, a lambda must NOT inherit the enclosing top-level
+        // def's `default_slots`: a process-global slot cannot hold a per-closure-
+        // instance capture, so a non-literal default here is a clean error.
+        let nested_ctx = AnnCtx {
+            default_slots: None,
+            ..*self.ctx
+        };
+        let parsed = parse_params(
+            self.interner,
+            &nested_ctx,
+            l.args.as_ref(),
+            &FirstParam::Plain,
+            name,
+        )?;
 
         let fid = self.shared.reserve();
         let mut fl = FnLowerer::new(
@@ -185,22 +196,23 @@ impl<'a> FnLowerer<'a> {
         fl.set_scope_facts(&facts);
         let env_name = fl.intern("__env__");
         fl.add_param(env_name, SemTy::Dyn);
-        for awd in args.posonlyargs.iter().chain(args.args.iter()) {
-            let pname = fl.intern(awd.def.arg.as_str());
-            fl.add_param(pname, SemTy::Dyn);
-        }
+        fl.install_params(&parsed);
         fl.install_captures(&captures, &facts, span);
         fl.init_cells();
         let body = fl.lower_expr(l.body.as_ref())?;
         fl.seal(HirTerminator::Return(Some(body)));
-        let f = fl.finish(HirTerminator::Return(None));
+        let mut f = fl.finish(HirTerminator::Return(None));
+        f.varargs = parsed.varargs.is_some();
+        f.kwargs = parsed.kwargs.is_some();
         self.shared.fill(fid, f);
 
         let lam_ty = self.closure_sem_ty(fid);
-        // Slot 0 is the uniform thunk over the lambda body (lambdas reject
-        // keyword-only / *args / **kwargs / defaults, so all params are fixed).
-        let n_fixed = args.posonlyargs.len() + args.args.len();
-        let thunk = self.uniform_thunk_over_nested(fid, n_fixed, 0)?;
+        // Slot 0 is the uniform thunk over the lambda body; it reads
+        // `f.varargs` / `f.kwargs` and binds the packed call args to the params
+        // (defaults / keyword-only / `*args` / `**kwargs`) at run time.
+        let n_fixed = parsed.fixed.len();
+        let n_kwonly = parsed.kwonly.len();
+        let thunk = self.uniform_thunk_over_nested(fid, n_fixed, n_kwonly)?;
         self.make_closure_expr(thunk, &captures, span, lam_ty)
     }
 
