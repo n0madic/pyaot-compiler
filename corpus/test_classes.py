@@ -410,19 +410,19 @@ assert sc.get_default() == 100, "sc.get_default() should equal 100"
 
 # ===== SECTION: @classmethod decorator =====
 
-# Basic classmethod - cls is passed as first argument (as class_id integer)
+# Basic classmethod - `cls` is a compile-time alias of the enclosing class
 class ClassMethodBasic:
     count: int = 0  # Class attribute with type annotation
 
     @classmethod
-    def increment(cls: int) -> int:
-        # cls receives the class_id as an integer
-        ClassMethodBasic.count = ClassMethodBasic.count + 1
-        return ClassMethodBasic.count
+    def increment(cls) -> int:
+        # cls.attr read AND write resolve like the written class name
+        cls.count = cls.count + 1
+        return cls.count
 
     @classmethod
-    def get_count(cls: int) -> int:
-        return ClassMethodBasic.count
+    def get_count(cls) -> int:
+        return cls.count
 
 # Test calling classmethod on class
 assert ClassMethodBasic.get_count() == 0, "ClassMethodBasic.get_count() should equal 0"
@@ -442,20 +442,39 @@ assert obj.get_count() == 3, "obj.get_count() should equal 3"
 class ClassMethodWithArgs:
     value: int = 10  # Class attribute with type annotation
 
-    @classmethod
-    def add_to_value(cls: int, x: int) -> int:
-        return ClassMethodWithArgs.value + x
+    def __init__(self, start: int) -> None:
+        self.instance_value = start
 
     @classmethod
-    def multiply_value(cls: int, x: int, y: int) -> int:
-        return ClassMethodWithArgs.value * x * y
+    def add_to_value(cls, x: int) -> int:
+        return cls.value + x
+
+    @classmethod
+    def multiply_value(cls, x: int, y: int) -> int:
+        return cls.value * x * y
+
+    @classmethod
+    def make(cls, start: int) -> "ClassMethodWithArgs":
+        # `cls(...)` alternative constructor → constructs the enclosing class
+        return cls(start)
+
+    @classmethod
+    def combined(cls, x: int) -> int:
+        # `cls.method(...)` dispatch (no spread) to sibling classmethods
+        return cls.add_to_value(x) + cls.multiply_value(1, 1)
 
 # Test classmethod with args on class
 assert ClassMethodWithArgs.add_to_value(5) == 15, "ClassMethodWithArgs.add_to_value(5) should equal 15"
 assert ClassMethodWithArgs.multiply_value(2, 3) == 60, "ClassMethodWithArgs.multiply_value(2, 3) should equal 60"
 
+# `cls(...)` alternative constructor and `cls.method(...)` dispatch
+made = ClassMethodWithArgs.make(42)
+assert made.instance_value == 42, "ClassMethodWithArgs.make(42).instance_value should equal 42"
+print(made.instance_value)
+assert ClassMethodWithArgs.combined(5) == 25, "ClassMethodWithArgs.combined(5) should equal 25"
+
 # Test classmethod with args on instance
-cwa = ClassMethodWithArgs()
+cwa = ClassMethodWithArgs(0)
 assert cwa.add_to_value(20) == 30, "cwa.add_to_value(20) should equal 30"
 assert cwa.multiply_value(4, 5) == 200, "cwa.multiply_value(4, 5) should equal 200"
 

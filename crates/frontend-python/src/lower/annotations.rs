@@ -336,6 +336,13 @@ pub(super) fn lower_callable(
     }
 
     let mut fl = FnLowerer::new(interner, ctx, shared, name, name_str, ret_ty, enclosing);
+    // A `@classmethod` body binds `cls` as a compile-time alias of the enclosing
+    // class (the `ClsMethod` shape). `enclosing` stays `None` for classmethods
+    // (set by the caller), so `super()` keeps cleanly rejecting — it reads `self`
+    // from param 0, which a classmethod does not have.
+    if let FirstParam::ClsMethod { class_id, name } = first {
+        fl.cls_ref = Some((class_id, name));
+    }
     fl.set_scope_facts(facts);
     if nested.is_some() {
         let env_name = fl.intern("__env__");
@@ -372,7 +379,8 @@ pub(super) fn parse_params(
     first: &FirstParam,
     fname: InternedString,
 ) -> Result<ParsedParams> {
-    let skip = matches!(first, FirstParam::SkipCls) as usize;
+    let skip =
+        matches!(first, FirstParam::SkipCls | FirstParam::ClsMethod { .. }) as usize;
     let mut fixed = Vec::new();
     for (i, awd) in args
         .posonlyargs

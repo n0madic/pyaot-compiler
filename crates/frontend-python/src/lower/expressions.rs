@@ -29,6 +29,19 @@ impl<'a> FnLowerer<'a> {
                         span,
                     ));
                 }
+                // Inside a `@classmethod`, a bare `cls` is a compile-time alias of
+                // the enclosing class — it resolves exactly like the written class
+                // name (`Symbol::Class`), so `cls.attr` / `cls.method(...)` take
+                // the standard class-reference paths. A local `cls` shadows it.
+                if n.id.as_str() == "cls" && !self.scope.contains_key(&name) {
+                    if let Some((_, class_name)) = self.cls_ref {
+                        return Ok(self.alloc(
+                            HirExprKind::Name(SymbolRef::Unresolved(class_name)),
+                            SemTy::Dyn,
+                            span,
+                        ));
+                    }
+                }
                 // A name the frontend already has in scope resolves directly
                 // through its binding (a local read or a `CellGet`); a top-level
                 // function used as a VALUE becomes its memoized thunk closure

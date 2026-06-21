@@ -815,8 +815,18 @@ pub(super) fn lower_class(
                         static_methods.push((method_name, fid));
                     }
                     MethodDecor::Class => {
-                        let (fid, _) =
-                            lower_method(interner, shared, m, "", FirstParam::SkipCls, None)?;
+                        // Bind `cls` as a compile-time alias of this class (a
+                        // classmethod body resolves `cls` / `cls(...)` against it).
+                        // `enclosing` stays `None` — a classmethod has no `self`,
+                        // so `super()` must keep cleanly rejecting.
+                        let (fid, _) = lower_method(
+                            interner,
+                            shared,
+                            m,
+                            "",
+                            FirstParam::ClsMethod { class_id, name },
+                            None,
+                        )?;
                         class_methods.push((method_name, fid));
                     }
                     MethodDecor::Property => {

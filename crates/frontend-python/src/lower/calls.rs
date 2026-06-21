@@ -50,6 +50,30 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
+        // `cls(args)` inside a `@classmethod` (the alternative-constructor idiom)
+        // → construct the enclosing class, exactly like `ClassName(args)`. Only
+        // positional args (mirroring every other construction path). A local
+        // `cls` shadows the alias.
+        if let Expr::Name(n) = c.func.as_ref() {
+            if n.id.as_str() == "cls" {
+                let iname = self.intern("cls");
+                if !self.scope.contains_key(&iname) {
+                    if let Some((class_id, _)) = self.cls_ref {
+                        reject_call_extras(c, span, "cls() construction")?;
+                        let args = self.lower_expr_list(&c.args)?;
+                        return Ok(self.alloc(
+                            HirExprKind::GenericConstruct {
+                                class_id,
+                                type_args: vec![],
+                                args,
+                            },
+                            SemTy::Dyn,
+                            span,
+                        ));
+                    }
+                }
+            }
+        }
         // `isinstance(value, Cls)` against a known user class → the runtime
         // inheritance-aware check (Phase 5B). `isinstance(value, str|int|
         // float|bool)` → the static fold (Phase 8B). Other forms fall through.

@@ -477,6 +477,13 @@ pub(crate) struct FnLowerer<'a> {
     base_name: String,
     /// The class this is a method of (`Some` for methods), for `super()` resolution.
     enclosing_class: Option<ClassId>,
+    /// For a `@classmethod` body: `(class_id, interned class name)` so a bare
+    /// `cls` resolves as a compile-time alias of the enclosing class — `cls.attr`
+    /// / `cls.method(...)` take the static class-reference paths and `cls(...)`
+    /// constructs the class. `None` everywhere else. (Static model, like
+    /// `super()` / `object.__new__(cls)`: `cls` is the statically enclosing
+    /// class, never a runtime subclass.)
+    cls_ref: Option<(ClassId, InternedString)>,
     params: Vec<HirParam>,
     ret_ty: SemTy,
     exprs: Arena<HirExpr>,
@@ -628,8 +635,16 @@ enum FirstParam {
     /// class (carried `SemTy::Class`).
     Method(SemTy),
     /// A `@classmethod`: the first param (`cls`) is dropped — it is resolved
-    /// statically to the enclosing class.
+    /// statically to the enclosing class. Skip-only: used where the body is NOT
+    /// lowered (the spread-call thunk in `closures.rs`), so no alias is bound.
     SkipCls,
+    /// A `@classmethod` whose body IS lowered: drop `cls` from the signature AND
+    /// bind it as a compile-time alias of the enclosing class (`cls.attr` /
+    /// `cls.method(...)` / `cls(...)`). Carries the class id and interned name.
+    ClsMethod {
+        class_id: ClassId,
+        name: InternedString,
+    },
     /// A free function / `@staticmethod`: no special first-param handling.
     Plain,
 }

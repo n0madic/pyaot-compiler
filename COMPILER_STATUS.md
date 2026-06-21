@@ -130,7 +130,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice |
 | `super()` | ✅ | |
 | `@property` | ✅ | |
-| `@staticmethod` / `@classmethod` | ✅ | Receiver-less / cls-receiver thunks |
+| `@staticmethod` / `@classmethod` | ✅ | `cls` is a compile-time alias of the enclosing class (`cls()` / `cls.attr` / `cls.method`); statically enclosing class, not a runtime subclass |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
 | Iterator protocol (`__iter__`/`__next__`) | ✅ | Per-class compiled iter-next thunk |
 | `__slots__` | 🟡 | Accepted but ignored (no layout effect) |
