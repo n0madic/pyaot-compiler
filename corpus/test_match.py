@@ -777,6 +777,99 @@ class _p7m_Point:
         self.y = y
 
 
+def _fold_or_capture():
+    # ── or-patterns WITH capture: every alternative binds the same name(s);
+    # the bind on whichever alternative matched survives the merge. ──
+
+    # sequence alternatives of different lengths, same capture
+    def seq_first(v: list[int]) -> int:
+        match v:
+            case [x] | [x, _]:
+                return x
+            case _:
+                return -1
+
+    assert seq_first([5]) == 5
+    assert seq_first([7, 8]) == 7
+    assert seq_first([]) == -1
+
+    # tuple alternatives, bind the non-zero element
+    def tuple_other(v: tuple[int, int]) -> int:
+        match v:
+            case (0, y) | (y, 0):
+                return y
+            case _:
+                return -99
+
+    assert tuple_other((0, 5)) == 5
+    assert tuple_other((9, 0)) == 9
+    assert tuple_other((1, 2)) == -99
+
+    # three alternatives, all bind x
+    def three(v: tuple[int, int]) -> int:
+        match v:
+            case (1, x) | (2, x) | (3, x):
+                return x
+            case _:
+                return -1
+
+    assert three((1, 11)) == 11
+    assert three((2, 22)) == 22
+    assert three((3, 33)) == 33
+    assert three((4, 44)) == -1
+
+    # mapping alternatives, same capture name
+    def mapping_v(d: dict[str, int]) -> int:
+        match d:
+            case {"a": v} | {"b": v}:
+                return v
+            case _:
+                return 0
+
+    assert mapping_v({"a": 1}) == 1
+    assert mapping_v({"b": 2}) == 2
+    assert mapping_v({"c": 3}) == 0
+
+    # keyword class patterns, literal discriminant + shared capture
+    def class_v(p: _p7m_Point) -> int:
+        match p:
+            case _p7m_Point(x=0, y=v) | _p7m_Point(y=0, x=v):
+                return v
+            case _:
+                return -1
+
+    assert class_v(_p7m_Point(0, 7)) == 7   # x==0 → v = y
+    assert class_v(_p7m_Point(9, 0)) == 9   # y==0 → v = x
+    assert class_v(_p7m_Point(2, 3)) == -1
+
+    # guard reads the OR-bound capture
+    def guarded(v: list[int]) -> int:
+        match v:
+            case [a] | [a, _] if a > 0:
+                return a
+            case _:
+                return -1
+
+    assert guarded([5]) == 5
+    assert guarded([7, 8]) == 7
+    assert guarded([-3]) == -1   # guard fails on the bound `a`
+
+    # `(... | ...) as name`: the OR binds nothing, the `as` binds the whole match
+    def as_form(v: list[int]) -> int:
+        match v:
+            case ([1, 2] | [3, 4]) as pair:
+                return len(pair)
+            case _:
+                return 0
+
+    assert as_form([1, 2]) == 2
+    assert as_form([3, 4]) == 2
+    assert as_form([5, 6]) == 0
+
+
+_fold_or_capture()
+
+
 def _fold_p7_match():
     # ── literals + default ──
     def kind(n: int) -> str:

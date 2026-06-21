@@ -73,14 +73,21 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             Pattern::MatchOr(o) => {
-                // v1: capture-free alternatives only (each alternative would
-                // otherwise need to bind the same names on its own path).
-                for sub in &o.patterns {
-                    if pattern_has_bindings(sub) {
-                        return Err(parse_error(
-                            "or-patterns with capture names are out of scope for this milestone",
-                            span,
-                        ));
+                // CPython requires every alternative to bind the SAME set of
+                // names (`case A(x) | B(x):` is fine, `A(x) | B(y)` is a
+                // SyntaxError). Each alternative binds its captures on its own
+                // success path before jumping to the shared `ok` block, so the
+                // names resolve to the same function-scope locals and the merge
+                // at `ok` holds whichever alternative matched.
+                if let Some((first, rest)) = o.patterns.split_first() {
+                    let names0 = sorted_bound_names(first);
+                    for sub in rest {
+                        if sorted_bound_names(sub) != names0 {
+                            return Err(parse_error(
+                                "alternative patterns bind different names",
+                                span,
+                            ));
+                        }
                     }
                 }
                 let ok = self.new_block();
@@ -541,23 +548,62 @@ impl<'a> FnLowerer<'a> {
 
 }
 
-/// True iff a `match` pattern binds any name (capture / star / `**rest`) —
-/// the v1 or-pattern restriction (Phase 7E).
-pub(super) fn pattern_has_bindings(p: &rustpython_parser::ast::Pattern) -> bool {
+/// Collect every name a `match` pattern binds (capture / `as` / star / `**rest`),
+/// recursing into sub-patterns. Mapping keys are expressions, not patterns, so
+/// they bind nothing.
+fn pattern_bound_names(p: &rustpython_parser::ast::Pattern, out: &mut Vec<String>) {
     use rustpython_parser::ast::Pattern;
     match p {
-        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => false,
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => {}
         Pattern::MatchAs(a) => {
-            a.name.is_some() || a.pattern.as_deref().is_some_and(pattern_has_bindings)
+            if let Some(n) = &a.name {
+                out.push(n.to_string());
+            }
+            if let Some(sub) = &a.pattern {
+                pattern_bound_names(sub, out);
+            }
         }
-        Pattern::MatchOr(o) => o.patterns.iter().any(pattern_has_bindings),
-        Pattern::MatchSequence(s) => s.patterns.iter().any(pattern_has_bindings),
-        Pattern::MatchStar(s) => s.name.is_some(),
-        Pattern::MatchMapping(m) => m.rest.is_some() || m.patterns.iter().any(pattern_has_bindings),
+        Pattern::MatchStar(s) => {
+            if let Some(n) = &s.name {
+                out.push(n.to_string());
+            }
+        }
+        Pattern::MatchOr(o) => {
+            for sub in &o.patterns {
+                pattern_bound_names(sub, out);
+            }
+        }
+        Pattern::MatchSequence(s) => {
+            for sub in &s.patterns {
+                pattern_bound_names(sub, out);
+            }
+        }
+        Pattern::MatchMapping(m) => {
+            for sub in &m.patterns {
+                pattern_bound_names(sub, out);
+            }
+            if let Some(r) = &m.rest {
+                out.push(r.to_string());
+            }
+        }
         Pattern::MatchClass(c) => {
-            c.patterns.iter().any(pattern_has_bindings)
-                || c.kwd_patterns.iter().any(pattern_has_bindings)
+            for sub in &c.patterns {
+                pattern_bound_names(sub, out);
+            }
+            for sub in &c.kwd_patterns {
+                pattern_bound_names(sub, out);
+            }
         }
     }
+}
+
+/// The sorted, de-duplicated set of names a pattern binds — used to enforce
+/// CPython's "alternative patterns bind different names" rule on or-patterns.
+fn sorted_bound_names(p: &rustpython_parser::ast::Pattern) -> Vec<String> {
+    let mut names = Vec::new();
+    pattern_bound_names(p, &mut names);
+    names.sort();
+    names.dedup();
+    names
 }
 

@@ -35,9 +35,20 @@
     }
 
     #[test]
-    fn rejects_or_pattern_with_captures() {
+    fn rejects_or_pattern_binding_different_names() {
+        // CPython rule: every alternative must bind the same set of names.
+        // `[a]` binds {a}, `[a, b]` binds {a, b} — a mismatch.
         let err = parse_err("match x:\n    case [a] | [a, b]:\n        pass\n");
-        assert!(err.contains("or-patterns with capture names"), "got: {err}");
+        assert!(
+            err.contains("alternative patterns bind different names"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_or_pattern_with_matching_captures() {
+        // Same name set across alternatives is allowed (`case [a] | [a, _]:`).
+        let (_m, _i) = parsed("match x:\n    case [a] | [a, _]:\n        pass\n");
     }
 
     #[test]

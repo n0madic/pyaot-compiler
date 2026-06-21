@@ -190,7 +190,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Class patterns | ✅ | With type narrowing |
 | Sequence patterns | ✅ | |
 | Mapping patterns | ✅ | |
-| OR patterns `\|` | ✅ | |
+| OR patterns `\|` | ✅ | Incl. capturing alternatives (`case A(x) \| B(x)`); every alternative must bind the same name set (CPython rule) |
 | Guards (`if`) | ✅ | |
 
 ---
