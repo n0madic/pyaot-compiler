@@ -108,7 +108,8 @@ impl<'a> FnLowerer<'a> {
             } else if let Some(kv) = take_keyword(&mut keywords, p.name) {
                 self.stdlib_arg_slot(kv, &p.ty, p.optional, span)?
             } else if let Some(cv) = &p.default {
-                Some(self.lower_stdlib_const(cv, span))
+                // Param defaults are raw-ABI sentinels — keep them as `IntLit`.
+                Some(self.lower_stdlib_const(cv, span, false))
             } else if p.optional {
                 None
             } else {
@@ -197,14 +198,31 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Materialize a descriptor's `ConstValue` default as a literal expr.
+    /// Lower a stdlib `ConstValue` to an HIR expression.
+    ///
+    /// `promote_bignum` distinguishes the two call contexts:
+    /// - module-constant *reads* (`sys.maxsize`, `math.pi`) are Python values, so
+    ///   an out-of-fixnum-range `Int` must promote to `BigIntLit` (a bare `IntLit`
+    ///   would overflow the tag shift and miscompile, printing e.g. `-1`);
+    /// - param *defaults* are raw-ABI sentinels (e.g. `randrange`'s `i64::MIN`
+    ///   "stop absent") consumed as `Raw(I64)`, where a `BigIntLit` is an illegal
+    ///   `Heap(BigInt) → Raw(I64)` coercion — they must stay a plain `IntLit`.
     pub(super) fn lower_stdlib_const(
         &mut self,
         cv: &pyaot_stdlib_defs::ConstValue,
         span: Span,
+        promote_bignum: bool,
     ) -> Idx<HirExpr> {
         use pyaot_stdlib_defs::ConstValue;
         match cv {
-            ConstValue::Int(i) => self.alloc(HirExprKind::IntLit(*i), SemTy::Int, span),
+            ConstValue::Int(i) => {
+                let kind = if promote_bignum {
+                    self.int_literal_const(*i)
+                } else {
+                    HirExprKind::IntLit(*i)
+                };
+                self.alloc(kind, SemTy::Int, span)
+            }
             ConstValue::Float(f) => self.alloc(HirExprKind::FloatLit(*f), SemTy::Float, span),
             ConstValue::Bool(b) => self.alloc(HirExprKind::BoolLit(*b), SemTy::Bool, span),
             ConstValue::Str(s) => {

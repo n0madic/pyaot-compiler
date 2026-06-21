@@ -233,4 +233,14 @@ print(_rv_abs2)
 _rv_abs3: str = abspath("/../../a/b")
 print(_rv_abs3)
 
+# os path/line-separator constants (platform-portable assertions).
+assert os.sep in ("/", "\\"), "os.sep is the path separator"
+assert os.pathsep in (":", ";"), "os.pathsep is the PATH-list separator"
+assert os.linesep in ("\n", "\r\n"), "os.linesep is the line separator"
+assert os.curdir == ".", "os.curdir is the current-dir string"
+assert os.pardir == "..", "os.pardir is the parent-dir string"
+assert os.extsep == ".", "os.extsep is the extension separator"
+assert len(os.devnull) > 0, "os.devnull is a non-empty path"
+print("os path constants tests passed")
+
 print("\nAll os module tests passed!")

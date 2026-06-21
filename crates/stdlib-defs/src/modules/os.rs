@@ -3,12 +3,32 @@
 //! Provides access to operating system dependent functionality.
 
 use crate::types::{
-    ConstValue, LoweringHints, ParamDef, StdlibAttrDef, StdlibFunctionDef, StdlibModuleDef,
-    TypeSpec, TYPE_STR,
+    ConstValue, LoweringHints, ParamDef, StdlibAttrDef, StdlibConstDef, StdlibFunctionDef,
+    StdlibModuleDef, TypeSpec, TYPE_STR,
 };
 #[allow(unused_imports)]
 use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
 use pyaot_core_defs::RuntimeFuncDef;
+
+// os path/line separators are platform-specific (CPython exposes them as plain
+// string constants). pyaot compiles natively, so the build-time `cfg` matches
+// the produced binary's platform.
+#[cfg(windows)]
+const SEP: &str = "\\";
+#[cfg(not(windows))]
+const SEP: &str = "/";
+#[cfg(windows)]
+const LINESEP: &str = "\r\n";
+#[cfg(not(windows))]
+const LINESEP: &str = "\n";
+#[cfg(windows)]
+const PATHSEP: &str = ";";
+#[cfg(not(windows))]
+const PATHSEP: &str = ":";
+#[cfg(windows)]
+const DEVNULL: &str = "nul";
+#[cfg(not(windows))]
+const DEVNULL: &str = "/dev/null";
 
 /// os.environ attribute
 pub static OS_ENVIRON: StdlibAttrDef = StdlibAttrDef {
@@ -182,6 +202,55 @@ pub static OS_ENVIRON_SET: StdlibFunctionDef = StdlibFunctionDef {
 };
 
 /// os module definition
+/// os.sep — path component separator ("/" on POSIX, "\\" on Windows).
+pub static OS_SEP: StdlibConstDef = StdlibConstDef {
+    name: "sep",
+    value: ConstValue::Str(SEP),
+    ty: TypeSpec::Str,
+};
+
+/// os.linesep — line separator ("\n" on POSIX, "\r\n" on Windows).
+pub static OS_LINESEP: StdlibConstDef = StdlibConstDef {
+    name: "linesep",
+    value: ConstValue::Str(LINESEP),
+    ty: TypeSpec::Str,
+};
+
+/// os.pathsep — `PATH`-list separator (":" on POSIX, ";" on Windows).
+pub static OS_PATHSEP: StdlibConstDef = StdlibConstDef {
+    name: "pathsep",
+    value: ConstValue::Str(PATHSEP),
+    ty: TypeSpec::Str,
+};
+
+/// os.curdir — string for the current directory (".").
+pub static OS_CURDIR: StdlibConstDef = StdlibConstDef {
+    name: "curdir",
+    value: ConstValue::Str("."),
+    ty: TypeSpec::Str,
+};
+
+/// os.pardir — string for the parent directory ("..").
+pub static OS_PARDIR: StdlibConstDef = StdlibConstDef {
+    name: "pardir",
+    value: ConstValue::Str(".."),
+    ty: TypeSpec::Str,
+};
+
+/// os.extsep — extension separator (".").
+pub static OS_EXTSEP: StdlibConstDef = StdlibConstDef {
+    name: "extsep",
+    value: ConstValue::Str("."),
+    ty: TypeSpec::Str,
+};
+
+/// os.devnull — null device path ("/dev/null" on POSIX, "nul" on Windows).
+pub static OS_DEVNULL: StdlibConstDef = StdlibConstDef {
+    name: "devnull",
+    value: ConstValue::Str(DEVNULL),
+    ty: TypeSpec::Str,
+};
+
 pub static OS_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "os",
     functions: &[
@@ -197,7 +266,15 @@ pub static OS_MODULE: StdlibModuleDef = StdlibModuleDef {
         OS_GETENV,
     ],
     attrs: &[OS_ENVIRON, OS_NAME],
-    constants: &[],
+    constants: &[
+        OS_SEP,
+        OS_LINESEP,
+        OS_PATHSEP,
+        OS_CURDIR,
+        OS_PARDIR,
+        OS_EXTSEP,
+        OS_DEVNULL,
+    ],
     classes: &[],
     exceptions: &[],
     submodules: &[&OS_PATH_MODULE],

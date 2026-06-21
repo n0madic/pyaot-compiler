@@ -54,8 +54,9 @@ impl<'a> FnLowerer<'a> {
                     self.lower_top_fn_value(n.id.as_str(), span)
                 } else if let Some(c) = self.ctx.stdlib.consts.get(n.id.as_str()).copied() {
                     // A from-imported stdlib constant (`from math import pi`)
-                    // folds to its literal at every use site (Phase 8B).
-                    Ok(self.lower_stdlib_const(&c.value, span))
+                    // folds to its literal at every use site (Phase 8B). A
+                    // Python-value read, so out-of-range ints promote to bignum.
+                    Ok(self.lower_stdlib_const(&c.value, span, true))
                 } else if let Some(attr) = self.ctx.stdlib.attrs.get(n.id.as_str()).copied() {
                     // A from-imported module attribute (`from sys import argv`).
                     Ok(self.alloc(
@@ -163,7 +164,7 @@ impl<'a> FnLowerer<'a> {
                         if !self.scope.contains_key(&mname) {
                             let qual = format!("{}.{}", m.id.as_str(), a.attr.as_str());
                             if let Some(c) = self.ctx.stdlib.consts.get(&qual).copied() {
-                                return Ok(self.lower_stdlib_const(&c.value, span));
+                                return Ok(self.lower_stdlib_const(&c.value, span, true));
                             }
                             if let Some(attr) = self.ctx.stdlib.attrs.get(&qual).copied() {
                                 return Ok(self.alloc(

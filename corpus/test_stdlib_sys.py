@@ -63,4 +63,14 @@ assert popped == "/pyaot/test/marker"
 assert len(sys.path) == before, "pop must reduce the cached list back to the original count"
 
 print("sys.path tests passed")
+
+# sys module constants (platform-portable assertions: both pyaot and CPython
+# run on the same host, so assert shape/relations, not an exact platform).
+assert sys.maxsize == 2**63 - 1, "sys.maxsize should be 2**63-1 on a 64-bit build"
+assert sys.maxsize > 2**31, "maxsize comparison works (bignum-safe)"
+assert sys.maxunicode == 1114111, "sys.maxunicode should be 0x10FFFF"
+assert sys.byteorder in ("little", "big"), "sys.byteorder is little or big"
+assert sys.platform in ("darwin", "linux", "win32"), "sys.platform is a known value"
+print("sys constants tests passed")
+
 print("All sys module tests passed!")

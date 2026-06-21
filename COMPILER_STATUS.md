@@ -252,11 +252,11 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 |---|---|---|
 | `math` | ✅ | Core functions + constants |
 | `random` | ✅ | |
-| `sys` | ✅ | `argv`, `exit`, `stdout`/`stderr`, … |
+| `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
 | `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |
 | `json` | ✅ | Object types, `ensure_ascii` (gated `stdlib-json`) |
-| `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath` |
+| `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath`; constants `sep`/`linesep`/`pathsep`/`curdir`/`pardir`/`extsep`/`devnull` |
 | `subprocess` | ✅ | |
 | `itertools` | ✅ | |
 | `functools` | ✅ | `reduce` (desugared accumulate-loop) |
