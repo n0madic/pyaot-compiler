@@ -78,7 +78,7 @@ use pyaot_hir::{
 use pyaot_types::SemTy;
 use pyaot_utils::LocalId;
 
-use crate::WIDEN_LIMIT;
+use crate::{widen_move, WIDEN_LIMIT};
 
 /// The conservative magnitude bound, in `i128`. A `Range` inside `[-BOUND, BOUND]`
 /// cannot promote to a heap `BigInt` and leaves headroom so a raw `Add`/`Sub`/
@@ -394,14 +394,13 @@ pub(crate) fn narrow_raw_ints(
                 if pinned[f][p] {
                     continue;
                 }
-                if fresh[f][p] != entry_iv[f][p] {
-                    moves[f][p] += 1;
-                    entry_iv[f][p] = if moves[f][p] >= WIDEN_LIMIT {
-                        pinned[f][p] = true;
-                        Interval::Top
-                    } else {
-                        fresh[f][p]
-                    };
+                if widen_move(
+                    &mut entry_iv[f][p],
+                    &mut moves[f][p],
+                    Some(&mut pinned[f][p]),
+                    fresh[f][p],
+                    Interval::Top,
+                ) {
                     changed = true;
                     if specializable[f] {
                         next_dirty[f] = true;
@@ -608,14 +607,21 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
     }
 }
 
-/// A leaf / unary / binary integer interval in `env` (the read-only evaluator the
-/// dataflow uses). Recurses only into arithmetic operands — sufficient because a
-/// local's value is an arithmetic expression or a leaf; a `BinOp` buried in a
-/// call argument never influences any local's interval, so the analysis need not
-/// descend into one (the `record_all` apply walk does, to flag it). Non-integer /
-/// unanalyzable shapes are `⊤`.
-fn eval(func: &HirFunction, resolve: &ResolveResult, env: &Env, idx: Idx<HirExpr>) -> Interval {
-    match &func.exprs[idx].kind {
+/// The interval of an arithmetic leaf / unary / binary node, delegating operand
+/// evaluation to `operand`. Returns `None` for any node that is NOT an integer
+/// arithmetic shape — the caller decides what an unanalyzable node means
+/// ([`eval`] returns `⊤`; [`record_all`] recurses its children and records `⊤`).
+/// The single source of the leaf/unary/binary interval rules, shared so they can
+/// never drift between the read-only evaluator and the recording walk.
+/// `~x` / `not x` route through the tagged baseline (conservative `⊤`).
+fn arith_iv(
+    func: &HirFunction,
+    resolve: &ResolveResult,
+    env: &Env,
+    idx: Idx<HirExpr>,
+    mut operand: impl FnMut(Idx<HirExpr>) -> Interval,
+) -> Option<Interval> {
+    let iv = match &func.exprs[idx].kind {
         HirExprKind::IntLit(v) => Interval::range(*v as i128, *v as i128),
         // A bignum literal does not fit i64 by construction; a bool is `0`/`1`.
         HirExprKind::BigIntLit(_) => Interval::Top,
@@ -634,23 +640,32 @@ fn eval(func: &HirFunction, resolve: &ResolveResult, env: &Env, idx: Idx<HirExpr
             Symbol::Local(lid) if func.locals[lid.index()].ty == SemTy::Int => env[lid.index()],
             _ => Interval::Top,
         },
-        HirExprKind::Unary { op, operand } => {
-            let ov = eval(func, resolve, env, *operand);
+        HirExprKind::Unary { op, operand: o } => {
+            let ov = operand(*o);
             match op {
                 UnaryOp::Neg => ov.negate(),
                 UnaryOp::Pos => ov,
-                // `~x` / `not x` route through the tagged baseline; conservative.
                 UnaryOp::Invert | UnaryOp::Not => Interval::Top,
             }
         }
         HirExprKind::BinOp { op, l, r } => {
-            let lv = eval(func, resolve, env, *l);
-            let rv = eval(func, resolve, env, *r);
+            let lv = operand(*l);
+            let rv = operand(*r);
             binop_interval(*op, lv, rv)
         }
-        // Parameters, calls, globals, cells, container/heap reads, … → ⊤.
-        _ => Interval::Top,
-    }
+        _ => return None,
+    };
+    Some(iv)
+}
+
+/// A leaf / unary / binary integer interval in `env` (the read-only evaluator the
+/// dataflow uses). Recurses only into arithmetic operands — sufficient because a
+/// local's value is an arithmetic expression or a leaf; a `BinOp` buried in a
+/// call argument never influences any local's interval, so the analysis need not
+/// descend into one (the `record_all` apply walk does, to flag it). Non-integer /
+/// unanalyzable shapes are `⊤`.
+fn eval(func: &HirFunction, resolve: &ResolveResult, env: &Env, idx: Idx<HirExpr>) -> Interval {
+    arith_iv(func, resolve, env, idx, |c| eval(func, resolve, env, c)).unwrap_or(Interval::Top)
 }
 
 /// The comprehensive recording walk (apply phase only): compute `idx`'s interval
@@ -665,40 +680,19 @@ fn record_all(
     idx: Idx<HirExpr>,
     rec: &mut ExprIv,
 ) -> Interval {
+    // Arithmetic leaf/unary/binary nodes share their interval rules with `eval`
+    // through `arith_iv`; the operand callback recurses (and so records) each
+    // child. Record this node and return early — the match below handles only
+    // the non-arithmetic shapes, which are `⊤` but still recursed for flagging.
+    if let Some(iv) = arith_iv(func, resolve, env, idx, |c| record_all(func, resolve, env, c, rec))
+    {
+        rec.insert(idx, iv);
+        return iv;
+    }
     let child = |c: Idx<HirExpr>, rec: &mut ExprIv| {
         record_all(func, resolve, env, c, rec);
     };
     let iv = match &func.exprs[idx].kind {
-        HirExprKind::IntLit(v) => Interval::range(*v as i128, *v as i128),
-        HirExprKind::BigIntLit(_) => Interval::Top,
-        HirExprKind::BoolLit(b) => {
-            let v = *b as i128;
-            Interval::range(v, v)
-        }
-        HirExprKind::Local(lid) => {
-            if func.locals[lid.index()].ty == SemTy::Int {
-                env[lid.index()]
-            } else {
-                Interval::Top
-            }
-        }
-        HirExprKind::Name(SymbolRef::Resolved(sid)) => match resolve.symbol(*sid) {
-            Symbol::Local(lid) if func.locals[lid.index()].ty == SemTy::Int => env[lid.index()],
-            _ => Interval::Top,
-        },
-        HirExprKind::Unary { op, operand } => {
-            let ov = record_all(func, resolve, env, *operand, rec);
-            match op {
-                UnaryOp::Neg => ov.negate(),
-                UnaryOp::Pos => ov,
-                UnaryOp::Invert | UnaryOp::Not => Interval::Top,
-            }
-        }
-        HirExprKind::BinOp { op, l, r } => {
-            let lv = record_all(func, resolve, env, *l, rec);
-            let rv = record_all(func, resolve, env, *r, rec);
-            binop_interval(*op, lv, rv)
-        }
         // ── compound non-integer nodes: recurse all children, value is ⊤ ──
         HirExprKind::Compare { l, r, .. } | HirExprKind::Is { l, r } => {
             child(*l, rec);

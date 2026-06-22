@@ -345,16 +345,17 @@ pub fn infer(
                 &inferred_return_ty(&module.functions[i], &states[i], classes),
                 classes,
             );
-            if lifted != vars.ret_ty[i] {
-                vars.ret_moves[i] += 1;
-                // Widening: a return still climbing after WIDEN_LIMIT strict
-                // moves is on an unbounded spine — go straight to `Dyn` (the
-                // absorbing top, so the variable never moves again).
-                vars.ret_ty[i] = if vars.ret_moves[i] >= WIDEN_LIMIT {
-                    SemTy::Dyn
-                } else {
-                    lifted
-                };
+            // A return still climbing after WIDEN_LIMIT strict moves is on an
+            // unbounded spine — `widen_move` jumps it straight to `Dyn` (the
+            // absorbing top; no explicit pin flag is needed since `Dyn` never
+            // moves again).
+            if widen_move(
+                &mut vars.ret_ty[i],
+                &mut vars.ret_moves[i],
+                None,
+                lifted,
+                SemTy::Dyn,
+            ) {
                 moved_rets[i] = true;
             }
         }
@@ -566,21 +567,17 @@ fn move_field_tys(
             continue;
         }
         let tys = &contribs[vi];
-        let joined = raw_uniform(
-            tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes)),
-            tys,
-        );
+        let joined = join_guarded(tys, classes);
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the variable stays at bottom
         }
-        if joined != vars.field_ty[vi] {
-            vars.field_moves[vi] += 1;
-            if vars.field_moves[vi] >= WIDEN_LIMIT {
-                vars.field_ty[vi] = SemTy::Dyn;
-                vars.field_pinned[vi] = true;
-            } else {
-                vars.field_ty[vi] = joined;
-            }
+        if widen_move(
+            &mut vars.field_ty[vi],
+            &mut vars.field_moves[vi],
+            Some(&mut vars.field_pinned[vi]),
+            joined,
+            SemTy::Dyn,
+        ) {
             moved[vi] = true;
         }
     }
@@ -620,14 +617,13 @@ fn move_global_tys(
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the slot stays at bottom
         }
-        if joined != vars.global_ty[vid] {
-            vars.global_moves[vid] += 1;
-            if vars.global_moves[vid] >= WIDEN_LIMIT {
-                vars.global_ty[vid] = SemTy::Dyn;
-                vars.global_pinned[vid] = true;
-            } else {
-                vars.global_ty[vid] = joined;
-            }
+        if widen_move(
+            &mut vars.global_ty[vid],
+            &mut vars.global_moves[vid],
+            Some(&mut vars.global_pinned[vid]),
+            joined,
+            SemTy::Dyn,
+        ) {
             moved[vid] = true;
         }
     }
@@ -665,6 +661,51 @@ fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
     joined
 }
 
+/// Fold a slice of types into their lattice join (`Never` is the bottom /
+/// identity, so not-yet-evaluated contributors are ignored). The *unguarded*
+/// join — use [`join_guarded`] whenever the result decides a slot/element/return
+/// representation.
+fn join_tys(tys: &[SemTy], classes: &ClassTable) -> SemTy {
+    tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes))
+}
+
+/// [`join_tys`] followed by the [`raw_uniform`] representation guard — the join
+/// used wherever the joined type becomes a representation-deciding slot, so a
+/// numerically-promoted contributor can't silently unbox a tagged value.
+fn join_guarded(tys: &[SemTy], classes: &ClassTable) -> SemTy {
+    raw_uniform(join_tys(tys, classes), tys)
+}
+
+/// Apply one widening move to a monotone join-lattice slot. If `candidate`
+/// differs from the slot, bump its strict-move counter and store `candidate` —
+/// but once the slot has moved [`WIDEN_LIMIT`] times it jumps straight to the
+/// absorbing `top` (and sets `pinned`, when the slot carries an explicit pin
+/// flag) so it can never move again, which is what bounds the fixpoint. Returns
+/// whether the slot changed, leaving each caller to propagate its own
+/// `moved`/dirty bookkeeping. The shared termination protocol behind the
+/// return / field / global type widenings and the interval entry-seed loop.
+pub(crate) fn widen_move<T: PartialEq>(
+    slot: &mut T,
+    moves: &mut usize,
+    pinned: Option<&mut bool>,
+    candidate: T,
+    top: T,
+) -> bool {
+    if *slot == candidate {
+        return false;
+    }
+    *moves += 1;
+    if *moves >= WIDEN_LIMIT {
+        *slot = top;
+        if let Some(p) = pinned {
+            *p = true;
+        }
+    } else {
+        *slot = candidate;
+    }
+    true
+}
+
 /// The inferred return type of a function (Phase 8E): the join of every
 /// `return <v>` expression's solved type, with a value-less `return` / fall-off
 /// (`Return(None)`) contributing `NoneTy`. `Never` (no contributors yet) means
@@ -682,10 +723,7 @@ fn inferred_return_ty(func: &HirFunction, st: &FuncState, classes: &ClassTable) 
             _ => {}
         }
     }
-    let joined = contribs
-        .iter()
-        .fold(SemTy::Never, |acc, t| acc.join(t, classes));
-    raw_uniform(joined, &contribs)
+    join_guarded(&contribs, classes)
 }
 
 /// How a slot's representation *reinterprets a tagged value by its assumed type*
@@ -1669,8 +1707,7 @@ impl FuncState {
         // The Raw-uniformity discipline (PITFALLS A2/B6) lives in
         // [`raw_uniform`], shared with element-slot and return-type joins.
         let tys: Vec<SemTy> = writes.iter().map(|&v| self.ety(v)).collect();
-        let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes));
-        raw_uniform(joined, &tys)
+        join_guarded(&tys, classes)
     }
 
     /// Join a local's writes — whole-value assignments plus the element-level
@@ -1742,10 +1779,7 @@ impl FuncState {
                 }
             }
         }
-        let join_slot = |tys: &[SemTy]| {
-            let joined = tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes));
-            raw_uniform(joined, tys)
-        };
+        let join_slot = |tys: &[SemTy]| join_guarded(tys, classes);
         if is_list {
             SemTy::list_of(join_slot(&elems))
         } else if is_set {
@@ -1954,16 +1988,8 @@ impl<'a> Sweeper<'a> {
                 // elements — stored values keep their own representation.
                 let kt: Vec<SemTy> = pairs.iter().map(|(k, _)| self.ety(*k)).collect();
                 let vt: Vec<SemTy> = pairs.iter().map(|(_, v)| self.ety(*v)).collect();
-                let k = raw_uniform(
-                    kt.iter()
-                        .fold(SemTy::Never, |acc, t| acc.join(t, self.classes)),
-                    &kt,
-                );
-                let v = raw_uniform(
-                    vt.iter()
-                        .fold(SemTy::Never, |acc, t| acc.join(t, self.classes)),
-                    &vt,
-                );
+                let k = join_guarded(&kt, self.classes);
+                let v = join_guarded(&vt, self.classes);
                 SemTy::dict_of(k, v)
             }
             HirExprKind::BytesLit(_) => SemTy::Bytes,
@@ -2357,10 +2383,7 @@ impl<'a> Sweeper<'a> {
     /// stored tagged int.
     fn join_all(&self, elems: &[Idx<HirExpr>]) -> SemTy {
         let tys: Vec<SemTy> = elems.iter().map(|e| self.ety(*e)).collect();
-        let joined = tys
-            .iter()
-            .fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
-        raw_uniform(joined, &tys)
+        join_guarded(&tys, self.classes)
     }
 
     /// The declared return type of a concrete-class dunder `name` on `ty`, if any
@@ -2398,9 +2421,7 @@ impl<'a> Sweeper<'a> {
                     return elems[idx as usize].clone();
                 }
             }
-            return elems
-                .iter()
-                .fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
+            return join_tys(elems, self.classes);
         }
         if let Some(e) = bt.tuple_var_elem() {
             return e.clone();
@@ -2426,10 +2447,7 @@ impl<'a> Sweeper<'a> {
             return SemTy::tuple_var_of(e.clone());
         }
         if let Some(elems) = bt.tuple_elems() {
-            let joined = elems
-                .iter()
-                .fold(SemTy::Never, |acc, t| acc.join(t, self.classes));
-            return SemTy::tuple_var_of(joined);
+            return SemTy::tuple_var_of(join_tys(elems, self.classes));
         }
         match bt {
             SemTy::Str => SemTy::Str,
@@ -2889,10 +2907,7 @@ fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
         // tuple like `(1.5, 1)` joins to `float` (Raw(F64)) via the numeric
         // tower, and the iterator's tagged `int` element gets raw-unboxed as an
         // f64 — a SIGSEGV at the unbox (PITFALLS A2).
-        let joined = elems
-            .iter()
-            .fold(SemTy::Never, |acc, x| acc.join(x, classes));
-        return raw_uniform(joined, elems);
+        return join_guarded(elems, classes);
     }
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
