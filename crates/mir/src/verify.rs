@@ -10,9 +10,9 @@
 //! `Call` reprs are checked against the callee signature (ABI = f(param Repr)).
 
 use crate::{
-    classify_coercion, is_heap_str, BinOp, Const, ContainerArg, ContainerOp, ContainerResult,
-    ExcQuery, GenOp, GenResult, MirArmCause, MirFunction, MirInst, MirRaise, MirTerminator, Operand,
-    PrintKind, UnaryOp,
+    classify_coercion, is_heap_str, is_legal_checked_coercion, BinOp, Const, ContainerArg,
+    ContainerOp, ContainerResult, ExcQuery, GenOp, GenResult, MirArmCause, MirFunction, MirInst,
+    MirRaise, MirTerminator, Operand, PrintKind, UnaryOp,
 };
 use pyaot_types::{HeapShape, RawKind, Repr};
 use pyaot_utils::{BlockId, LocalId};
@@ -488,26 +488,10 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // — kept as defense-in-depth against in-crate construction.
             if c.checked {
                 // A checked (runtime-validated) coercion is legal ONLY for the
-                // guard-backed gradual seams (mirrors `CoerceInst::new_checked`):
-                //  - the three raw-ABI unbox shapes `Tagged→Raw(F64|I64|I8)`
-                //    (Phase 8H, D3) backed by `rt_unbox_float`/`rt_unbox_int`/
-                //    `rt_unbox_bool`;
-                //  - a `Tagged→Heap(shape)` shape guard for any `shape` whose
-                //    `dyn_check` is `Some` backed by
-                //    `rt_check_heap_kind`/`rt_check_instance`.
-                // Each has a matching runtime guard that raises `TypeError`
-                // instead of SEGV. Never widen this set without adding the
-                // matching `rt_*` guard first — doing so reopens the Phase 8B–8F
-                // gradual-seam SEGV family. See PITFALLS B18.
-                let legal = c.from == Repr::Tagged
-                    && match &c.to {
-                        Repr::Raw(RawKind::F64)
-                        | Repr::Raw(RawKind::I64)
-                        | Repr::Raw(RawKind::I8) => true,
-                        Repr::Heap(shape) => shape.dyn_check().is_some(),
-                        _ => false,
-                    };
-                if !legal {
+                // guard-backed gradual seams — re-checked here as defense-in-depth
+                // against in-crate construction, through the same predicate that
+                // `CoerceInst::new_checked` admits with. See PITFALLS B18.
+                if !is_legal_checked_coercion(&c.from, &c.to) {
                     return Err(VerifyError::IllegalCoercion {
                         from: c.from.clone(),
                         to: c.to.clone(),

@@ -391,11 +391,11 @@ pub(super) fn body_has_yield(body: &[Stmt]) -> bool {
 
 pub(super) fn stmt_has_yield(s: &Stmt) -> bool {
     match s {
-        Stmt::Expr(e) => expr_has_yield(&e.value),
-        Stmt::Assign(a) => expr_has_yield(&a.value),
-        Stmt::AugAssign(a) => expr_has_yield(&a.value),
-        Stmt::AnnAssign(a) => a.value.as_ref().is_some_and(|v| expr_has_yield(v)),
-        Stmt::Return(r) => r.value.as_ref().is_some_and(|v| expr_has_yield(v)),
+        Stmt::Expr(e) => is_yield_expr(&e.value),
+        Stmt::Assign(a) => is_yield_expr(&a.value),
+        Stmt::AugAssign(a) => is_yield_expr(&a.value),
+        Stmt::AnnAssign(a) => a.value.as_ref().is_some_and(|v| is_yield_expr(v)),
+        Stmt::Return(r) => r.value.as_ref().is_some_and(|v| is_yield_expr(v)),
         Stmt::If(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
         Stmt::While(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
         Stmt::For(s) => body_has_yield(&s.body) || body_has_yield(&s.orelse),
@@ -416,10 +416,6 @@ pub(super) fn stmt_has_yield(s: &Stmt) -> bool {
         // A nested def/lambda/class is its own scope — its yields don't count.
         _ => false,
     }
-}
-
-pub(super) fn expr_has_yield(e: &Expr) -> bool {
-    matches!(e, Expr::Yield(_) | Expr::YieldFrom(_))
 }
 
 /// True if a `yield` appears lexically inside an `except` handler body or a

@@ -987,15 +987,7 @@ impl<'a> FnLowerer<'a> {
             !self.celled.contains(&name),
             "celled name must be pre-created by init_cells"
         );
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: false,
-            cell_shared: false,
-            deletable: false,
-        });
+        let id = self.push_local(HirLocal::new(name, ty));
         self.scope.insert(name, Binding::Direct(id));
         Binding::Direct(id)
     }

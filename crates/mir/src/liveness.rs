@@ -30,7 +30,7 @@
 
 use pyaot_utils::LocalId;
 
-use crate::{MirArmCause, MirFunction, MirInst, MirRaise, MirTerminator, Operand};
+use crate::{MirFunction, MirInst, MirTerminator, Operand};
 
 /// For each local (by index): must it get a GC root slot? `true` only for
 /// locals whose `Repr::is_gc_root()` holds AND whose liveness crosses an
@@ -185,256 +185,20 @@ fn term_uses(t: &MirTerminator, mut f: impl FnMut(LocalId)) {
     }
 }
 
-/// The local an instruction defines, if any (exhaustive — no catch-all).
+/// The local an instruction defines, if any. Thin projection over the
+/// canonical [`MirInst::dst`] so the per-variant `dst` layout lives in exactly
+/// one place.
 fn inst_def(inst: &MirInst) -> Option<LocalId> {
-    match inst {
-        MirInst::Const { dst, .. }
-        | MirInst::BinOp { dst, .. }
-        | MirInst::Unary { dst, .. }
-        | MirInst::Compare { dst, .. }
-        | MirInst::Truthy { dst, .. }
-        | MirInst::MakeInstance { dst, .. }
-        | MirInst::GetField { dst, .. }
-        | MirInst::GetFieldNamed { dst, .. }
-        | MirInst::IsInstance { dst, .. }
-        | MirInst::GetClassAttr { dst, .. }
-        | MirInst::MakeClosure { dst, .. }
-        | MirInst::MakeCell { dst, .. }
-        | MirInst::CellGet { dst, .. }
-        | MirInst::GlobalGet { dst, .. }
-        | MirInst::MakeGenerator { dst, .. }
-        | MirInst::ExcQuery { dst, .. }
-        | MirInst::ExcInstanceStr { dst, .. } => Some(*dst),
-        MirInst::Coerce(c) => Some(c.dst()),
-        MirInst::Call { dst, .. }
-        | MirInst::CallBuiltin { dst, .. }
-        | MirInst::CallContainer { dst, .. }
-        | MirInst::CallRuntime { dst, .. }
-        | MirInst::CallVirtual { dst, .. }
-        | MirInst::CallIndirect { dst, .. }
-        | MirInst::GenOpInst { dst, .. } => *dst,
-        MirInst::SetField { .. }
-        | MirInst::SetFieldNamed { .. }
-        | MirInst::SetClassAttr { .. }
-        | MirInst::AssertFail
-        | MirInst::Print { .. }
-        | MirInst::CellSet { .. }
-        | MirInst::GlobalSet { .. }
-        | MirInst::ExcOp(_)
-        | MirInst::ArmCause(_)
-        | MirInst::Raise(_)
-        | MirInst::LineMarker(_) => None,
-    }
+    inst.dst()
 }
 
-/// The locals an instruction reads (exhaustive — no catch-all).
+/// The locals an instruction reads. Thin projection over the canonical
+/// [`MirInst::for_each_operand`], mapping each `Operand` to its `LocalId`.
 fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
-    let local = |op: &Operand| match op {
-        Operand::Local(id) => *id,
-    };
-    let mut one = |op: &Operand| f(local(op));
-    match inst {
-        MirInst::Const { dst: _, val: _ } => {}
-        MirInst::Coerce(c) => one(c.src()),
-        MirInst::BinOp {
-            dst: _,
-            op: _,
-            l,
-            r,
-        }
-        | MirInst::Compare {
-            dst: _,
-            op: _,
-            l,
-            r,
-        } => {
-            one(l);
-            one(r);
-        }
-        MirInst::Unary {
-            dst: _,
-            op: _,
-            operand,
-        }
-        | MirInst::Truthy { dst: _, operand } => one(operand),
-        MirInst::Call {
-            dst: _,
-            func: _,
-            args,
-        }
-        | MirInst::CallBuiltin {
-            dst: _,
-            kind: _,
-            args,
-        }
-        | MirInst::CallContainer {
-            dst: _,
-            op: _,
-            args,
-        }
-        | MirInst::CallRuntime {
-            dst: _,
-            def: _,
-            args,
-        } => {
-            for a in args {
-                one(a);
-            }
-        }
-        MirInst::CallVirtual {
-            dst: _,
-            recv,
-            name_hash: _,
-            args,
-            ret: _,
-        } => {
-            one(recv);
-            for a in args {
-                one(a);
-            }
-        }
-        MirInst::CallIndirect {
-            dst: _,
-            callee,
-            args,
-            sig: _,
-        } => {
-            one(callee);
-            for a in args {
-                one(a);
-            }
-        }
-        MirInst::MakeInstance {
-            dst: _,
-            class_id: _,
-            field_count: _,
-        } => {}
-        MirInst::GetField {
-            dst: _,
-            base,
-            slot: _,
-        } => one(base),
-        MirInst::SetField {
-            base,
-            slot: _,
-            value,
-        } => {
-            one(base);
-            one(value);
-        }
-        MirInst::GetFieldNamed {
-            dst: _,
-            base,
-            name_hash: _,
-        } => one(base),
-        MirInst::SetFieldNamed {
-            base,
-            name_hash: _,
-            value,
-        } => {
-            one(base);
-            one(value);
-        }
-        MirInst::IsInstance {
-            dst: _,
-            value,
-            class_id: _,
-        } => one(value),
-        MirInst::GetClassAttr {
-            dst: _,
-            class_id: _,
-            attr_idx: _,
-        } => {}
-        MirInst::SetClassAttr {
-            class_id: _,
-            attr_idx: _,
-            value,
-        } => one(value),
-        MirInst::AssertFail => {}
-        MirInst::Print { kind: _, arg } => {
-            if let Some(a) = arg {
-                one(a);
-            }
-        }
-        MirInst::MakeClosure {
-            dst: _,
-            func: _,
-            captures,
-        } => {
-            for c in captures {
-                one(c);
-            }
-        }
-        MirInst::MakeCell { dst: _, init } => one(init),
-        MirInst::CellGet { dst: _, cell } => one(cell),
-        MirInst::CellSet { cell, value } => {
-            one(cell);
-            one(value);
-        }
-        MirInst::GlobalGet { dst: _, var_id: _ } => {}
-        MirInst::GlobalSet { var_id: _, value } => one(value),
-        MirInst::MakeGenerator {
-            dst: _,
-            gen_id: _,
-            num_locals: _,
-        } => {}
-        MirInst::GenOpInst {
-            dst: _,
-            op: _,
-            gen,
-            imm: _,
-            value,
-        } => {
-            one(gen);
-            if let Some(v) = value {
-                one(v);
-            }
-        }
-        MirInst::ExcOp(_) => {}
-        MirInst::ArmCause(arm) => match arm {
-            MirArmCause::Suppress => {}
-            MirArmCause::Builtin {
-                cause_tag: _,
-                cause_msg,
-            } => {
-                if let Some(m) = cause_msg {
-                    one(m);
-                }
-            }
-            MirArmCause::Value(v) => one(v),
-        },
-        MirInst::LineMarker(_) => {}
-        MirInst::ExcQuery { dst: _, query: _ } => {}
-        MirInst::ExcInstanceStr { dst: _, value } => one(value),
-        MirInst::Raise(r) => match r {
-            MirRaise::Builtin { tag: _, msg } => {
-                if let Some(m) = msg {
-                    one(m);
-                }
-            }
-            MirRaise::CustomWithInstance {
-                class_id: _,
-                msg,
-                instance,
-            } => {
-                if let Some(m) = msg {
-                    one(m);
-                }
-                one(instance);
-            }
-            MirRaise::Stdlib {
-                class_id: _,
-                exc_type_tag: _,
-                msg,
-            } => {
-                if let Some(m) = msg {
-                    one(m);
-                }
-            }
-            MirRaise::Instance { value } => one(value),
-            MirRaise::Reraise => {}
-        },
-    }
+    inst.for_each_operand(|op| {
+        let Operand::Local(id) = op;
+        f(*id);
+    });
 }
 
 #[cfg(test)]

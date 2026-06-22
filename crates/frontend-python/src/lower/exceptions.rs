@@ -308,15 +308,7 @@ impl<'a> FnLowerer<'a> {
             self.write_named(iname, SemTy::Dyn, value);
             return;
         }
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name: iname,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: false,
-            cell_shared: false,
-            deletable: false,
-        });
+        let id = self.push_local(HirLocal::new(iname, ty));
         self.scope.insert(iname, Binding::Direct(id));
         self.push_stmt(HirStmt::Assign { target: id, value });
     }

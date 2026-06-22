@@ -752,18 +752,7 @@ impl<'a> FnLowerer<'a> {
                     // Same discipline as min/max: a bare out-of-scope name is
                     // called directly per element (builtins have no
                     // value-position thunk); anything else is staged once.
-                    key_mode = Some(match &kw.value {
-                        k @ Expr::Name(nm)
-                            if {
-                                let kn = self.intern(nm.id.as_str());
-                                self.scope.contains_key(&kn)
-                            } =>
-                        {
-                            KeyMode::Staged(self.stage_arg(k)?)
-                        }
-                        k @ Expr::Name(_) => KeyMode::ByName(k),
-                        k => KeyMode::Staged(self.stage_arg(k)?),
-                    });
+                    key_mode = Some(self.stage_callable(&kw.value)?);
                 }
                 Some("reverse") => rev = Some(self.stage_arg(&kw.value)?),
                 Some(other) => {
@@ -881,18 +870,7 @@ impl<'a> FnLowerer<'a> {
         for kw in &c.keywords {
             match kw.arg.as_ref().map(|i| i.as_str()) {
                 Some("key") => {
-                    key_mode = Some(match &kw.value {
-                        k @ Expr::Name(nm)
-                            if {
-                                let kn = self.intern(nm.id.as_str());
-                                self.scope.contains_key(&kn)
-                            } =>
-                        {
-                            KeyMode::Staged(self.stage_arg(k)?)
-                        }
-                        k @ Expr::Name(_) => KeyMode::ByName(k),
-                        k => KeyMode::Staged(self.stage_arg(k)?),
-                    });
+                    key_mode = Some(self.stage_callable(&kw.value)?);
                 }
                 Some("reverse") => rev = Some(self.stage_arg(&kw.value)?),
                 Some(other) => {

@@ -1077,12 +1077,15 @@ fn emit_classinit(
             // registry-dispatched ops (`rt_obj_add`/`rt_obj_neg`/the default-repr
             // path) resolve `a + b` / `print(a)` for instances of this class.
             for (name_hash, fid) in &c.dunders {
-                let cidd = builder.ins().iconst(types::I64, c.class_id.0 as i64);
-                let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
-                let fref = module.declare_func_in_func(func_ids[fid.index()], builder.func);
-                let addr = builder.ins().func_addr(_ptr_ty, fref);
-                let rdf = module.declare_func_in_func(rt.register_dunder_func, builder.func);
-                builder.ins().call(rdf, &[cidd, hashv, addr]);
+                register_class_thunk(
+                    &mut builder,
+                    module,
+                    _ptr_ty,
+                    rt.register_dunder_func,
+                    c.class_id.0 as i64,
+                    Some(*name_hash),
+                    func_ids[fid.index()],
+                );
             }
 
             // Uniform method-thunk registrations (gradual-completeness method
@@ -1090,12 +1093,15 @@ fn emit_classinit(
             // (class_id, method_name_hash), so `rt_obj_method` can invoke this
             // method on a `Dyn` receiver. Same shape as the dunder loop.
             for (name_hash, thunk_fid) in &c.method_uniforms {
-                let cidm = builder.ins().iconst(types::I64, c.class_id.0 as i64);
-                let hashv = builder.ins().iconst(types::I64, *name_hash as i64);
-                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
-                let addr = builder.ins().func_addr(_ptr_ty, fref);
-                let rmu = module.declare_func_in_func(rt.register_method_uniform, builder.func);
-                builder.ins().call(rmu, &[cidm, hashv, addr]);
+                register_class_thunk(
+                    &mut builder,
+                    module,
+                    _ptr_ty,
+                    rt.register_method_uniform,
+                    c.class_id.0 as i64,
+                    Some(*name_hash),
+                    func_ids[thunk_fid.index()],
+                );
             }
 
             // Iternext-thunk registration (lazy user-class iterator protocol):
@@ -1104,11 +1110,15 @@ fn emit_classinit(
             // / `iter()` / `next()`. An inherited `__next__` registers the
             // base's thunk under this subclass id.
             if let Some(thunk_fid) = &c.iternext_thunk {
-                let cidi = builder.ins().iconst(types::I64, c.class_id.0 as i64);
-                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
-                let addr = builder.ins().func_addr(_ptr_ty, fref);
-                let rit = module.declare_func_in_func(rt.register_iternext, builder.func);
-                builder.ins().call(rit, &[cidi, addr]);
+                register_class_thunk(
+                    &mut builder,
+                    module,
+                    _ptr_ty,
+                    rt.register_iternext,
+                    c.class_id.0 as i64,
+                    None,
+                    func_ids[thunk_fid.index()],
+                );
             }
 
             // `__copy__` / `__deepcopy__` thunk registration: the class's compiled
@@ -1117,18 +1127,26 @@ fn emit_classinit(
             // iternext block. An inherited dunder registers the base's thunk under
             // this subclass id.
             if let Some(thunk_fid) = &c.copy_thunk {
-                let cidc = builder.ins().iconst(types::I64, c.class_id.0 as i64);
-                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
-                let addr = builder.ins().func_addr(_ptr_ty, fref);
-                let rcf = module.declare_func_in_func(rt.register_copy_func, builder.func);
-                builder.ins().call(rcf, &[cidc, addr]);
+                register_class_thunk(
+                    &mut builder,
+                    module,
+                    _ptr_ty,
+                    rt.register_copy_func,
+                    c.class_id.0 as i64,
+                    None,
+                    func_ids[thunk_fid.index()],
+                );
             }
             if let Some(thunk_fid) = &c.deepcopy_thunk {
-                let cidc = builder.ins().iconst(types::I64, c.class_id.0 as i64);
-                let fref = module.declare_func_in_func(func_ids[thunk_fid.index()], builder.func);
-                let addr = builder.ins().func_addr(_ptr_ty, fref);
-                let rdf = module.declare_func_in_func(rt.register_deepcopy_func, builder.func);
-                builder.ins().call(rdf, &[cidc, addr]);
+                register_class_thunk(
+                    &mut builder,
+                    module,
+                    _ptr_ty,
+                    rt.register_deepcopy_func,
+                    c.class_id.0 as i64,
+                    None,
+                    func_ids[thunk_fid.index()],
+                );
             }
 
             // Class-attribute initializers (Phase 5D): materialize each literal and
@@ -1154,6 +1172,32 @@ fn emit_classinit(
 /// Materialize a [`Const`] into a Cranelift `Value` in a free builder context
 /// (used by `__pyaot_classinit` for class-attribute initializers). Mirrors
 /// `FnGen::lower_const`, but standalone (no per-function state).
+/// Emit one class-thunk registration inside `__pyaot_classinit`: materialize
+/// the class id, take the address of `target_fid`, and call the `reg_fid`
+/// registrar with `[class_id, (name_hash,)? addr]`. The single shape behind the
+/// dunder / method-uniform / iternext / copy / deepcopy registration blocks,
+/// which differ only in the registrar and whether a method-name hash is passed.
+fn register_class_thunk(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    ptr_ty: Type,
+    reg_fid: FuncId,
+    class_id: i64,
+    name_hash: Option<u64>,
+    target_fid: FuncId,
+) {
+    let cid = builder.ins().iconst(types::I64, class_id);
+    let fref = module.declare_func_in_func(target_fid, builder.func);
+    let addr = builder.ins().func_addr(ptr_ty, fref);
+    let reg = module.declare_func_in_func(reg_fid, builder.func);
+    let mut args = vec![cid];
+    if let Some(h) = name_hash {
+        args.push(builder.ins().iconst(types::I64, h as i64));
+    }
+    args.push(addr);
+    builder.ins().call(reg, &args);
+}
+
 fn materialize_const(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,

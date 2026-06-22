@@ -444,6 +444,40 @@ impl<'a> FnLower<'a> {
         id
     }
 
+    /// Allocate a fresh `repr` temp, emit a `Const` into it, and return the
+    /// local. The single home for the `alloc_temp` + `Const` pair that
+    /// otherwise recurs at every literal/sentinel emission site.
+    fn emit_const(&mut self, repr: Repr, val: Const) -> LocalId {
+        let dst = self.alloc_temp(repr);
+        self.emit(MirInst::Const { dst, val });
+        dst
+    }
+
+    /// A `Tagged` null-pointer sentinel — the "absent optional arg / no kwargs"
+    /// marker. Distinct from `None` (`NONE_TAG`): runtime guards test
+    /// `is_null`, so a `None` literal here would not read as absent. See
+    /// PITFALLS §9 (None ≠ null).
+    fn null_temp(&mut self) -> LocalId {
+        self.emit_const(Repr::Tagged, Const::NullPtr)
+    }
+
+    /// FNV-1a hash of an interned method/field `name`. The single home for the
+    /// `fnv1a_hash(resolve(..))` computation, used both as the `i64` `name_hash`
+    /// field of `*Named`/`CallVirtual` instructions and (via [`Self::emit_name_hash`])
+    /// as a `Raw(I64)` immediate operand.
+    fn name_hash(&self, name: InternedString) -> u64 {
+        pyaot_utils::fnv1a_hash(self.interner.resolve(name))
+    }
+
+    /// Emit the name-hash of `name` as a `Raw(I64)` immediate. The 64-bit hash
+    /// MUST go straight into a `Raw(I64)` `Const` — never round-tripped through
+    /// `Tagged` (which would truncate/retag it). Backs the gradual `rt_obj_*`
+    /// dispatch hash operand.
+    fn emit_name_hash(&mut self, name: InternedString) -> LocalId {
+        let hash = self.name_hash(name) as i64;
+        self.emit_const(Repr::Raw(RawKind::I64), Const::Int(hash))
+    }
+
     // ── coercion (the single legalize seam) ──────────────────────────────────
 
     /// Coerce `src` (`from`) into a fresh local of `to`, returning it. No-op
@@ -1879,11 +1913,7 @@ impl<'a> FnLower<'a> {
         // No call-site keywords on the uniform path → the null `__kwargs__`
         // sentinel (no allocation; the thunk reads it only when `F` has
         // keyword-only / `**kwargs` params, which a value call never supplies).
-        let kwargs = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const {
-            dst: kwargs,
-            val: Const::NullPtr,
-        });
+        let kwargs = self.null_temp();
 
         let dst = self.alloc_temp(Repr::Tagged);
         self.emit(MirInst::CallIndirect {
@@ -1916,14 +1946,7 @@ impl<'a> FnLower<'a> {
                 let (kl, kr) = self.lower_expr(k)?;
                 self.coerce(kl, kr, Repr::Tagged)?
             }
-            None => {
-                let n = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const {
-                    dst: n,
-                    val: Const::NullPtr,
-                });
-                n
-            }
+            None => self.null_temp(),
         };
         let dst = self.alloc_temp(Repr::Tagged);
         self.emit(MirInst::CallIndirect {
@@ -2239,11 +2262,7 @@ impl<'a> FnLower<'a> {
                 }
                 None => {
                     // Absent optional object param → the null-pointer sentinel.
-                    let null = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const {
-                        dst: null,
-                        val: Const::NullPtr,
-                    });
+                    let null = self.null_temp();
                     ops.push(Operand::Local(null));
                 }
             }
@@ -2862,12 +2881,7 @@ impl<'a> FnLower<'a> {
                 if matches!(want, ArgWant::Tagged)
                     && matches!(self.func.exprs[*a].kind, HirExprKind::NoneLit)
                 {
-                    let d = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const {
-                        dst: d,
-                        val: Const::NullPtr,
-                    });
-                    d
+                    self.null_temp()
                 } else {
                     // `sep.join(iterable)` accepts ANY iterable in CPython (str,
                     // tuple, generator, …), but `rt_str_join`/`rt_bytes_join` read
@@ -2895,14 +2909,7 @@ impl<'a> FnLower<'a> {
                 // class (`maxsplit`/`count = -1`, `tabsize = 8`, search `start = 0`
                 // / `end = i64::MAX`).
                 match want {
-                    ArgWant::Tagged => {
-                        let d = self.alloc_temp(Repr::Tagged);
-                        self.emit(MirInst::Const {
-                            dst: d,
-                            val: Const::NullPtr,
-                        });
-                        d
-                    }
+                    ArgWant::Tagged => self.null_temp(),
                     ArgWant::RawI64(default) => {
                         let d = self.alloc_temp(Repr::Raw(RawKind::I64));
                         self.emit(MirInst::Const {
@@ -2985,14 +2992,7 @@ impl<'a> FnLower<'a> {
                     let (al, ar) = self.lower_expr(a)?;
                     self.coerce(al, ar, Repr::Tagged)?
                 }
-                _ => {
-                    let d = self.alloc_temp(Repr::Tagged);
-                    self.emit(MirInst::Const {
-                        dst: d,
-                        val: Const::NullPtr,
-                    });
-                    d
-                }
+                _ => self.null_temp(),
             };
             ops.push(Operand::Local(op));
         }
@@ -3237,7 +3237,7 @@ impl<'a> FnLower<'a> {
             let (bl, br) = self.lower_expr(value)?;
             let base = self.coerce(bl, br, Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Tagged);
-            let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
+            let name_hash = self.name_hash(name);
             self.emit(MirInst::GetFieldNamed {
                 dst,
                 base: Operand::Local(base),
@@ -3319,17 +3319,12 @@ impl<'a> FnLower<'a> {
         // is a RAW i64 immediate.
         let (vl, vr) = self.lower_expr(value)?;
         let base = self.coerce(vl, vr, Repr::Tagged)?;
-        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
         let dst = self.alloc_temp(Repr::Tagged);
         match default {
             Some(d) => {
                 let (dl, dr) = self.lower_expr(d)?;
                 let deflt = self.coerce(dl, dr, Repr::Tagged)?;
-                let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
-                self.emit(MirInst::Const {
-                    dst: hash_local,
-                    val: Const::Int(name_hash as i64),
-                });
+                let hash_local = self.emit_name_hash(name);
                 self.emit(MirInst::CallRuntime {
                     dst: Some(dst),
                     def: &pyaot_core_defs::runtime_func_def::RT_GETATTR_NAME_OR_DEFAULT,
@@ -3341,6 +3336,7 @@ impl<'a> FnLower<'a> {
                 });
             }
             None => {
+                let name_hash = self.name_hash(name);
                 self.emit(MirInst::GetFieldNamed {
                     dst,
                     base: Operand::Local(base),
@@ -3448,7 +3444,7 @@ impl<'a> FnLower<'a> {
             let bt = self.coerce(bl, br, Repr::Tagged)?;
             let (vl, vr) = self.lower_expr(value)?;
             let vt = self.coerce(vl, vr, Repr::Tagged)?;
-            let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name));
+            let name_hash = self.name_hash(name);
             self.emit(MirInst::SetFieldNamed {
                 base: Operand::Local(bt),
                 name_hash,
@@ -3928,12 +3924,7 @@ impl<'a> FnLower<'a> {
         let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
 
         // Method-name hash: a RAW `i64` immediate (like `GetFieldNamed`).
-        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
-        let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
-        self.emit(MirInst::Const {
-            dst: hash_local,
-            val: Const::Int(name_hash as i64),
-        });
+        let hash_local = self.emit_name_hash(method_name);
 
         // Pack the positional args into a `tuple[Tagged]` (the uniform-call shape).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
@@ -3963,12 +3954,7 @@ impl<'a> FnLower<'a> {
         // the common (no-keyword) path (no allocation; the dispatcher reads it
         // only for a user method with keyword params).
         let kwargs_op = if kwargs.is_empty() {
-            let k = self.alloc_temp(Repr::Tagged);
-            self.emit(MirInst::Const {
-                dst: k,
-                val: Const::NullPtr,
-            });
-            k
+            self.null_temp()
         } else {
             let dict_repr = Repr::Heap(HeapShape::Dict(
                 Box::new(Repr::Tagged),
@@ -4033,12 +4019,7 @@ impl<'a> FnLower<'a> {
         let recv_t = self.coerce(rl, rr, Repr::Tagged)?;
 
         // Method-name hash: a RAW `i64` immediate (like `lower_dyn_method_call`).
-        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
-        let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
-        self.emit(MirInst::Const {
-            dst: hash_local,
-            val: Const::Int(name_hash as i64),
-        });
+        let hash_local = self.emit_name_hash(method_name);
 
         // Positional tuple — already built by the frontend; just coerce to Tagged.
         let (al, ar) = self.lower_expr(args)?;
@@ -4051,14 +4032,7 @@ impl<'a> FnLower<'a> {
                 let (kl, kr) = self.lower_expr(k)?;
                 self.coerce(kl, kr, Repr::Tagged)?
             }
-            None => {
-                let n = self.alloc_temp(Repr::Tagged);
-                self.emit(MirInst::Const {
-                    dst: n,
-                    val: Const::NullPtr,
-                });
-                n
-            }
+            None => self.null_temp(),
         };
 
         let dst = self.alloc_temp(Repr::Tagged);
@@ -4434,7 +4408,7 @@ impl<'a> FnLower<'a> {
         let (rl, rr) = self.lower_expr(recv)?;
         let self_arg = self.coerce(rl, rr, params[0].clone())?;
         let argvals = self.build_call_operands(fid, true, args, kwargs, span)?;
-        let name_hash = pyaot_utils::fnv1a_hash(self.interner.resolve(method_name));
+        let name_hash = self.name_hash(method_name);
         let dst = self.alloc_temp(ret.clone());
         self.emit(MirInst::CallVirtual {
             dst: Some(dst),
@@ -4504,16 +4478,10 @@ impl<'a> FnLower<'a> {
         }
         let mut acc: Option<LocalId> = None; // Tagged-boolean accumulator.
         for name in method_names {
-            // The method-name hash is a RAW `i64` immediate emitted DIRECTLY into a
-            // `Raw(I64)` local (as `lower_dyn_method_call` does) — NOT via
-            // `raw_i64_const`, whose `Const::Int → Tagged → untag` round-trip would
-            // drop the top 3 bits of a 64-bit FNV hash (no fixnum range here).
-            let hash = pyaot_utils::fnv1a_hash(self.interner.resolve(name)) as i64;
-            let hash_local = self.alloc_temp(Repr::Raw(RawKind::I64));
-            self.emit(MirInst::Const {
-                dst: hash_local,
-                val: Const::Int(hash),
-            });
+            // The method-name hash is a RAW `i64` immediate emitted directly into
+            // a `Raw(I64)` local — never round-tripped through `Tagged` (see
+            // `emit_name_hash`, which is the single home for that invariant).
+            let hash_local = self.emit_name_hash(name);
             let flag = self.alloc_temp(Repr::Raw(RawKind::I8));
             self.emit(MirInst::CallRuntime {
                 dst: Some(flag),
@@ -4635,22 +4603,16 @@ impl<'a> FnLower<'a> {
     /// value is a compile-time element count well within the fixnum range, so the
     /// `Tagged → Raw(I64)` untag round-trips soundly.
     fn raw_i64_const(&mut self, n: i64) -> LocalId {
-        let t = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const {
-            dst: t,
-            val: Const::Int(n),
-        });
+        // Via `Tagged` (a fixnum-range cursor value), then untag — unlike
+        // `emit_name_hash`, which writes a full 64-bit immediate directly.
+        let t = self.emit_const(Repr::Tagged, Const::Int(n));
         self.coerce(t, Repr::Tagged, Repr::Raw(RawKind::I64))
             .expect("Tagged -> Raw(I64) is always legal")
     }
 
     /// Materialize a `Raw(I8)` boolean constant (a default `reverse=False`).
     fn raw_i8_const(&mut self, b: bool) -> LocalId {
-        let t = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const {
-            dst: t,
-            val: Const::Bool(b),
-        });
+        let t = self.emit_const(Repr::Tagged, Const::Bool(b));
         self.coerce(t, Repr::Tagged, Repr::Raw(RawKind::I8))
             .expect("Tagged -> Raw(I8) is always legal")
     }
@@ -5434,12 +5396,7 @@ impl<'a> FnLower<'a> {
                     let value = if argn == 2 {
                         self.coerce(a[1].0, a[1].1.clone(), Repr::Tagged)?
                     } else {
-                        let n = self.alloc_temp(Repr::Tagged);
-                        self.emit(MirInst::Const {
-                            dst: n,
-                            val: Const::NullPtr,
-                        });
-                        n
+                        self.null_temp()
                     };
                     let dst_repr = heap();
                     let dst = self.alloc_temp(dst_repr.clone());
@@ -5606,12 +5563,7 @@ impl<'a> FnLower<'a> {
 
     /// Materialize the tagged `None` singleton into a fresh local.
     fn none_temp(&mut self) -> LocalId {
-        let t = self.alloc_temp(Repr::Tagged);
-        self.emit(MirInst::Const {
-            dst: t,
-            val: Const::None,
-        });
-        t
+        self.emit_const(Repr::Tagged, Const::None)
     }
 
     /// A `None`-valued result (for mutating methods used as expressions).

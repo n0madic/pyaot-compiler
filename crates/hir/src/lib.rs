@@ -232,6 +232,37 @@ pub struct HirLocal {
     pub deletable: bool,
 }
 
+impl HirLocal {
+    /// A slot named `name` of type `ty` with every representation override at
+    /// its tagged-baseline default (`raw_int_ok` / `pin_tagged` / `cell_shared`
+    /// / `deletable` all `false`). Toggle the overrides the frontend sets with
+    /// the [`Self::pinned`] / [`Self::with_cell_shared`] builders.
+    pub fn new(name: InternedString, ty: SemTy) -> Self {
+        Self {
+            name,
+            ty,
+            raw_int_ok: false,
+            pin_tagged: false,
+            cell_shared: false,
+            deletable: false,
+        }
+    }
+
+    /// Pin this slot to `Tagged` regardless of inference (e.g. an `iter_next`
+    /// result that is null on exhaustion, or a cell). See [`Self::pin_tagged`].
+    pub fn pinned(mut self) -> Self {
+        self.pin_tagged = true;
+        self
+    }
+
+    /// Set whether this slot's cell contents may be written cross-function.
+    /// See [`Self::cell_shared`].
+    pub fn with_cell_shared(mut self, shared: bool) -> Self {
+        self.cell_shared = shared;
+        self
+    }
+}
+
 /// A function: a flat `exprs` arena, a `locals` table, and a CFG of `blocks`.
 ///
 /// There is deliberately NO `is_closure` flag: a nested function's environment

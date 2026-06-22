@@ -1287,16 +1287,7 @@ impl<'a> FnLowerer<'a> {
     /// name) for desugared result/operand slots.
     pub(super) fn fresh_local(&mut self, ty: SemTy) -> LocalId {
         let name = self.interner.intern("");
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: false,
-            cell_shared: false,
-            deletable: false,
-        });
-        id
+        self.push_local(HirLocal::new(name, ty))
     }
 
     /// Evaluate a call-argument expression NOW into a fresh staged local.
@@ -1333,16 +1324,7 @@ impl<'a> FnLowerer<'a> {
     /// inferred to an unboxed `Raw(F64)`/`Raw(I8)` that would deref the null).
     pub(super) fn fresh_local_tagged(&mut self) -> LocalId {
         let name = self.interner.intern("");
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name,
-            ty: SemTy::Dyn,
-            raw_int_ok: false,
-            pin_tagged: true,
-            cell_shared: false,
-            deletable: false,
-        });
-        id
+        self.push_local(HirLocal::new(name, SemTy::Dyn).pinned())
     }
 
     /// A fresh synthetic local carrying an authoritative `ty` (typeck fixes it,
@@ -1353,16 +1335,7 @@ impl<'a> FnLowerer<'a> {
     /// Tagged value to the param's `Raw` repr at the call site.
     pub(super) fn fresh_local_pinned(&mut self, ty: SemTy) -> LocalId {
         let name = self.interner.intern("");
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: true,
-            cell_shared: false,
-            deletable: false,
-        });
-        id
+        self.push_local(HirLocal::new(name, ty).pinned())
     }
 
     // ── closures / nested functions (Phase 6A) ────────────────────────────────

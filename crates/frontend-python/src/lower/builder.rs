@@ -82,6 +82,14 @@ impl<'a> FnLowerer<'a> {
         self.add_param_default(name, ty, None);
     }
 
+    /// Append `local` to the slot table and return its freshly minted
+    /// [`LocalId`]. The single home for the `LocalId::new(len)` + `push` pair.
+    pub(super) fn push_local(&mut self, local: HirLocal) -> LocalId {
+        let id = LocalId::new(self.locals.len() as u32);
+        self.locals.push(local);
+        id
+    }
+
     /// Register a parameter carrying a default (Phase 6C; literal `Const` or a
     /// `Slot` for a mutable/computed top-level default).
     pub(super) fn add_param_default(
@@ -90,20 +98,12 @@ impl<'a> FnLowerer<'a> {
         ty: SemTy,
         default: Option<ParamDefault>,
     ) {
-        let id = LocalId::new(self.locals.len() as u32);
         self.params.push(HirParam {
             name,
             ty: ty.clone(),
             default,
         });
-        self.locals.push(HirLocal {
-            name,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: false,
-            cell_shared: false,
-            deletable: false,
-        });
+        let id = self.push_local(HirLocal::new(name, ty));
         self.scope.insert(name, Binding::Direct(id));
     }
 
@@ -111,15 +111,7 @@ impl<'a> FnLowerer<'a> {
     /// used for a generator resume function's Python params, which live in gen
     /// slots rather than the ABI (Phase 6E).
     pub(super) fn add_logical_local(&mut self, name: InternedString, ty: SemTy) -> LocalId {
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name,
-            ty,
-            raw_int_ok: false,
-            pin_tagged: false,
-            cell_shared: false,
-            deletable: false,
-        });
+        let id = self.push_local(HirLocal::new(name, ty));
         self.scope.insert(name, Binding::Direct(id));
         id
     }
@@ -183,16 +175,11 @@ impl<'a> FnLowerer<'a> {
     ) -> LocalId {
         let cell_name = format!("{}.cell", self.interner.resolve(name));
         let cname = self.interner.intern(&cell_name);
-        let id = LocalId::new(self.locals.len() as u32);
-        self.locals.push(HirLocal {
-            name: cname,
-            ty: content_ty,
-            raw_int_ok: false,
-            pin_tagged: true,
-            cell_shared,
-            deletable: false,
-        });
-        id
+        self.push_local(
+            HirLocal::new(cname, content_ty)
+                .pinned()
+                .with_cell_shared(cell_shared),
+        )
     }
 
     /// Seal the current block with `default_term` if it is still open, then

@@ -33,6 +33,7 @@ pub mod cold;
 pub mod liveness;
 pub mod verify;
 pub use coerce::CoerceInst;
+pub(crate) use coerce::is_legal_checked_coercion;
 pub use cold::cold_blocks;
 pub use liveness::roots_needed;
 pub use verify::{verify, VerifyError};
