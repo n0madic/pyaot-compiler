@@ -104,8 +104,7 @@ impl<'a> FnLowerer<'a> {
 
         // ── handler chain (runs under the OUTER handler) ──
         self.switch(h_test);
-        for (hi, handler) in handlers.iter().enumerate() {
-            let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = handler;
+        for (hi, h) in try_handlers(handlers).enumerate() {
             let hspan = to_span(h.range());
             let body_b = self.new_block();
             let next_test = self.new_block();

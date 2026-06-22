@@ -84,8 +84,7 @@ pub(super) fn collect_nested_in_controlflow<'a>(
         }
         Stmt::Try(t) => {
             collect_nested_in_body(&t.body, enclosing, out);
-            for h in &t.handlers {
-                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+            for h in try_handlers(&t.handlers) {
                 collect_nested_in_body(&h.body, enclosing, out);
             }
             collect_nested_in_body(&t.orelse, enclosing, out);
@@ -170,16 +169,8 @@ pub(super) fn collect_calls_stmt(s: &Stmt, out: &mut HashSet<String>) {
             for deco in &d.decorator_list {
                 e(deco, out);
             }
-            for awd in d
-                .args
-                .posonlyargs
-                .iter()
-                .chain(&d.args.args)
-                .chain(&d.args.kwonlyargs)
-            {
-                if let Some(dflt) = &awd.default {
-                    e(dflt, out);
-                }
+            for dflt in param_defaults(&d.args) {
+                e(dflt, out);
             }
             collect_calls_body(&d.body, out);
         }
@@ -194,8 +185,7 @@ pub(super) fn collect_calls_stmt(s: &Stmt, out: &mut HashSet<String>) {
         }
         Stmt::Try(t) => {
             collect_calls_body(&t.body, out);
-            for h in &t.handlers {
-                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+            for h in try_handlers(&t.handlers) {
                 if let Some(ty) = &h.type_ {
                     e(ty, out);
                 }
@@ -336,16 +326,8 @@ pub(super) fn collect_calls_expr(x: &Expr, out: &mut HashSet<String>) {
             collect_calls_expr(&c.value, out);
         }
         Expr::Lambda(l) => {
-            for awd in l
-                .args
-                .posonlyargs
-                .iter()
-                .chain(&l.args.args)
-                .chain(&l.args.kwonlyargs)
-            {
-                if let Some(dflt) = &awd.default {
-                    collect_calls_expr(dflt, out);
-                }
+            for dflt in param_defaults(&l.args) {
+                collect_calls_expr(dflt, out);
             }
             collect_calls_expr(&l.body, out);
         }
@@ -1039,8 +1021,7 @@ pub(super) fn scan_self_field_annotations(
             Stmt::With(s) => scan_self_field_annotations(&s.body, cctx, interner, out),
             Stmt::Try(s) => {
                 scan_self_field_annotations(&s.body, cctx, interner, out);
-                for h in &s.handlers {
-                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                for h in try_handlers(&s.handlers) {
                     scan_self_field_annotations(&h.body, cctx, interner, out);
                 }
                 scan_self_field_annotations(&s.orelse, cctx, interner, out);
@@ -1287,8 +1268,7 @@ pub(super) fn count_scope_bindings(stmts: &[Stmt], name: &str) -> usize {
             }
             Stmt::Try(t) => {
                 count += count_scope_bindings(&t.body, name);
-                for h in &t.handlers {
-                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                for h in try_handlers(&t.handlers) {
                     if h.name.as_ref().is_some_and(|n| n.as_str() == name) {
                         count += 1;
                     }

@@ -32,6 +32,7 @@ use pyaot_hir::{
 use pyaot_types::{SemTy, Sig};
 use pyaot_utils::{ClassId, FuncId, InternedString, LineMap, LocalId, Span, StringInterner};
 
+use crate::ast_util::{defaultable_params, param_defaults, try_handlers};
 use crate::freevars::{self, ScopeFacts};
 
 mod annotations;

@@ -374,8 +374,7 @@ impl<'a> ProgramLowerer<'a> {
                 }
                 Stmt::Try(t) => {
                     self.scan_imports(&t.body, mod_path, is_package, my_ns, col)?;
-                    for h in &t.handlers {
-                        let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    for h in try_handlers(&t.handlers) {
                         self.scan_imports(&h.body, mod_path, is_package, my_ns, col)?;
                     }
                     self.scan_imports(&t.orelse, mod_path, is_package, my_ns, col)?;
@@ -383,8 +382,7 @@ impl<'a> ProgramLowerer<'a> {
                 }
                 Stmt::TryStar(t) => {
                     self.scan_imports(&t.body, mod_path, is_package, my_ns, col)?;
-                    for h in &t.handlers {
-                        let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                    for h in try_handlers(&t.handlers) {
                         self.scan_imports(&h.body, mod_path, is_package, my_ns, col)?;
                     }
                     self.scan_imports(&t.orelse, mod_path, is_package, my_ns, col)?;
@@ -683,12 +681,7 @@ impl<'a> ProgramLowerer<'a> {
             }
             let fname = self.interner.intern(def.name.as_str());
             let dargs = def.args.as_ref();
-            for awd in dargs
-                .posonlyargs
-                .iter()
-                .chain(dargs.args.iter())
-                .chain(dargs.kwonlyargs.iter())
-            {
+            for awd in defaultable_params(dargs) {
                 let Some(e) = &awd.default else { continue };
                 if try_literal_default(&mut *self.interner, e).is_none() {
                     let pname = self.interner.intern(awd.def.arg.as_str());
@@ -715,12 +708,7 @@ impl<'a> ProgramLowerer<'a> {
                 );
                 let fname = self.interner.intern(&synthetic);
                 let margs = m.args.as_ref();
-                for awd in margs
-                    .posonlyargs
-                    .iter()
-                    .chain(margs.args.iter())
-                    .chain(margs.kwonlyargs.iter())
-                {
+                for awd in defaultable_params(margs) {
                     let Some(e) = &awd.default else { continue };
                     if try_literal_default(&mut *self.interner, e).is_none() {
                         let pname = self.interner.intern(awd.def.arg.as_str());

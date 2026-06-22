@@ -404,10 +404,7 @@ pub(super) fn stmt_has_yield(s: &Stmt) -> bool {
         // message instead of "unsupported expression").
         Stmt::Try(t) => {
             body_has_yield(&t.body)
-                || t.handlers.iter().any(|h| {
-                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
-                    body_has_yield(&h.body)
-                })
+                || try_handlers(&t.handlers).any(|h| body_has_yield(&h.body))
                 || body_has_yield(&t.orelse)
                 || body_has_yield(&t.finalbody)
         }
@@ -433,10 +430,8 @@ fn stmt_yield_in_except_or_finally(s: &Stmt) -> bool {
         Stmt::Try(t) => {
             // A `yield` ANYWHERE inside a handler body or the finalbody is the
             // rejected case; the try body and `else` clause descend normally.
-            t.handlers.iter().any(|h| {
-                let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
-                body_has_yield(&h.body)
-            }) || body_has_yield(&t.finalbody)
+            try_handlers(&t.handlers).any(|h| body_has_yield(&h.body))
+                || body_has_yield(&t.finalbody)
                 || yield_in_except_or_finally(&t.body)
                 || yield_in_except_or_finally(&t.orelse)
         }

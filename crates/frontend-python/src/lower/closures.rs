@@ -130,14 +130,7 @@ impl<'a> FnLowerer<'a> {
         // uninitialized slot. A literal default folds to a `Const` and is fine.
         for stmt in &c.body {
             let Stmt::FunctionDef(m) = stmt else { continue };
-            for awd in m
-                .args
-                .posonlyargs
-                .iter()
-                .chain(&m.args.args)
-                .chain(&m.args.kwonlyargs)
-            {
-                let Some(dflt) = &awd.default else { continue };
+            for dflt in param_defaults(&m.args) {
                 if try_literal_default(&mut *self.interner, dflt).is_none() {
                     return Err(parse_error(
                         "a nested class method with a non-literal default is out of \

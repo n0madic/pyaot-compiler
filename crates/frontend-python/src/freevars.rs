@@ -18,6 +18,8 @@ use rustpython_parser::ast::{
     TypeParam,
 };
 
+use crate::ast_util::{defaultable_params, param_defaults, try_handlers};
+
 /// The scoping facts of one function-like scope (a `def`, a lambda, a genexpr,
 /// or the module body).
 #[derive(Debug, Default)]
@@ -176,16 +178,8 @@ impl Walker {
                 for deco in &d.decorator_list {
                     self.expr(deco);
                 }
-                for awd in d
-                    .args
-                    .posonlyargs
-                    .iter()
-                    .chain(&d.args.args)
-                    .chain(&d.args.kwonlyargs)
-                {
-                    if let Some(dflt) = &awd.default {
-                        self.expr(dflt);
-                    }
+                for dflt in param_defaults(&d.args) {
+                    self.expr(dflt);
                 }
                 self.bind(d.name.as_str());
                 let facts = analyze_def(d);
@@ -218,8 +212,7 @@ impl Walker {
             // ── exceptions / with / match (Phase 7) ──
             Stmt::Try(t) => {
                 self.stmts(&t.body);
-                for h in &t.handlers {
-                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                for h in try_handlers(&t.handlers) {
                     if let Some(ty) = &h.type_ {
                         self.expr(ty);
                     }
@@ -438,16 +431,8 @@ impl Walker {
             }
             Expr::Lambda(l) => {
                 // Lambda defaults evaluate in this scope.
-                for awd in l
-                    .args
-                    .posonlyargs
-                    .iter()
-                    .chain(&l.args.args)
-                    .chain(&l.args.kwonlyargs)
-                {
-                    if let Some(dflt) = &awd.default {
-                        self.expr(dflt);
-                    }
+                for dflt in param_defaults(&l.args) {
+                    self.expr(dflt);
                 }
                 let facts = analyze_lambda(l);
                 self.child(&facts);
@@ -485,12 +470,7 @@ impl Walker {
 
 /// Bind every parameter name of an `Arguments` node.
 fn bind_params(w: &mut Walker, args: &rustpython_parser::ast::Arguments) {
-    for awd in args
-        .posonlyargs
-        .iter()
-        .chain(&args.args)
-        .chain(&args.kwonlyargs)
-    {
+    for awd in defaultable_params(args) {
         w.bind(awd.def.arg.as_str());
     }
     if let Some(v) = &args.vararg {
@@ -693,8 +673,7 @@ fn collect_class_method_facts(stmts: &[Stmt], out: &mut Vec<ScopeFacts>) {
             }
             Stmt::Try(t) => {
                 collect_class_method_facts(&t.body, out);
-                for h in &t.handlers {
-                    let rustpython_parser::ast::ExceptHandler::ExceptHandler(h) = h;
+                for h in try_handlers(&t.handlers) {
                     collect_class_method_facts(&h.body, out);
                 }
                 collect_class_method_facts(&t.orelse, out);

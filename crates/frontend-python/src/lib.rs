@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ast_util;
 mod freevars;
 mod lower;
 

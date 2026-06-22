@@ -1089,12 +1089,7 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn emit_default_slots(&mut self, f: &StmtFunctionDef, slots: &DefaultSlotMap) -> Result<()> {
         let fname = self.intern(f.name.as_str());
         let args = f.args.as_ref();
-        for awd in args
-            .posonlyargs
-            .iter()
-            .chain(args.args.iter())
-            .chain(args.kwonlyargs.iter())
-        {
+        for awd in defaultable_params(args) {
             let Some(default_expr) = &awd.default else {
                 continue;
             };
@@ -1127,12 +1122,7 @@ impl<'a> FnLowerer<'a> {
             );
             let fname = self.intern(&synthetic);
             let margs = m.args.as_ref();
-            for awd in margs
-                .posonlyargs
-                .iter()
-                .chain(margs.args.iter())
-                .chain(margs.kwonlyargs.iter())
-            {
+            for awd in defaultable_params(margs) {
                 let Some(default_expr) = &awd.default else {
                     continue;
                 };
