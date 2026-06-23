@@ -436,7 +436,9 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 ),
                 // An integer const materializes tagged by default, but may also
                 // target a raw integer register slot directly (Phase 8B:
-                // descriptor-ABI immediates — field indexes, arg counts).
+                // descriptor-ABI immediates — field indexes, arg counts; the
+                // stdlib struct_time descriptor getter folds a field index into a
+                // `Raw(I8)` slot, so all raw int widths are admissible here).
                 Const::Int(_) => (
                     matches!(
                         repr,
@@ -647,12 +649,24 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             recv,
             args,
             ret,
+            param_reprs,
             ..
         } => {
             check_operand(f, recv)?;
             want_instance_base(f, recv, "CallVirtual.recv")?;
-            for arg in args {
-                check_operand(f, arg)?;
+            // Each non-self arg must carry the resolved method's param repr —
+            // the same arg-repr defense the direct `Call` arm applies. Every
+            // override shares this ABI (invariant 3), so the single statically
+            // resolved param-repr list is authoritative.
+            if args.len() != param_reprs.len() {
+                return Err(VerifyError::CallArity {
+                    func: usize::MAX,
+                    expected: param_reprs.len(),
+                    actual: args.len(),
+                });
+            }
+            for (arg, prepr) in args.iter().zip(param_reprs) {
+                want(f, arg, prepr, "CallVirtual.arg")?;
             }
             // `dst` (if present) must carry the resolved method's return repr.
             if let Some(d) = dst {

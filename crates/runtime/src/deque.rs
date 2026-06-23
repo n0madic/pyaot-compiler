@@ -483,15 +483,30 @@ pub extern "C" fn rt_deque_reverse_abi(deque: Value) {
 
 /// deque.copy() -> new deque
 pub fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     unsafe {
+        // Root the source deque (and the new one) across rt_make_deque /
+        // rt_deque_append, both of which can collect: a caller passing an
+        // unrooted temporary deque would otherwise see it freed mid-copy
+        // (matches rt_dict_copy's self-rooting convention).
+        let mut roots: [*mut Obj; 2] = [deque, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let new_obj = rt_make_deque((*(deque as *mut DequeObj)).maxlen);
+        std::ptr::write(roots.as_mut_ptr().add(1), new_obj);
+
         let d = deque as *mut DequeObj;
-        let new_obj = rt_make_deque((*d).maxlen);
-        let _new_d = new_obj as *mut DequeObj;
         for i in 0..(*d).len {
             let idx = ((*d).head + i) % (*d).capacity;
             let elem = (*(*d).data.add(idx)).0 as *mut Obj;
             rt_deque_append(new_obj, elem);
         }
+        gc_pop();
         new_obj
     }
 }

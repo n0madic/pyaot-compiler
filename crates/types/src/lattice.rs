@@ -203,6 +203,56 @@ fn make_canonical_union(
         }
     }
 
+    // Tuple-shape collapse — keeps `join` ASSOCIATIVE with its binary
+    // empty-tuple arm (`tuple[] ⊔ tuple[T..] → tuple_var[T..]`). The same-base
+    // loop above only merges equal-arity tuples, so `tuple[]` (arity 0) and a
+    // fixed `tuple[T..]` survive as distinct members — yet the binary `join`
+    // collapses them. Without this pass the inferred type of a field written
+    // `()` in one place and `(a, b)` in another would depend on the order the
+    // writers appear in `typeck`'s fold. An empty `tuple[]` carries no shape, so
+    // its presence collapses every tuple-family member (empty/fixed/variadic)
+    // into one `tuple_var[E]`. With no empty tuple present, distinct fixed
+    // shapes are preserved (the binary `join` keeps them too).
+    let has_empty_tuple = deduped.iter().any(|t| {
+        matches!(t, SemTy::Generic { base, args }
+                 if *base == builtin_classes::BUILTIN_TUPLE_CLASS_ID && args.is_empty())
+    });
+    if has_empty_tuple {
+        let mut elem = SemTy::Never;
+        let mut had_shaped = false;
+        deduped.retain(|t| match t {
+            SemTy::Generic { base, args } if *base == builtin_classes::BUILTIN_TUPLE_CLASS_ID => {
+                if !args.is_empty() {
+                    had_shaped = true;
+                    for a in args {
+                        elem = elem.join(a, env);
+                    }
+                }
+                false
+            }
+            SemTy::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID =>
+            {
+                had_shaped = true;
+                if let Some(a) = args.first() {
+                    elem = elem.join(a, env);
+                }
+                false
+            }
+            _ => true,
+        });
+        if had_shaped {
+            deduped.push(SemTy::tuple_var_of(elem));
+        } else {
+            // Only an empty tuple was present — preserve it as-is (a lone
+            // `tuple[]` does not become variadic).
+            deduped.push(SemTy::Generic {
+                base: builtin_classes::BUILTIN_TUPLE_CLASS_ID,
+                args: vec![],
+            });
+        }
+    }
+
     // Merge `Class` members pairwise to their nearest common MRO ancestor
     // (unambiguous NCA only — see `nearest_common_ancestor`). Repeat until
     // stable, so a fold over `[Dog, Unrelated, Cat]` collapses Dog+Cat → Animal
@@ -432,6 +482,13 @@ impl TypeLattice for SemTy {
     }
 
     fn minus(&self, other: &Self, env: &dyn ClassHierarchy) -> Self {
+        // `a ∖ a == ∅` for ANY `a`, including `Dyn` — checked before the
+        // gradual-top guard below so `Dyn.minus(Dyn)` yields `Never` rather than
+        // `Dyn` (the algebraic law `minus(self, self) == Never`). A `Dyn` LHS
+        // minus a *different* type still stays gradual (the guard below).
+        if self == other {
+            return SemTy::Never;
+        }
         if matches!(self, SemTy::Dyn) {
             return self.clone();
         }
@@ -770,5 +827,55 @@ mod tests {
         assert_eq!(animal.meet(&dog, &env), dog);
         assert_eq!(dog.minus(&animal, &env), SemTy::Never);
         assert_eq!(animal.minus(&dog, &env), animal);
+    }
+
+    fn tuple_fixed(args: Vec<SemTy>) -> SemTy {
+        SemTy::Generic {
+            base: builtin_classes::BUILTIN_TUPLE_CLASS_ID,
+            args,
+        }
+    }
+
+    #[test]
+    fn join_associative_empty_vs_fixed_tuple() {
+        // `join` must be ASSOCIATIVE for the empty-tuple-vs-fixed-tuple case the
+        // binary `tuple[] ⊔ tuple[T..] → tuple_var` arm collapses but the
+        // canonical-union same-arity merge used to miss (the H4 bug). Both fold
+        // orders must agree.
+        let env = NoClasses;
+        let empty = tuple_fixed(vec![]);
+        let fixed = tuple_fixed(vec![SemTy::Int, SemTy::Str]);
+        // (Bool ⊔ tuple[Int,Str]) ⊔ tuple[]  ==  Bool ⊔ (tuple[Int,Str] ⊔ tuple[])
+        let left = SemTy::Bool
+            .join(&fixed, &env)
+            .join(&empty, &env);
+        let right = SemTy::Bool.join(&fixed.join(&empty, &env), &env);
+        assert_eq!(left, right, "join is not associative: {left:?} vs {right:?}");
+        // Both collapse the tuples to a single `tuple_var`.
+        assert_eq!(
+            make_canonical_union([SemTy::Bool, fixed, empty], &env),
+            SemTy::Bool.join(&SemTy::tuple_var_of(SemTy::Int.join(&SemTy::Str, &env)), &env),
+        );
+    }
+
+    #[test]
+    fn join_empty_tuple_alone_stays_empty_tuple() {
+        // A lone empty tuple (no other tuple-family member) does NOT become
+        // variadic — the collapse only fires when a shaped tuple is present.
+        let env = NoClasses;
+        let empty = tuple_fixed(vec![]);
+        assert_eq!(
+            make_canonical_union([SemTy::Bool, empty.clone()], &env),
+            SemTy::Bool.join(&empty, &env),
+        );
+    }
+
+    #[test]
+    fn minus_dyn_minus_dyn_is_never() {
+        // `a ∖ a == Never` for any `a`, including `Dyn` (the M5 algebraic-law
+        // fix). A `Dyn` LHS minus a *different* type stays gradual.
+        let env = NoClasses;
+        assert_eq!(SemTy::Dyn.minus(&SemTy::Dyn, &env), SemTy::Never);
+        assert_eq!(SemTy::Dyn.minus(&SemTy::Int, &env), SemTy::Dyn);
     }
 }

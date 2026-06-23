@@ -327,6 +327,11 @@ pub enum MirInst {
         name_hash: u64,
         args: Vec<Operand>,
         ret: Repr,
+        /// The statically-resolved method's NON-self parameter reprs (`recv`
+        /// carries `self`). Every override shares this ABI (invariant 3), so the
+        /// verifier can `want()` each `args[i]` against `param_reprs[i]` — the
+        /// same defense-in-depth the direct `Call` arm applies.
+        param_reprs: Vec<Repr>,
     },
     /// `isinstance(value, class_id)` with inheritance (Phase 5B) —
     /// `rt_isinstance_class_inherited`. `value` is `Tagged`; `dst` is `Raw(I8)`.

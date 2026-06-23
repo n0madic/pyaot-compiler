@@ -2322,4 +2322,17 @@ _fold_p10_kwargs_builtins()
 _fold_p17_type_builtin()
 _fold_test_builtin_first_class()
 
+
+# ===== SECTION: int(str) honours arbitrary precision + digit-group underscores =====
+def _review_int_str_bignum():
+    assert int("1_000") == 1000, "int() accepts digit-group underscores"
+    assert int("255") == 255
+    assert int("ff", 16) == 255, "int(str, base)"
+    assert int("1" * 30) == 111111111111111111111111111111, "int(huge str) is a bignum"
+    assert int("z" * 12, 36) > 10**18, "int(str, 36) is a bignum"
+
+
+_review_int_str_bignum()
+
+
 print("All builtins code-review regression tests passed!")

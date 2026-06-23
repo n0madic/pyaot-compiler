@@ -20,8 +20,20 @@ class Point:
     def add(self, other_x: int, other_y: int) -> int:
         return self.x + other_x + self.y + other_y
 
+    # Methods declared WITHOUT `self`, callable via the class as plain functions
+    # (CPython: `Point.no_self_const()` runs with no receiver bound).
+    def no_self_const() -> int:
+        return 5
+
+    def no_self_add(a: int, b: int) -> int:
+        return a + b
+
 # Create instance via constructor
 p = Point(3, 4)
+
+# A no-`self` method is callable via the class (must not panic at compile time).
+assert Point.no_self_const() == 5, "no-self method via class, 0 args"
+assert Point.no_self_add(3, 4) == 7, "no-self method via class, 2 args"
 
 # ===== SECTION: Instance fields and methods =====
 

@@ -1112,4 +1112,18 @@ def _fold26_read_config() -> int:
 assert _fold26_read_config() == 101
 
 
+# ===== SECTION: range() with a zero step raises ValueError at run time =====
+def _review_range_zero_step():
+    raised = False
+    try:
+        for _i in range(0, 5, 0):
+            pass
+    except ValueError:
+        raised = True
+    assert raised, "range() with a zero step raises ValueError"
+
+
+_review_range_zero_step()
+
+
 print("All control flow tests passed!")

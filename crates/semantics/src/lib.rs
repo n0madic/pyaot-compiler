@@ -255,8 +255,26 @@ pub fn collect_classes(
         // (PITFALLS "fail loud"; method dispatch is by-name and stays correct).
         let mut fields: Vec<FieldInfo> = Vec::new();
         for base in &parents[&c.class_id] {
-            let Some(binfo) = table.get(*base) else {
-                continue;
+            let binfo = match table.get(*base) {
+                Some(b) => b,
+                None => {
+                    // A user-class base that is not yet in `table` was declared
+                    // LATER in the file (a forward reference). CPython binds class
+                    // statements at run time, so `class Sub(Base): ...` before
+                    // `class Base: ...` raises `NameError: name 'Base' is not
+                    // defined`. Reject it here rather than silently dropping the
+                    // base's field layout (which made pyaot accept and mis-run a
+                    // program CPython rejects). A base absent from `by_id` is a
+                    // builtin (Exception/Protocol/object) with no user field
+                    // layout — skip it as before.
+                    if let Some(bhc) = by_id.get(base) {
+                        return Err(CompilerError::semantic_error(
+                            format!("name `{}` is not defined", interner.resolve(bhc.name)),
+                            Span::dummy(),
+                        ));
+                    }
+                    continue;
+                }
             };
             for (bslot, bf) in binfo.fields.iter().enumerate() {
                 match fields.get(bslot) {
@@ -705,6 +723,29 @@ class A(A):
     pass
 ";
         assert!(try_collect(self_cycle).is_err());
+    }
+
+    #[test]
+    fn rejects_forward_base_reference() {
+        // A base class declared LATER than its subclass is a forward reference;
+        // CPython raises `NameError` at the `class Sub(Base):` line. Reject it
+        // rather than silently dropping the base's field layout.
+        let forward = "\
+class Sub(Base):
+    pass
+class Base:
+    pass
+";
+        assert!(try_collect(forward).is_err());
+
+        // The normal (base-before-subclass) order is accepted.
+        let normal = "\
+class Base:
+    pass
+class Sub(Base):
+    pass
+";
+        assert!(try_collect(normal).is_ok());
     }
 
     #[test]

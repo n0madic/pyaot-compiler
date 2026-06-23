@@ -199,6 +199,12 @@ pub fn rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8 {
     if obj.is_null() {
         return 0;
     }
+    // Class ids are compiler-generated u8s; reject anything outside 0..256 up
+    // front so the `as u8` narrowing below cannot alias a different class via
+    // truncation (e.g. 256 -> 0). Mirrors the registration-side guards.
+    if !(0..256).contains(&class_id) {
+        return 0;
+    }
     // Validate alignment before dereferencing
     if !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
         return 0;
@@ -234,6 +240,11 @@ pub extern "C" fn rt_isinstance_class_abi(obj: Value, class_id: i64) -> i8 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_isinstance_class_inherited(obj: *mut Obj, target_class_id: i64) -> i8 {
     if obj.is_null() {
+        return 0;
+    }
+    // Reject out-of-range class ids before the `as u8` narrowing (see
+    // rt_isinstance_class).
+    if !(0..256).contains(&target_class_id) {
         return 0;
     }
     // Validate alignment before dereferencing (mirrors rt_isinstance_class)

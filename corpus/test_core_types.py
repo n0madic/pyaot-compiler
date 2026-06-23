@@ -1197,4 +1197,34 @@ def _fold_p44_numeric_tower_seams() -> None:
 
 _fold_p44_numeric_tower_seams()
 
+
+# ===== SECTION: left-shift of a large fixnum promotes to bignum (no silent wrap) =====
+def _review_shift_bignum():
+    assert ((1 << 60) - 1) << 4 == 18446744073709551600, "<< must not silently wrap"
+    assert (1 << 59) << 5 == 18446744073709551616
+    assert (2**100) >> 50 == 2**50, "shift of a bignum"
+
+
+_review_shift_bignum()
+
+
+# ===== SECTION: `x in y` evaluates the LEFT operand first =====
+_review_in_order: list[str] = []
+
+
+def _review_in_left() -> int:
+    _review_in_order.append("left")
+    return 1
+
+
+def _review_in_right() -> list[int]:
+    _review_in_order.append("right")
+    return [1, 2, 3]
+
+
+_review_in_present = _review_in_left() in _review_in_right()
+assert _review_in_present is True
+assert _review_in_order == ["left", "right"], "`in` evaluates left before right"
+
+
 print("All core types and operator tests passed!")

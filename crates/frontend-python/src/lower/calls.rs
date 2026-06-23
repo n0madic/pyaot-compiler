@@ -1321,6 +1321,22 @@ impl<'a> FnLowerer<'a> {
             }
             let pos_for_fixed = n_pos.min(n_fixed);
             for (i, p) in info.fixed.iter().enumerate() {
+                // A parameter filled positionally must not ALSO be passed by
+                // keyword. CPython raises `TypeError: got multiple values for
+                // argument` at run time; this is a static error for any call
+                // shape, so reject it at compile time rather than letting the
+                // stray keyword fall silently into `**kwargs`.
+                if i < pos_for_fixed
+                    && take_keyword(&mut keywords, self.interner.resolve(p.name)).is_some()
+                {
+                    return Err(parse_error(
+                        format!(
+                            "`{fname}()` got multiple values for argument `{}`",
+                            self.interner.resolve(p.name)
+                        ),
+                        span,
+                    ));
+                }
                 let v = if i < pos_for_fixed {
                     self.arg_src_value(positionals[i], span)?
                 } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name))

@@ -291,7 +291,18 @@ unsafe fn iter_next_dict(
     reversed: bool,
     raise_on_exhausted: bool,
 ) -> *mut Obj {
-    use crate::object::ListObj;
+    use crate::object::{DictObj, ListObj};
+
+    // CPython parity: a dict that changed size since iteration began raises
+    // `RuntimeError` on the next step (the keys are a snapshot, so `size_guard`
+    // holds the live dict to compare against).
+    let guard = (*iter).size_guard;
+    if !guard.is_null() && (*(guard as *mut DictObj)).len as i64 != (*iter).expected_len {
+        raise_exc!(
+            exceptions::ExceptionType::RuntimeError,
+            "dictionary changed size during iteration"
+        );
+    }
 
     let keys_list = (*iter).source as *mut ListObj;
     let len = (*keys_list).len as i64;
@@ -353,6 +364,17 @@ unsafe fn iter_next_set(
     use crate::object::{SetObj, TOMBSTONE};
 
     let set = (*iter).source as *mut SetObj;
+
+    // CPython parity: a set that changed size since iteration began raises
+    // `RuntimeError` on the next step.
+    let guard = (*iter).size_guard;
+    if !guard.is_null() && (*(guard as *mut SetObj)).len as i64 != (*iter).expected_len {
+        raise_exc!(
+            exceptions::ExceptionType::RuntimeError,
+            "Set changed size during iteration"
+        );
+    }
+
     let capacity = (*set).capacity;
     let entries = (*set).entries;
 

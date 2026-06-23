@@ -105,6 +105,10 @@ pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
         (*iter).index = 0;
         (*iter).range_stop = 0;
         (*iter).range_step = 0;
+        // Size-change guard: the keys list is a snapshot, so keep a reference to
+        // the live dict to detect mutation during iteration (CPython parity).
+        (*iter).size_guard = dict;
+        (*iter).expected_len = (*(dict as *mut crate::object::DictObj)).len as i64;
     }
 
     obj
@@ -322,6 +326,9 @@ pub fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
         (*iter).index = len - 1; // Start at last key
         (*iter).range_stop = 0;
         (*iter).range_step = 0;
+        // Size-change guard against the live dict (see rt_iter_dict).
+        (*iter).size_guard = dict;
+        (*iter).expected_len = (*(dict as *mut crate::object::DictObj)).len as i64;
     }
 
     obj
@@ -580,6 +587,11 @@ pub fn rt_iter_set(set: *mut Obj) -> *mut Obj {
         (*iter).index = 0; // Start at first slot
         (*iter).range_stop = 0;
         (*iter).range_step = 0;
+        // Size-change guard: `source` is the live set, so detect mutation by
+        // comparing its element count (CPython parity). Immutable frozensets
+        // never diverge, so the check is harmless for them.
+        (*iter).size_guard = set;
+        (*iter).expected_len = (*(set as *mut crate::object::SetObj)).len as i64;
     }
 
     obj

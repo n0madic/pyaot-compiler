@@ -1199,23 +1199,25 @@ pub static RT_BOOL_TO_STR: RuntimeFuncDef =
 /// rt_none_to_str() -> *mut Obj
 pub static RT_NONE_TO_STR: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_none_to_str", &[], Some(RI64), true);
-/// rt_str_to_int(s: *mut Obj) -> i64
-pub static RT_STR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_str_to_int");
+/// rt_str_to_int(s: *mut Obj) -> Value (tagged int, fixnum or heap BigInt)
+pub static RT_STR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_to_int");
 /// rt_str_to_float(s: *mut Obj) -> f64
 pub static RT_STR_TO_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_str_to_float", &[PI64], Some(RF64), false);
-/// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 — `int(s, base)`. The
+/// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> Value — `int(s, base)`. The
 /// string is a tagged `Value`; the base is a RAW i64 (not a tagged int), so this
 /// needs the mixed `[Tagged, Raw]` semantics, NOT `binary_to_i64`'s `[Tagged,
-/// Tagged]` (which would feed the runtime the base's tagged bits).
+/// Tagged]` (which would feed the runtime the base's tagged bits). The RESULT is
+/// a tagged int `Value` (fixnum or heap `BigInt`), so it is GC-rooted and read
+/// back as `Tagged` — large literals must promote to bignum, never truncate (A6).
 const STR_BASE_BINARY: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Raw];
 pub static RT_STR_TO_INT_WITH_BASE: RuntimeFuncDef = RuntimeFuncDef::new_typed(
     "rt_str_to_int_with_base",
     &[PI64, PI64],
     Some(RI64),
-    false,
+    true,
     STR_BASE_BINARY,
-    Some(MirSemantic::Raw),
+    Some(MirSemantic::Tagged),
 );
 /// rt_builtin_int(obj: Value) -> Value (boxed Int). Dynamic `int(obj)` for
 /// non-statically-resolved args (Union/Any/class instance): dispatches

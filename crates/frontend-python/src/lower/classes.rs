@@ -374,17 +374,21 @@ pub(super) fn build_method_uniform_thunk(
     args: &rustpython_parser::ast::Arguments,
     method_fid: FuncId,
 ) -> Result<FuncId> {
-    // Non-`self` positional params, then keyword-only params. An instance method
-    // always has `self` as its first positional, so the subtraction is safe.
+    // Non-`self` positional params, then keyword-only params. A normal instance
+    // method has `self` as its first positional; a method declared WITHOUT one
+    // (`def m():`, referenced as `C.m`) has no leading slot to skip, so guard the
+    // base index against an empty params list (avoids a slice-bounds panic) and
+    // do not forward a receiver for it.
     let n_positional = args.posonlyargs.len() + args.args.len();
+    let has_self = n_positional >= 1;
     let n_fixed = n_positional.saturating_sub(1);
     let n_kwonly = args.kwonlyargs.len();
     let target = {
         let f = shared.funcs[method_fid.index()]
             .as_ref()
             .expect("method is filled before its uniform thunk is built");
-        // params: [self, fixed.., kwonly.., *args?, **kwargs?] — skip self (1).
-        let base = 1;
+        // params: [self?, fixed.., kwonly.., *args?, **kwargs?] — skip self when present.
+        let base = if has_self { 1 } else { 0 };
         let fixed = f.params[base..base + n_fixed]
             .iter()
             .map(ThunkParam::from_hir_param)
@@ -396,7 +400,7 @@ pub(super) fn build_method_uniform_thunk(
         UniformTarget {
             name: f.name,
             ret: f.ret_ty.clone(),
-            pass_env: true,
+            pass_env: has_self,
             fixed,
             kwonly,
             varargs: f.varargs,

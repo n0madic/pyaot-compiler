@@ -2542,4 +2542,62 @@ def _rvf_comp_scope():
 _rvf_comp_scope()
 
 
+# ===== SECTION: Unpacking a non-sequence iterable (dict / generator / zip / set) =====
+def _review_nonseq_unpack():
+    # A dict RHS unpacks its KEYS (previously subscripted by int 0/1 -> None).
+    a, b = {"x": 1, "y": 2}
+    assert a == "x" and b == "y", "dict unpack yields keys in insertion order"
+    # A generator / zip / set RHS unpacks via the iterator protocol (previously a
+    # spurious ValueError or a TypeError).
+    g0, g1 = (v for v in [10, 20])
+    assert g0 == 10 and g1 == 20, "generator unpack"
+    z0, z1 = zip([1, 2], [3, 4])
+    assert z0 == (1, 3) and z1 == (2, 4), "zip unpack"
+    sx, sy, sz = {7, 8, 9}
+    assert sorted([sx, sy, sz]) == [7, 8, 9], "set unpack"
+    # Star-unpack of a generator / string.
+    first, *rest = (i for i in range(5))
+    assert first == 0 and rest == [1, 2, 3, 4], "star unpack of genexpr"
+    h, *mid, t = "abcde"
+    assert h == "a" and mid == ["b", "c", "d"] and t == "e", "star unpack of str"
+    # Statically-typed sequences still unpack via the fast path.
+    p, q, r = [1, 2, 3]
+    assert (p, q, r) == (1, 2, 3), "list unpack (fast path)"
+    for k, v in {"a": 1, "b": 2}.items():
+        assert k in ("a", "b") and v in (1, 2), "for k, v over dict.items()"
+
+
+_review_nonseq_unpack()
+
+
+# ===== SECTION: Mutation during iteration raises RuntimeError =====
+def _review_mutation_during_iteration():
+    raised = False
+    try:
+        d = {"a": 1, "b": 2, "c": 3}
+        for key in d:
+            d["z"] = 0
+    except RuntimeError:
+        raised = True
+    assert raised, "dict changed size during iteration must raise RuntimeError"
+
+    raised = False
+    try:
+        s = {1, 2, 3}
+        for e in s:
+            s.add(99)
+    except RuntimeError:
+        raised = True
+    assert raised, "set changed size during iteration must raise RuntimeError"
+
+    # Replacing an EXISTING key's value (no size change) must NOT raise.
+    d2 = {"a": 1, "b": 2}
+    for key in d2:
+        d2[key] = d2[key] + 1
+    assert d2 == {"a": 2, "b": 3}, "value-replace during iteration is allowed"
+
+
+_review_mutation_during_iteration()
+
+
 print("All iteration and comprehension tests passed!")

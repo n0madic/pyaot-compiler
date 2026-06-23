@@ -1303,3 +1303,54 @@ print(b.get())
 ";
     assert!(try_infer(src).is_ok());
 }
+
+// ── Whole-program interval pass (`narrow_raw_ints`) — the highest-miscompile-risk
+// code in typeck, previously exercised only through the corpus differential.
+// These pin the A7 soundness boundary directly. ──
+
+/// `raw_int_ok` of the named local (the interval pass's representation proof).
+fn local_raw_ok(func: &HirFunction, interner: &StringInterner, name: &str) -> bool {
+    func.locals
+        .iter()
+        .find(|l| interner.resolve(l.name) == name)
+        .unwrap_or_else(|| panic!("no local named {name}"))
+        .raw_int_ok
+}
+
+#[test]
+fn interval_range_cursor_is_proven_raw() {
+    // A `range`-bounded loop cursor stays within a static interval, so the
+    // interval pass proves it `Raw(I64)` (raw_int_ok = true).
+    let (m, i) = typed("total = 0\nfor c in range(10):\n    total = total + c\nprint(total)\n");
+    assert!(
+        local_raw_ok(main_fn(&m), &i, "c"),
+        "a range(10) cursor must be proven raw"
+    );
+}
+
+#[test]
+fn interval_unbounded_accumulator_stays_tagged() {
+    // The canonical A7 case: a `3*n + 1` accumulator escapes every static
+    // interval, so the pass MUST refuse to prove it raw (it stays tagged =
+    // bignum-safe). Proving it raw here would be a silent miscompile on overflow.
+    let (m, i) = typed(
+        "n = 1\nfor _ in range(100):\n    n = 3 * n + 1\nprint(n)\n",
+    );
+    assert!(
+        !local_raw_ok(main_fn(&m), &i, "n"),
+        "an unbounded 3n+1 accumulator must NOT be proven raw (A7)"
+    );
+}
+
+#[test]
+fn interval_open_while_accumulator_stays_tagged() {
+    // A `range`-free `while` accumulator has no literal cap to narrow against,
+    // so the pass refuses it (stays tagged). Pins the second A7 shape.
+    let (m, i) = typed(
+        "acc = 0\nstep = 1\nwhile step < 50:\n    acc = acc + step * step\n    step = step + 1\nprint(acc)\n",
+    );
+    assert!(
+        !local_raw_ok(main_fn(&m), &i, "acc"),
+        "an unbounded while accumulator must NOT be proven raw (A7)"
+    );
+}

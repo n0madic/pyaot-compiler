@@ -272,6 +272,19 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     let MirInst::Call { dst, args, .. } = call else {
         unreachable!("splice target must be a direct Call");
     };
+    // Continuation block source line (L8): the inlined callee's blocks set their
+    // own srclocs in between, so the suffix would otherwise inherit a stale line
+    // at codegen (Cranelift's sticky `set_srcloc`). Prepend the call statement's
+    // line — the most recent LineMarker in the call block's prefix — so a raise
+    // in the suffix before any later marker is attributed to the call site.
+    if !matches!(suffix.first(), Some(MirInst::LineMarker(_))) {
+        if let Some(line) = block.insts.iter().rev().find_map(|i| match i {
+            MirInst::LineMarker(l) => Some(*l),
+            _ => None,
+        }) {
+            suffix.insert(0, MirInst::LineMarker(line));
+        }
+    }
     let orig_term = std::mem::replace(
         &mut block.term,
         MirTerminator::Jump(BlockId::new(b_off + body.entry.index() as u32)),

@@ -139,7 +139,10 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
                     }
                     f as i64
                 }
-                TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
+                // `int(str)` may overflow i64 (bignum) — return the tagged
+                // Value directly rather than funnelling through the fixnum
+                // `Value::from_int(value)` boxing below.
+                TypeTagKind::Str => return crate::conversions::rt_str_to_int(obj),
                 TypeTagKind::Instance => {
                     // CPython: int(obj) dispatches to obj.__int__(). The dunder
                     // returns a boxed Value (tagged Int) which is exactly what

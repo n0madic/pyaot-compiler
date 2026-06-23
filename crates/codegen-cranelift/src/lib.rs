@@ -2190,6 +2190,9 @@ impl FnGen<'_, '_> {
                 name_hash,
                 args,
                 ret,
+                // `param_reprs` is verifier-only metadata; codegen derives the
+                // indirect-call signature from the operand reprs.
+                ..
             } => self.lower_call_virtual(dst, recv, *name_hash, args, ret),
             MirInst::IsInstance {
                 dst,

@@ -337,11 +337,36 @@ pub extern "C" fn rt_obj_default_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_obj_default_repr(obj.unwrap_ptr()))
 }
 
-/// Convert string to integer with given base
+/// Strip CPython-style digit-group underscores from a numeric literal body.
+///
+/// CPython allows a single `_` only *between* two digits (it may not lead,
+/// trail, double up, or sit next to a sign). Returns `None` on a malformed
+/// placement so the caller raises `ValueError`, matching CPython.
+pub(crate) fn strip_int_underscores(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'_' {
+            let prev_ok =
+                i > 0 && bytes[i - 1] != b'_' && bytes[i - 1] != b'+' && bytes[i - 1] != b'-';
+            let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
+            if !prev_ok || !next_ok {
+                return None;
+            }
+            // skip the underscore
+        } else {
+            out.push(b as char);
+        }
+    }
+    Some(out)
+}
+
+/// Convert string to integer with given base.
 /// s: pointer to StrObj
-/// base: numeric base (2, 8, 10, or 16)
-/// Returns: integer value
-pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
+/// base: numeric base (0 for prefix auto-detect, or 2..=36)
+/// Returns: a tagged int `Value` — a fixnum when it fits, else a heap `BigInt`
+/// (so large literals like `int("1" * 100)` honour arbitrary precision, A6).
+pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> *mut Obj {
     if s.is_null() {
         unsafe {
             raise_exc!(
@@ -390,9 +415,16 @@ pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
                 );
             }
 
-            match i64::from_str_radix(trimmed_str, actual_base) {
-                Ok(val) => val,
-                Err(_) => {
+            // Strip digit-group underscores, then parse as a BigInt so values
+            // beyond i64 range succeed (CPython int is arbitrary precision).
+            let cleaned = strip_int_underscores(trimmed_str);
+            let parsed = cleaned
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .and_then(|c| BigInt::parse_bytes(c.as_bytes(), actual_base));
+            match parsed {
+                Some(big) => make_int_value(big),
+                None => {
                     raise_exc!(
                         crate::exceptions::ExceptionType::ValueError,
                         "invalid literal for int() with base"
@@ -409,8 +441,8 @@ pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
 }
 #[export_name = "rt_str_to_int_with_base"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_str_to_int_with_base_abi(s: Value, base: i64) -> i64 {
-    rt_str_to_int_with_base(s.unwrap_ptr(), base)
+pub extern "C" fn rt_str_to_int_with_base_abi(s: Value, base: i64) -> Value {
+    Value::from_ptr(rt_str_to_int_with_base(s.unwrap_ptr(), base))
 }
 
 // Suppress unused import warning

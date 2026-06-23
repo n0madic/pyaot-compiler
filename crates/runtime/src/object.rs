@@ -310,6 +310,14 @@ pub struct IteratorObj {
     pub index: i64,       // Current position
     pub range_stop: i64,  // For range iterator: stop value
     pub range_step: i64,  // For range iterator: step value
+    // Mutation-during-iteration guard (dict/set only). `size_guard` is the LIVE
+    // container (null elsewhere) and `expected_len` is its element count when
+    // iteration began; `iter_next_dict`/`iter_next_set` raise `RuntimeError`
+    // when the live count diverges, matching CPython's size-change detection.
+    // Both default to 0/null via gc_alloc's zero-init, so non-dict/set
+    // iterators (and immutable frozensets, when unset) skip the check.
+    pub size_guard: *mut Obj, // Live dict/set to size-check (null = no check)
+    pub expected_len: i64,    // Element count captured at iterator creation
 }
 
 /// Generator object for generator functions

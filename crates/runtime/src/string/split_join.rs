@@ -29,13 +29,16 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
         let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
-        // CRITICAL: Protect the list from GC during construction.
-        // The list is not on any shadow stack, so GC could collect it
-        // when rt_make_str triggers collection.
-        let mut roots: [*mut Obj; 1] = [list];
+        // CRITICAL: Protect the list AND the source string/separator from GC
+        // during construction. The list is not on any shadow stack, and the
+        // source `str_obj`/`sep` are frequently unrooted temporaries (e.g.
+        // `"a,b,c".split(",")`). Each `rt_make_str` below may trigger a
+        // collection; rooting all three keeps `src_data`/`sep_data` valid (the
+        // collector is non-moving, so a rooted buffer's address is stable).
+        let mut roots: [*mut Obj; 3] = [list, str_obj, sep];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
-            nroots: 1,
+            nroots: 3,
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
@@ -258,11 +261,13 @@ pub fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
         // Create result list
         let list = rt_make_list(0);
 
-        // Protect list from GC during string allocations
-        let mut roots: [*mut Obj; 1] = [list];
+        // Protect list AND the source string from GC during string allocations.
+        // `s` is often an unrooted temporary; each `rt_make_str` may collect,
+        // and `str_data` points into `s`'s (non-moving) buffer.
+        let mut roots: [*mut Obj; 2] = [list, s];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
-            nroots: 1,
+            nroots: 2,
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
@@ -577,11 +582,13 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
         let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
-        // CRITICAL: Protect the list from GC during construction
-        let mut roots: [*mut Obj; 1] = [list];
+        // CRITICAL: Protect the list AND the source string/separator from GC
+        // during construction (each `rt_make_str` may collect; `src_data`/
+        // `sep_data` point into their non-moving buffers).
+        let mut roots: [*mut Obj; 3] = [list, str_obj, sep];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
-            nroots: 1,
+            nroots: 3,
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);

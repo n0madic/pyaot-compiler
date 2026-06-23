@@ -79,9 +79,19 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
     // overflow — exactly `num_bigint::BigInt::to_f64`'s semantics (matches
     // CPython). Mirrors `rt_unbox_int_abi`'s `BigIntObj` access; without this
     // arm `rt_unbox_float` below would TypeError on a legitimate big int.
-    let ptr: *mut Obj = obj.unwrap_ptr();
+    // Use `unwrap_ptr_or_null` (not `unwrap_ptr`): the only remaining immediate
+    // tag here is RESERVED/UNBOUND (0b111), which `unwrap_ptr` would fabricate
+    // into a wild address `0x7` and then dereference. Map it to null and raise
+    // a clean `TypeError`, matching the checked-unbox contract (B18).
+    let ptr: *mut Obj = obj.unwrap_ptr_or_null();
     unsafe {
-        if !ptr.is_null() && (*ptr).header.type_tag == TypeTagKind::BigInt {
+        if ptr.is_null() {
+            raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "must be real number, not NoneType"
+            );
+        }
+        if (*ptr).header.type_tag == TypeTagKind::BigInt {
             use crate::object::BigIntObj;
             use num_traits::ToPrimitive;
             let big = &(*(ptr as *mut BigIntObj)).value;
@@ -104,7 +114,10 @@ pub extern "C" fn rt_unbox_int_abi(v: Value) -> i64 {
     if v.is_bool() {
         return if v.unwrap_bool() { 1 } else { 0 };
     }
-    let obj: *mut Obj = v.unwrap_ptr();
+    // `unwrap_ptr_or_null` maps the RESERVED/UNBOUND immediate (0b111) to null
+    // instead of fabricating a wild `0x7` address that the deref below would
+    // SEGV on; the null branch then raises the checked-unbox TypeError (B18).
+    let obj: *mut Obj = v.unwrap_ptr_or_null();
     unsafe {
         if obj.is_null() {
             raise_exc!(

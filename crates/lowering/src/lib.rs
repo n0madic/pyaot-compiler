@@ -121,7 +121,7 @@ pub fn lower(
         &module.method_uniform_thunks,
         &module.iternext_thunks,
         &module.copy_thunks,
-    );
+    )?;
     Ok(MirProgram {
         funcs,
         entry: module.main,
@@ -142,7 +142,7 @@ fn build_mir_classes(
     method_uniform_thunks: &std::collections::HashMap<FuncId, FuncId>,
     iternext_thunks: &std::collections::HashMap<FuncId, FuncId>,
     copy_thunks: &std::collections::HashMap<FuncId, FuncId>,
-) -> Vec<MirClass> {
+) -> Result<Vec<MirClass>> {
     let mut out = Vec::new();
     for info in classes.iter() {
         str_pool.insert(
@@ -191,11 +191,15 @@ fn build_mir_classes(
             let name = interner.resolve(fld.name);
             let hash = pyaot_utils::fnv1a_hash(name);
             if field_names.iter().any(|(h, _)| *h == hash) {
-                panic!(
-                    "FNV-1a-64 hash collision between fields of class `{}` (field `{}`)",
-                    interner.resolve(info.name),
-                    name
-                );
+                return Err(CompilerError::semantic_error(
+                    format!(
+                        "FNV-1a-64 hash collision between fields of class `{}` (field `{}`) \
+                         — rename one of the colliding fields",
+                        interner.resolve(info.name),
+                        name
+                    ),
+                    pyaot_utils::Span::dummy(),
+                ));
             }
             field_names.push((hash, slot));
         }
@@ -247,7 +251,7 @@ fn build_mir_classes(
     }
     // Deterministic order (the table is a HashMap) so codegen output is stable.
     out.sort_by_key(|c| c.class_id.0);
-    out
+    Ok(out)
 }
 
 /// A function's representation-level signature (ABI), plus the Phase-6C
@@ -4301,12 +4305,33 @@ impl<'a> FnLower<'a> {
         kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<Option<(LocalId, Repr)>> {
-        let fid = match self.classes.get(cid).and_then(|i| {
+        let static_fid = self.classes.get(cid).and_then(|i| {
             i.static_method(name)
                 .or_else(|| i.class_method(name))
                 .map(|m| m.func_id)
-        }) {
+        });
+        let fid = match static_fid {
             Some(f) => f,
+            // Only for a `ClassName.method(args)` call (recv is None). An
+            // `instance.method()` call (recv is Some) must keep self-injection
+            // via the normal instance path and NOT match a regular method here.
+            None if recv.is_none() => {
+                // `ClassName.method(args)` on a regular (non-static/class)
+                // method is CPython's UNBOUND call: the function is invoked with
+                // `args` mapped straight to its parameters, with NO receiver
+                // injected (so `def m(self)` accessed via the class needs `self`
+                // passed explicitly; a no-`self` `def m()` just runs). Direct-call
+                // it below with `has_self = false`, exactly like a staticmethod.
+                let regular = self
+                    .classes
+                    .get(cid)
+                    .and_then(|i| i.method(name))
+                    .map(|m| m.func_id);
+                match regular {
+                    Some(f) => f,
+                    None => return Ok(None),
+                }
+            }
             None => return Ok(None),
         };
         // Evaluate the receiver for side effects (`instance.staticmethod()`).
@@ -4416,6 +4441,8 @@ impl<'a> FnLower<'a> {
             name_hash,
             args: argvals,
             ret: ret.clone(),
+            // Non-self param reprs (self is `recv`) for the verifier's arg check.
+            param_reprs: params[1..].to_vec(),
         });
         Ok((dst, ret))
     }
@@ -6183,20 +6210,22 @@ impl<'a> FnLower<'a> {
                 }
                 // `int(s, base)` — the two-arg form parses string `s` in the
                 // given radix via `rt_str_to_int_with_base` (the base is a RAW
-                // i64). The generic unary `rt_builtin_int` path ignores a second
-                // argument (parsing in base 10), so intercept here.
+                // i64). The result is a TAGGED int Value (fixnum or heap BigInt),
+                // so large literals honour arbitrary precision. The generic unary
+                // `rt_builtin_int` path ignores a second argument (parsing in
+                // base 10), so intercept here.
                 if kind == BK::Int && args.len() == 2 {
                     let (sl, sr) = self.lower_expr(args[0])?;
                     let s_tagged = self.coerce(sl, sr, Repr::Tagged)?;
                     let (bl, br) = self.lower_expr(args[1])?;
                     let base_raw = self.coerce_to_i64(bl, br)?;
-                    let dst = self.alloc_temp(Repr::Raw(RawKind::I64));
+                    let dst = self.alloc_temp(Repr::Tagged);
                     self.emit(MirInst::CallRuntime {
                         dst: Some(dst),
                         def: &pyaot_core_defs::runtime_func_def::RT_STR_TO_INT_WITH_BASE,
                         args: vec![Operand::Local(s_tagged), Operand::Local(base_raw)],
                     });
-                    return self.normalize_container_result(dst, Repr::Raw(RawKind::I64));
+                    return self.normalize_container_result(dst, Repr::Tagged);
                 }
                 // `str(x)` / `repr(x)` of a concrete class instance route to the
                 // user dunder (CPython precedence: `str` → `__str__` then

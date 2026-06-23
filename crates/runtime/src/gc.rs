@@ -228,6 +228,15 @@ fn mark_object(root: Value) {
                 let vv: Value = $v;
                 if vv.is_ptr() {
                     let p = vv.unwrap_ptr::<Obj>();
+                    // `is_ptr()` only tests bit 0; a real heap object is always
+                    // 8-aligned. This debug guard catches a future regression
+                    // that lets a raw, non-8-aligned word (e.g. an unboxed float
+                    // bit pattern) reach a GC-traced slot before it corrupts the
+                    // heap walk by dereferencing a non-pointer (see PITFALLS B12).
+                    debug_assert!(
+                        p.is_null() || (p as usize).is_multiple_of(8),
+                        "GC traced a misaligned (non-object) value as a pointer"
+                    );
                     if !p.is_null() && !(*p).is_marked() {
                         (*p).set_marked(true);
                         worklist.push(p);
@@ -324,7 +333,13 @@ fn mark_object(root: Value) {
                         }
                         Ok(IteratorKind::ISlice) => fields!(obj, ISliceIterObj, inner_iter),
                         Ok(IteratorKind::ZipN) => fields!(obj, ZipNIterObj, iters),
-                        _ => enqueue_ptr!((*(obj as *mut IteratorObj)).source),
+                        _ => {
+                            let it = obj as *mut IteratorObj;
+                            enqueue_ptr!((*it).source);
+                            // The dict/set mutation guard keeps the live container
+                            // alive; null (skipped) for every other iterator kind.
+                            enqueue_ptr!((*it).size_guard);
+                        }
                     }
                 }
                 TypeTagKind::Cell => {

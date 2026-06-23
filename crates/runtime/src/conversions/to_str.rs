@@ -55,11 +55,15 @@ pub extern "C" fn rt_none_to_str_abi() -> Value {
     Value::from_ptr(rt_none_to_str())
 }
 
-/// Convert a string to an integer
-/// Returns: i64 value
-/// Raises: ValueError if string is not a valid integer
-pub fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
+/// Convert a string to an integer (base 10).
+/// Returns: a tagged int `Value` — fixnum or heap `BigInt`, so large literals
+/// such as `int("1" * 100)` honour arbitrary precision (A6) rather than
+/// overflowing an i64. Digit-group underscores (`int("1_000")`) are accepted.
+/// Raises: ValueError if string is not a valid integer.
+pub fn rt_str_to_int(str_obj: *mut Obj) -> *mut Obj {
+    use crate::bigint::make_int_value;
     use crate::object::StrObj;
+    use num_bigint::BigInt;
 
     if str_obj.is_null() {
         unsafe {
@@ -78,9 +82,12 @@ pub fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
 
         if let Ok(s) = std::str::from_utf8(bytes) {
             let trimmed = s.trim_matches(|c: char| c.is_whitespace());
-            match trimmed.parse::<i64>() {
-                Ok(val) => val,
-                Err(_) => {
+            let parsed = super::type_cast::strip_int_underscores(trimmed)
+                .filter(|c| !c.is_empty())
+                .and_then(|c| BigInt::parse_bytes(c.as_bytes(), 10));
+            match parsed {
+                Some(big) => make_int_value(big),
+                None => {
                     crate::raise_exc!(
                         crate::exceptions::ExceptionType::ValueError,
                         "invalid literal for int() with base 10: '{}'",
@@ -98,8 +105,8 @@ pub fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
 }
 #[export_name = "rt_str_to_int"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_str_to_int_abi(str_obj: Value) -> i64 {
-    rt_str_to_int(str_obj.unwrap_ptr())
+pub extern "C" fn rt_str_to_int_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_to_int(str_obj.unwrap_ptr()))
 }
 
 /// Convert a string to a float

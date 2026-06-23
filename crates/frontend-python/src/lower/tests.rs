@@ -316,3 +316,27 @@ print(add(1, 2))
             "decorated def must rebind via a global slot"
         );
     }
+
+    #[test]
+    fn rejects_duplicate_positional_and_keyword_argument() {
+        // Filling a parameter both positionally AND by keyword is a static error
+        // for any call shape (CPython: `TypeError: got multiple values for
+        // argument`). It must be rejected rather than silently absorbed into
+        // `**kwargs`.
+        let err = parse_err(
+            "def f(a, **kw):\n    return (a, kw)\nprint(f(1, a=2))\n",
+        );
+        assert!(
+            err.contains("got multiple values for argument"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_no_self_method_called_via_class() {
+        // A method declared without `self` (`def m():`) is callable via the class
+        // as a plain function (`C.m()`) — must lower cleanly, not panic.
+        let (_m, _i) = parsed(
+            "class C:\n    def m():\n        return 5\n    def add(x, y):\n        return x + y\nprint(C.m())\nprint(C.add(3, 4))\n",
+        );
+    }

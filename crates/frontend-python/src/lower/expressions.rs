@@ -607,8 +607,20 @@ impl<'a> FnLowerer<'a> {
             // `x in y` / `x not in y` → a container membership op (`Contains` reads
             // `container, elem`, so the operand order flips). `not in` negates it.
             if matches!(c.ops[0], PyCmpOp::In | PyCmpOp::NotIn) {
+                // Python evaluates the LEFT operand first, then the right. The
+                // `Contains` node reads `[container, elem]`, and lowering
+                // evaluates its args in that order — so merely reordering the
+                // `lower_expr` calls is not enough (both return lazy exprs).
+                // STAGE `elem` (left) into a local so its side effects fire at
+                // the assignment, before the container expression is evaluated.
+                let elem_val = self.lower_expr(c.left.as_ref())?;
+                let elem_local = self.fresh_local(SemTy::Dyn);
+                self.push_stmt(HirStmt::Assign {
+                    target: elem_local,
+                    value: elem_val,
+                });
+                let elem = self.local_ref(elem_local, span);
                 let container = self.lower_expr(&c.comparators[0])?;
-                let elem = self.lower_expr(c.left.as_ref())?;
                 let contains = self.alloc(
                     HirExprKind::ContainerExpr {
                         op: ContainerOp::Contains,

@@ -287,7 +287,12 @@ pub fn num_shl(a: Num, b: Num) -> *mut Obj {
     if let (Num::Int(x), Num::Int(s)) = (&a, &b) {
         if *s < 62 {
             if let Some(v) = x.checked_shl(*s as u32) {
-                if int_fits(v) {
+                // `checked_shl` only rejects shift counts >= 64; it does NOT
+                // detect significant bits shifted out of the 64-bit word. Guard
+                // with a round-trip check so the fixnum fast path fires only
+                // when no bits were lost — otherwise fall through to the bignum
+                // path (never silently wrap; cf. A6).
+                if int_fits(v) && (v >> *s) == *x {
                     return Value::from_int(v).0 as *mut Obj;
                 }
             }
