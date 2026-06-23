@@ -44,3 +44,15 @@ pub(crate) fn try_handlers(
         h
     })
 }
+
+/// The `&mut` counterpart of [`try_handlers`] — the same single-variant unwrap
+/// for the handler loops that mutate the bodies in place (e.g. the synthesized
+/// `@dataclass` / class desugaring pre-scan).
+pub(crate) fn try_handlers_mut(
+    handlers: &mut [ExceptHandler],
+) -> impl Iterator<Item = &mut ExceptHandlerExceptHandler> {
+    handlers.iter_mut().map(|h| {
+        let ExceptHandler::ExceptHandler(h) = h;
+        h
+    })
+}

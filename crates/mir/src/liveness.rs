@@ -52,7 +52,7 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
             use_b[l.index()] = true;
         });
         for inst in b.insts.iter().rev() {
-            if let Some(d) = inst_def(inst) {
+            if let Some(d) = inst.dst() {
                 use_b[d.index()] = false;
                 def_b[d.index()] = true;
             }
@@ -111,7 +111,7 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
             live[l.index()] = true;
         });
         for inst in b.insts.iter().rev() {
-            let def = inst_def(inst);
+            let def = inst.dst();
             if inst.may_allocate(&f.locals) {
                 // needs_root(l) ⇐ l ∈ uses(I) ∪ (live_after(I) \ {def(I)})
                 for l in 0..nlocals {
@@ -185,15 +185,11 @@ fn term_uses(t: &MirTerminator, mut f: impl FnMut(LocalId)) {
     }
 }
 
-/// The local an instruction defines, if any. Thin projection over the
-/// canonical [`MirInst::dst`] so the per-variant `dst` layout lives in exactly
-/// one place.
-fn inst_def(inst: &MirInst) -> Option<LocalId> {
-    inst.dst()
-}
-
-/// The locals an instruction reads. Thin projection over the canonical
-/// [`MirInst::for_each_operand`], mapping each `Operand` to its `LocalId`.
+/// The locals an instruction reads — the def-vs-use complement of the canonical
+/// [`MirInst::dst`] (used directly above). Adapts [`MirInst::for_each_operand`]
+/// by mapping each `Operand` to its `LocalId`; both canonical sources are
+/// exhaustive (no catch-all), so a new instruction variant is forced through GC
+/// liveness at compile time.
 fn inst_uses(inst: &MirInst, mut f: impl FnMut(LocalId)) {
     inst.for_each_operand(|op| {
         let Operand::Local(id) = op;

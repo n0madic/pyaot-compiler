@@ -352,7 +352,6 @@ pub fn infer(
             if widen_move(
                 &mut vars.ret_ty[i],
                 &mut vars.ret_moves[i],
-                None,
                 lifted,
                 SemTy::Dyn,
             ) {
@@ -567,14 +566,14 @@ fn move_field_tys(
             continue;
         }
         let tys = &contribs[vi];
-        let joined = join_guarded(tys, classes);
+        let joined = join_tys(tys, classes);
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the variable stays at bottom
         }
-        if widen_move(
+        if widen_move_pinned(
             &mut vars.field_ty[vi],
             &mut vars.field_moves[vi],
-            Some(&mut vars.field_pinned[vi]),
+            &mut vars.field_pinned[vi],
             joined,
             SemTy::Dyn,
         ) {
@@ -617,10 +616,10 @@ fn move_global_tys(
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the slot stays at bottom
         }
-        if widen_move(
+        if widen_move_pinned(
             &mut vars.global_ty[vid],
             &mut vars.global_moves[vid],
-            Some(&mut vars.global_pinned[vid]),
+            &mut vars.global_pinned[vid],
             joined,
             SemTy::Dyn,
         ) {
@@ -661,33 +660,39 @@ fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
     joined
 }
 
-/// Fold a slice of types into their lattice join (`Never` is the bottom /
-/// identity, so not-yet-evaluated contributors are ignored). The *unguarded*
-/// join — use [`join_guarded`] whenever the result decides a slot/element/return
-/// representation.
+/// Fold a slice of types into their lattice join, then apply the [`raw_uniform`]
+/// representation guard. `Never` is the bottom / identity, so not-yet-evaluated
+/// contributors are ignored. This is THE join to reach for: wherever the result
+/// becomes a representation-deciding slot / element / return, the guard demotes a
+/// numerically-promoted contributor to `Dyn` rather than let it silently unbox a
+/// tagged value (a heterogeneous-numeric tuple `(1.5, 1)` read by a non-literal
+/// index is the canonical trap — see [`Solver::subscript_ty`]). Always guarded so
+/// the guard can never be forgotten at a call site; reach for [`join_unguarded`]
+/// only with a proof that the result is not a fresh representation-deciding slot.
 fn join_tys(tys: &[SemTy], classes: &ClassTable) -> SemTy {
+    raw_uniform(join_unguarded(tys, classes), tys)
+}
+
+/// The raw lattice fold with NO representation guard — the explicitly-named
+/// exception to [`join_tys`]. Use ONLY where the result is not a fresh
+/// representation-deciding slot: re-joining the members of an existing `Union`
+/// during type-variable erasure ([`erase_vars`]), where every contributor already
+/// passed the guard when its own slot was first decided.
+fn join_unguarded(tys: &[SemTy], classes: &ClassTable) -> SemTy {
     tys.iter().fold(SemTy::Never, |acc, t| acc.join(t, classes))
 }
 
-/// [`join_tys`] followed by the [`raw_uniform`] representation guard — the join
-/// used wherever the joined type becomes a representation-deciding slot, so a
-/// numerically-promoted contributor can't silently unbox a tagged value.
-fn join_guarded(tys: &[SemTy], classes: &ClassTable) -> SemTy {
-    raw_uniform(join_tys(tys, classes), tys)
-}
-
-/// Apply one widening move to a monotone join-lattice slot. If `candidate`
-/// differs from the slot, bump its strict-move counter and store `candidate` —
-/// but once the slot has moved [`WIDEN_LIMIT`] times it jumps straight to the
-/// absorbing `top` (and sets `pinned`, when the slot carries an explicit pin
-/// flag) so it can never move again, which is what bounds the fixpoint. Returns
-/// whether the slot changed, leaving each caller to propagate its own
-/// `moved`/dirty bookkeeping. The shared termination protocol behind the
-/// return / field / global type widenings and the interval entry-seed loop.
-pub(crate) fn widen_move<T: PartialEq>(
+/// Apply one widening move to a monotone join-lattice slot that carries an
+/// explicit pin flag (the field / global type widenings and the interval
+/// entry-seed loop). If `candidate` differs from the slot, bump its strict-move
+/// counter and store `candidate` — but once the slot has moved [`WIDEN_LIMIT`]
+/// times it jumps straight to the absorbing `top` and sets `pinned`, so it can
+/// never move again, which is what bounds the fixpoint. Returns whether the slot
+/// changed, leaving each caller to propagate its own `moved`/dirty bookkeeping.
+pub(crate) fn widen_move_pinned<T: PartialEq>(
     slot: &mut T,
     moves: &mut usize,
-    pinned: Option<&mut bool>,
+    pinned: &mut bool,
     candidate: T,
     top: T,
 ) -> bool {
@@ -697,13 +702,24 @@ pub(crate) fn widen_move<T: PartialEq>(
     *moves += 1;
     if *moves >= WIDEN_LIMIT {
         *slot = top;
-        if let Some(p) = pinned {
-            *p = true;
-        }
+        *pinned = true;
     } else {
         *slot = candidate;
     }
     true
+}
+
+/// [`widen_move_pinned`] for a slot with no separate pin flag — the return-type
+/// widening, whose absorbing `top` is `Dyn` (which never moves again, so pinning
+/// is implicit). Keeps the no-pin call sites free of an `Option`/throwaway pin.
+pub(crate) fn widen_move<T: PartialEq>(
+    slot: &mut T,
+    moves: &mut usize,
+    candidate: T,
+    top: T,
+) -> bool {
+    let mut ignored = false;
+    widen_move_pinned(slot, moves, &mut ignored, candidate, top)
 }
 
 /// The inferred return type of a function (Phase 8E): the join of every
@@ -723,7 +739,7 @@ fn inferred_return_ty(func: &HirFunction, st: &FuncState, classes: &ClassTable) 
             _ => {}
         }
     }
-    join_guarded(&contribs, classes)
+    join_tys(&contribs, classes)
 }
 
 /// How a slot's representation *reinterprets a tagged value by its assumed type*
@@ -1707,7 +1723,7 @@ impl FuncState {
         // The Raw-uniformity discipline (PITFALLS A2/B6) lives in
         // [`raw_uniform`], shared with element-slot and return-type joins.
         let tys: Vec<SemTy> = writes.iter().map(|&v| self.ety(v)).collect();
-        join_guarded(&tys, classes)
+        join_tys(&tys, classes)
     }
 
     /// Join a local's writes — whole-value assignments plus the element-level
@@ -1779,7 +1795,7 @@ impl FuncState {
                 }
             }
         }
-        let join_slot = |tys: &[SemTy]| join_guarded(tys, classes);
+        let join_slot = |tys: &[SemTy]| join_tys(tys, classes);
         if is_list {
             SemTy::list_of(join_slot(&elems))
         } else if is_set {
@@ -1988,8 +2004,8 @@ impl<'a> Sweeper<'a> {
                 // elements — stored values keep their own representation.
                 let kt: Vec<SemTy> = pairs.iter().map(|(k, _)| self.ety(*k)).collect();
                 let vt: Vec<SemTy> = pairs.iter().map(|(_, v)| self.ety(*v)).collect();
-                let k = join_guarded(&kt, self.classes);
-                let v = join_guarded(&vt, self.classes);
+                let k = join_tys(&kt, self.classes);
+                let v = join_tys(&vt, self.classes);
                 SemTy::dict_of(k, v)
             }
             HirExprKind::BytesLit(_) => SemTy::Bytes,
@@ -2383,7 +2399,7 @@ impl<'a> Sweeper<'a> {
     /// stored tagged int.
     fn join_all(&self, elems: &[Idx<HirExpr>]) -> SemTy {
         let tys: Vec<SemTy> = elems.iter().map(|e| self.ety(*e)).collect();
-        join_guarded(&tys, self.classes)
+        join_tys(&tys, self.classes)
     }
 
     /// The declared return type of a concrete-class dunder `name` on `ty`, if any
@@ -2907,7 +2923,7 @@ fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
         // tuple like `(1.5, 1)` joins to `float` (Raw(F64)) via the numeric
         // tower, and the iterator's tagged `int` element gets raw-unboxed as an
         // f64 — a SIGSEGV at the unbox (PITFALLS A2).
-        return join_guarded(elems, classes);
+        return join_tys(elems, classes);
     }
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
@@ -2944,9 +2960,13 @@ fn erase_vars(ty: &SemTy, classes: &ClassTable) -> SemTy {
         },
         SemTy::Iterator(t) => SemTy::Iterator(Box::new(erase_vars(t, classes))),
         // Re-join union members through the lattice so an erased `Dyn` absorbs.
-        SemTy::Union(ts) => ts.iter().fold(SemTy::Never, |acc, t| {
-            acc.join(&erase_vars(t, classes), classes)
-        }),
+        // `join_unguarded` (not `join_tys`): the members already passed the repr
+        // guard at their own slots — this is an erasure re-join, not a fresh
+        // representation-deciding slot.
+        SemTy::Union(ts) => {
+            let erased: Vec<SemTy> = ts.iter().map(|t| erase_vars(t, classes)).collect();
+            join_unguarded(&erased, classes)
+        }
         other => other.clone(),
     }
 }

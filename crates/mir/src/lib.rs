@@ -709,6 +709,11 @@ impl MirInst {
     /// The destination local this instruction writes, if any. The complement
     /// of [`MirInst::has_side_effects`] for DCE: a side-effect-free
     /// instruction whose `dst` (this) is never read is removable.
+    ///
+    /// Exhaustive with NO catch-all — load-bearing: `liveness` derives GC-root
+    /// liveness from this (a missed `dst` would let a live value be collected),
+    /// so a new variant must be classified here at compile time. Do not add a
+    /// `_ =>` arm.
     pub fn dst(&self) -> Option<LocalId> {
         match self {
             MirInst::Const { dst, .. }
@@ -894,6 +899,11 @@ impl MirInst {
 
     /// Visit every operand this instruction reads (NOT its `dst`). The shared
     /// traversal for the optimizer's use-counting and rewriting.
+    ///
+    /// Exhaustive with NO catch-all — load-bearing: `liveness` derives GC-root
+    /// liveness from the operand set (a missed operand would let a still-read
+    /// value be collected), so a new variant must enumerate its reads here at
+    /// compile time. Do not add a `_ =>` arm.
     pub fn for_each_operand(&self, mut f: impl FnMut(&Operand)) {
         match self {
             MirInst::Const { .. } => {}

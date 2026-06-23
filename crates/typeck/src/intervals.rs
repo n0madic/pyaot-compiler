@@ -78,7 +78,7 @@ use pyaot_hir::{
 use pyaot_types::SemTy;
 use pyaot_utils::LocalId;
 
-use crate::{widen_move, WIDEN_LIMIT};
+use crate::{widen_move_pinned, WIDEN_LIMIT};
 
 /// The conservative magnitude bound, in `i128`. A `Range` inside `[-BOUND, BOUND]`
 /// cannot promote to a heap `BigInt` and leaves headroom so a raw `Add`/`Sub`/
@@ -394,10 +394,10 @@ pub(crate) fn narrow_raw_ints(
                 if pinned[f][p] {
                     continue;
                 }
-                if widen_move(
+                if widen_move_pinned(
                     &mut entry_iv[f][p],
                     &mut moves[f][p],
-                    Some(&mut pinned[f][p]),
+                    &mut pinned[f][p],
                     fresh[f][p],
                     Interval::Top,
                 ) {
@@ -682,17 +682,33 @@ fn record_all(
 ) -> Interval {
     // Arithmetic leaf/unary/binary nodes share their interval rules with `eval`
     // through `arith_iv`; the operand callback recurses (and so records) each
-    // child. Record this node and return early — the match below handles only
-    // the non-arithmetic shapes, which are `⊤` but still recursed for flagging.
-    if let Some(iv) = arith_iv(func, resolve, env, idx, |c| record_all(func, resolve, env, c, rec))
-    {
-        rec.insert(idx, iv);
-        return iv;
-    }
+    // child. Non-arithmetic nodes delegate to `record_non_arith` (⊤ + recurse
+    // every child). Both paths converge on the single `rec.insert` below, so this
+    // node's interval is recorded in exactly one place.
+    let iv = match arith_iv(func, resolve, env, idx, |c| record_all(func, resolve, env, c, rec)) {
+        Some(iv) => iv,
+        None => record_non_arith(func, resolve, env, idx, rec),
+    };
+    rec.insert(idx, iv);
+    iv
+}
+
+/// The non-arithmetic arm of [`record_all`]: every other expression node is a
+/// `⊤` leaf for interval purposes, but its children are still recursed (and
+/// recorded) so a flaggable `BinOp` buried in a call arg / subscript / container
+/// literal (`xs.append(i*3 % k)`) gets its interval. Split out so [`record_all`]
+/// keeps a single `rec.insert` recording point.
+fn record_non_arith(
+    func: &HirFunction,
+    resolve: &ResolveResult,
+    env: &Env,
+    idx: Idx<HirExpr>,
+    rec: &mut ExprIv,
+) -> Interval {
     let child = |c: Idx<HirExpr>, rec: &mut ExprIv| {
         record_all(func, resolve, env, c, rec);
     };
-    let iv = match &func.exprs[idx].kind {
+    match &func.exprs[idx].kind {
         // ── compound non-integer nodes: recurse all children, value is ⊤ ──
         HirExprKind::Compare { l, r, .. } | HirExprKind::Is { l, r } => {
             child(*l, rec);
@@ -828,9 +844,7 @@ fn record_all(
         }
         // ── leaves with no expression children ──
         _ => Interval::Top,
-    };
-    rec.insert(idx, iv);
-    iv
+    }
 }
 
 /// Apply a block's statements to `env` (strong updates on `int` local writes),

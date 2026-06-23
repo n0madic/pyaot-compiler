@@ -53,91 +53,139 @@ pub enum DunderKind {
     Lifecycle,
 }
 
-/// Single source of truth: every recognized dunder name paired with its
-/// classification. Both [`dunder_kind`] and [`canonical_dunder_name`] derive
-/// from this one table, so the name set and its `'static` spellings can never
-/// drift apart (the previous design re-listed all names in two parallel
-/// matches, guarded only by a test).
-const DUNDER_TABLE: &[(&str, DunderKind)] = {
-    use DunderKind::*;
-    &[
-        // Binary numeric (forward)
-        ("__add__", BinaryNumeric),
-        ("__sub__", BinaryNumeric),
-        ("__mul__", BinaryNumeric),
-        ("__truediv__", BinaryNumeric),
-        ("__floordiv__", BinaryNumeric),
-        ("__mod__", BinaryNumeric),
-        ("__pow__", BinaryNumeric),
-        ("__matmul__", BinaryNumeric),
-        // Binary numeric (reflected)
-        ("__radd__", BinaryNumeric),
-        ("__rsub__", BinaryNumeric),
-        ("__rmul__", BinaryNumeric),
-        ("__rtruediv__", BinaryNumeric),
-        ("__rfloordiv__", BinaryNumeric),
-        ("__rmod__", BinaryNumeric),
-        ("__rpow__", BinaryNumeric),
-        ("__rmatmul__", BinaryNumeric),
-        // Binary bitwise (forward)
-        ("__and__", BinaryBitwise),
-        ("__or__", BinaryBitwise),
-        ("__xor__", BinaryBitwise),
-        ("__lshift__", BinaryBitwise),
-        ("__rshift__", BinaryBitwise),
-        // Binary bitwise (reflected)
-        ("__rand__", BinaryBitwise),
-        ("__ror__", BinaryBitwise),
-        ("__rxor__", BinaryBitwise),
-        ("__rlshift__", BinaryBitwise),
-        ("__rrshift__", BinaryBitwise),
-        // Rich comparison
-        ("__eq__", Comparison),
-        ("__ne__", Comparison),
-        ("__lt__", Comparison),
-        ("__le__", Comparison),
-        ("__gt__", Comparison),
-        ("__ge__", Comparison),
-        // Unary
-        ("__neg__", Unary),
-        ("__pos__", Unary),
-        ("__abs__", Unary),
-        ("__invert__", Unary),
-        // Conversion
-        ("__bool__", Conversion),
-        ("__int__", Conversion),
-        ("__float__", Conversion),
-        ("__str__", Conversion),
-        ("__repr__", Conversion),
-        ("__hash__", Conversion),
-        ("__index__", Conversion),
-        ("__len__", Conversion),
-        ("__format__", Conversion),
-        // Container
-        ("__getitem__", Container),
-        ("__setitem__", Container),
-        ("__delitem__", Container),
-        ("__contains__", Container),
-        ("__iter__", Container),
-        ("__next__", Container),
-        ("__call__", Container),
-        // Lifecycle
-        ("__init__", Lifecycle),
-        ("__new__", Lifecycle),
-        ("__del__", Lifecycle),
-        ("__copy__", Lifecycle),
-        ("__deepcopy__", Lifecycle),
-    ]
-};
+/// Single source of truth for the Python dunder protocol. The `dunder_table!`
+/// invocation below is the *one* place every recognized dunder is listed; the
+/// macro expands it into three O(1) `match`-based lookups ([`dunder_kind`],
+/// [`canonical_dunder_name`], [`reflected_name`]) plus the test-only
+/// `DUNDER_ROWS` projection. The recognized name set, each name's kind, its
+/// canonical `'static` spelling, and its reflected counterpart therefore can
+/// never drift apart, and no surface re-lists the names (the previous design
+/// kept the kind table, the reflected map, and the test name lists as three
+/// parallel hand-written copies). A `reflect "<name>"` clause names a forward
+/// binary / comparison dunder's reflected partner (CPython data model §3.3.8);
+/// rows without it have no reflection (the `__r*__` forms, unary, conversion,
+/// container, lifecycle).
+macro_rules! dunder_table {
+    (
+        $( $name:literal => $kind:ident $(, reflect $refl:literal )? ; )*
+    ) => {
+        /// Map a dunder method name to its classification. Returns `None` for
+        /// names that are not recognized dunders (plain methods with accidental
+        /// double-underscore names like `__myhelper__` fall through here). An
+        /// O(1) string `match` (compiler-lowered jump table), not a table scan.
+        pub fn dunder_kind(name: &str) -> Option<DunderKind> {
+            use DunderKind::*;
+            match name {
+                $( $name => Some($kind), )*
+                _ => None,
+            }
+        }
 
-/// Map a dunder method name to its classification. Returns `None` for names
-/// that are not recognized dunders (plain methods with accidental double
-/// underscore names like `__myhelper__` fall through here).
-pub fn dunder_kind(name: &str) -> Option<DunderKind> {
-    DUNDER_TABLE
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, kind)| *kind)
+        /// If `name` is a recognized dunder, returns the canonical `&'static str`
+        /// spelling of that name (e.g. `"__add__"`), otherwise `None`. The
+        /// `'static` lifetime makes it safe to store directly in maps keyed by
+        /// `&'static str` without additional interning.
+        pub fn canonical_dunder_name(name: &str) -> Option<&'static str> {
+            match name {
+                $( $name => Some($name), )*
+                _ => None,
+            }
+        }
+
+        /// Given a forward binary or comparison dunder name (e.g. `"__add__"`),
+        /// return its reflected counterpart (e.g. `"__radd__"`). Comparison
+        /// dunders reflect to their symmetric pair (`__lt__` ↔ `__gt__`,
+        /// `__le__` ↔ `__ge__`); `__eq__` / `__ne__` are self-reflected. Returns
+        /// `None` for any input that is not a forward binary / comparison dunder,
+        /// including the already-reflected `__r*__` forms (no double reflection).
+        pub fn reflected_name(forward: &str) -> Option<&'static str> {
+            match forward {
+                $( $( $name => Some($refl), )? )*
+                _ => None,
+            }
+        }
+
+        /// Every recognized dunder as `(name, kind, reflected)` — the test-only
+        /// projection of the table, so the test suite drives off the single
+        /// source instead of re-listing names.
+        #[cfg(test)]
+        const DUNDER_ROWS: &[(&str, DunderKind, Option<&str>)] = {
+            use DunderKind::*;
+            &[ $( ($name, $kind, dunder_table!(@refl $( $refl )?)), )* ]
+        };
+    };
+    // Internal: lift an optional `reflect` clause to an `Option<&str>` literal.
+    (@refl $refl:literal) => { Some($refl) };
+    (@refl) => { None };
+}
+
+dunder_table! {
+    // Binary numeric (forward → reflected)
+    "__add__"      => BinaryNumeric, reflect "__radd__";
+    "__sub__"      => BinaryNumeric, reflect "__rsub__";
+    "__mul__"      => BinaryNumeric, reflect "__rmul__";
+    "__truediv__"  => BinaryNumeric, reflect "__rtruediv__";
+    "__floordiv__" => BinaryNumeric, reflect "__rfloordiv__";
+    "__mod__"      => BinaryNumeric, reflect "__rmod__";
+    "__pow__"      => BinaryNumeric, reflect "__rpow__";
+    "__matmul__"   => BinaryNumeric, reflect "__rmatmul__";
+    // Binary numeric (reflected — no further reflection)
+    "__radd__"      => BinaryNumeric;
+    "__rsub__"      => BinaryNumeric;
+    "__rmul__"      => BinaryNumeric;
+    "__rtruediv__"  => BinaryNumeric;
+    "__rfloordiv__" => BinaryNumeric;
+    "__rmod__"      => BinaryNumeric;
+    "__rpow__"      => BinaryNumeric;
+    "__rmatmul__"   => BinaryNumeric;
+    // Binary bitwise (forward → reflected)
+    "__and__"    => BinaryBitwise, reflect "__rand__";
+    "__or__"     => BinaryBitwise, reflect "__ror__";
+    "__xor__"    => BinaryBitwise, reflect "__rxor__";
+    "__lshift__" => BinaryBitwise, reflect "__rlshift__";
+    "__rshift__" => BinaryBitwise, reflect "__rrshift__";
+    // Binary bitwise (reflected — no further reflection)
+    "__rand__"    => BinaryBitwise;
+    "__ror__"     => BinaryBitwise;
+    "__rxor__"    => BinaryBitwise;
+    "__rlshift__" => BinaryBitwise;
+    "__rrshift__" => BinaryBitwise;
+    // Rich comparison (reflect to the symmetric pair; eq/ne self-reflected)
+    "__eq__" => Comparison, reflect "__eq__";
+    "__ne__" => Comparison, reflect "__ne__";
+    "__lt__" => Comparison, reflect "__gt__";
+    "__le__" => Comparison, reflect "__ge__";
+    "__gt__" => Comparison, reflect "__lt__";
+    "__ge__" => Comparison, reflect "__le__";
+    // Unary
+    "__neg__"    => Unary;
+    "__pos__"    => Unary;
+    "__abs__"    => Unary;
+    "__invert__" => Unary;
+    // Conversion
+    "__bool__"   => Conversion;
+    "__int__"    => Conversion;
+    "__float__"  => Conversion;
+    "__str__"    => Conversion;
+    "__repr__"   => Conversion;
+    "__hash__"   => Conversion;
+    "__index__"  => Conversion;
+    "__len__"    => Conversion;
+    "__format__" => Conversion;
+    // Container
+    "__getitem__"  => Container;
+    "__setitem__"  => Container;
+    "__delitem__"  => Container;
+    "__contains__" => Container;
+    "__iter__"     => Container;
+    "__next__"     => Container;
+    "__call__"     => Container;
+    // Lifecycle
+    "__init__"     => Lifecycle;
+    "__new__"      => Lifecycle;
+    "__del__"      => Lifecycle;
+    "__copy__"     => Lifecycle;
+    "__deepcopy__" => Lifecycle;
 }
 
 /// Returns `true` iff `name` is a recognized dunder method.
@@ -145,162 +193,56 @@ pub fn is_dunder(name: &str) -> bool {
     dunder_kind(name).is_some()
 }
 
-/// If `name` is a recognized dunder method, returns the canonical `&'static str`
-/// spelling of that name (e.g. `"__add__"`), otherwise returns `None`.
-///
-/// The returned reference has `'static` lifetime, which makes it safe to store
-/// directly in maps keyed by `&'static str` without additional interning.
-pub fn canonical_dunder_name(name: &str) -> Option<&'static str> {
-    // Return the table's `'static` spelling of `name` (or `None`); shares
-    // `DUNDER_TABLE` with `dunder_kind`, so the two can never disagree.
-    DUNDER_TABLE
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(n, _)| *n)
-}
-
-/// Given a forward binary dunder name (e.g. `"__add__"`), return the name of
-/// its reflected counterpart (e.g. `"__radd__"`). Returns `None` for any
-/// input that is not a forward binary dunder.
-///
-/// Comparison dunders reflect to their symmetric pair per the data model
-/// (`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`); `__eq__` / `__ne__` are
-/// self-reflected.
-pub fn reflected_name(forward: &str) -> Option<&'static str> {
-    Some(match forward {
-        // Binary numeric
-        "__add__" => "__radd__",
-        "__sub__" => "__rsub__",
-        "__mul__" => "__rmul__",
-        "__truediv__" => "__rtruediv__",
-        "__floordiv__" => "__rfloordiv__",
-        "__mod__" => "__rmod__",
-        "__pow__" => "__rpow__",
-        "__matmul__" => "__rmatmul__",
-        // Binary bitwise
-        "__and__" => "__rand__",
-        "__or__" => "__ror__",
-        "__xor__" => "__rxor__",
-        "__lshift__" => "__rlshift__",
-        "__rshift__" => "__rrshift__",
-        // Comparison (per Python data model — symmetric pairs)
-        "__lt__" => "__gt__",
-        "__gt__" => "__lt__",
-        "__le__" => "__ge__",
-        "__ge__" => "__le__",
-        "__eq__" => "__eq__",
-        "__ne__" => "__ne__",
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every lookup agrees with the table row it came from — `dunder_kind`,
+    /// `canonical_dunder_name`, and `reflected_name` can never drift from the
+    /// single source, since they and `DUNDER_ROWS` all expand from it.
     #[test]
-    fn recognizes_every_binary_numeric_forward_and_reflected() {
-        for name in [
-            "__add__",
-            "__sub__",
-            "__mul__",
-            "__truediv__",
-            "__floordiv__",
-            "__mod__",
-            "__pow__",
-            "__matmul__",
-            "__radd__",
-            "__rsub__",
-            "__rmul__",
-            "__rtruediv__",
-            "__rfloordiv__",
-            "__rmod__",
-            "__rpow__",
-            "__rmatmul__",
-        ] {
-            assert_eq!(
-                dunder_kind(name),
-                Some(DunderKind::BinaryNumeric),
-                "{}",
-                name
-            );
+    fn lookups_agree_with_the_table() {
+        for &(name, kind, reflected) in DUNDER_ROWS {
+            assert_eq!(dunder_kind(name), Some(kind), "kind for {name}");
+            assert_eq!(canonical_dunder_name(name), Some(name), "canonical for {name}");
+            assert_eq!(reflected_name(name), reflected, "reflected for {name}");
+            assert!(is_dunder(name), "is_dunder for {name}");
         }
     }
 
+    /// Reflection is an involution on forward binary dunders (each maps to a
+    /// distinct `__r*__` form that does not itself reflect) and a symmetric
+    /// pairing on comparisons. Only rows that declare a `reflect` partner.
     #[test]
-    fn recognizes_every_binary_bitwise() {
-        for name in [
-            "__and__",
-            "__or__",
-            "__xor__",
-            "__lshift__",
-            "__rshift__",
-            "__rand__",
-            "__ror__",
-            "__rxor__",
-            "__rlshift__",
-            "__rrshift__",
-        ] {
-            assert_eq!(
-                dunder_kind(name),
-                Some(DunderKind::BinaryBitwise),
-                "{}",
-                name
-            );
+    fn reflection_structure_holds_for_every_reflecting_row() {
+        for &(name, kind, reflected) in DUNDER_ROWS {
+            let Some(r) = reflected else { continue };
+            // Both ends classify to the same kind.
+            assert_eq!(dunder_kind(name), dunder_kind(r), "{name} vs {r}");
+            match kind {
+                DunderKind::BinaryNumeric | DunderKind::BinaryBitwise => {
+                    assert!(r.starts_with("__r"), "{r}");
+                    // No double reflection: the `__r*__` form does not reflect.
+                    assert_eq!(reflected_name(r), None, "double reflection of {r}");
+                }
+                DunderKind::Comparison => {
+                    // The symmetric pair reflects back to `name`.
+                    assert_eq!(reflected_name(r), Some(name), "{name} <-> {r}");
+                }
+                other => panic!("unexpected reflecting kind {other:?} for {name}"),
+            }
         }
     }
 
+    /// A few spot checks, in case the macro expansion itself ever regresses.
     #[test]
-    fn recognizes_every_comparison() {
-        for name in ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"] {
-            assert_eq!(dunder_kind(name), Some(DunderKind::Comparison), "{}", name);
-        }
-    }
-
-    #[test]
-    fn recognizes_every_unary() {
-        for name in ["__neg__", "__pos__", "__abs__", "__invert__"] {
-            assert_eq!(dunder_kind(name), Some(DunderKind::Unary), "{}", name);
-        }
-    }
-
-    #[test]
-    fn recognizes_every_conversion() {
-        for name in [
-            "__bool__",
-            "__int__",
-            "__float__",
-            "__str__",
-            "__repr__",
-            "__hash__",
-            "__index__",
-            "__len__",
-            "__format__",
-        ] {
-            assert_eq!(dunder_kind(name), Some(DunderKind::Conversion), "{}", name);
-        }
-    }
-
-    #[test]
-    fn recognizes_every_container() {
-        for name in [
-            "__getitem__",
-            "__setitem__",
-            "__delitem__",
-            "__contains__",
-            "__iter__",
-            "__next__",
-            "__call__",
-        ] {
-            assert_eq!(dunder_kind(name), Some(DunderKind::Container), "{}", name);
-        }
-    }
-
-    #[test]
-    fn recognizes_every_lifecycle() {
-        for name in ["__init__", "__new__", "__del__", "__copy__", "__deepcopy__"] {
-            assert_eq!(dunder_kind(name), Some(DunderKind::Lifecycle), "{}", name);
-        }
+    fn reflected_name_spot_checks() {
+        assert_eq!(reflected_name("__add__"), Some("__radd__"));
+        assert_eq!(reflected_name("__rshift__"), Some("__rrshift__"));
+        assert_eq!(reflected_name("__lt__"), Some("__gt__"));
+        assert_eq!(reflected_name("__gt__"), Some("__lt__"));
+        assert_eq!(reflected_name("__eq__"), Some("__eq__"));
+        assert_eq!(reflected_name("__ne__"), Some("__ne__"));
     }
 
     #[test]
@@ -309,73 +251,17 @@ mod tests {
         assert_eq!(dunder_kind("__private"), None);
         assert_eq!(dunder_kind("_single_underscore"), None);
         assert_eq!(dunder_kind("__mycustom__"), None);
-        assert!(!is_dunder("regular_method"));
-    }
-
-    #[test]
-    fn canonical_name_is_total_over_the_kind_table() {
-        // Every name dunder_kind recognizes must have a canonical spelling,
-        // and vice versa — the two tables may never drift apart.
-        for name in [
-            "__add__",
-            "__rmatmul__",
-            "__rrshift__",
-            "__ge__",
-            "__invert__",
-            "__format__",
-            "__call__",
-            "__deepcopy__",
-        ] {
-            assert_eq!(canonical_dunder_name(name), Some(name));
-            assert!(dunder_kind(name).is_some());
-        }
         assert_eq!(canonical_dunder_name("__mycustom__"), None);
-    }
-
-    #[test]
-    fn reflected_name_forms_a_bijection_on_binary_dunders() {
-        // Forward → reflected roundtrip defined for all binary dunders.
-        let forwards = [
-            "__add__",
-            "__sub__",
-            "__mul__",
-            "__truediv__",
-            "__floordiv__",
-            "__mod__",
-            "__pow__",
-            "__matmul__",
-            "__and__",
-            "__or__",
-            "__xor__",
-            "__lshift__",
-            "__rshift__",
-        ];
-        for f in forwards {
-            let r = reflected_name(f).expect(f);
-            // Reflected name is the forward with `r` prefix in the first underscore slot.
-            assert!(r.starts_with("__r"));
-            // Reflected names are NOT valid inputs to reflected_name (no double reflection).
-            assert_eq!(reflected_name(r), None);
-            // Both forward and reflected classify to the same kind.
-            assert_eq!(dunder_kind(f), dunder_kind(r));
-        }
-    }
-
-    #[test]
-    fn reflected_name_comparison_pairs() {
-        assert_eq!(reflected_name("__lt__"), Some("__gt__"));
-        assert_eq!(reflected_name("__gt__"), Some("__lt__"));
-        assert_eq!(reflected_name("__le__"), Some("__ge__"));
-        assert_eq!(reflected_name("__ge__"), Some("__le__"));
-        // __eq__ / __ne__ are self-reflected.
-        assert_eq!(reflected_name("__eq__"), Some("__eq__"));
-        assert_eq!(reflected_name("__ne__"), Some("__ne__"));
-    }
-
-    #[test]
-    fn reflected_name_returns_none_for_unary_and_unknown() {
+        // Unary / conversion / unknown names have no reflection.
         assert_eq!(reflected_name("__neg__"), None);
         assert_eq!(reflected_name("__str__"), None);
         assert_eq!(reflected_name("random"), None);
+        assert!(!is_dunder("regular_method"));
+    }
+
+    /// Guard against an accidental row deletion in the single-source table.
+    #[test]
+    fn table_covers_every_recognized_dunder() {
+        assert_eq!(DUNDER_ROWS.len(), 57);
     }
 }

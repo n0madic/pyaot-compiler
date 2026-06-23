@@ -1077,13 +1077,13 @@ fn emit_classinit(
             // registry-dispatched ops (`rt_obj_add`/`rt_obj_neg`/the default-repr
             // path) resolve `a + b` / `print(a)` for instances of this class.
             for (name_hash, fid) in &c.dunders {
-                register_class_thunk(
+                register_named_thunk(
                     &mut builder,
                     module,
                     _ptr_ty,
                     rt.register_dunder_func,
                     c.class_id.0 as i64,
-                    Some(*name_hash),
+                    *name_hash,
                     func_ids[fid.index()],
                 );
             }
@@ -1093,13 +1093,13 @@ fn emit_classinit(
             // (class_id, method_name_hash), so `rt_obj_method` can invoke this
             // method on a `Dyn` receiver. Same shape as the dunder loop.
             for (name_hash, thunk_fid) in &c.method_uniforms {
-                register_class_thunk(
+                register_named_thunk(
                     &mut builder,
                     module,
                     _ptr_ty,
                     rt.register_method_uniform,
                     c.class_id.0 as i64,
-                    Some(*name_hash),
+                    *name_hash,
                     func_ids[thunk_fid.index()],
                 );
             }
@@ -1110,13 +1110,12 @@ fn emit_classinit(
             // / `iter()` / `next()`. An inherited `__next__` registers the
             // base's thunk under this subclass id.
             if let Some(thunk_fid) = &c.iternext_thunk {
-                register_class_thunk(
+                register_thunk(
                     &mut builder,
                     module,
                     _ptr_ty,
                     rt.register_iternext,
                     c.class_id.0 as i64,
-                    None,
                     func_ids[thunk_fid.index()],
                 );
             }
@@ -1127,24 +1126,22 @@ fn emit_classinit(
             // iternext block. An inherited dunder registers the base's thunk under
             // this subclass id.
             if let Some(thunk_fid) = &c.copy_thunk {
-                register_class_thunk(
+                register_thunk(
                     &mut builder,
                     module,
                     _ptr_ty,
                     rt.register_copy_func,
                     c.class_id.0 as i64,
-                    None,
                     func_ids[thunk_fid.index()],
                 );
             }
             if let Some(thunk_fid) = &c.deepcopy_thunk {
-                register_class_thunk(
+                register_thunk(
                     &mut builder,
                     module,
                     _ptr_ty,
                     rt.register_deepcopy_func,
                     c.class_id.0 as i64,
-                    None,
                     func_ids[thunk_fid.index()],
                 );
             }
@@ -1172,30 +1169,55 @@ fn emit_classinit(
 /// Materialize a [`Const`] into a Cranelift `Value` in a free builder context
 /// (used by `__pyaot_classinit` for class-attribute initializers). Mirrors
 /// `FnGen::lower_const`, but standalone (no per-function state).
-/// Emit one class-thunk registration inside `__pyaot_classinit`: materialize
-/// the class id, take the address of `target_fid`, and call the `reg_fid`
-/// registrar with `[class_id, (name_hash,)? addr]`. The single shape behind the
-/// dunder / method-uniform / iternext / copy / deepcopy registration blocks,
-/// which differ only in the registrar and whether a method-name hash is passed.
-fn register_class_thunk(
+/// Emit one *named* class-thunk registration inside `__pyaot_classinit`: call
+/// `reg_fid` with `[class_id, name_hash, addr]`. The 3-arg form behind the
+/// dunder and method-uniform registrars, which are keyed by method-name hash.
+/// Split from [`register_thunk`] by arity so each call site is tied to its
+/// registrar's true signature (the arity can't be mismatched), and the argument
+/// list stays on the stack.
+fn register_named_thunk(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     ptr_ty: Type,
     reg_fid: FuncId,
     class_id: i64,
-    name_hash: Option<u64>,
+    name_hash: u64,
     target_fid: FuncId,
 ) {
     let cid = builder.ins().iconst(types::I64, class_id);
-    let fref = module.declare_func_in_func(target_fid, builder.func);
-    let addr = builder.ins().func_addr(ptr_ty, fref);
+    let hash = builder.ins().iconst(types::I64, name_hash as i64);
+    let addr = thunk_addr(builder, module, ptr_ty, target_fid);
     let reg = module.declare_func_in_func(reg_fid, builder.func);
-    let mut args = vec![cid];
-    if let Some(h) = name_hash {
-        args.push(builder.ins().iconst(types::I64, h as i64));
-    }
-    args.push(addr);
-    builder.ins().call(reg, &args);
+    builder.ins().call(reg, &[cid, hash, addr]);
+}
+
+/// Emit one *unnamed* class-thunk registration inside `__pyaot_classinit`: call
+/// `reg_fid` with `[class_id, addr]`. The 2-arg form behind the iternext / copy
+/// / deepcopy registrars, which register one thunk per class (no method-name
+/// key). See [`register_named_thunk`] for the 3-arg counterpart.
+fn register_thunk(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    ptr_ty: Type,
+    reg_fid: FuncId,
+    class_id: i64,
+    target_fid: FuncId,
+) {
+    let cid = builder.ins().iconst(types::I64, class_id);
+    let addr = thunk_addr(builder, module, ptr_ty, target_fid);
+    let reg = module.declare_func_in_func(reg_fid, builder.func);
+    builder.ins().call(reg, &[cid, addr]);
+}
+
+/// The address of a class thunk `target_fid` as a Cranelift `Value`.
+fn thunk_addr(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    ptr_ty: Type,
+    target_fid: FuncId,
+) -> Value {
+    let fref = module.declare_func_in_func(target_fid, builder.func);
+    builder.ins().func_addr(ptr_ty, fref)
 }
 
 fn materialize_const(

@@ -31,7 +31,7 @@ use super::*;
 
 use rustpython_parser::ast::bigint::BigInt;
 use rustpython_parser::ast::{
-    Arg, ArgWithDefault, Arguments, ConversionFlag, ExceptHandler, ExprConstant, ExprContext,
+    Arg, ArgWithDefault, Arguments, ConversionFlag, ExprConstant, ExprContext,
     ExprFormattedValue, ExprJoinedStr, ExprName, ExprYield, Identifier, OptionalRange, StmtAssign,
     StmtExpr, StmtIf, StmtPass, StmtRaise, StmtReturn,
 };
@@ -95,8 +95,7 @@ fn desugar_stmt(stmt: &mut Stmt) -> Result<()> {
         Stmt::With(s) => desugar_synthesized_classes(&mut s.body)?,
         Stmt::Try(s) => {
             desugar_synthesized_classes(&mut s.body)?;
-            for h in &mut s.handlers {
-                let ExceptHandler::ExceptHandler(eh) = h;
+            for eh in try_handlers_mut(&mut s.handlers) {
                 desugar_synthesized_classes(&mut eh.body)?;
             }
             desugar_synthesized_classes(&mut s.orelse)?;
