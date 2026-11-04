@@ -42,7 +42,7 @@ class CM:
         return self
 
     def __exit__(self, t, val, tb):
-        log.append("exit " + str(t is not None))
+        log.append("exit " + str(t is not None) + " " + t.__name__ + " " + str(val))
         return True
 
 
@@ -156,7 +156,7 @@ def test_with_and_print() -> None:
     del log[:]
     with CM():
         raise ValueError("x")
-    assert log == ["exit True"]
+    assert log == ["exit True ValueError x"]
     try:
         print(Bad(), file=sys.stderr)
     except RuntimeError:

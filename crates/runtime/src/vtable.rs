@@ -586,6 +586,20 @@ pub extern "C" fn rt_getattr_name(
                 pyaot_core_defs::Value(raw as u64)
             }
             Err(()) => {
+                // `t.__name__` on a gradual type value: `type(x)` yields the
+                // `<class '…'>` string object (the static `type(x).__name__`
+                // path extracts the same way).
+                const FNV_NAME: u64 = crate::ops::fnv1a(b"__name__");
+                if name_hash as u64 == FNV_NAME && obj.is_ptr() && !ptr.is_null() {
+                    let o = ptr as *mut crate::object::Obj;
+                    if (*o).type_tag() == crate::object::TypeTagKind::Str
+                        && crate::utils::str_obj_to_rust_string(o).starts_with("<class '")
+                    {
+                        return pyaot_core_defs::Value(
+                            crate::conversions::rt_type_name_extract(o) as u64,
+                        );
+                    }
+                }
                 raise_exc!(
                     crate::exceptions::ExceptionType::AttributeError,
                     "object has no attribute (by-name lookup failed)"

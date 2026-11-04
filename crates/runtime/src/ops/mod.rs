@@ -19,6 +19,7 @@ pub use dunder_dispatch::{
     try_int_dunder, try_iter_dunder, try_repr_dunder, try_str_dunder,
 };
 pub use dunder_dispatch::{instance_class_name, instance_defines_eq, try_instance_key_eq};
+pub(crate) use dunder_dispatch::fnv1a;
 
 pub(crate) use comparison::obj_cmp_ordering;
 pub(crate) use comparison::type_name as comparison_type_name;
