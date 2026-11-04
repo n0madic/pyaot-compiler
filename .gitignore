@@ -8,3 +8,6 @@ Cargo.lock
 **/__pycache__
 corpus/test_*
 !corpus/test_*.py
+
+# Local Claude Code state (agent worktrees)
+/.claude/
