@@ -3825,15 +3825,33 @@ impl<'a> FnLower<'a> {
         // A generator (typed `Iterator(T)`): `send(v)` / `close()` lower to the
         // generator ops. Decided by the receiver's type — never by the method
         // name alone, so a StringIO/file/user-class `.close()` keeps its own
-        // method. `throw()` has no support in the compiled resume protocol.
+        // method. `throw(exc)` raises at the suspended yield via the runtime.
         if let SemTy::Iterator(_) = recv_ty {
             let name = self.interner.resolve(method_name);
             let gen_op = match (name, args.len(), kwargs.is_empty()) {
                 ("send", 1, true) => Some((GenOp::Send, Some(args[0]))),
                 ("close", 0, true) => Some((GenOp::Close, None)),
+                ("throw", 1, true) => {
+                    // Raise the exception at the suspended yield
+                    // (`rt_generator_throw`; the resume point's closing check
+                    // raises it inside the generator's own handlers).
+                    let (gl, gr) = self.lower_expr(recv)?;
+                    let g = self.coerce(gl, gr, Repr::Tagged)?;
+                    let (el, er) = self.lower_expr(args[0])?;
+                    let e = self.coerce(el, er, Repr::Tagged)?;
+                    let dst = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::CallRuntime {
+                        dst: Some(dst),
+                        def: &pyaot_core_defs::runtime_func_def::RT_GENERATOR_THROW,
+                        args: vec![Operand::Local(g), Operand::Local(e)],
+                    });
+                    return Ok((dst, Repr::Tagged));
+                }
                 ("throw", _, _) => {
                     return Err(CompilerError::semantic_error(
-                        "generator.throw() is not supported".to_string(),
+                        "generator.throw() takes exactly one exception instance here \
+                         (the legacy (type, value, traceback) form is out of scope)"
+                            .to_string(),
                         span,
                     ))
                 }

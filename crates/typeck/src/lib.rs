@@ -2308,7 +2308,7 @@ impl<'a> Sweeper<'a> {
         // `close` returns None.
         if let SemTy::Iterator(_) = recv {
             match self.interner.resolve(method_name) {
-                "send" => return SemTy::Dyn,
+                "send" | "throw" => return SemTy::Dyn,
                 "close" => return SemTy::NoneTy,
                 _ => {}
             }

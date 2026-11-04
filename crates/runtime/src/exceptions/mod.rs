@@ -41,6 +41,6 @@ pub use ffi::{
     rt_exc_set_instance_message, rt_exc_start_handling,
 };
 
-pub(crate) use ffi::{exception_class_name, exception_repr, exception_str};
+pub(crate) use ffi::{exception_class_name, exception_repr, exception_str, raise_exception_value};
 pub use unwind::rt_exc_register_table;
 pub(crate) use unwind::walk_return_pcs;

@@ -256,6 +256,14 @@ Two root causes dominate:
       iterable of pairs). Corpus: test_collections.py.
 - [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
+      Still open (needs a front-half change): they are typed and built as
+      `list` snapshots. Correct for the common uses on an unmutated dict
+      (iteration, `len`, `in`, `list()`/`sorted()`); wrong after a later
+      mutation of the dict (`ks = d.keys(); d[k] = v; len(ks)`), and the
+      set-like operations (`d.keys() == {...}`, `d.keys() & s`) raise
+      TypeError (list vs set). A real fix is a `dict_keys`/`dict_items`
+      view object (new runtime tag over the live `DictObj`, set-like ops)
+      plus typeck typing `keys()` as a view instead of `list[K]`.
 - [x] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
       Fixed: CPython parse_template semantics (escapes, octal, `\N`,
       `\g<name>`/`\g<N>`, bad-escape and invalid-group errors); group(n) out of
@@ -302,8 +310,14 @@ Two root causes dominate:
       unchecked: `s.update([2])` read a list as a set. Fixed: a non-set
       `other` is collected from any iterable first (`set/core.rs`
       `with_set_operand`). Corpus: test_collections.py.
-- [ ] **L** `generator.throw()` unsupported (needs resume-protocol support
+- [x] **L** `generator.throw()` unsupported (needs resume-protocol support
       for injecting an exception at the paused yield).
+      Fixed: rt_generator_throw arms a pending exception and resumes; the
+      resume point's closing query (rt_generator_is_closing) raises it at the
+      suspended yield, inside the generator's own handlers. Boundaries: one
+      exception-instance argument (no legacy (type, value, tb) form); a
+      builtin exception must be a caught/bound instance (builtin constructors
+      are not value expressions). Corpus: test_generators.py.
 - [x] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
       silent no-op (`rt_generator_close` ignores non-generators); CPython
       raises AttributeError.

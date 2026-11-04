@@ -1475,4 +1475,94 @@ def _gradual_getitem_and_close() -> None:
 _gradual_getitem_and_close()
 
 
+# ===== SECTION: generator.throw() =====
+
+class _ThBoom(ValueError):
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+
+
+class _ThOther(Exception):
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+
+
+_th_log: list[str] = []
+
+
+def _th_catching() -> Iterator[int]:
+    try:
+        yield 1
+        yield 2
+    except ValueError as e:
+        _th_log.append("caught " + str(e))
+    yield 3
+
+
+def _th_finally() -> Iterator[int]:
+    try:
+        yield 1
+    finally:
+        _th_log.append("finally")
+
+
+def _th_plain() -> Iterator[int]:
+    yield 1
+    yield 2
+
+
+def _th_returning() -> Iterator[int]:
+    try:
+        yield 1
+    except ValueError:
+        return
+
+
+def _generator_throw() -> None:
+    g = _th_catching()
+    assert next(g) == 1
+    assert g.throw(_ThBoom("boom")) == 3
+    assert list(g) == []
+    g = _th_finally()
+    next(g)
+    propagated = ""
+    try:
+        g.throw(_ThOther("k"))
+    except _ThOther as e:
+        propagated = str(e)
+    assert propagated == "k"
+    assert list(g) == []
+    g = _th_plain()
+    unstarted = ""
+    try:
+        g.throw(_ThOther("early"))
+    except _ThOther as e:
+        unstarted = str(e)
+    assert unstarted == "early"
+    assert list(g) == []
+    g = _th_returning()
+    next(g)
+    stopped = False
+    try:
+        g.throw(_ThBoom("x"))
+    except StopIteration:
+        stopped = True
+    assert stopped
+    rethrown = ""
+    try:
+        raise KeyError("kk")
+    except KeyError as caught:
+        g = _th_catching()
+        next(g)
+        try:
+            g.throw(caught)
+        except KeyError as e2:
+            rethrown = str(e2)
+    assert rethrown == "'kk'"
+    assert _th_log == ["caught boom", "finally"]
+
+
+_generator_throw()
+
+
 print("All generator tests passed!")

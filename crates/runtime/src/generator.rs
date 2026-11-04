@@ -26,6 +26,12 @@ pub unsafe fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
         );
     }
 
+    // A finished generator is never resumed (e.g. one an exception thrown
+    // into it terminated): callers read the `exhausted` flag.
+    if (*(gen as *mut GeneratorObj)).exhausted {
+        return std::ptr::null_mut();
+    }
+
     // Call the dispatcher function (provided by compiled code)
     __pyaot_generator_resume(gen)
 }
@@ -105,6 +111,12 @@ pub extern "C" fn rt_generator_get_state_abi(gen: Value) -> u32 {
 pub unsafe fn rt_generator_set_state(gen: *mut Obj, state: u32) {
     let gen = gen as *mut GeneratorObj;
     (*gen).state = state;
+    // Suspending at a yield means the generator is alive again — undoing the
+    // provisional `exhausted` that a thrown-in exception sets (see
+    // `rt_generator_is_closing`), when the generator caught it and yielded.
+    if state != u32::MAX {
+        (*gen).exhausted = false;
+    }
 }
 #[export_name = "rt_generator_set_state"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -411,6 +423,25 @@ pub extern "C" fn rt_generator_close_abi(gen: Value) {
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 pub unsafe fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
+    // `throw(exc)` resumes with a pending exception for this generator: raise
+    // it HERE — at the suspended `yield` (every resume point starts with this
+    // query), so the generator's own try/except/finally handle it.
+    let pending = PENDING_THROW.with(|p| {
+        let (g, e) = p.get();
+        if g == gen as usize {
+            p.set((0, 0));
+            Some(e)
+        } else {
+            None
+        }
+    });
+    if let Some(e) = pending {
+        // Provisionally finished: if the exception escapes the generator it is
+        // done (CPython); a caught one that reaches another yield clears this
+        // again (`rt_generator_set_state`), a `return` keeps it.
+        (*(gen as *mut GeneratorObj)).exhausted = true;
+        crate::exceptions::raise_exception_value(pyaot_core_defs::Value(e));
+    }
     let gen_obj = gen as *mut GeneratorObj;
     if (*gen_obj).closing {
         1
@@ -418,6 +449,49 @@ pub unsafe fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
         0
     }
 }
+thread_local! {
+    /// `(generator address, exception Value bits)` armed by
+    /// [`rt_generator_throw`] for the resume it is about to perform. Only live
+    /// across that synchronous resume (the caller keeps the exception rooted).
+    static PENDING_THROW: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// `generator.throw(exc)`: raise `exc` (an exception instance) at the
+/// generator's suspended `yield`. Returns the next yielded value when the
+/// generator handles it and yields again; raises `StopIteration` when it
+/// returns instead; propagates `exc` (or whatever the generator raised) when
+/// unhandled. A not-yet-started or exhausted generator raises `exc` at once
+/// (and is finished).
+///
+/// # Safety
+/// `gen` must be a valid object pointer; `exc` a tagged immediate or a valid
+/// object pointer.
+pub unsafe fn rt_generator_throw(gen: *mut Obj, exc: pyaot_core_defs::Value) -> *mut Obj {
+    if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
+        raise_exc!(
+            ExceptionType::AttributeError,
+            "object has no attribute 'throw'"
+        );
+    }
+    let gen_obj = gen as *mut GeneratorObj;
+    if (*gen_obj).exhausted || (*gen_obj).state == 0 {
+        (*gen_obj).exhausted = true;
+        crate::exceptions::raise_exception_value(exc);
+    }
+    PENDING_THROW.with(|p| p.set((gen as usize, exc.0)));
+    let result = __pyaot_generator_resume(gen);
+    PENDING_THROW.with(|p| p.set((0, 0)));
+    if (*gen_obj).exhausted {
+        raise_exc!(ExceptionType::StopIteration, "");
+    }
+    result
+}
+#[export_name = "rt_generator_throw"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_throw_abi(gen: Value, exc: Value) -> Value {
+    Value::from_ptr(unsafe { rt_generator_throw(gen.unwrap_ptr(), exc) })
+}
+
 #[export_name = "rt_generator_is_closing"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_generator_is_closing_abi(gen: Value) -> i8 {

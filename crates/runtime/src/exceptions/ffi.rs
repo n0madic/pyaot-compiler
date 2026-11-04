@@ -905,3 +905,34 @@ pub(crate) unsafe fn exception_repr(obj: *mut crate::object::Obj) -> Option<Stri
     }
     Some(format!("{}({})", name, parts.join(", ")))
 }
+
+/// Raise an exception given as a VALUE (an exception instance, e.g. the
+/// argument of `generator.throw(exc)`): its own class and message (`.args[0]`
+/// of a builtin exception, the `BaseException.__init__` message of a user
+/// one), with the usual implicit `__context__`. A non-exception raises
+/// `TypeError`, as CPython.
+///
+/// # Safety
+/// `exc` must be a tagged immediate or a valid object pointer.
+pub(crate) unsafe fn raise_exception_value(exc: pyaot_core_defs::Value) -> ! {
+    let mut obj = match exc_object_from_value(exc) {
+        Ok(o) => o,
+        Err(()) => {
+            let msg = b"exceptions must be classes or instances deriving from BaseException";
+            rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        }
+    };
+    if obj.message_len == 0 {
+        if let Some(m) = super::core::instance_message(obj.instance) {
+            let (p, l, c) = copy_message_to_owned(m.as_ptr(), m.len());
+            obj.message = p;
+            obj.message_len = l;
+            obj.message_capacity = c;
+        }
+    }
+    obj.context = with_exception_state(|state| state.new_context(obj.instance));
+    obj.traceback = Some(crate::traceback::capture_traceback());
+    let mut boxed = Box::new(obj);
+    apply_pending(&mut boxed);
+    dispatch_to_handler(boxed)
+}
