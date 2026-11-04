@@ -833,6 +833,43 @@ impl<'a> FnLower<'a> {
         Ok(None)
     }
 
+    /// Supply both operands of a float binary op / comparison as `Raw(F64)`,
+    /// or `None`. At least one side must already be `Raw(F64)`; the other is
+    /// either `Raw(F64)` too or an int literal with `|v| <= 2^53`, which
+    /// converts to `f64` exactly — so the float operation (and a mixed
+    /// int/float comparison, which CPython performs exactly) gives the same
+    /// result as on the original int.
+    fn raw_f64_operands(
+        &mut self,
+        l: Idx<HirExpr>,
+        ll: LocalId,
+        lr: &Repr,
+        r: Idx<HirExpr>,
+        rl: LocalId,
+        rr: &Repr,
+    ) -> Option<(LocalId, LocalId)> {
+        let f64r = Repr::Raw(RawKind::F64);
+        if *lr != f64r && *rr != f64r {
+            return None;
+        }
+        let la = self.raw_f64_operand(l, ll, lr)?;
+        let ra = self.raw_f64_operand(r, rl, rr)?;
+        Some((la, ra))
+    }
+
+    fn raw_f64_operand(&mut self, expr: Idx<HirExpr>, loc: LocalId, repr: &Repr) -> Option<LocalId> {
+        const EXACT: i64 = 1 << 53;
+        if *repr == Repr::Raw(RawKind::F64) {
+            return Some(loc);
+        }
+        match self.func.exprs[expr].kind {
+            HirExprKind::IntLit(v) if *repr == Repr::Tagged && (-EXACT..=EXACT).contains(&v) => {
+                Some(self.emit_const(Repr::Raw(RawKind::F64), Const::Float(v as f64)))
+            }
+            _ => None,
+        }
+    }
+
     // ── statements ────────────────────────────────────────────────────────────
 
     fn lower_stmt(&mut self, stmt: &HirStmt) -> Result<()> {
@@ -6158,17 +6195,23 @@ impl<'a> FnLower<'a> {
             return Ok(res);
         }
 
-        let raw_addsubmul = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul);
+        // Raw float fast path: `+ - * /` on two `Raw(F64)` operands (or one
+        // `Raw(F64)` and an exactly-representable int literal) stays unboxed.
+        // `/` inlines `fdiv` with a zero-divisor check that raises
+        // `ZeroDivisionError` through the runtime (codegen).
+        let raw_float_op = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul | MBinOp::Div);
         let f64 = Repr::Raw(RawKind::F64);
-        if raw_addsubmul && lr == f64 && rr == f64 {
-            let dst = self.alloc_temp(f64.clone());
-            self.emit(MirInst::BinOp {
-                dst,
-                op: mop,
-                l: Operand::Local(ll),
-                r: Operand::Local(rl),
-            });
-            return Ok((dst, f64));
+        if raw_float_op {
+            if let Some((la, ra)) = self.raw_f64_operands(l, ll, &lr, r, rl, &rr) {
+                let dst = self.alloc_temp(f64.clone());
+                self.emit(MirInst::BinOp {
+                    dst,
+                    op: mop,
+                    l: Operand::Local(la),
+                    r: Operand::Local(ra),
+                });
+                return Ok((dst, f64));
+            }
         }
 
         // Raw int fast path (Phase 3c). `Add`/`Sub` fire whenever an operand is a
@@ -6384,6 +6427,20 @@ impl<'a> FnLower<'a> {
     fn lower_unary(&mut self, op: HUnaryOp, operand: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
         let mop = map_unaryop(op);
         let (ol, orr) = self.lower_expr(operand)?;
+        // Raw float `-x` is an inline IEEE negation (no boxing); `+x` on a
+        // float is the value itself.
+        if orr == Repr::Raw(RawKind::F64) && matches!(mop, MUnaryOp::Neg | MUnaryOp::Pos) {
+            if mop == MUnaryOp::Pos {
+                return Ok((ol, orr));
+            }
+            let dst = self.alloc_temp(orr.clone());
+            self.emit(MirInst::Unary {
+                dst,
+                op: mop,
+                operand: Operand::Local(ol),
+            });
+            return Ok((dst, orr));
+        }
         let ot = self.coerce(ol, orr, Repr::Tagged)?;
         let dst_repr = if mop == MUnaryOp::Not {
             Repr::Raw(RawKind::I8)
@@ -6678,10 +6735,19 @@ impl<'a> FnLower<'a> {
         let i64r = Repr::Raw(RawKind::I64);
         // Raw int compare (Phase 3c): when both operands are range-proven
         // `Raw(I64)` cursors (the `range()` loop guard `cursor < stop`), compare
-        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Anything
-        // else runs on the tagged baseline (a lone raw operand re-tags soundly).
+        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Raw
+        // float operands (or a float against an exact int literal) compare with
+        // an IEEE `fcmp` (NaN-correct). Anything else runs on the tagged
+        // baseline (a lone raw operand re-tags soundly).
+        let raw_f64 = if want_value {
+            None
+        } else {
+            self.raw_f64_operands(l, ll, &lr, r, rl, &rr)
+        };
         let (la, ra) = if lr == i64r && rr == i64r {
             (ll, rl)
+        } else if let Some(pair) = raw_f64 {
+            pair
         } else {
             (
                 self.coerce(ll, lr, Repr::Tagged)?,

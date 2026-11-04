@@ -25,7 +25,7 @@ use std::path::Path;
 
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::{
-    condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
+    condcodes::FloatCC, condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
     ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
     StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
@@ -85,6 +85,9 @@ struct RuntimeFns {
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
+    /// `rt_div_float(a, b) -> f64`: the cold zero-divisor path of a raw `/`
+    /// (raises `ZeroDivisionError`).
+    div_float: FuncId,
     obj_add: FuncId,
     obj_sub: FuncId,
     obj_mul: FuncId,
@@ -340,6 +343,7 @@ impl RuntimeFns {
             add_int: d("rt_add_int", &[ti, ti], &[ti])?,
             sub_int: d("rt_sub_int", &[ti, ti], &[ti])?,
             mul_int: d("rt_mul_int", &[ti, ti], &[ti])?,
+            div_float: d("rt_div_float", &[tf, tf], &[tf])?,
             obj_add: d("rt_obj_add", &[ti, ti], &[ti])?,
             obj_sub: d("rt_obj_sub", &[ti, ti], &[ti])?,
             obj_mul: d("rt_obj_mul", &[ti, ti], &[ti])?,
@@ -3085,11 +3089,17 @@ impl FnGen<'_, '_> {
             (Repr::Raw(RawKind::F64), BinOp::Add) => self.builder.ins().fadd(a, b),
             (Repr::Raw(RawKind::F64), BinOp::Sub) => self.builder.ins().fsub(a, b),
             (Repr::Raw(RawKind::F64), BinOp::Mul) => self.builder.ins().fmul(a, b),
-            // Raw i64 (range-proven cursors): checked machine arithmetic that
-            // raises on i64 overflow — sound only because lowering proved range.
-            (Repr::Raw(RawKind::I64), BinOp::Add) => self.call(self.rt.add_int, &[a, b]).unwrap(),
-            (Repr::Raw(RawKind::I64), BinOp::Sub) => self.call(self.rt.sub_int, &[a, b]).unwrap(),
-            (Repr::Raw(RawKind::I64), BinOp::Mul) => self.call(self.rt.mul_int, &[a, b]).unwrap(),
+            // `/` on two floats: inline `fdiv`, except a zero divisor (`0.0` or
+            // `-0.0`) takes the cold `rt_div_float` call, which raises
+            // `ZeroDivisionError` (CPython never yields inf/nan from `x / 0.0`).
+            (Repr::Raw(RawKind::F64), BinOp::Div) => self.raw_float_div(a, b),
+            // Raw i64 (range-proven cursors): inline machine arithmetic with the
+            // overflow flag. Overflow is impossible by the range proof, but the
+            // cold path still calls the checked `rt_*_int`, which raises
+            // `OverflowError` — the same behaviour as before, minus the call.
+            (Repr::Raw(RawKind::I64), BinOp::Add) => self.raw_int_overflow_op(op, a, b),
+            (Repr::Raw(RawKind::I64), BinOp::Sub) => self.raw_int_overflow_op(op, a, b),
+            (Repr::Raw(RawKind::I64), BinOp::Mul) => self.raw_int_overflow_op(op, a, b),
             // Raw i64 `% //` (Phase 3c): inline `srem`/`sdiv` with the Python
             // floor-toward-−∞ correction. typeck's interval pass proved the
             // divisor statically positive (hence nonzero and never `INT_MIN/-1`),
@@ -3131,6 +3141,60 @@ impl FnGen<'_, '_> {
         Ok(())
     }
 
+    /// Overflow-checked raw i64 `+ - *`: the `{s,ss,sm}{add,ub,ul}_overflow`
+    /// result is used directly; on the (cold) overflow edge the checked
+    /// runtime op (`rt_add_int`/`rt_sub_int`/`rt_mul_int`) recomputes and
+    /// raises `OverflowError`.
+    fn raw_int_overflow_op(&mut self, op: BinOp, a: Value, b: Value) -> Value {
+        let (res, of, slow_fn) = match op {
+            BinOp::Add => {
+                let (r, of) = self.builder.ins().sadd_overflow(a, b);
+                (r, of, self.rt.add_int)
+            }
+            BinOp::Sub => {
+                let (r, of) = self.builder.ins().ssub_overflow(a, b);
+                (r, of, self.rt.sub_int)
+            }
+            BinOp::Mul => {
+                let (r, of) = self.builder.ins().smul_overflow(a, b);
+                (r, of, self.rt.mul_int)
+            }
+            other => unreachable!("raw_int_overflow_op on {other:?}"),
+        };
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let out = self.builder.append_block_param(join, types::I64);
+        self.builder.ins().brif(of, slow, &[], join, &[res.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(slow_fn, &[a, b]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Raw f64 `/`: inline `fdiv` unless the divisor compares equal to zero
+    /// (`0.0` / `-0.0`; a NaN divisor is not zero and divides normally), in
+    /// which case the cold `rt_div_float` call raises `ZeroDivisionError`.
+    fn raw_float_div(&mut self, a: Value, b: Value) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let out = self.builder.append_block_param(join, types::F64);
+        let zero = self.builder.ins().f64const(0.0);
+        let is_zero = self.builder.ins().fcmp(FloatCC::Equal, b, zero);
+        self.builder.ins().brif(is_zero, slow, &[], fast, &[]);
+        self.builder.switch_to_block(fast);
+        let q = self.builder.ins().fdiv(a, b);
+        self.builder.ins().jump(join, &[q.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(self.rt.div_float, &[a, b]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
     /// Branchless Python floor modulo on raw i64 (`a % b`, result takes the sign
     /// of the divisor). `srem` truncates toward zero; when the remainder is
     /// nonzero and its sign differs from the divisor's, add the divisor to floor
@@ -3165,8 +3229,12 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_unary(&mut self, dst: LocalId, op: UnaryOp, operand: &Operand) -> Result<()> {
+        let raw_f64 = *self.operand_repr(operand) == Repr::Raw(RawKind::F64);
         let a = self.use_operand(operand);
         let v = match op {
+            // Raw f64 negation: an IEEE sign flip (`-0.0` stays exact, NaN
+            // stays NaN) — the verifier admits only `Neg` on `Raw(F64)`.
+            UnaryOp::Neg if raw_f64 => self.builder.ins().fneg(a),
             UnaryOp::Neg => self.call(self.rt.obj_neg, &[a]).unwrap(),
             UnaryOp::Pos => self.call(self.rt.obj_pos, &[a]).unwrap(),
             UnaryOp::Invert => self.call(self.rt.obj_invert, &[a]).unwrap(),
@@ -3197,6 +3265,23 @@ impl FnGen<'_, '_> {
                 CmpOp::GtE => IntCC::SignedGreaterThanOrEqual,
             };
             let v = self.builder.ins().icmp(cc, a, b);
+            self.def_local(dst, v);
+            return Ok(());
+        }
+        // Raw f64: an IEEE `fcmp` yielding the `I8` boolean. Python float
+        // comparison is IEEE: every ordered predicate is false on a NaN
+        // operand and `!=` is true (`FloatCC::NotEqual` is "unordered or not
+        // equal"); `0.0 == -0.0`.
+        if lrepr == Repr::Raw(RawKind::F64) {
+            let cc = match op {
+                CmpOp::Eq => FloatCC::Equal,
+                CmpOp::NotEq => FloatCC::NotEqual,
+                CmpOp::Lt => FloatCC::LessThan,
+                CmpOp::LtE => FloatCC::LessThanOrEqual,
+                CmpOp::Gt => FloatCC::GreaterThan,
+                CmpOp::GtE => FloatCC::GreaterThanOrEqual,
+            };
+            let v = self.builder.ins().fcmp(cc, a, b);
             self.def_local(dst, v);
             return Ok(());
         }

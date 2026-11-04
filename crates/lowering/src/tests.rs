@@ -97,16 +97,25 @@ fn float_accumulator_loop_is_unboxed() {
 }
 
 #[test]
-fn float_division_stays_tagged() {
-    // `/` is NOT specialized (CPython `x/0.0` raises; we keep tagged semantics).
-    let p = lowered("print(7.0 / 2.0)\n");
+fn float_division_compare_and_neg_lower_unboxed() {
+    // `/` on floats is a Raw(F64) BinOp (codegen guards the zero divisor and
+    // raises ZeroDivisionError through the runtime); float comparison and
+    // negation are raw too — no float boxing anywhere.
+    let f64 = Repr::Raw(RawKind::F64);
+    let p = lowered("x = 7.0\ny = 2.0\nprint(x / y)\nprint(x < y)\nprint(-x)\n");
     let f = main_fn(&p);
     let divs: Vec<_> = binops_with_repr(f)
         .into_iter()
         .filter(|(op, _)| *op == BinOp::Div)
         .collect();
     assert_eq!(divs.len(), 1, "expected one Div");
-    assert_eq!(divs[0].1, Repr::Tagged, "float division must stay tagged");
+    assert_eq!(divs[0].1, f64, "float division runs raw");
+    assert!(compare_operand_reprs(f).contains(&f64), "float compare runs raw");
+    let raw_neg = f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+        matches!(i, MirInst::Unary { dst, op: pyaot_mir::UnaryOp::Neg, .. }
+                 if f.locals[dst.index()].repr == f64)
+    });
+    assert!(raw_neg, "float negation runs raw");
 }
 
 #[test]
@@ -154,18 +163,23 @@ fn bounded_call_specializes_params_and_return_to_raw() {
 }
 
 #[test]
-fn mixed_int_float_add_stays_tagged() {
-    // Only when BOTH operands are statically float does the raw path fire; mixed
-    // int/float falls back to the tagged baseline (the runtime promotes).
-    let p = lowered("print(3 + 1.5)\n");
-    let f = main_fn(&p);
-    let adds: Vec<_> = binops_with_repr(f)
-        .into_iter()
-        .filter(|(op, _)| *op == BinOp::Add)
-        .collect();
+fn mixed_int_float_add() {
+    // A float against an exactly-representable int LITERAL stays raw (the
+    // literal becomes an f64 constant); a float against an int VARIABLE (which
+    // may be a bignum) falls back to the tagged baseline (the runtime promotes).
+    let f64 = Repr::Raw(RawKind::F64);
+    let adds = |src: &str| -> Vec<Repr> {
+        let p = lowered(src);
+        binops_with_repr(main_fn(&p))
+            .into_iter()
+            .filter(|(op, _)| *op == BinOp::Add)
+            .map(|(_, r)| r)
+            .collect()
+    };
+    assert!(adds("print(3 + 1.5)\n").contains(&f64), "literal mix runs raw");
     assert!(
-        adds.iter().any(|(_, r)| *r == Repr::Tagged),
-        "mixed add must be tagged"
+        adds("n = 10**30\nprint(n + 1.5)\n").contains(&Repr::Tagged),
+        "int-variable mix must be tagged"
     );
 }
 

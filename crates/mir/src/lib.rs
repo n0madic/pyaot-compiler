@@ -513,12 +513,9 @@ impl MirInst {
                         Some(Coercion::BoxFloat | Coercion::TagInt)
                     )
             }
-            MirInst::BinOp {
-                dst: _,
-                op: _,
-                l,
-                r,
-            } => non_raw(l) || non_raw(r),
+            // A raw float `/` raises `ZeroDivisionError` (allocating the
+            // exception) on a zero divisor; the other raw ops cannot raise.
+            MirInst::BinOp { dst: _, op, l, r } => non_raw(l) || non_raw(r) || *op == BinOp::Div,
             MirInst::Compare {
                 dst: _,
                 op: _,

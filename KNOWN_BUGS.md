@@ -418,9 +418,16 @@ Regressions: `corpus/test_eval_order.py`.
 
 ## Phase 7 — performance & cleanup
 
-- [ ] Raw(I64) add/sub/mul compile to `rt_*_int` calls instead of inline ops
-      (`codegen lib.rs:2720`).
-- [ ] Raw(F64) compare/div/neg box both operands (`lowering:5656`, `:6139`).
+- [x] Raw(I64) add/sub/mul compile to `rt_*_int` calls instead of inline ops
+      (`codegen lib.rs:2720`). Fixed: inline `sadd/ssub/smul_overflow`; only
+      the cold overflow edge calls the raising `rt_*_int`. Corpus:
+      test_raw_fastpaths.py.
+- [x] Raw(F64) compare/div/neg box both operands (`lowering:5656`, `:6139`).
+      Fixed: `Raw(F64)` `Compare` (IEEE `fcmp`, NaN-correct), `Div` (inline
+      `fdiv`, zero divisor → cold `rt_div_float`, which now raises
+      `ZeroDivisionError` — contract change) and `Unary::Neg` (`fneg`); a
+      float against an int literal with `|v| <= 2^53` stays raw too. Corpus:
+      test_raw_fastpaths.py.
 - [ ] Quadratic: liveness worklist + per-alloc local scan
       (`mir/src/liveness.rs:96`); peephole `resolve_target` (`peephole.rs:83`);
       devirt `single_def` clones (`devirt.rs:173`); inline size recompute +
