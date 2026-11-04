@@ -73,7 +73,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `bytes` | ✅ | Constructors (incl. `bytes.fromhex`), methods (find/rfind/index/rindex/count/replace/split/strip/case/join/decode/startswith/endswith), slicing |
 | `list` | ✅ | |
 | `tuple` | ✅ | Fixed-arity & homogeneous; lexicographic compare |
-| `dict` | ✅ | Insertion-ordered; merge `|`/`|=`, `fromkeys` |
+| `dict` | ✅ | Insertion-ordered; merge `|`/`|=`, `fromkeys`; `d[k]` on a missing key raises `KeyError(k)` (typed and dynamic bases; a dynamic `defaultdict`/`Counter` keeps its own miss rule) |
 | `set` | ✅ | `\| & - ^`, `pop`, and update/relational methods |
 | `range` | ✅ | Lazy iterator, negative/variable step |
 | `NoneType` | ✅ | `None` sentinel, `is`/`is not` |

@@ -1348,7 +1348,7 @@ impl<'a> FnLowerer<'a> {
                 } else if let Some(kv) = kw {
                     self.arg_src_value(kv, span)?
                 } else if let Some(v) = by_name
-                    .then(|| self.bind_from_kw_dict(kw_dict, p, span))
+                    .then(|| self.bind_from_kw_dict(kw_dict, p, fname, span))
                     .flatten()
                 {
                     v
@@ -1385,7 +1385,7 @@ impl<'a> FnLowerer<'a> {
         for p in &info.kwonly {
             let v = if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name)) {
                 self.arg_src_value(kv, span)?
-            } else if let Some(v) = self.bind_from_kw_dict(kw_dict, p, span) {
+            } else if let Some(v) = self.bind_from_kw_dict(kw_dict, p, fname, span) {
                 v
             } else if let Some(def) = &p.default {
                 self.lower_param_default(def, span)
@@ -1444,7 +1444,9 @@ impl<'a> FnLowerer<'a> {
 
     /// Bind parameter `p` from a runtime `**dict` spread (`kw_dict`), if present:
     /// a defaulted parameter reads `dict.get(name, default)` (the default fills an
-    /// absent key); a required parameter reads `dict[name]`. Returns `None` when
+    /// absent key); a required parameter reads `dict[name]` behind a membership
+    /// guard, so an absent key is CPython's call-time `TypeError` (missing
+    /// required argument), not the subscript's `KeyError`. Returns `None` when
     /// there is no runtime dict, so the caller falls through to the literal default
     /// (or the missing-argument error). Documented gaps (the static callee shape
     /// can't see a runtime dict's contents at compile time): an unexpected key in
@@ -1456,6 +1458,7 @@ impl<'a> FnLowerer<'a> {
         &mut self,
         kw_dict: Option<LocalId>,
         p: &ParamInfo,
+        fname: &str,
         span: Span,
     ) -> Option<Idx<HirExpr>> {
         let dvar = kw_dict?;
@@ -1469,10 +1472,43 @@ impl<'a> FnLowerer<'a> {
                     args: vec![dref, key, default],
                 }
             }
-            None => HirExprKind::ContainerExpr {
-                op: ContainerOp::DictGet,
-                args: vec![dref, key],
-            },
+            None => {
+                // `if name not in d: raise TypeError(...)`, then `d[name]`.
+                let guard_d = self.local_ref(dvar, span);
+                let guard_k = self.alloc(HirExprKind::StrLit(p.name), SemTy::Str, span);
+                let has = self.alloc(
+                    HirExprKind::ContainerExpr {
+                        op: ContainerOp::Contains,
+                        args: vec![guard_d, guard_k],
+                    },
+                    SemTy::Bool,
+                    span,
+                );
+                let fail = self.new_block();
+                let ok = self.new_block();
+                self.seal(HirTerminator::Branch {
+                    cond: has,
+                    then: ok,
+                    else_: fail,
+                });
+                self.switch(fail);
+                let msg = format!(
+                    "{fname}() missing 1 required argument: '{}'",
+                    self.interner.resolve(p.name)
+                );
+                let msg_id = self.intern(&msg);
+                let m = self.alloc(HirExprKind::StrLit(msg_id), SemTy::Str, span);
+                self.push_stmt(HirStmt::Raise(HirRaise::Builtin {
+                    tag: pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                    msg: Some(m),
+                }));
+                self.seal(HirTerminator::Unreachable);
+                self.switch(ok);
+                HirExprKind::ContainerExpr {
+                    op: ContainerOp::DictGet,
+                    args: vec![dref, key],
+                }
+            }
         };
         Some(self.alloc(node, SemTy::Dyn, span))
     }
@@ -1668,6 +1704,20 @@ impl<'a> FnLowerer<'a> {
         default: Idx<HirExpr>,
         span: Span,
     ) -> Idx<HirExpr> {
+        self.emit_spread_default_with(argv, n_local, i, |_| default, span)
+    }
+
+    /// [`Self::emit_spread_default`] whose fallback is BUILT inside the
+    /// out-of-bounds arm, so any statements it emits (e.g. the missing-keyword
+    /// guard of [`Self::bind_from_kw_dict`]) run only when `argv[i]` is absent.
+    pub(super) fn emit_spread_default_with(
+        &mut self,
+        argv: LocalId,
+        n_local: LocalId,
+        i: usize,
+        default: impl FnOnce(&mut Self) -> Idx<HirExpr>,
+        span: Span,
+    ) -> Idx<HirExpr> {
         let res = self.fresh_local(SemTy::Dyn);
         let i_lit = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
         let n_ref = self.local_ref(n_local, span);
@@ -1702,6 +1752,7 @@ impl<'a> FnLowerer<'a> {
         });
         self.seal(HirTerminator::Jump(join));
         self.switch(else_b);
+        let default = default(self);
         self.push_stmt(HirStmt::Assign {
             target: res,
             value: default,
@@ -1881,10 +1932,16 @@ impl<'a> FnLowerer<'a> {
                     default: p.default.clone(),
                     pos_only: false,
                 };
-                let kw_or_default = self
-                    .bind_from_kw_dict(kwargs_dict, &pinfo, span)
-                    .expect("kw_bindable materializes the keyword dict");
-                self.emit_spread_default(args_t, n_local, i, kw_or_default, span)
+                self.emit_spread_default_with(
+                    args_t,
+                    n_local,
+                    i,
+                    |this| {
+                        this.bind_from_kw_dict(kwargs_dict, &pinfo, fname, span)
+                            .expect("kw_bindable materializes the keyword dict")
+                    },
+                    span,
+                )
             } else if i < req {
                 let base = self.local_ref(args_t, span);
                 let idx = self.alloc(HirExprKind::IntLit(i as i64), SemTy::Int, span);
@@ -1911,7 +1968,7 @@ impl<'a> FnLowerer<'a> {
                 pos_only: false,
             };
             let raw = self
-                .bind_from_kw_dict(kwargs_dict, &pinfo, span)
+                .bind_from_kw_dict(kwargs_dict, &pinfo, fname, span)
                 .expect("kwargs_dict is Some when keyword-only params are present");
             out.push(self.bind_arg_checked(raw, &p.ty, span));
         }

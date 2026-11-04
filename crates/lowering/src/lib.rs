@@ -4937,13 +4937,26 @@ impl<'a> FnLower<'a> {
             // Str needs the codepoint-aware getter (handles negative indices); the
             // generic `rt_any_getitem` only does byte indexing.
             SubKind::Str => ContainerOp::StrGet,
-            // Unknown base: a statically-`str` key means a MAPPING subscript
-            // (`json.loads(...)["k"]`) — route to the Tagged-key dict getter, since
-            // `rt_any_getitem` takes an i64 INDEX and would coerce the string key to
-            // garbage (the json-subscript-returns-`None` bug). An int / unknown key
-            // stays on the tag-dispatched sequence getter.
-            SubKind::Generic if matches!(self.func.exprs[index].ty, SemTy::Str) => {
-                ContainerOp::DictGet
+            // Unknown base with a key that is not statically an int (`str`,
+            // `Dyn`, …): the tag-dispatched, TAGGED-key `rt_obj_getitem` — a
+            // mapping is looked up by its real key with its own missing-key
+            // rule (dict → KeyError, defaultdict → factory, Counter → 0), a
+            // sequence takes an int key. `rt_any_getitem`'s i64 INDEX ABI would
+            // coerce a str key to garbage (the json-subscript-returns-`None` /
+            // `o["k"]`-as-number bugs).
+            SubKind::Generic
+                if !matches!(self.func.exprs[index].ty, SemTy::Int | SemTy::Bool) =>
+            {
+                use pyaot_core_defs::runtime_func_def as rf;
+                let recv = self.coerce(bl, br, Repr::Tagged)?;
+                let key = self.coerce(il, ir, Repr::Tagged)?;
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(dst),
+                    def: &rf::RT_OBJ_GETITEM,
+                    args: vec![Operand::Local(recv), Operand::Local(key)],
+                });
+                return self.normalize_container_result(dst, Repr::Tagged);
             }
             SubKind::Generic => ContainerOp::AnyGetItem,
         };

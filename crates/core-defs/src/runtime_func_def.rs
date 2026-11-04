@@ -637,8 +637,15 @@ pub static RT_SET_SYMMETRIC_DIFFERENCE_UPDATE: RuntimeFuncDef =
 pub static RT_MAKE_DICT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_make_dict");
 /// rt_dict_set(dict: *mut Obj, key: i64, value: i64) -> void
 pub static RT_DICT_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_dict_set", &[PI64, PI64, PI64]);
-/// rt_dict_get(dict: *mut Obj, key: i64) -> *mut Obj
+/// rt_dict_get(dict: *mut Obj, key: Value) -> Value — the `d[key]` subscript
+/// read; raises `KeyError(key)` on a missing key (contract: it used to return
+/// null, read back as `None`).
 pub static RT_DICT_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_dict_get");
+/// rt_obj_getitem(obj: Value, key: Value) -> Value — `obj[key]` on a
+/// statically-unknown base with a non-`int` key: tag-dispatched, the key stays
+/// a tagged Value (dict family by key with each flavor's missing-key rule;
+/// sequences take an int key).
+pub static RT_OBJ_GETITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_obj_getitem");
 /// rt_dict_len(dict: *mut Obj) -> i64
 pub static RT_DICT_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_dict_len");
 /// rt_dict_contains(dict: *mut Obj, key: i64) -> i8

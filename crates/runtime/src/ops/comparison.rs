@@ -518,11 +518,17 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 let elem = *(*tuple).data.as_ptr().add(actual_idx as usize);
                 elem.0 as *mut Obj
             }
+            // Mapping subscript with an int key (re-boxed): each dict flavor
+            // keeps its own missing-key semantics — KeyError for a plain dict,
+            // factory insertion for a defaultdict, `0` for a Counter.
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
-                // Dict subscript needs a boxed key
                 let boxed_key =
                     pyaot_core_defs::Value::from_int(index).0 as *mut crate::object::Obj;
-                crate::dict::rt_dict_get(obj, boxed_key)
+                match (*obj).type_tag() {
+                    TypeTagKind::DefaultDict => crate::defaultdict::rt_defaultdict_get(obj, boxed_key),
+                    TypeTagKind::Counter => crate::counter::rt_counter_get(obj, boxed_key),
+                    _ => crate::dict::rt_dict_getitem(obj, boxed_key),
+                }
             }
             TypeTagKind::Str => {
                 // String subscript returns single-char string
@@ -549,6 +555,57 @@ pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
         }
     }
     Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
+}
+
+/// `obj[key]` where BOTH the base and the key are statically unknown (or the
+/// key is not an `int`): the key rides as a tagged `Value`, so a mapping is
+/// looked up by its real key — a str key is never coerced into a raw index the
+/// way `rt_any_getitem`'s `i64` ABI would. Each mapping flavor keeps its
+/// missing-key semantics (dict → `KeyError(key)`, defaultdict → factory
+/// insertion, Counter → `0`); a sequence base takes an `int`/`bool` key and is
+/// delegated to `rt_any_getitem`; any other key on a sequence is CPython's
+/// `TypeError`. Runtime contract addition (`ContainerOp::AnyGetItem` on a
+/// non-`int` key).
+pub fn rt_obj_getitem(obj: Value, key: Value) -> Value {
+    if !obj.is_ptr() {
+        unsafe {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "'{}' object is not subscriptable",
+                immediate_type_name(obj)
+            );
+        }
+    }
+    let base = obj.unwrap_ptr::<Obj>();
+    let k = key.0 as *mut Obj;
+    // SAFETY: a tagged pointer is a live heap object.
+    let tag = unsafe { (*base).type_tag() };
+    let out = match tag {
+        TypeTagKind::Dict => crate::dict::rt_dict_getitem(base, k),
+        TypeTagKind::DefaultDict => crate::defaultdict::rt_defaultdict_get(base, k),
+        TypeTagKind::Counter => crate::counter::rt_counter_get(base, k),
+        _ => {
+            let index = if key.is_int() {
+                key.unwrap_int()
+            } else if key.is_bool() {
+                key.unwrap_bool() as i64
+            } else {
+                unsafe {
+                    raise_exc!(
+                        ExceptionType::TypeError,
+                        "{} indices must be integers or slices",
+                        type_name(tag)
+                    );
+                }
+            };
+            rt_any_getitem(base, index)
+        }
+    };
+    Value::from_ptr(out)
+}
+#[export_name = "rt_obj_getitem"]
+pub extern "C" fn rt_obj_getitem_abi(obj: Value, key: Value) -> Value {
+    rt_obj_getitem(obj, key)
 }
 
 /// Runtime-dispatched `del container[index]` for a statically-unknown base.

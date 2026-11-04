@@ -15,9 +15,7 @@
 use crate::boxing::rt_box_float;
 #[allow(unused_imports)]
 use crate::debug_assert_dict_family;
-use crate::dict::{
-    real_entries_capacity, rt_dict_get, rt_dict_set, CAPACITY_MASK, FACTORY_TAG_SHIFT,
-};
+use crate::dict::{real_entries_capacity, rt_dict_set, CAPACITY_MASK, FACTORY_TAG_SHIFT};
 use crate::object::{DictObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 
@@ -90,7 +88,7 @@ pub fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
 
         if factory_tag == FACTORY_NONE {
             // No factory — raise KeyError (same as regular dict)
-            return rt_dict_get(dd, key);
+            return crate::dict::rt_dict_getitem(dd, key);
         }
 
         let default_value = create_default_value(factory_tag);

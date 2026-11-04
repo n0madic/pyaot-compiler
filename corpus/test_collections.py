@@ -2392,4 +2392,68 @@ def _fold_bytearray():
 
 _fold_bytearray()
 
+# ----- dict subscript on a missing key raises KeyError (typed and dynamic) -----
+def _kerr_dyn(i: int) -> object:
+    if i == 0:
+        return {"k": 1, 5: "five"}
+    if i == 1:
+        return Counter("aab")
+    if i == 2:
+        return defaultdict(int)
+    return [10, 20]
+
+
+def _fold_dict_keyerror():
+    d: dict[str, int] = {"a": 1}
+    assert d["a"] == 1
+    try:
+        d["missing"]
+        assert False, "typed dict miss must raise"
+    except KeyError as e:
+        print("KeyError", e)
+    di: dict[int, str] = {1: "x"}
+    try:
+        di[2]
+        assert False
+    except KeyError as e:
+        print("KeyError", e)
+    o = _kerr_dyn(0)
+    assert o["k"] == 1 and o[5] == "five"
+    for key in ["zz", 7]:
+        try:
+            o[key]
+            assert False, "dynamic dict miss must raise"
+        except KeyError as e:
+            print("KeyError", e)
+    c = _kerr_dyn(1)
+    assert c["a"] == 2 and c["zz"] == 0, "a dynamic Counter keeps miss -> 0"
+    dd = _kerr_dyn(2)
+    assert dd["new"] == 0, "a dynamic defaultdict keeps factory insertion"
+    lst = _kerr_dyn(3)
+    assert lst[1] == 20
+    try:
+        lst["x"]
+        assert False, "a str index on a list is a TypeError"
+    except TypeError:
+        pass
+
+
+def _kw_required(a, b=2):
+    return a + b
+
+
+def _fold_kwargs_missing_required():
+    good: dict[str, int] = {"a": 1}
+    assert _kw_required(**good) == 3
+    bad: dict[str, int] = {"b": 5}
+    try:
+        _kw_required(**bad)
+        assert False, "a required param missing from **dict is a TypeError"
+    except TypeError:
+        pass
+
+
+_fold_dict_keyerror()
+_fold_kwargs_missing_required()
+
 print("All collections tests passed!")

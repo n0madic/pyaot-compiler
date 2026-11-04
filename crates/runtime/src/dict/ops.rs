@@ -126,8 +126,10 @@ pub extern "C" fn rt_dict_set_abi(dict: Value, key: Value, value: Value) {
     rt_dict_set(dict.unwrap_ptr(), key.0 as *mut Obj, value.0 as *mut Obj)
 }
 
-/// Get a value from the dictionary by key
-/// Returns: pointer to value, or null if key not found
+/// Get a value from the dictionary by key — the NON-raising probe.
+/// Returns: pointer to value, or null if key not found. Internal callers
+/// (`.get()`, `setdefault`, method dispatch) rely on the null; the Python
+/// subscript `d[key]` goes through [`rt_dict_getitem`] instead.
 pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
     if dict.is_null() || key.is_null() {
         return std::ptr::null_mut();
@@ -150,13 +152,41 @@ pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
         }
     }
 }
+/// Raise CPython's `KeyError(key)`: the message is `repr(key)`, which is what
+/// `str(KeyError(key))` prints. Shared by every raising dict read / delete.
+pub(crate) fn raise_key_error(key: *mut Obj) -> ! {
+    use crate::exceptions::ExceptionType;
+    let repr = crate::builtins::rt_builtin_repr(key);
+    // SAFETY: `rt_builtin_repr` returns a live StrObj; `raise_exc!` diverges
+    // via the runtime's exception unwinder.
+    unsafe {
+        let msg = crate::utils::str_obj_to_rust_string(repr);
+        raise_exc!(ExceptionType::KeyError, "{}", msg)
+    }
+}
+
+/// `d[key]` — the subscript read: the stored value, or `KeyError(key)` when
+/// the key is absent (CPython). A stored value is never null (`rt_dict_set`
+/// rejects it), so a null probe result is exactly "missing".
+pub fn rt_dict_getitem(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
+    let v = rt_dict_get(dict, key);
+    if v.is_null() {
+        raise_key_error(key);
+    }
+    v
+}
+
+/// Compiled `ContainerOp::DictGet` — the `d[key]` subscript read, so it
+/// RAISES `KeyError` on a missing key (runtime contract: it used to return
+/// null, which compiled code then read as `None`). Non-raising lookups
+/// (`.get()`) use `rt_dict_get_default`.
 #[export_name = "rt_dict_get"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_get_abi(dict: Value, key: Value) -> Value {
     // `key` is the lookup key, possibly a tagged immediate (int/bool/None);
     // pass raw bits so the tag survives instead of tripping `unwrap_ptr`'s debug
     // `is_ptr` assertion. The internal hash/compare handles tagged keys.
-    Value::from_ptr(rt_dict_get(dict.unwrap_ptr(), key.0 as *mut Obj))
+    Value::from_ptr(rt_dict_getitem(dict.unwrap_ptr(), key.0 as *mut Obj))
 }
 
 /// Check if key exists in dictionary
@@ -269,7 +299,6 @@ pub extern "C" fn rt_dict_pop_abi(dict: Value, key: Value) -> Value {
 /// (matching CPython's `del`). Reuses the `rt_dict_pop` probe; discards the
 /// returned value.
 pub fn rt_dict_delete(dict: *mut Obj, key: *mut Obj) {
-    use crate::exceptions::ExceptionType;
     if dict.is_null() || key.is_null() {
         return;
     }
@@ -305,9 +334,7 @@ pub fn rt_dict_delete(dict: *mut Obj, key: *mut Obj) {
             }
         }
         // Missing key → KeyError with the key's repr (CPython prints `repr(key)`).
-        let repr = crate::builtins::rt_builtin_repr(key);
-        let msg = crate::utils::str_obj_to_rust_string(repr);
-        raise_exc!(ExceptionType::KeyError, "{}", msg);
+        raise_key_error(key);
     }
 }
 #[export_name = "rt_dict_delete"]
