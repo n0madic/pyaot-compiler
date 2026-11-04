@@ -11,11 +11,13 @@
 pub mod ids;
 pub mod interner;
 pub mod line_map;
+pub mod source_map;
 pub mod span;
 
 pub use ids::*;
 pub use interner::*;
 pub use line_map::LineMap;
+pub use source_map::{SourceFile, SourceMap};
 pub use span::*;
 
 /// FNV-1a hash for method name strings (used by Protocol dispatch).

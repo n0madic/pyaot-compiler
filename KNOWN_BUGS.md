@@ -234,10 +234,14 @@ Two root causes dominate:
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 
-- [ ] **H** `--run` executes bare name via `$PATH` (`cli/src/main.rs:356`);
-      signal exit reported as 1. ✓
-- [ ] **H** output path can overwrite source (no `.py`) / collide with `.o`;
-      `foo.o` deleted (`cli/src/main.rs:324`). ✓
+- [x] **H** `--run` executes bare name via `$PATH` (`cli/src/main.rs:356`);
+      signal exit reported as 1. ✓ Fixed: a relative output runs as `./…`;
+      a signal death exits `128 + signo` like a shell
+      (`cli/tests/output_paths.rs`, `main.rs` `path_tests`).
+- [x] **H** output path can overwrite source (no `.py`) / collide with `.o`;
+      `foo.o` deleted (`cli/src/main.rs:324`). ✓ Fixed: an output naming the
+      input is refused; the object is a unique temp file
+      (`cli/tests/output_paths.rs`).
 - [x] **H** lattice prune removes both mutually-subtyped members → `Never`
       (`dict`⇄`defaultdict`, `Iterator[Dyn]`) (`types/src/lattice.rs:314`). ✓
       Fixed: `defaultdict <: dict` only (not the reverse); `Iterator`
@@ -252,8 +256,12 @@ Two root causes dominate:
       `test_core_types.py` `_review_bool_int_identity`).
 - [x] **M** `SemTy::optional` builds non-canonical unions (`types/src/sem.rs:179`).
       Now built via `join` (flat, deduped, `Optional[Dyn] = Dyn`; unit test).
-- [ ] **M** diagnostics in imported modules rendered against entry file —
+- [x] **M** diagnostics in imported modules rendered against entry file —
       `Span` has no file id (`cli/src/main.rs:228`, `utils/src/span.rs`). ✓
+      Fixed with a program-wide `utils::SourceMap`: each module is parsed at
+      a disjoint base offset, so a bare `Span` identifies its file; the CLI
+      renders an error against that file (`cli/tests/import_diagnostics.rs`).
+      The CLI loader also reports imported modules by their real path.
 - [ ] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
       use `ensure_base_srcloc`). ✓
 - [ ] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)

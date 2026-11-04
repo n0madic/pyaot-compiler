@@ -373,6 +373,9 @@ pub(crate) struct ProgramLowerer<'a> {
     loaded: HashMap<String, ModuleExports>,
     loading: Vec<String>,
     init_emitted: HashSet<String>,
+    /// Global offset at which the next imported module's spans start (each
+    /// module gets a disjoint range, see [`pyaot_utils::SourceMap`]).
+    next_base: u32,
 }
 
 

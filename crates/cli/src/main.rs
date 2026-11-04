@@ -10,7 +10,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
@@ -21,7 +21,7 @@ use pyaot_codegen_cranelift::{CodegenOptions, OptLevel};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_frontend_python::ModuleSource;
 use pyaot_mir::MirProgram;
-use pyaot_utils::StringInterner;
+use pyaot_utils::{SourceFile, SourceMap, StringInterner};
 
 /// Resolves `import` targets against a list of search roots (Phase 8): a dotted
 /// module `a.b.c` is `root/a/b/c.py`, else the package `root/a/b/c/__init__.py`.
@@ -31,10 +31,16 @@ use pyaot_utils::StringInterner;
 /// wins.
 struct DirModuleSource {
     roots: Vec<PathBuf>,
+    /// Every imported module's source at its global span base (the entry
+    /// script is added by `main`), so a diagnostic is rendered against the
+    /// file it points into.
+    sources: SourceMap,
 }
 
-impl ModuleSource for DirModuleSource {
-    fn load(&mut self, path: &[String]) -> Option<(String, bool)> {
+impl DirModuleSource {
+    /// The file a dotted module path resolves to (first root wins), and
+    /// whether it is a package `__init__.py`.
+    fn resolve(&self, path: &[String]) -> Option<(PathBuf, bool)> {
         for root in &self.roots {
             let mut base = root.clone();
             for component in path {
@@ -42,16 +48,38 @@ impl ModuleSource for DirModuleSource {
             }
             let module_file = base.with_extension("py");
             if module_file.is_file() {
-                return std::fs::read_to_string(&module_file)
-                    .ok()
-                    .map(|s| (s, false));
+                return Some((module_file, false));
             }
             let init_file = base.join("__init__.py");
             if init_file.is_file() {
-                return std::fs::read_to_string(&init_file).ok().map(|s| (s, true));
+                return Some((init_file, true));
             }
         }
         None
+    }
+}
+
+impl ModuleSource for DirModuleSource {
+    fn load(&mut self, path: &[String]) -> Option<(String, bool)> {
+        let (file, is_package) = self.resolve(path)?;
+        std::fs::read_to_string(&file).ok().map(|s| (s, is_package))
+    }
+
+    /// The real resolved path, for diagnostics and traceback `File "…"` lines.
+    fn display_path(&self, path: &[String], is_package: bool) -> String {
+        match self.resolve(path) {
+            Some((file, _)) => file.display().to_string(),
+            None if is_package => format!("{}/__init__.py", path.join("/")),
+            None => format!("{}.py", path.join("/")),
+        }
+    }
+
+    fn module_loaded(&mut self, display: &str, base: u32, src: &str) {
+        self.sources.insert(SourceFile {
+            name: display.to_string(),
+            source: src.to_string(),
+            base,
+        });
     }
 }
 
@@ -224,13 +252,18 @@ fn main() {
         }
     };
 
-    if let Err(err) = compile(&cli, &source) {
-        eprint!("{}", err.format(&cli.input.display().to_string(), &source));
+    // Program-wide source map: the entry script at base 0, imported modules
+    // after it (registered by the loader as the frontend reaches them).
+    let input_name = cli.input.display().to_string();
+    let mut sources = SourceMap::new();
+    sources.add(input_name.clone(), source.clone());
+    if let Err(err) = compile(&cli, &source, &mut sources) {
+        eprint!("{}", err.format_in(&sources, &input_name, &source));
         std::process::exit(1);
     }
 }
 
-fn compile(cli: &Cli, source: &str) -> Result<()> {
+fn compile(cli: &Cli, source: &str, sources: &mut SourceMap) -> Result<()> {
     // `-v/--verbose`: announce + time each pipeline stage on stderr. A no-op
     // when verbose is off, so the `timer.step(...)` calls below stay
     // unconditional.
@@ -250,14 +283,23 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // Bundled / external `site-packages/` packages (e.g. `requests`) are added
     // last so user code and `--module-path` always win on a name clash.
     roots.extend(site_packages_roots());
-    let mut loader = DirModuleSource { roots };
+    let mut loader = DirModuleSource {
+        roots,
+        sources: SourceMap::new(),
+    };
     timer.step("Parsing");
-    let program = pyaot_frontend_python::parse_program(
+    let parsed = pyaot_frontend_python::parse_program(
         source,
         &cli.input.display().to_string(),
         &mut loader,
         &mut interner,
-    )?;
+    );
+    // Collect the imported modules' sources even when parsing failed — the
+    // error may point into one of them.
+    for file in loader.sources.files() {
+        sources.insert(file.clone());
+    }
+    let program = parsed?;
     let mut module = program.module;
     let namespaces = program.namespaces;
     timer.step("Resolving");
@@ -317,14 +359,11 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     }
 
     // ── codegen → object → link. ──
-    // Default the output to the input path with its extension stripped
-    // (`foo.py` → `foo`) when `-o` is omitted.
-    let output = cli.output.clone().unwrap_or_else(|| {
-        let mut path = cli.input.clone();
-        path.set_extension("");
-        path
-    });
-    let object_path = output.with_extension("o");
+    let output = output_path(cli)?;
+    // The intermediate object goes to a private, uniquely named temp file —
+    // never `output.with_extension("o")`, which could be the user's own `foo.o`
+    // (deleted after linking) or, for an input named `foo.o`, the input itself.
+    let object_path = temp_object_path(&output);
     let codegen_opts = CodegenOptions {
         opt_level: match opt_level {
             OptLevelArg::None => OptLevel::None,
@@ -343,7 +382,12 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // faster per compile — matters most for the `--run` edit-compile loop).
     let linker = pyaot_linker::Linker::with_debug(runtime_lib, cli.debug)
         .minimize_size(opt_level == OptLevelArg::SpeedAndSize);
-    linker.link(&object_path, &output, &[])?;
+    let linked = linker.link(&object_path, &output, &[]);
+    if linked.is_err() {
+        // The linker removes the object only on success; don't leak the temp.
+        let _ = std::fs::remove_file(&object_path);
+    }
+    linked?;
     timer.finish();
 
     // ── --run: execute the freshly linked binary, propagating its exit code. ──
@@ -351,7 +395,9 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
         if cli.verbose {
             eprintln!("pyaot: Running: {}", output.display());
         }
-        let status = std::process::Command::new(&output)
+        // Run by an explicit path: a bare relative name (`-o foo`) handed to
+        // `Command::new` would be searched on `$PATH`, not in the cwd.
+        let status = std::process::Command::new(runnable_path(&output))
             .status()
             .map_err(|e| {
                 CompilerError::link_error(format!(
@@ -359,10 +405,79 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
                     output.display()
                 ))
             })?;
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(exit_code_of(status));
     }
 
     Ok(())
+}
+
+/// Resolve the output executable path: `-o` if given, else the input path with
+/// its extension stripped (`foo.py` → `foo`). Refuses an output that would
+/// overwrite the input source (an input without a `.py` extension, or an
+/// explicit `-o` naming the input).
+fn output_path(cli: &Cli) -> Result<PathBuf> {
+    let output = cli.output.clone().unwrap_or_else(|| {
+        let mut path = cli.input.clone();
+        path.set_extension("");
+        path
+    });
+    if same_file(&output, &cli.input) {
+        return Err(CompilerError::link_error(format!(
+            "output path {} would overwrite the input source; pass a different `-o`",
+            output.display()
+        )));
+    }
+    Ok(output)
+}
+
+/// Whether `a` and `b` name the same file: canonical paths when both exist
+/// (catches `./foo` vs `foo` and symlinks), else the lexical absolute paths.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => std::path::absolute(a).ok() == std::path::absolute(b).ok(),
+    }
+}
+
+/// A unique intermediate object path in the system temp directory, named after
+/// the output stem plus the process id and a timestamp, so it never aliases a
+/// user file and concurrent compiles never collide.
+fn temp_object_path(output: &Path) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pyaot");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("pyaot-{stem}-{}-{nanos}.o", std::process::id()))
+}
+
+/// The path `--run` executes: a relative path is anchored at the cwd
+/// (`foo` → `./foo`) so `Command::new` never searches `$PATH` for it.
+fn runnable_path(output: &Path) -> PathBuf {
+    if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        Path::new(".").join(output)
+    }
+}
+
+/// The exit code `--run` propagates, shell-style: the child's own code, or
+/// `128 + signo` when a signal killed it (e.g. 139 for SIGSEGV).
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signo) = status.signal() {
+            return 128 + signo;
+        }
+    }
+    1
 }
 
 /// The mandatory, release-safe pre-codegen representation gate.
@@ -429,6 +544,51 @@ fn locate_runtime_lib(cli: &Cli) -> Result<PathBuf> {
              set PYAOT_RUNTIME_LIB.",
             candidate.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::{exit_code_of, runnable_path, same_file, temp_object_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    #[cfg(unix)]
+    fn signal_exit_is_reported_shell_style() {
+        use std::os::unix::process::ExitStatusExt;
+        // Raw wait statuses: a normal exit carries the code in bits 8..16, a
+        // signal death the signal number in the low 7 bits.
+        assert_eq!(exit_code_of(std::process::ExitStatus::from_raw(3 << 8)), 3);
+        assert_eq!(
+            exit_code_of(std::process::ExitStatus::from_raw(11)),
+            128 + 11
+        );
+        assert_eq!(exit_code_of(std::process::ExitStatus::from_raw(9)), 128 + 9);
+    }
+
+    #[test]
+    fn run_path_never_searches_path() {
+        assert_eq!(runnable_path(Path::new("foo")), PathBuf::from("./foo"));
+        assert_eq!(
+            runnable_path(Path::new("out/foo")),
+            PathBuf::from("./out/foo")
+        );
+        let abs = std::env::temp_dir().join("foo");
+        assert_eq!(runnable_path(&abs), abs);
+    }
+
+    #[test]
+    fn output_aliasing_input_is_detected() {
+        assert!(same_file(Path::new("foo"), Path::new("./foo")));
+        assert!(!same_file(Path::new("foo"), Path::new("foo.py")));
+    }
+
+    #[test]
+    fn object_file_is_private_temp() {
+        let obj = temp_object_path(Path::new("dir/foo"));
+        assert!(obj.starts_with(std::env::temp_dir()));
+        assert_ne!(obj, PathBuf::from("dir/foo.o"));
+        assert_eq!(obj.extension().and_then(|e| e.to_str()), Some("o"));
     }
 }
 
