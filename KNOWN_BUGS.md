@@ -453,10 +453,16 @@ Regressions: `corpus/test_eval_order.py`.
       emits `BigIntLit` for such literals, so this is a safety net). Both
       const materializers share `tagged_immediate`/`heap_const_ctor`. Unit
       tests in codegen.
-- [ ] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),
+- [x] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),
       `RT_BYTES_STARTS/ENDS_WITH` declared i8 vs i64, collections/functools
       sentinel descriptors (`core-defs/src/runtime_func_def.rs`,
-      `stdlib-defs collections.rs`, `functools.rs`).
+      `stdlib-defs collections.rs`, `functools.rs`). Fixed: the 272 RT_*
+      descriptors with no reference anywhere in the workspace are removed
+      (incl. all 11 naming missing symbols); `rt_bytes_startswith`/`endswith`
+      now return `i8` (contract change, matching the descriptor and
+      `rt_str_startswith`); the recognition-only `reduce`/`Counter`/`deque`
+      defs carry the never-emitted `INTERCEPTED_BY_FRONTEND` marker instead
+      of invented signatures, and lowering rejects a call that reaches one.
 - [x] Mislabelled live descriptors caught by the new `CallRuntime` dst check:
       stdlib object getters returning a tagged `Value` declared
       `unary_to_i64` (Raw); `RT_STR_FIND/RFIND/INDEX/RINDEX` declared

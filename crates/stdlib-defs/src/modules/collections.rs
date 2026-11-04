@@ -4,7 +4,7 @@
 
 use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
-    StdlibModuleDef, TypeSpec,
+    StdlibModuleDef, TypeSpec, INTERCEPTED_BY_FRONTEND,
 };
 #[allow(unused_imports)]
 use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
@@ -247,7 +247,8 @@ pub static COUNTER_ITEMS: StdlibMethodDef = StdlibMethodDef {
 /// Counter(iterable?) -- registered as function for import recognition only.
 /// Its sentinel `runtime_name` ("rt_make_counter", which has no runtime symbol)
 /// is what the frontend matches on to intercept construction; the actual call is
-/// routed to `COUNTER_EMPTY` / `COUNTER_FROM_ITER` by arity.
+/// routed to `COUNTER_EMPTY` / `COUNTER_FROM_ITER` by arity, so its `codegen`
+/// is the never-emitted [`INTERCEPTED_BY_FRONTEND`] marker.
 pub static COUNTER_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "Counter",
     runtime_name: "rt_make_counter",
@@ -256,7 +257,7 @@ pub static COUNTER_NEW: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_counter", &[P_I64], Some(R_I64), false),
+    codegen: INTERCEPTED_BY_FRONTEND,
 };
 
 /// `Counter()` — empty construction. The frontend routes the 0-arg form here;
@@ -477,7 +478,7 @@ pub static DEQUE_NEW: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_deque", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: INTERCEPTED_BY_FRONTEND,
 };
 
 /// `deque()` — empty, unlimited (`maxlen=None`). The 0-arg construction target

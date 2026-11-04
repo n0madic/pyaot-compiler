@@ -2485,6 +2485,16 @@ impl<'a> FnLower<'a> {
         provided: u32,
     ) -> Result<(LocalId, Repr)> {
         use pyaot_hir::RuntimeCallTarget;
+        if let RuntimeCallTarget::Func(f) = target {
+            if f.is_intercepted() {
+                // A recognition-only descriptor (`reduce`/`Counter`/`deque`)
+                // must have been rerouted by the frontend; it has no ABI.
+                return Err(CompilerError::codegen_error(
+                    format!("internal: intercepted stdlib function `{}` reached lowering", f.name),
+                    None,
+                ));
+            }
+        }
         let def = target.codegen();
         // `itertools.islice` needs the iterable `iter()`-wrapped (the runtime
         // advances it with the iterator protocol) and start/stop/step resolved
