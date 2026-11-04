@@ -2072,4 +2072,35 @@ _percent_format()
 _format_spec_edges()
 
 
+# ===== SECTION: repr quoting and Unicode whitespace =====
+
+def _repr_quoting_and_whitespace() -> None:
+    assert repr("it's") == '"it\'s"'
+    assert repr('say "hi"') == "'say \"hi\"'"
+    assert repr("both ' and \"") == "'both \\' and \"'"
+    assert str(["it's", 'a"b']) == "[\"it's\", 'a\"b']"
+    assert repr(b"it's") == 'b"it\'s"'
+    assert repr(b'a"b') == "b'a\"b'"
+    assert repr(b"\n\x00\x7f") == "b'\\n\\x00\\x7f'"
+    assert ascii("it's é") == '"it\'s \\xe9"'
+    assert ascii("\x01") == "'\\x01'"
+    assert str({"k'": "v"}) == "{\"k'\": 'v'}"
+    assert repr(" x ") == "'\\xa0x\\u2003'"
+    s = "  hello \x0b\x0c\x1c "
+    assert s.strip() == "hello"
+    assert s.lstrip() == "hello \x0b\x0c\x1c "
+    assert s.rstrip() == "  hello"
+    assert "a b\x0bc d".split() == ["a", "b", "c", "d"]
+    assert " a  b ".split(None, 1) == ["a", "b "]
+    assert "a b  c ".rsplit(None, 1) == ["a b", "c"]
+    assert b" a\x0bb\x0c ".split() == [b"a", b"b"]
+    assert b"\x0b ab \x0c".strip() == b"ab"
+    assert "éa".lstrip("é") == "a"
+    assert "aé".rstrip("é") == "a"
+    assert "èa".lstrip("é") == "èa"
+
+
+_repr_quoting_and_whitespace()
+
+
 print("All string tests passed!")

@@ -140,9 +140,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
             let bytes = std::slice::from_raw_parts(data, len);
             if let Ok(text) = std::str::from_utf8(bytes) {
                 let mut s = String::with_capacity(len + 2);
-                s.push('\'');
-                crate::conversions::repr_escape_into(&mut s, text);
-                s.push('\'');
+                crate::conversions::repr_str_into(&mut s, text);
                 rt_emit!("{}", s);
             }
         }

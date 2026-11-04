@@ -210,17 +210,26 @@ Two root causes dominate:
       based float floordiv/mod, exact int-vs-float compare/eq, OverflowError
       on int->float overflow. A statically typed Raw int-vs-float compare
       still converts in codegen. Corpus: test_core_types.py.
-- [ ] **M** str/bytes `repr` always single quotes (`conversions/repr.rs:19`,
+- [x] **M** str/bytes `repr` always single quotes (`conversions/repr.rs:19`,
       `print.rs:66`). ✓
-- [ ] **M** strip/split whitespace only ` \t\n\r` (`string/trim.rs:31`,
+      Fixed: one quote-choosing repr/ascii/bytes-repr helper
+      (conversions/repr.rs) used by every repr path; Zs/Zl/Zp separators
+      escape like CPython. Corpus: test_strings.py repr section.
+- [x] **M** strip/split whitespace only ` \t\n\r` (`string/trim.rs:31`,
       `slice_utils.rs:47`). ✓
+      Fixed: str strip/split use str.isspace (full Unicode), chars-strips are
+      per code point (no more split UTF-8); bytes use ASCII whitespace incl.
+      \x0b \x0c. Corpus: test_strings.py.
 - [x] **M** Dyn `str % x`, `[1]*3`, `tuple * int` raise TypeError
       (`ops/arithmetic.rs:400`, `:269`; `lowering:5780`). ✓
       Fixed: printf-style formatting (runtime percent_format.rs, also the
       static path, which had none) and gradual str/list/tuple/bytes repetition
       (new rt_tuple_repeat). Corpus: test_strings.py, test_core_types.py.
-- [ ] **H** json: key order sorted (no `preserve_order`), big ints truncated,
+- [x] **H** json: key order sorted (no `preserve_order`), big ints truncated,
       NaN, non-str keys (`runtime/Cargo.toml:35`, `json.rs:137`). ✓
+      Fixed: in-tree encoder/decoder replaces serde_json (dependency dropped):
+      insertion order, exact big ints, NaN/Infinity, converted non-str keys,
+      CPython error messages. Corpus: test_stdlib_json.py.
 - [ ] **M** `random.sample` algorithm differs from CPython; BigInt seed
       (`random.rs:465`). ✓
 - [ ] **M** `isinstance(x, dict)` false for defaultdict/Counter

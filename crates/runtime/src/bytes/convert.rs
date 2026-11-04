@@ -24,7 +24,7 @@ pub fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
         let mut hex_chars = Vec::new();
         for i in 0..str_len {
             let c = *str_data.add(i);
-            if c != b' ' && c != b'\t' && c != b'\n' && c != b'\r' {
+            if !crate::slice_utils::is_bytes_space(c) {
                 hex_chars.push(c);
             }
         }

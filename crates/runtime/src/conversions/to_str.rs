@@ -317,11 +317,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             let data = (*str_obj).data.as_ptr();
             let bytes = std::slice::from_raw_parts(data, len);
             let mut s = String::with_capacity(len + 2);
-            s.push('\'');
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                super::repr::repr_escape_into(&mut s, text);
-            }
-            s.push('\'');
+            super::repr::repr_str_into(&mut s, &String::from_utf8_lossy(bytes));
             s
         }
         TypeTagKind::ByteArray => crate::bytearray::bytearray_repr_string(obj),
@@ -330,16 +326,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             let len = (*src).len;
             let data = (*src).data.as_ptr();
             let mut s = String::with_capacity(len + 3);
-            s.push_str("b'");
-            for i in 0..len {
-                let b = *data.add(i);
-                if (0x20..0x7f).contains(&b) && b != b'\'' && b != b'\\' {
-                    s.push(b as char);
-                } else {
-                    s.push_str(&format!("\\x{:02x}", b));
-                }
-            }
-            s.push('\'');
+            super::repr::bytes_repr_into(&mut s, std::slice::from_raw_parts(data, len));
             s
         }
         TypeTagKind::None => "None".to_string(),
@@ -556,11 +543,7 @@ pub(super) unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let len = (*str_obj).len;
             let data = (*str_obj).data.as_ptr();
             let bytes = std::slice::from_raw_parts(data, len);
-            s.push('\'');
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                super::repr::repr_escape_into(s, text);
-            }
-            s.push('\'');
+            super::repr::repr_str_into(s, &String::from_utf8_lossy(bytes));
         }
         TypeTagKind::None => s.push_str("None"),
         TypeTagKind::Instance => {

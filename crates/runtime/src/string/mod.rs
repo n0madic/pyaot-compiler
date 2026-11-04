@@ -12,6 +12,7 @@ mod core;
 pub mod interning;
 mod modify;
 mod predicates;
+pub(crate) use predicates::is_py_space;
 mod search;
 mod unicode_char_table;
 pub mod slice;

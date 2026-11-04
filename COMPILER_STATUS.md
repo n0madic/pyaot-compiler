@@ -260,7 +260,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
 | `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |
-| `json` | ✅ | Object types, `ensure_ascii` (gated `stdlib-json`) |
+| `json` | ✅ | `dumps`/`loads`/`dump`/`load`, CPython-exact output with default options: insertion order, big ints, `NaN`/`Infinity`, int/float/bool/None keys, `ensure_ascii`, `JSONDecodeError` messages (raised as `ValueError`). In-tree codec (no external crate). No `indent`/`sort_keys`/`separators`/`default` kwargs |
 | `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath`; constants `sep`/`linesep`/`pathsep`/`curdir`/`pardir`/`extsep`/`devnull` |
 | `subprocess` | ✅ | |
 | `itertools` | ✅ | |

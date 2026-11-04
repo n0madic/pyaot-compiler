@@ -33,31 +33,7 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
             let bytes = std::slice::from_raw_parts(data, len);
 
             let mut s = String::with_capacity(len + 2);
-            s.push('\'');
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                for c in text.chars() {
-                    match c {
-                        '\n' => s.push_str("\\n"),
-                        '\r' => s.push_str("\\r"),
-                        '\t' => s.push_str("\\t"),
-                        '\\' => s.push_str("\\\\"),
-                        '\'' => s.push_str("\\'"),
-                        _ => {
-                            let cp = c as u32;
-                            if cp < 128 {
-                                s.push(c);
-                            } else if cp <= 0xFF {
-                                s.push_str(&format!("\\x{:02x}", cp));
-                            } else if cp <= 0xFFFF {
-                                s.push_str(&format!("\\u{:04x}", cp));
-                            } else {
-                                s.push_str(&format!("\\U{:08x}", cp));
-                            }
-                        }
-                    }
-                }
-            }
-            s.push('\'');
+            super::repr::ascii_str_into(&mut s, &String::from_utf8_lossy(bytes));
             s
         }
         TypeTagKind::List => {
@@ -153,16 +129,7 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
             let len = (*src).len;
             let data = (*src).data.as_ptr();
             let mut s = String::with_capacity(len + 3);
-            s.push_str("b'");
-            for i in 0..len {
-                let b = *data.add(i);
-                if (0x20..0x7f).contains(&b) && b != b'\'' && b != b'\\' {
-                    s.push(b as char);
-                } else {
-                    s.push_str(&format!("\\x{:02x}", b));
-                }
-            }
-            s.push('\'');
+            super::repr::bytes_repr_into(&mut s, std::slice::from_raw_parts(data, len));
             s
         }
         // For non-string primitive types, delegate to repr (they don't contain non-ASCII)
