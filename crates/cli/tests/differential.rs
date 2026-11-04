@@ -171,6 +171,11 @@ fn phase_corpus_matches_cpython() {
         entries.extend_from_slice(NET_TESTS);
     }
 
+    // The oracle interpreter. The corpus targets CPython 3.14 semantics (PEP 649
+    // deferred annotations), so `PYAOT_PYTHON` lets a host whose `python3` is
+    // older point the gate at a 3.14 interpreter.
+    let python = std::env::var("PYAOT_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
     for entry in &entries {
         let source = corpus_dir.join(entry);
         assert!(
@@ -200,6 +205,7 @@ fn phase_corpus_matches_cpython() {
 
         // ── Run the compiled executable. ──
         let compiled = Command::new(&exe)
+            .env("PYTHONCOERCECLOCALE", "0") // same env as the oracle, see below
             .output()
             .unwrap_or_else(|e| panic!("failed to run compiled {}: {e}", exe.display()));
         assert!(
@@ -211,10 +217,15 @@ fn phase_corpus_matches_cpython() {
         );
 
         // ── Run the CPython oracle live. ──
-        let oracle = Command::new("python3")
+        // PYTHONCOERCECLOCALE=0: under a C/POSIX locale CPython (PEP 538)
+        // injects `LC_CTYPE` into its own `os.environ`, which the compiled
+        // binary (correctly) does not — an oracle artifact, not a divergence.
+        // Both processes get the variable so `os.environ` stays identical.
+        let oracle = Command::new(&python)
+            .env("PYTHONCOERCECLOCALE", "0")
             .arg(&source)
             .output()
-            .expect("failed to spawn python3");
+            .unwrap_or_else(|e| panic!("failed to spawn oracle `{python}`: {e}"));
         assert!(
             oracle.status.success(),
             "python3 failed on {}:\n{}",
