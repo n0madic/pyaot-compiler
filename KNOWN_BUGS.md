@@ -67,8 +67,8 @@ Two root causes dominate:
       `pop`/`popleft` leave stale pointers in vacated slots. ✓
 - [x] **H** `StringIO.truncate()` past end reads out of bounds
       (`runtime/src/stringio.rs:299`). ✓
-- [ ] **M** StringIO positions are byte offsets, not char offsets → invalid
-      UTF-8 strings (`stringio.rs:176`). ✓
+- [x] **M** StringIO positions are byte offsets, not char offsets → invalid
+      UTF-8 strings (`stringio.rs:176`). ✓ (buffer is now UCS-4 code points)
 - [x] **H** `random.choices`: negative `k`, short `weights`, int weights all
       segfault (`runtime/src/random.rs:333`). ✓
 - [x] **M** `rt_exc_instance_str` allocates under `EXCEPTION_STATE.borrow_mut`;
@@ -219,6 +219,11 @@ Two root causes dominate:
       unhandled receiver kind instead of raising TypeError / dispatching
       `__getitem__` (`runtime/src/ops/comparison.rs` `_ => null`). Deque arm
       added; bytes/bytearray/range/instances still fall through.
+- [ ] **H** `StringIO(...)` is typed `Dyn`, and a `Dyn` receiver's `.close()`
+      is lowered as generator close (`GenQuery Close`) by method name, so
+      `s.close()` on a StringIO is a silent no-op and a later `read()` does
+      not raise "I/O operation on closed file" (frontend method-name
+      dispatch; also check other generator-method names `send`/`throw`).
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 

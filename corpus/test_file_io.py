@@ -313,4 +313,33 @@ assert len(_rv_content) == 200000, "file.write must not drop the buffer tail"
 os.remove(_rv_big_path)
 print("file I/O code-review regression tests passed!")
 
+# ── review fix: StringIO positions count characters, not UTF-8 bytes ──
+_cp_sio = io.StringIO("h\u00e9llo w\u00f6rld")
+assert _cp_sio.read(2) == "h\u00e9" and _cp_sio.tell() == 2
+_cp_sio.seek(1)
+assert _cp_sio.read(3) == "\u00e9ll" and _cp_sio.tell() == 4
+assert _cp_sio.read() == "o w\u00f6rld" and _cp_sio.tell() == 11
+_cp_sio = io.StringIO()
+assert _cp_sio.write("\u00e9\u00e9") == 2 and _cp_sio.tell() == 2
+_cp_sio.seek(4)
+_cp_sio.write("x")
+assert _cp_sio.getvalue() == "\u00e9\u00e9\x00\x00x" and _cp_sio.tell() == 5
+_cp_sio = io.StringIO("ab\nc\u00e9\nd")
+assert _cp_sio.readline() == "ab\n" and _cp_sio.readline() == "c\u00e9\n"
+assert _cp_sio.tell() == 6 and _cp_sio.readline() == "d" and _cp_sio.readline() == ""
+_cp_sio = io.StringIO("h\u00e9llo")
+_cp_sio.seek(2)
+assert _cp_sio.truncate() == 2 and _cp_sio.getvalue() == "h\u00e9"
+_cp_sio = io.StringIO("\U0001F600 emoji \u4e2d\u6587")
+assert _cp_sio.read(1) == "\U0001F600" and _cp_sio.tell() == 1
+assert _cp_sio.read(7) == " emoji " and _cp_sio.tell() == 8
+_cp_sio.seek(0)
+_cp_sio.write("ABC")
+assert _cp_sio.getvalue() == "ABCmoji \u4e2d\u6587"
+_cp_sio = io.StringIO("ab")
+_cp_sio.seek(100000)
+assert _cp_sio.truncate() == 100000 and _cp_sio.getvalue() == "ab"
+assert _cp_sio.read() == "" and _cp_sio.tell() == 100000
+print("StringIO character-position tests passed!")
+
 print("All file I/O tests passed!")
