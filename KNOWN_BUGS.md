@@ -230,14 +230,25 @@ Two root causes dominate:
       Fixed: in-tree encoder/decoder replaces serde_json (dependency dropped):
       insertion order, exact big ints, NaN/Infinity, converted non-str keys,
       CPython error messages. Corpus: test_stdlib_json.py.
-- [ ] **M** `random.sample` algorithm differs from CPython; BigInt seed
+- [x] **M** `random.sample` algorithm differs from CPython; BigInt seed
       (`random.rs:465`). ✓
-- [ ] **M** `isinstance(x, dict)` false for defaultdict/Counter
+      Fixed: CPython's Random.sample (pool vs selected-set) over list/tuple;
+      seed() takes a tagged value (any-size int, float via hash, str via
+      sha512, None). Corpus: test_stdlib_random.py.
+- [x] **M** `isinstance(x, dict)` false for defaultdict/Counter
       (`runtime/src/instance.rs:312`). ✓
-- [ ] **M** sentinel defaults: `time.gmtime(-1.0)`, `randrange(step=0)`,
+      Fixed in rt_isinstance_builtin (defaultdict/Counter tags) and the static
+      fold (Counter). Corpus: test_collections.py.
+- [x] **M** sentinel defaults: `time.gmtime(-1.0)`, `randrange(step=0)`,
       `log(x, nan)` (`stdlib-defs time.rs:63`, `random.rs:99`, `math.rs:133`). ✓
-- [ ] **M** `OrderedDict(iterable)` declared as `(capacity: Int)`
+      Fixed: ctime/localtime/gmtime, randrange and math.log pass the user-
+      written arg count (pass_arg_count) instead of in-band sentinels;
+      timestamps floor like CPython. Corpus: test_stdlib_time.py,
+      test_stdlib_random.py, test_stdlib_math.py.
+- [x] **M** `OrderedDict(iterable)` declared as `(capacity: Int)`
       (`stdlib-defs collections.rs:21`). ✓
+      Fixed: OrderedDict([arg]) maps to new rt_dict_from_any (mapping copy or
+      iterable of pairs). Corpus: test_collections.py.
 - [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
 - [ ] **M** `re.sub` template escapes; `match.group(n)` out of range → None.

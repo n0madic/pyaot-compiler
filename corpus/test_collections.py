@@ -2620,4 +2620,33 @@ def _instance_hash_keys() -> None:
 _instance_hash_keys()
 
 
+# --- dict subclasses satisfy isinstance(x, dict); OrderedDict(iterable) ---
+def _coll_ident(x):
+    return x
+
+
+def _dict_subclasses_and_ordereddict() -> None:
+    dd = defaultdict(int)
+    assert isinstance(_coll_ident(dd), dict)
+    assert isinstance(_coll_ident(Counter()), dict)
+    assert isinstance(_coll_ident(OrderedDict()), dict)
+    assert isinstance(dd, dict)
+    assert isinstance(Counter("ab"), dict)
+    od = OrderedDict([("a", 1), ("b", 2)])
+    assert list(od.items()) == [("a", 1), ("b", 2)]
+    od2 = OrderedDict({"z": 26, "y": 25})
+    assert list(od2.keys()) == ["z", "y"]
+    assert list(OrderedDict(zip("ab", [1, 2])).values()) == [1, 2]
+    assert len(OrderedDict()) == 0
+    raised = ""
+    try:
+        OrderedDict([(1, 2, 3)])
+    except ValueError as e:
+        raised = str(e)
+    assert raised == "too many values to unpack (expected 2)"
+
+
+_dict_subclasses_and_ordereddict()
+
+
 print("All collections tests passed!")

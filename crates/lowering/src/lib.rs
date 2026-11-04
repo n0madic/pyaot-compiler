@@ -2044,7 +2044,11 @@ impl<'a> FnLower<'a> {
             // `isinstance(x, list)` regardless of the canonical Dyn-element target.
             // (A fixed `tuple[A, B]` and a variable `tuple[T, ...]` are both `tuple`.)
             _ if target.list_elem().is_some() => got.list_elem().is_some(),
-            _ if target.dict_kv().is_some() => got.dict_kv().is_some(),
+            // `Counter` is a dict subclass (defaultdict is covered by `dict_kv`).
+            _ if target.dict_kv().is_some() => {
+                got.dict_kv().is_some()
+                    || *got == SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter)
+            }
             _ if target.set_elem().is_some() => got.set_elem().is_some(),
             _ if target.tuple_elems().is_some() || target.tuple_var_elem().is_some() => {
                 got.tuple_elems().is_some() || got.tuple_var_elem().is_some()

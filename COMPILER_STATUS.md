@@ -256,7 +256,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Module | Status | Notes |
 |---|---|---|
 | `math` | ✅ | Core functions + constants |
-| `random` | ✅ | |
+| `random` | ✅ | MT19937 identical to CPython: `seed` (any-size int, float, str, None), `random`/`randint`/`randrange`/`choice`/`choices`/`shuffle`/`sample`/`uniform`/`gauss` produce CPython's sequences |
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
 | `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |

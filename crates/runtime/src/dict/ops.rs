@@ -767,3 +767,121 @@ pub fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_dict_from_pairs_abi(pairs: Value) -> Value {
     Value::from_ptr(rt_dict_from_pairs(pairs.unwrap_ptr()))
 }
+
+/// `dict(arg)`-style construction from ANY source (the `OrderedDict(arg)`
+/// constructor): null/None → empty; a dict-family mapping → a copy; else any
+/// iterable of key/value pairs (each a 2-element tuple or list), raising
+/// CPython's (OrderedDict) unpack errors for a malformed element.
+pub fn rt_dict_from_any(arg: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    use crate::object::{ListObj, TupleObj};
+    let v = Value(arg as u64);
+    unsafe {
+        if arg.is_null() || v.is_none() || (v.is_ptr() && (*arg).type_tag() == TypeTagKind::None) {
+            return rt_make_dict(8);
+        }
+        if v.is_ptr()
+            && matches!(
+                (*arg).type_tag(),
+                TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter
+            )
+        {
+            // A plain-dict copy (the source may be a defaultdict / Counter).
+            let mut roots: [*mut Obj; 2] = [rt_make_dict(8), arg];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+            let mut i = 0;
+            while i < (*(roots[1] as *mut DictObj)).entries_len {
+                let entry = (*(roots[1] as *mut DictObj)).entries.add(i);
+                if (*entry).key.0 != 0 {
+                    rt_dict_set(
+                        roots[0],
+                        (*entry).key.0 as *mut Obj,
+                        (*entry).value.0 as *mut Obj,
+                    );
+                }
+                i += 1;
+            }
+            gc_pop();
+            return roots[0];
+        }
+        let dict = rt_make_dict(8);
+        // roots: dict, iterator, current item
+        let mut roots: [*mut Obj; 3] = [dict, arg, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+        roots[1] = crate::iterator::rt_iter_value_dyn(roots[1]);
+        loop {
+            let item = crate::iterator::rt_iter_next_no_exc(roots[1]);
+            if item.is_null() {
+                break;
+            }
+            roots[2] = item;
+            let iv = Value(item as u64);
+            let (data, len): (*const Value, usize) = if iv.is_ptr() {
+                match (*item).type_tag() {
+                    TypeTagKind::Tuple => {
+                        let t = item as *mut TupleObj;
+                        ((*t).data.as_ptr(), (*t).len)
+                    }
+                    TypeTagKind::List => {
+                        let l = item as *mut ListObj;
+                        ((*l).data as *const Value, (*l).len)
+                    }
+                    _ => (std::ptr::null(), usize::MAX),
+                }
+            } else {
+                (std::ptr::null(), usize::MAX)
+            };
+            // OrderedDict's update unpacks each item as `key, value`
+            // (CPython's messages for that unpack).
+            if len == usize::MAX {
+                gc_pop();
+                raise_exc!(
+                    crate::exceptions::ExceptionType::TypeError,
+                    "'{}' object is not iterable",
+                    crate::ops::comparison_type_name(if iv.is_ptr() {
+                        (*item).type_tag()
+                    } else {
+                        iv.primitive_type().unwrap_or(TypeTagKind::None)
+                    })
+                );
+            }
+            if len > 2 {
+                gc_pop();
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "too many values to unpack (expected 2)"
+                );
+            }
+            if len < 2 {
+                gc_pop();
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "not enough values to unpack (expected 2, got {})",
+                    len
+                );
+            }
+            rt_dict_set(
+                roots[0],
+                (*data).0 as *mut Obj,
+                (*data.add(1)).0 as *mut Obj,
+            );
+        }
+        gc_pop();
+        roots[0]
+    }
+}
+#[export_name = "rt_dict_from_any"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_from_any_abi(arg: Value) -> Value {
+    Value::from_ptr(rt_dict_from_any(arg.0 as *mut Obj))
+}

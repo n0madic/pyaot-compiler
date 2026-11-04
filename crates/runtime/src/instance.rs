@@ -309,7 +309,13 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
         k::STR => heap_tag_is(obj, TypeTagKind::Str),
         k::BYTES => heap_tag_is(obj, TypeTagKind::Bytes),
         k::LIST => heap_tag_is(obj, TypeTagKind::List),
-        k::DICT => heap_tag_is(obj, TypeTagKind::Dict),
+        // `defaultdict` and `Counter` are dict subclasses (OrderedDict is a
+        // plain `Dict` at runtime).
+        k::DICT => {
+            heap_tag_is(obj, TypeTagKind::Dict)
+                || heap_tag_is(obj, TypeTagKind::DefaultDict)
+                || heap_tag_is(obj, TypeTagKind::Counter)
+        }
         k::SET => heap_tag_is(obj, TypeTagKind::Set),
         k::TUPLE => heap_tag_is(obj, TypeTagKind::Tuple),
         k::FROZENSET => heap_tag_is(obj, TypeTagKind::FrozenSet),

@@ -59,54 +59,54 @@ pub static TIME_PERF_COUNTER: StdlibFunctionDef = StdlibFunctionDef {
 };
 
 /// time.ctime([seconds]) - Convert seconds to readable local time string
-/// If seconds is not provided (or negative), uses current time
+/// If seconds is not provided, uses the current time
 pub static TIME_CTIME: StdlibFunctionDef = StdlibFunctionDef {
     name: "ctime",
     runtime_name: "rt_time_ctime",
     params: &[ParamDef::optional_with_default(
         "seconds",
         TypeSpec::Float,
-        ConstValue::Float(-1.0), // Sentinel: use current time
+        ConstValue::Float(0.0), // placeholder: the arg count says "omitted"
     )],
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_time_ctime", &[P_F64], Some(R_I64), false),
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    codegen: RuntimeFuncDef::new("rt_time_ctime", &[P_F64, P_I64], Some(R_I64), false),
 };
 
 /// time.localtime([seconds]) - Convert seconds to local time struct_time
-/// If seconds is not provided (or negative), uses current time
+/// If seconds is not provided, uses the current time
 pub static TIME_LOCALTIME: StdlibFunctionDef = StdlibFunctionDef {
     name: "localtime",
     runtime_name: "rt_time_localtime",
     params: &[ParamDef::optional_with_default(
         "seconds",
         TypeSpec::Float,
-        ConstValue::Float(-1.0), // Sentinel: use current time
+        ConstValue::Float(0.0), // placeholder: the arg count says "omitted"
     )],
     return_type: TypeSpec::StructTime,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_time_localtime", &[P_F64], Some(R_I64), false),
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    codegen: RuntimeFuncDef::new("rt_time_localtime", &[P_F64, P_I64], Some(R_I64), false),
 };
 
 /// time.gmtime([seconds]) - Convert seconds to UTC struct_time
-/// If seconds is not provided (or negative), uses current time
+/// If seconds is not provided, uses the current time
 pub static TIME_GMTIME: StdlibFunctionDef = StdlibFunctionDef {
     name: "gmtime",
     runtime_name: "rt_time_gmtime",
     params: &[ParamDef::optional_with_default(
         "seconds",
         TypeSpec::Float,
-        ConstValue::Float(-1.0), // Sentinel: use current time
+        ConstValue::Float(0.0), // placeholder: the arg count says "omitted"
     )],
     return_type: TypeSpec::StructTime,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_time_gmtime", &[P_F64], Some(R_I64), false),
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    codegen: RuntimeFuncDef::new("rt_time_gmtime", &[P_F64, P_I64], Some(R_I64), false),
 };
 
 /// time.mktime(t) - Convert struct_time to seconds since epoch

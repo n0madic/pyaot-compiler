@@ -550,4 +550,34 @@ assert gcd_from_import == 6
 comb_from_import: int = comb(5, 2)
 assert comb_from_import == 10
 
+
+# ===== SECTION: math.log with an explicit base (no in-band sentinel) =====
+
+def _math_log_base() -> None:
+    assert math.isnan(math.log(8, float("nan")))
+    assert math.log(8, 2) == 3.0
+    assert math.log(math.e) == 1.0
+    msgs: list[str] = []
+    try:
+        math.log(5, 1)
+    except ZeroDivisionError as e:
+        msgs.append("ZDE " + str(e))
+    try:
+        math.log(5, -2)
+    except ValueError as e:
+        msgs.append("VE " + str(e))
+    try:
+        math.log(0)
+    except ValueError as e:
+        msgs.append("VE " + str(e))
+    assert msgs == [
+        "ZDE division by zero",
+        "VE expected a positive input",
+        "VE expected a positive input",
+    ]
+
+
+_math_log_base()
+
+
 print("All math module tests passed!")
