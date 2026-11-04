@@ -623,12 +623,12 @@ fn arith_iv(
 ) -> Option<Interval> {
     let iv = match &func.exprs[idx].kind {
         HirExprKind::IntLit(v) => Interval::range(*v as i128, *v as i128),
-        // A bignum literal does not fit i64 by construction; a bool is `0`/`1`.
-        HirExprKind::BigIntLit(_) => Interval::Top,
-        HirExprKind::BoolLit(b) => {
-            let v = *b as i128;
-            Interval::range(v, v)
-        }
+        // A bignum literal does not fit i64 by construction. A bool literal is
+        // numerically `0`/`1`, but `bool ⊂ int` means it may flow into an
+        // `int`-typed slot (`x = True if c else 1`, `return True` from `-> int`)
+        // that must keep printing `True`: a `Raw(I64)` slot would erase the bool
+        // tag, so a bool leaf is `⊤` (the slot stays `Tagged`).
+        HirExprKind::BigIntLit(_) | HirExprKind::BoolLit(_) => Interval::Top,
         HirExprKind::Local(lid) => {
             if func.locals[lid.index()].ty == SemTy::Int {
                 env[lid.index()]

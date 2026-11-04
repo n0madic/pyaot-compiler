@@ -13,10 +13,17 @@ pub struct LineMap {
 impl LineMap {
     /// Build a line map from source text.
     pub fn new(source: &str) -> Self {
-        let mut line_starts = vec![0u32];
+        Self::with_base(source, 0)
+    }
+
+    /// Build a line map for source text whose first byte sits at global offset
+    /// `base` (a module placed in a program-wide [`crate::SourceMap`]): lookups
+    /// then take global offsets.
+    pub fn with_base(source: &str, base: u32) -> Self {
+        let mut line_starts = vec![base];
         for (i, byte) in source.bytes().enumerate() {
             if byte == b'\n' {
-                line_starts.push((i + 1) as u32);
+                line_starts.push(base + (i + 1) as u32);
             }
         }
         Self { line_starts }

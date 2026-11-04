@@ -1227,4 +1227,44 @@ assert _review_in_present is True
 assert _review_in_order == ["left", "right"], "`in` evaluates left before right"
 
 
+# ===== SECTION: a bool flowing into an int slot keeps its bool identity =====
+# `bool ⊔ int = int` as a type, but the value must still be a bool at runtime
+# (prints `True`, `is True`) — the int slot must not be unboxed to a raw i64.
+def _review_bool_ret_int() -> int:
+    return True
+
+
+def _review_bool_param_int(q: int) -> int:
+    return q
+
+
+def _review_bool_int_join(c: bool) -> list[str]:
+    out: list[str] = []
+    x = True if c else 1
+    out.append(str(x))
+    y = 2
+    if c:
+        y = False
+    out.append(str(y))
+    z: int = 5
+    z = c
+    out.append(repr(z))
+    return out
+
+
+def _review_bool_int_identity() -> None:
+    assert _review_bool_int_join(True) == ["True", "False", "True"]
+    assert _review_bool_int_join(False) == ["1", "2", "False"]
+    assert str(_review_bool_ret_int()) == "True"
+    assert _review_bool_ret_int() is True
+    assert str(_review_bool_param_int(True)) == "True"
+    assert str(_review_bool_param_int(7)) == "7"
+    mixed = [True, 1, False, 0]
+    assert str(mixed) == "[True, 1, False, 0]"
+    assert str({"a": True, "b": 2}) == "{'a': True, 'b': 2}"
+
+
+_review_bool_int_identity()
+
+
 print("All core types and operator tests passed!")

@@ -264,24 +264,52 @@ override) is called through a synthesized function that switches on
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 
-- [ ] **H** `--run` executes bare name via `$PATH` (`cli/src/main.rs:356`);
-      signal exit reported as 1. ✓
-- [ ] **H** output path can overwrite source (no `.py`) / collide with `.o`;
-      `foo.o` deleted (`cli/src/main.rs:324`). ✓
-- [ ] **H** lattice prune removes both mutually-subtyped members → `Never`
+- [x] **H** `--run` executes bare name via `$PATH` (`cli/src/main.rs:356`);
+      signal exit reported as 1. ✓ Fixed: a relative output runs as `./…`;
+      a signal death exits `128 + signo` like a shell
+      (`cli/tests/output_paths.rs`, `main.rs` `path_tests`).
+- [x] **H** output path can overwrite source (no `.py`) / collide with `.o`;
+      `foo.o` deleted (`cli/src/main.rs:324`). ✓ Fixed: an output naming the
+      input is refused; the object is a unique temp file
+      (`cli/tests/output_paths.rs`).
+- [x] **H** lattice prune removes both mutually-subtyped members → `Never`
       (`dict`⇄`defaultdict`, `Iterator[Dyn]`) (`types/src/lattice.rs:314`). ✓
-- [ ] **M** `Bool ⊔ Int = Int` loses bool identity (`lattice.rs:116`). ✓
-- [ ] **M** `SemTy::optional` builds non-canonical unions (`types/src/sem.rs:179`).
-- [ ] **M** diagnostics in imported modules rendered against entry file —
+      Fixed: `defaultdict <: dict` only (not the reverse); `Iterator`
+      members merge element-wise; a remaining equivalence keeps the
+      canonically-first member (corpus `test_collections.py`
+      `_review_lattice_joins`, lattice unit tests).
+- [x] **M** `Bool ⊔ Int = Int` loses bool identity (`lattice.rs:116`). ✓
+      The join `int` is the correct *type* (`bool ⊂ int`); the identity loss
+      was representational: the interval pass gave a `BoolLit` the range
+      `[0,1]`, proving bool-fed `int` slots `Raw(I64)` (which erases the bool
+      tag). A bool leaf is now `⊤`, so such slots stay `Tagged` (corpus
+      `test_core_types.py` `_review_bool_int_identity`).
+- [x] **M** `SemTy::optional` builds non-canonical unions (`types/src/sem.rs:179`).
+      Now built via `join` (flat, deduped, `Optional[Dyn] = Dyn`; unit test).
+- [x] **M** diagnostics in imported modules rendered against entry file —
       `Span` has no file id (`cli/src/main.rs:228`, `utils/src/span.rs`). ✓
-- [ ] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
-      use `ensure_base_srcloc`). ✓
-- [ ] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)
+      Fixed with a program-wide `utils::SourceMap`: each module is parsed at
+      a disjoint base offset, so a bare `Span` identifies its file; the CLI
+      renders an error against that file (`cli/tests/import_diagnostics.rs`).
+      The CLI loader also reports imported modules by their real path.
+- [x] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
+      use `ensure_base_srcloc`). ✓ Fixed: base pinned to 0
+      (`cli/tests/traceback_names.rs`).
+- [x] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)
       differ from CPython (`codegen lib.rs:828`); inlined frames erased
-      (`optimizer/src/inline.rs:254`). ✓
-- [ ] **M** linker: package archives after runtime archive (GNU ld single
+      (`optimizer/src/inline.rs:254`). ✓ Fixed: codegen derives CPython's
+      `co_name` and gives dispatch thunks no record; the inliner turns
+      spliced markers into `InlinedLine` chains, emitted as traceback-table
+      inline chains (runtime contract extension `TB_LOC_INLINE_FLAG`). Also:
+      lambda / genexpr bodies get their own line, and a block entered
+      mid-statement (e.g. a `for` header's `next()`) re-establishes the
+      statement's line. `cli/tests/traceback_names.rs` checks both opt levels.
+- [x] **M** linker: package archives after runtime archive (GNU ld single
       pass); missing runtime lib silently skipped; Windows/other OS branches
-      broken (`linker/src/lib.rs:59`).
+      broken (`linker/src/lib.rs:59`). Fixed: object → package archives →
+      runtime → system libs; a missing runtime/package archive is a clear
+      `LinkError`; other Unix-likes link via `cc`, Windows is a clear
+      "unsupported" error (unit tests in `linker/src/lib.rs`).
 
 ## Phase 7 — performance & cleanup
 

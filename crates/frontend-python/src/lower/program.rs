@@ -18,6 +18,7 @@ impl<'a> ProgramLowerer<'a> {
             loaded: HashMap::new(),
             loading: Vec::new(),
             init_emitted: HashSet::new(),
+            next_base: 0,
         }
     }
 
@@ -35,6 +36,8 @@ impl<'a> ProgramLowerer<'a> {
         self.shared.current_ns = 0;
         self.shared.cur_file = Some(self.interner.intern(entry_file));
         self.shared.line_map = LineMap::new(entry_src);
+        // The entry occupies offsets `0..len`; imports follow (SourceMap layout).
+        self.next_base = entry_src.len() as u32 + 1;
         let main_id = self.shared.reserve();
         self.lower_module_into(&[], false, body, true, 0, main_id)?;
 
@@ -96,7 +99,13 @@ impl<'a> ProgramLowerer<'a> {
         if path.len() > 1 {
             self.ensure_loaded(&path[..path.len() - 1], true, span)?;
         }
-        let body = crate::parse_module_body(&src)?;
+        // Parse at a fresh global base so this module's spans never alias the
+        // entry's (diagnostics map a span back to its file by offset).
+        let base = self.next_base;
+        self.next_base = base + src.len() as u32 + 1;
+        let display = self.loader.display_path(path, is_package);
+        self.loader.module_loaded(&display, base, &src);
+        let body = crate::parse_module_body(&src, base)?;
         let ns = self.namespace_imports.len() as u32;
         self.namespace_imports.push(NamespaceImports::default());
         let saved_ns = self.shared.current_ns;
@@ -104,8 +113,8 @@ impl<'a> ProgramLowerer<'a> {
         // Traceback attribution: this module's file/line map, restored after
         // (imports lower recursively inside the importer's own lowering).
         let saved_file = self.shared.cur_file;
-        let saved_map = std::mem::replace(&mut self.shared.line_map, LineMap::new(&src));
-        let display = self.loader.display_path(path, is_package);
+        let saved_map =
+            std::mem::replace(&mut self.shared.line_map, LineMap::with_base(&src, base));
         self.shared.cur_file = Some(self.interner.intern(&display));
         let init_fid = self.shared.reserve();
         self.loading.push(dotted.clone());

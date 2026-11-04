@@ -2526,6 +2526,32 @@ def _review_fix_collections():
 
 
 _review_fix_collections()
+
+
+# ── review fix: dict ⊔ defaultdict / Iterator joins (lattice prune) ──
+# `defaultdict <: dict`; their join used to prune BOTH union members (they were
+# mutual subtypes) and collapse to `Never`, rejecting the subscript store.
+def _lattice_dict_or_defaultdict(c: bool):
+    d = defaultdict(int) if c else {"a": 1}
+    d["k"] = 2
+    return d
+
+
+def _lattice_iter_join(c: bool):
+    it = iter([1, 2]) if c else iter(["a"])
+    return next(it)
+
+
+def _review_lattice_joins():
+    r = _lattice_dict_or_defaultdict(True)
+    assert len(r) == 1 and r["k"] == 2
+    r2 = _lattice_dict_or_defaultdict(False)
+    assert sorted(r2.items()) == [("a", 1), ("k", 2)]
+    assert _lattice_iter_join(True) == 1
+    assert _lattice_iter_join(False) == "a"
+
+
+_review_lattice_joins()
 _fold_dict_keyerror()
 _fold_kwargs_missing_required()
 

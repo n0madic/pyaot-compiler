@@ -176,7 +176,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Exception binding `except E as e` | ✅ | |
 | Custom exception subclasses | ✅ | |
 | Built-in exception hierarchy | ✅ | `ValueError`, `TypeError`, `IndexError`, `IOError`, … |
-| Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table` |
+| Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table`; CPython frame names (`m`, `inner`, `<lambda>`, generator name; dispatch thunks hidden); inlined frames kept under optimization (inline chains). No source-line echo |
 | `except*` / `ExceptionGroup` | ❌ | Not implemented |
 
 ---

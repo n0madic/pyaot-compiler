@@ -50,6 +50,8 @@ impl<'a> FnLowerer<'a> {
             });
             let start = rl.new_block();
             rl.switch(start);
+            // The `<genexpr>` frame's line is the expression's own.
+            rl.mark_line(span);
             rl.lower_genexpr_clauses(g, 0, iter0, span)?;
             if rl.cur_open() {
                 rl.emit_gen_exhaust(span);

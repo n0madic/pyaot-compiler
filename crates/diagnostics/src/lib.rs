@@ -387,4 +387,55 @@ impl CompilerError {
             format!("  x {}\n", self)
         }
     }
+
+    /// Start offset of the primary span, if the error carries one.
+    pub fn span_start(&self) -> Option<u32> {
+        match self {
+            Self::ParseError { span, .. }
+            | Self::TypeError { span, .. }
+            | Self::NameError { span, .. }
+            | Self::SemanticError { span, .. }
+            | Self::ArgumentError { span, .. } => Some(span.0.start),
+            Self::CodegenError { span, .. } => span.map(|s| s.offset() as u32),
+            Self::LinkError { .. } | Self::IoError(_) => None,
+        }
+    }
+
+    /// Shift the primary span from program-global offsets to offsets local to
+    /// the file starting at global offset `base` (see `pyaot_utils::SourceMap`).
+    pub fn rebase_span(mut self, base: u32) -> Self {
+        match &mut self {
+            Self::ParseError { span, .. }
+            | Self::TypeError { span, .. }
+            | Self::NameError { span, .. }
+            | Self::SemanticError { span, .. }
+            | Self::ArgumentError { span, .. } => {
+                span.0.start = span.0.start.saturating_sub(base);
+                span.0.end = span.0.end.saturating_sub(base);
+            }
+            Self::CodegenError { span: Some(s), .. } => {
+                *s = SourceSpan::new(s.offset().saturating_sub(base as usize).into(), s.len());
+            }
+            Self::CodegenError { span: None, .. } | Self::LinkError { .. } | Self::IoError(_) => {}
+        }
+        self
+    }
+
+    /// Render the error against the file its span points into: `sources` maps
+    /// program-global offsets to files. Falls back to `default_name` /
+    /// `default_source` when the error has no span or the span is unmapped.
+    pub fn format_in(
+        &self,
+        sources: &pyaot_utils::SourceMap,
+        default_name: &str,
+        default_source: &str,
+    ) -> String {
+        match self.span_start().and_then(|o| sources.file_at(o)) {
+            Some(file) => self
+                .clone()
+                .rebase_span(file.base)
+                .format(&file.name, &file.source),
+            None => self.format(default_name, default_source),
+        }
+    }
 }

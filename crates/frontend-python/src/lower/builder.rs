@@ -43,6 +43,7 @@ impl<'a> FnLowerer<'a> {
             cur_handler: None,
             stamped: HashSet::new(),
             cur_line: None,
+            stmt_line: None,
             scope_stack: Vec::new(),
             synth_counter: 0,
             self_capture: None,
@@ -239,8 +240,27 @@ impl<'a> FnLowerer<'a> {
     }
 
     pub(super) fn push_stmt(&mut self, stmt: HirStmt) {
+        if !matches!(stmt, HirStmt::Line(_)) {
+            self.ensure_line();
+        }
         self.stamp_handler();
         self.blocks[self.cur].stmts.push(stmt);
+    }
+
+    /// Re-establish the enclosing statement's line in a block entered
+    /// mid-statement (a loop header, a short-circuit / ternary arm, a join
+    /// block) before it receives code: codegen's srcloc follows block
+    /// emission order, so without it such code would be attributed to
+    /// whatever line the previously emitted block ended on. Lazy — a block
+    /// that only jumps gets no marker (keeps it threadable by the peephole).
+    fn ensure_line(&mut self) {
+        if self.cur_line.is_none() {
+            if let Some(line) = self.stmt_line {
+                self.stamp_handler();
+                self.blocks[self.cur].stmts.push(HirStmt::Line(line));
+                self.cur_line = Some(line);
+            }
+        }
     }
 
     /// Seal the current block with `term` (only if still open) and leave `cur`
@@ -249,6 +269,15 @@ impl<'a> FnLowerer<'a> {
     /// terminator) because an explicit `Unreachable` seal — the Phase-7 `raise`
     /// shape — must not be overwritten by a later structural seal.
     pub(super) fn seal(&mut self, term: HirTerminator) {
+        // A terminator that evaluates an expression may raise (`__bool__`,
+        // a returned call): it needs the statement's line too.
+        if matches!(
+            term,
+            HirTerminator::Branch { .. } | HirTerminator::Return(Some(_))
+        ) && !self.sealed.contains(&self.cur)
+        {
+            self.ensure_line();
+        }
         self.stamp_handler();
         if self.sealed.insert(self.cur) {
             self.blocks[self.cur].term = term;
@@ -264,6 +293,7 @@ impl<'a> FnLowerer<'a> {
     /// block has not already established it (real tracebacks).
     pub(super) fn mark_line(&mut self, span: Span) {
         let line = self.shared.line_map.line_number(span.start);
+        self.stmt_line = Some(line);
         if self.cur_line != Some(line) {
             self.push_stmt(HirStmt::Line(line));
             self.cur_line = Some(line);

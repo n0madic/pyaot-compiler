@@ -309,27 +309,51 @@ fn make_canonical_union(
         }
     }
 
-    // Remove subsumed members: keep `m` only if no other member `o` covers it
-    // (via subtyping or the numeric tower).
+    // Merge `Iterator` members element-wise (`Iterator[a] ⊔ Iterator[b] =
+    // Iterator[a ⊔ b]`), like the same-base `Generic` merge above. Without it
+    // `Iterator[Dyn]` and `Iterator[int]` are mutual subtypes (the Dyn-wildcard
+    // slot) and the subsumption pass below would have to pick one arbitrarily.
+    while let Some(i) = deduped.iter().position(|t| matches!(t, SemTy::Iterator(_))) {
+        let Some(j) = (i + 1..deduped.len()).find(|&j| matches!(deduped[j], SemTy::Iterator(_)))
+        else {
+            break;
+        };
+        let (SemTy::Iterator(b), SemTy::Iterator(a)) = (deduped.remove(j), deduped.remove(i))
+        else {
+            unreachable!("both members were matched as Iterator");
+        };
+        deduped.push(SemTy::Iterator(Box::new(a.join(&b, env))));
+    }
+
+    // Canonical order first, so the subsumption pass below can break ties
+    // between mutually-subtyped members deterministically.
+    deduped.sort_by(|a, b| {
+        type_discriminant(a)
+            .cmp(&type_discriminant(b))
+            .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+    });
+
+    // Remove subsumed members: drop `m` if another member `o` covers it (via
+    // subtyping or the numeric tower). When `m` and `o` cover EACH OTHER (an
+    // equivalence the Dyn-wildcard container slots admit, e.g. `list[Dyn]` vs
+    // `list[int]` in a non-merged position), only the later one in canonical
+    // order is dropped — removing both would collapse the union to `Never`.
+    let covers =
+        |m: &SemTy, o: &SemTy| m.is_subtype_of(o, env) || numeric_promote(m, o).as_ref() == Some(o);
     let to_remove: Vec<usize> = deduped
         .iter()
         .enumerate()
         .filter_map(|(i, m)| {
-            let subsumed = deduped.iter().enumerate().any(|(j, o)| {
-                j != i && (m.is_subtype_of(o, env) || numeric_promote(m, o).as_ref() == Some(o))
-            });
+            let subsumed = deduped
+                .iter()
+                .enumerate()
+                .any(|(j, o)| j != i && covers(m, o) && (j < i || !covers(o, m)));
             subsumed.then_some(i)
         })
         .collect();
     for i in to_remove.into_iter().rev() {
         deduped.remove(i);
     }
-
-    deduped.sort_by(|a, b| {
-        type_discriminant(a)
-            .cmp(&type_discriminant(b))
-            .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
-    });
 
     match deduped.len() {
         0 => SemTy::Never,
@@ -574,7 +598,12 @@ impl SemTy {
                 let (a, b) = (this.set_elem().unwrap(), other.set_elem().unwrap());
                 *a == SemTy::Dyn || *b == SemTy::Dyn || Self::is_subtype_of_inner(a, b, env)
             }
-            _ if this.dict_kv().is_some() && other.dict_kv().is_some() => {
+            // `defaultdict <: dict` (it is a dict subclass) but NOT the
+            // reverse: a plain dict lacks the auto-inserting subscript read.
+            _ if this.dict_kv().is_some()
+                && other.dict_kv().is_some()
+                && (this.is_defaultdict() || !other.is_defaultdict()) =>
+            {
                 let ((k1, v1), (k2, v2)) = (this.dict_kv().unwrap(), other.dict_kv().unwrap());
                 (*k1 == SemTy::Dyn || *k2 == SemTy::Dyn || Self::is_subtype_of_inner(k1, k2, env))
                     && (*v1 == SemTy::Dyn
@@ -846,15 +875,19 @@ mod tests {
         let empty = tuple_fixed(vec![]);
         let fixed = tuple_fixed(vec![SemTy::Int, SemTy::Str]);
         // (Bool ⊔ tuple[Int,Str]) ⊔ tuple[]  ==  Bool ⊔ (tuple[Int,Str] ⊔ tuple[])
-        let left = SemTy::Bool
-            .join(&fixed, &env)
-            .join(&empty, &env);
+        let left = SemTy::Bool.join(&fixed, &env).join(&empty, &env);
         let right = SemTy::Bool.join(&fixed.join(&empty, &env), &env);
-        assert_eq!(left, right, "join is not associative: {left:?} vs {right:?}");
+        assert_eq!(
+            left, right,
+            "join is not associative: {left:?} vs {right:?}"
+        );
         // Both collapse the tuples to a single `tuple_var`.
         assert_eq!(
             make_canonical_union([SemTy::Bool, fixed, empty], &env),
-            SemTy::Bool.join(&SemTy::tuple_var_of(SemTy::Int.join(&SemTy::Str, &env)), &env),
+            SemTy::Bool.join(
+                &SemTy::tuple_var_of(SemTy::Int.join(&SemTy::Str, &env)),
+                &env
+            ),
         );
     }
 
@@ -868,6 +901,79 @@ mod tests {
             make_canonical_union([SemTy::Bool, empty.clone()], &env),
             SemTy::Bool.join(&empty, &env),
         );
+    }
+
+    #[test]
+    fn dict_defaultdict_join_is_not_never() {
+        // `defaultdict <: dict` only; the join is the dict supertype, never
+        // `Never` (the old mutual subtyping pruned both members).
+        let env = NoClasses;
+        let d = SemTy::dict_of(SemTy::Str, SemTy::Int);
+        let dd = SemTy::defaultdict_of(SemTy::Str, SemTy::Int);
+        assert!(dd.is_subtype_of(&d, &env));
+        assert!(!d.is_subtype_of(&dd, &env));
+        assert_eq!(d.join(&dd, &env), d);
+        assert_eq!(dd.join(&d, &env), d);
+        assert_eq!(make_canonical_union([dd.clone(), d.clone()], &env), d);
+    }
+
+    #[test]
+    fn iterator_dyn_join_is_not_never() {
+        let env = NoClasses;
+        let it_dyn = SemTy::Iterator(Box::new(SemTy::Dyn));
+        let it_int = SemTy::Iterator(Box::new(SemTy::Int));
+        assert_eq!(it_dyn.join(&it_int, &env), it_dyn);
+        assert_eq!(it_int.join(&it_dyn, &env), it_dyn);
+        let it_str = SemTy::Iterator(Box::new(SemTy::Str));
+        assert_eq!(
+            it_int.join(&it_str, &env),
+            SemTy::Iterator(Box::new(SemTy::Int.join(&SemTy::Str, &env)))
+        );
+    }
+
+    #[test]
+    fn mutually_subtyped_members_keep_one() {
+        // Any equivalence the Dyn-wildcard slots admit must leave exactly one
+        // member, chosen independently of operand order.
+        let env = NoClasses;
+        let a = tuple_fixed(vec![SemTy::Dyn]);
+        let b = SemTy::tuple_var_of(SemTy::Int);
+        let ab = make_canonical_union([a.clone(), b.clone()], &env);
+        let ba = make_canonical_union([b, a], &env);
+        assert_ne!(ab, SemTy::Never);
+        assert_eq!(ab, ba);
+    }
+
+    #[test]
+    fn optional_is_canonical() {
+        let env = NoClasses;
+        assert_eq!(
+            SemTy::optional(SemTy::Int),
+            SemTy::NoneTy.join(&SemTy::Int, &env)
+        );
+        assert_eq!(SemTy::optional(SemTy::NoneTy), SemTy::NoneTy);
+        assert_eq!(SemTy::optional(SemTy::Dyn), SemTy::Dyn);
+        // Optional[Optional[int]] / Optional[Union[int, str]] are flat.
+        let opt = SemTy::optional(SemTy::Int);
+        assert_eq!(SemTy::optional(opt.clone()), opt);
+        let u = SemTy::Int.join(&SemTy::Str, &env);
+        match SemTy::optional(u) {
+            SemTy::Union(ms) => {
+                assert_eq!(ms.len(), 3);
+                assert!(ms.iter().all(|m| !matches!(m, SemTy::Union(_))));
+            }
+            other => panic!("expected a flat union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bool_int_join_is_int() {
+        // `bool ⊂ int`: the join is `int` as a type. Bool *identity* at runtime
+        // is a representation matter: `int` is `Tagged` (which carries the
+        // bool tag), and typeck never proves a bool-fed slot `Raw(I64)`.
+        let env = NoClasses;
+        assert_eq!(SemTy::Bool.join(&SemTy::Int, &env), SemTy::Int);
+        assert_eq!(crate::repr::repr_of(&SemTy::Int), crate::repr::Repr::Tagged);
     }
 
     #[test]

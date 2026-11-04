@@ -33,16 +33,20 @@
 //! Noop-`Coerce` into the call's `dst` plus a `Jump` to the continuation
 //! block (which inherits the call block's suffix + original terminator).
 //!
+//! Spliced callee `LineMarker`s become `InlinedLine`s carrying the inline
+//! chain (`callee`, call line), so the traceback still prints the callee's
+//! frame — inlining never erases frames.
+//!
 //! Functions are NEVER deleted: `FuncId`s are dense indices held by
 //! `MakeClosure` / vtables / dunder tables / generator dispatch; dead bodies
 //! are the linker's problem (`-dead_strip` / `--gc-sections`).
 
 use pyaot_mir::{
-    CoerceInst, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator,
-    Operand,
+    CoerceInst, Const, InlineFrame, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram,
+    MirTerminator, Operand,
 };
 use pyaot_types::{RawKind, Repr};
-use pyaot_utils::{BlockId, LocalId};
+use pyaot_utils::{BlockId, FuncId, LocalId};
 
 use crate::OptimizationPass;
 
@@ -108,6 +112,9 @@ impl OptimizationPass for Inline {
 
 /// The cloned parts of a callee needed for one splice.
 struct CalleeBody {
+    /// The callee itself — recorded in the inline chain of every spliced
+    /// line marker so tracebacks keep its frame.
+    func: FuncId,
     params: Vec<Repr>,
     locals: Vec<LocalDecl>,
     blocks: Vec<MirBlock>,
@@ -154,7 +161,7 @@ fn inline_into(
             continue;
         };
 
-        let body = clone_body(&program.funcs[callee]);
+        let body = clone_body(&program.funcs[callee], FuncId::new(callee as u32));
         let cont = splice(&mut program.funcs[caller], bi, inst_idx, &body);
         // The continuation holds the rest of this block — keep scanning it.
         work.push(cont);
@@ -187,7 +194,7 @@ fn real_size(f: &MirFunction) -> usize {
         .map(|b| {
             b.insts
                 .iter()
-                .filter(|i| !matches!(i, MirInst::LineMarker(_)))
+                .filter(|i| !matches!(i, MirInst::LineMarker(_) | MirInst::InlinedLine { .. }))
                 .count()
         })
         .sum()
@@ -206,8 +213,7 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
     // `default_ret`. An always-diverging `Never` callee with no `Return(None)`
     // stays inlinable (no default value is ever materialized).
     if matches!(f.ret, Repr::Never | Repr::FuncPtr(_))
-        && f
-            .blocks
+        && f.blocks
             .iter()
             .any(|b| matches!(b.term, MirTerminator::Return(None)))
     {
@@ -232,8 +238,9 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
     true
 }
 
-fn clone_body(f: &MirFunction) -> CalleeBody {
+fn clone_body(f: &MirFunction, func: FuncId) -> CalleeBody {
     CalleeBody {
+        func,
         params: f.params.clone(),
         locals: f.locals.clone(),
         blocks: f
@@ -316,6 +323,9 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
         let mut insts: Vec<MirInst> = cb.insts.clone();
         for inst in &mut insts {
             inst.map_locals(|l| LocalId::new(l_off + l.index() as u32));
+            if let Some(call_line) = call_line {
+                push_inline_frame(inst, body.func, call_line);
+            }
         }
         let rb = |b: BlockId| BlockId::new(b_off + b.index() as u32);
         let term = match &cb.term {
@@ -474,6 +484,26 @@ fn call_graph_sccs(funcs: &[MirFunction]) -> Vec<usize> {
         }
     }
     scc_of
+}
+
+/// Re-home a spliced callee line marker into the caller: its line now sits
+/// one inline level deeper, under `callee` called from the caller's
+/// `call_line` (tracebacks print the whole chain — inlining keeps frames).
+fn push_inline_frame(inst: &mut MirInst, callee: FuncId, call_line: u32) {
+    let outer = InlineFrame {
+        func: callee,
+        call_line,
+    };
+    match inst {
+        MirInst::LineMarker(line) => {
+            *inst = MirInst::InlinedLine {
+                line: *line,
+                frames: vec![outer],
+            };
+        }
+        MirInst::InlinedLine { frames, .. } => frames.insert(0, outer),
+        _ => {}
+    }
 }
 
 fn line_of(inst: &MirInst) -> Option<u32> {
@@ -974,5 +1004,32 @@ mod tests {
             ],
         );
         assert_eq!(line_at_block_entry(&g, 3), None);
+    }
+
+    #[test]
+    fn spliced_markers_carry_the_inline_chain() {
+        use super::push_inline_frame;
+        use pyaot_mir::InlineFrame;
+        // A callee's own line becomes an `InlinedLine` one level deep …
+        let mut m = MirInst::LineMarker(2);
+        push_inline_frame(&mut m, FuncId::new(5), 9);
+        let one = InlineFrame {
+            func: FuncId::new(5),
+            call_line: 9,
+        };
+        assert!(
+            matches!(&m, MirInst::InlinedLine { line: 2, frames } if *frames == [one.clone()]),
+            "{m:?}"
+        );
+        // … and inlining that again prepends the new outer frame.
+        push_inline_frame(&mut m, FuncId::new(3), 4);
+        let outer = InlineFrame {
+            func: FuncId::new(3),
+            call_line: 4,
+        };
+        assert!(
+            matches!(&m, MirInst::InlinedLine { line: 2, frames } if *frames == [outer, one]),
+            "{m:?}"
+        );
     }
 }
