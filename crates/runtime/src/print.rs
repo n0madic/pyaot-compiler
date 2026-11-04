@@ -168,7 +168,7 @@ pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
             // I/O error — raise IOError (CPython raises OSError for I/O errors, not EOFError)
             unsafe {
                 crate::raise_exc!(
-                    crate::exceptions::ExceptionType::IOError,
+                    crate::exceptions::ExceptionType::OSError,
                     "error reading from stdin: {}",
                     e
                 );

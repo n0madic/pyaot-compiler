@@ -392,7 +392,8 @@ impl<'a> FnLowerer<'a> {
                 ScopeCtx::TryFrame { outer } => {
                     self.exit_protected(outer);
                 }
-                ScopeCtx::Handler => {
+                ScopeCtx::Handler { outer } => {
+                    self.exit_protected(outer);
                     self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
                 }
                 ScopeCtx::Finally { outer, stmts } => {
@@ -440,6 +441,40 @@ impl<'a> FnLowerer<'a> {
             self.switch(b);
         }
         self.cur_handler = outer;
+    }
+
+    /// Emit `StartHandling` and open the region of the handling block that
+    /// follows it: every exception escaping the block lands on a cleanup pad
+    /// that pops the handling stack (`EndHandling`) and re-raises, so the
+    /// runtime's handling stack stays balanced however the block exits
+    /// (CPython's `POP_EXCEPT` cleanup handler). Returns the cleanup pad; the
+    /// caller closes the region with [`Self::end_handling_region`].
+    pub(super) fn begin_handling(&mut self) -> Idx<HirBlock> {
+        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        let cleanup = self.new_block();
+        let body = self.new_block();
+        self.seal(HirTerminator::Jump(body));
+        self.switch(body);
+        self.cur_handler = Some(cleanup);
+        cleanup
+    }
+
+    /// Close a region opened by [`Self::begin_handling`]: restore `outer` as
+    /// the handler context and emit the cleanup pad (under `outer`). The
+    /// current block is left where it was (the caller has already sealed or
+    /// continued it under `outer`).
+    pub(super) fn end_handling_region(
+        &mut self,
+        cleanup: Idx<HirBlock>,
+        outer: Option<Idx<HirBlock>>,
+    ) {
+        let resume = self.cur;
+        self.cur_handler = outer;
+        self.switch(cleanup);
+        self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+        self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+        self.seal(HirTerminator::Unreachable);
+        self.switch(resume);
     }
 
     /// Emit `mgr.__exit__(None, None, None)` as a statement (the normal-path

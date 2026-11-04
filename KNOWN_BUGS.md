@@ -175,11 +175,19 @@ Two root causes dominate:
 
 ## Phase 5 — runtime / stdlib semantics
 
-- [ ] **H** exception hierarchy flat: no parent column, `except OSError` /
+- [x] **H** exception hierarchy flat: no parent column, `except OSError` /
       `LookupError` / `RuntimeError` miss subclasses; IOError not alias
       (`core-defs/src/exceptions.rs:168`, `runtime/src/vtable.rs:289`). ✓
-- [ ] **H** `handling_exception` is a single slot, not a stack — bare `raise`
+      Fixed: parent column in core-defs seeds the runtime registry; tag 10 is
+      now ArithmeticError and IOError/EnvironmentError alias OSError; the
+      remaining concrete builtin exceptions were added (stdlib exception
+      reserve cut 32 -> 8 to keep the u8 class-id budget). Corpus:
+      test_exceptions.py hierarchy section.
+- [x] **H** `handling_exception` is a single slot, not a stack — bare `raise`
       after an inner handled exception fails (`exceptions/ffi.rs:110`). ✓
+      Fixed: runtime handling stack; the frontend wraps every handling block
+      (except body, exceptional finally, with-exit) in a cleanup landing pad
+      that pops it. Corpus: test_exceptions.py handling-stack section.
 - [ ] **M** `super().__init__(msg)` in Exception subclass doesn't compile
       (`lowering:4364`). ✓
 - [ ] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`

@@ -64,6 +64,28 @@ pub struct ExceptionObject {
     pub instance: *mut crate::object::Obj,
 }
 
+impl ExceptionObject {
+    /// A deep copy (owned message buffer, cause/context chains, traceback);
+    /// the GC-managed `instance` is shared — it is the same Python object.
+    pub fn deep_clone(&self) -> ExceptionObject {
+        // SAFETY: `message`/`message_len` describe this object's own buffer.
+        let (message, message_len, message_capacity) =
+            unsafe { copy_message_to_owned(self.message, self.message_len) };
+        ExceptionObject {
+            exc_type: self.exc_type,
+            custom_class_id: self.custom_class_id,
+            message,
+            message_len,
+            message_capacity,
+            cause: self.cause.as_ref().map(|c| Box::new(c.deep_clone())),
+            context: self.context.as_ref().map(|c| Box::new(c.deep_clone())),
+            suppress_context: self.suppress_context,
+            traceback: self.traceback.clone(),
+            instance: self.instance,
+        }
+    }
+}
+
 impl Drop for ExceptionObject {
     fn drop(&mut self) {
         // Free the message buffer if allocated.
@@ -126,7 +148,7 @@ pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
         if let Some(ref exc) = state.current_exception {
             collect_from(exc, &mut ptrs);
         }
-        if let Some(ref exc) = state.handling_exception {
+        for exc in state.handling_stack.iter().flatten() {
             collect_from(exc, &mut ptrs);
         }
         // A pending `from CAUSE` value (`raise X from caught_var`) holds the
@@ -169,7 +191,7 @@ pub(super) unsafe fn raise_with_owned_message(
 ) -> ! {
     // Capture implicit context from any exception being handled
     // This implements Python's __context__ (PEP 3134)
-    let context = with_exception_state(|state| state.handling_exception.take());
+    let context = with_exception_state(|state| state.new_context(std::ptr::null_mut()));
 
     // Capture traceback at the point of raise
     let traceback = Some(crate::traceback::capture_traceback());

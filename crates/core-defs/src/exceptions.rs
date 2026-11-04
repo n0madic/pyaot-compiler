@@ -45,7 +45,7 @@ pub struct BuiltinException {
 ///
 /// This ensures compile-time generation with zero runtime overhead.
 macro_rules! define_exceptions {
-    ($($variant:ident = $tag:expr => $name:literal),* $(,)?) => {
+    ($($variant:ident = $tag:expr => $name:literal : $parent:ident),* $(,)?) => {
         /// Built-in exception kind enum - single source of truth.
         /// Use this enum instead of separate Type/Builtin variants.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,6 +69,17 @@ macro_rules! define_exceptions {
                 }
             }
 
+            /// The direct builtin parent class (CPython's exception tree).
+            /// `None` only for `BaseException`, the root.
+            #[inline]
+            #[allow(unreachable_patterns)]
+            pub const fn parent(self) -> Option<Self> {
+                match self {
+                    Self::BaseException => None,
+                    $(Self::$variant => Some(Self::$parent),)*
+                }
+            }
+
             /// Create from a numeric tag.
             /// Returns `None` if the tag is invalid.
             #[inline]
@@ -84,6 +95,9 @@ macro_rules! define_exceptions {
             #[inline]
             pub fn from_name(name: &str) -> Option<Self> {
                 match name {
+                    // Legacy aliases: in Python 3 both names ARE `OSError`
+                    // (the same class object), not subclasses.
+                    "IOError" | "EnvironmentError" => Some(Self::OSError),
                     $($name => Some(Self::$variant),)*
                     _ => None,
                 }
@@ -138,7 +152,9 @@ macro_rules! define_exceptions {
 /// `StdlibExceptionClass` with a class_id in `BUILTIN_EXCEPTION_COUNT ..
 /// BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS`. User-defined
 /// classes start at FIRST_USER_CLASS_ID and never overlap stdlib or built-in tags.
-pub const RESERVED_STDLIB_EXCEPTION_SLOTS: u8 = 32;
+/// The u8 class-id space is shared with user classes, so the reserve is kept
+/// small (only `urllib.error` uses two slots today).
+pub const RESERVED_STDLIB_EXCEPTION_SLOTS: u8 = 8;
 
 /// Number of contiguous class IDs reserved after the stdlib exception slots
 /// for built-in generic container types (`list`, `dict`, `set`, `tuple`,
@@ -166,48 +182,72 @@ pub const FIRST_USER_CLASS_ID: u8 =
 // available everywhere.
 
 define_exceptions! {
-    Exception = 0 => "Exception",
-    AssertionError = 1 => "AssertionError",
-    IndexError = 2 => "IndexError",
-    ValueError = 3 => "ValueError",
-    StopIteration = 4 => "StopIteration",
-    TypeError = 5 => "TypeError",
-    RuntimeError = 6 => "RuntimeError",
-    GeneratorExit = 7 => "GeneratorExit",
-    KeyError = 8 => "KeyError",
-    AttributeError = 9 => "AttributeError",
-    IOError = 10 => "IOError",
-    ZeroDivisionError = 11 => "ZeroDivisionError",
-    OverflowError = 12 => "OverflowError",
-    MemoryError = 13 => "MemoryError",
-    NameError = 14 => "NameError",
-    NotImplementedError = 15 => "NotImplementedError",
-    FileNotFoundError = 16 => "FileNotFoundError",
-    PermissionError = 17 => "PermissionError",
-    RecursionError = 18 => "RecursionError",
-    EOFError = 19 => "EOFError",
-    SystemExit = 20 => "SystemExit",
-    KeyboardInterrupt = 21 => "KeyboardInterrupt",
-    FileExistsError = 22 => "FileExistsError",
-    ImportError = 23 => "ImportError",
-    OSError = 24 => "OSError",
-    ConnectionError = 25 => "ConnectionError",
-    TimeoutError = 26 => "TimeoutError",
-    SyntaxError = 27 => "SyntaxError",
-    BaseException = 28 => "BaseException",
-    // Subclass of NameError in CPython; the parent relationship is wired into the
-    // runtime class registry (`rt_init_builtin_exception_classes`). Raised by the
-    // `del name` unbound read-guard (`rt_check_bound`).
-    UnboundLocalError = 29 => "UnboundLocalError",
-    // §9 — encode/decode error hierarchy. Parents are wired into the runtime
-    // class registry (`rt_init_builtin_exception_classes`): `LookupError ⊂
-    // Exception` (raised for an unknown encoding name); `UnicodeError ⊂
-    // ValueError`; `Unicode{En,De}codeError ⊂ UnicodeError` (raised when bytes /
-    // codepoints fall outside the target codec).
-    LookupError = 30 => "LookupError",
-    UnicodeError = 31 => "UnicodeError",
-    UnicodeEncodeError = 32 => "UnicodeEncodeError",
-    UnicodeDecodeError = 33 => "UnicodeDecodeError",
+    // `Variant = tag => "Name" : Parent` — the parent column is the direct
+    // builtin base (CPython's exception tree); `BaseException` names itself
+    // (it is the root: `parent()` returns `None` for it). The runtime class
+    // registry is seeded from this column (`rt_init_builtin_exception_classes`),
+    // so `except OSError:` catches `FileNotFoundError`, `except LookupError:`
+    // catches `KeyError`, and so on. Tags are append-only.
+    Exception = 0 => "Exception" : BaseException,
+    AssertionError = 1 => "AssertionError" : Exception,
+    IndexError = 2 => "IndexError" : LookupError,
+    ValueError = 3 => "ValueError" : Exception,
+    StopIteration = 4 => "StopIteration" : Exception,
+    TypeError = 5 => "TypeError" : Exception,
+    RuntimeError = 6 => "RuntimeError" : Exception,
+    GeneratorExit = 7 => "GeneratorExit" : BaseException,
+    KeyError = 8 => "KeyError" : LookupError,
+    AttributeError = 9 => "AttributeError" : Exception,
+    // Tag 10 was `IOError`, which in Python 3 is merely an alias of `OSError`
+    // (`from_name` maps `IOError`/`EnvironmentError` to `OSError`).
+    ArithmeticError = 10 => "ArithmeticError" : Exception,
+    ZeroDivisionError = 11 => "ZeroDivisionError" : ArithmeticError,
+    OverflowError = 12 => "OverflowError" : ArithmeticError,
+    MemoryError = 13 => "MemoryError" : Exception,
+    NameError = 14 => "NameError" : Exception,
+    NotImplementedError = 15 => "NotImplementedError" : RuntimeError,
+    FileNotFoundError = 16 => "FileNotFoundError" : OSError,
+    PermissionError = 17 => "PermissionError" : OSError,
+    RecursionError = 18 => "RecursionError" : RuntimeError,
+    EOFError = 19 => "EOFError" : Exception,
+    SystemExit = 20 => "SystemExit" : BaseException,
+    KeyboardInterrupt = 21 => "KeyboardInterrupt" : BaseException,
+    FileExistsError = 22 => "FileExistsError" : OSError,
+    ImportError = 23 => "ImportError" : Exception,
+    OSError = 24 => "OSError" : Exception,
+    ConnectionError = 25 => "ConnectionError" : OSError,
+    TimeoutError = 26 => "TimeoutError" : OSError,
+    SyntaxError = 27 => "SyntaxError" : Exception,
+    BaseException = 28 => "BaseException" : BaseException,
+    // Raised by the `del name` unbound read-guard (`rt_check_bound`).
+    UnboundLocalError = 29 => "UnboundLocalError" : NameError,
+    // §9 — encode/decode error hierarchy: `LookupError` is raised for an
+    // unknown encoding name; `Unicode{En,De}codeError` when bytes / codepoints
+    // fall outside the target codec.
+    LookupError = 30 => "LookupError" : Exception,
+    UnicodeError = 31 => "UnicodeError" : ValueError,
+    UnicodeEncodeError = 32 => "UnicodeEncodeError" : UnicodeError,
+    UnicodeDecodeError = 33 => "UnicodeDecodeError" : UnicodeError,
+    // The rest of CPython's concrete builtin exception tree.
+    FloatingPointError = 34 => "FloatingPointError" : ArithmeticError,
+    BufferError = 35 => "BufferError" : Exception,
+    ModuleNotFoundError = 36 => "ModuleNotFoundError" : ImportError,
+    ReferenceError = 37 => "ReferenceError" : Exception,
+    SystemError = 38 => "SystemError" : Exception,
+    StopAsyncIteration = 39 => "StopAsyncIteration" : Exception,
+    IndentationError = 40 => "IndentationError" : SyntaxError,
+    TabError = 41 => "TabError" : IndentationError,
+    UnicodeTranslateError = 42 => "UnicodeTranslateError" : UnicodeError,
+    BlockingIOError = 43 => "BlockingIOError" : OSError,
+    ChildProcessError = 44 => "ChildProcessError" : OSError,
+    BrokenPipeError = 45 => "BrokenPipeError" : ConnectionError,
+    ConnectionAbortedError = 46 => "ConnectionAbortedError" : ConnectionError,
+    ConnectionRefusedError = 47 => "ConnectionRefusedError" : ConnectionError,
+    ConnectionResetError = 48 => "ConnectionResetError" : ConnectionError,
+    InterruptedError = 49 => "InterruptedError" : OSError,
+    IsADirectoryError = 50 => "IsADirectoryError" : OSError,
+    NotADirectoryError = 51 => "NotADirectoryError" : OSError,
+    ProcessLookupError = 52 => "ProcessLookupError" : OSError,
 }
 
 #[cfg(test)]
@@ -255,7 +295,9 @@ mod tests {
         assert_eq!(exception_name_to_tag("GeneratorExit"), Some(7));
         assert_eq!(exception_name_to_tag("KeyError"), Some(8));
         assert_eq!(exception_name_to_tag("AttributeError"), Some(9));
-        assert_eq!(exception_name_to_tag("IOError"), Some(10));
+        assert_eq!(exception_name_to_tag("IOError"), Some(24));
+        assert_eq!(exception_name_to_tag("EnvironmentError"), Some(24));
+        assert_eq!(exception_name_to_tag("ArithmeticError"), Some(10));
         assert_eq!(exception_name_to_tag("ZeroDivisionError"), Some(11));
         assert_eq!(exception_name_to_tag("OverflowError"), Some(12));
         assert_eq!(exception_name_to_tag("MemoryError"), Some(13));
@@ -290,7 +332,8 @@ mod tests {
         assert_eq!(exception_tag_to_name(31), Some("UnicodeError"));
         assert_eq!(exception_tag_to_name(32), Some("UnicodeEncodeError"));
         assert_eq!(exception_tag_to_name(33), Some("UnicodeDecodeError"));
-        assert_eq!(exception_tag_to_name(34), None);
+        assert_eq!(exception_tag_to_name(52), Some("ProcessLookupError"));
+        assert_eq!(exception_tag_to_name(53), None);
         assert_eq!(exception_tag_to_name(255), None);
     }
 

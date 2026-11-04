@@ -175,7 +175,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Multiple `except` clauses | ✅ | |
 | Exception binding `except E as e` | ✅ | |
 | Custom exception subclasses | ✅ | |
-| Built-in exception hierarchy | ✅ | `ValueError`, `TypeError`, `IndexError`, `IOError`, … |
+| Built-in exception hierarchy | ✅ | All concrete CPython builtin exceptions with their real parents (`except OSError` catches `FileNotFoundError`, `except LookupError` catches `KeyError`, `ArithmeticError`, `ConnectionError` subtree, …); `IOError`/`EnvironmentError` are aliases of `OSError`. No `Warning` hierarchy, no `ExceptionGroup` |
+| Bare `raise` / `__context__` with nested handlers | ✅ | Runtime handling stack (CPython `exc_info` stack): every handler exit pops it, including exceptional exits via a cleanup landing pad. Boundary: a generator suspended inside a handler does not save/restore its entry |
 | Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table` |
 | `except*` / `ExceptionGroup` | ❌ | Not implemented |
 

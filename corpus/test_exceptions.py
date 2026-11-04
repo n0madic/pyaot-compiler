@@ -2648,4 +2648,230 @@ assert _rvf_raises_type_error(lambda o: o % 1)
 assert _rvf_raises_type_error(lambda o: o ** 1)
 
 
+# ===== SECTION: builtin exception hierarchy (CPython's tree) =====
+
+def _eh_caught_by(kind: str) -> list[str]:
+    out: list[str] = []
+    try:
+        if kind == "fnf":
+            raise FileNotFoundError("f")
+        elif kind == "key":
+            raise KeyError("k")
+        elif kind == "idx":
+            raise IndexError("i")
+        elif kind == "nie":
+            raise NotImplementedError("n")
+        elif kind == "rec":
+            raise RecursionError("r")
+        elif kind == "zde":
+            raise ZeroDivisionError("z")
+        elif kind == "ovf":
+            raise OverflowError("o")
+        elif kind == "timeout":
+            raise TimeoutError("t")
+        elif kind == "conn":
+            raise ConnectionRefusedError("c")
+        elif kind == "uloc":
+            raise UnboundLocalError("u")
+        else:
+            raise ModuleNotFoundError("m")
+    except LookupError:
+        out.append("LookupError")
+    except ArithmeticError:
+        out.append("ArithmeticError")
+    except ConnectionError:
+        out.append("ConnectionError")
+    except OSError:
+        out.append("OSError")
+    except RuntimeError:
+        out.append("RuntimeError")
+    except NameError:
+        out.append("NameError")
+    except ImportError:
+        out.append("ImportError")
+    return out
+
+
+assert _eh_caught_by("fnf") == ["OSError"]
+assert _eh_caught_by("key") == ["LookupError"]
+assert _eh_caught_by("idx") == ["LookupError"]
+assert _eh_caught_by("nie") == ["RuntimeError"]
+assert _eh_caught_by("rec") == ["RuntimeError"]
+assert _eh_caught_by("zde") == ["ArithmeticError"]
+assert _eh_caught_by("ovf") == ["ArithmeticError"]
+assert _eh_caught_by("timeout") == ["OSError"]
+assert _eh_caught_by("conn") == ["ConnectionError"]
+assert _eh_caught_by("uloc") == ["NameError"]
+assert _eh_caught_by("mod") == ["ImportError"]
+
+
+def _eh_ioerror_alias() -> int:
+    n = 0
+    try:
+        raise IOError("io")
+    except OSError:
+        n += 1
+    try:
+        raise OSError("os")
+    except IOError:
+        n += 1
+    try:
+        raise PermissionError("p")
+    except EnvironmentError:
+        n += 1
+    try:
+        open("/nonexistent/dir/for/pyaot/test.txt")
+    except OSError:
+        n += 1
+    return n
+
+
+assert _eh_ioerror_alias() == 4
+
+
+def _eh_systemexit_not_exception() -> str:
+    try:
+        try:
+            raise SystemExit(3)
+        except Exception:
+            return "wrong"
+    except BaseException:
+        return "base"
+
+
+assert _eh_systemexit_not_exception() == "base"
+
+
+# ===== SECTION: handling stack (bare raise after a nested handled exception) =====
+
+def _hs_reraise_after_inner() -> str:
+    try:
+        try:
+            raise ValueError("outer")
+        except ValueError:
+            try:
+                raise KeyError("inner")
+            except KeyError:
+                pass
+            raise
+    except ValueError as e:
+        return "ValueError " + str(e)
+    except KeyError:
+        return "KeyError"
+    return "none"
+
+
+assert _hs_reraise_after_inner() == "ValueError outer"
+
+
+def _hs_three_levels() -> list[str]:
+    out: list[str] = []
+    try:
+        try:
+            raise ValueError("v")
+        except ValueError:
+            try:
+                raise KeyError("k")
+            except KeyError:
+                try:
+                    raise IndexError("i")
+                except IndexError:
+                    pass
+                try:
+                    raise
+                except KeyError:
+                    out.append("k")
+            raise
+    except ValueError:
+        out.append("v")
+    return out
+
+
+assert _hs_three_levels() == ["k", "v"]
+
+
+def _hs_inner_escapes_then_new_raise() -> str:
+    # An exception escaping a handler pops that handler's entry: after it is
+    # caught outside, a bare `raise` has nothing active to re-raise.
+    try:
+        try:
+            try:
+                raise ValueError("first")
+            except ValueError:
+                raise KeyError("second")
+        except KeyError:
+            pass
+        raise
+    except RuntimeError as e:
+        return str(e)
+    return "bad"
+
+
+assert _hs_inner_escapes_then_new_raise() == "No active exception to reraise"
+
+
+def _hs_finally_in_handler() -> str:
+    try:
+        raise ValueError("kept")
+    except ValueError:
+        try:
+            raise KeyError("x")
+        except KeyError:
+            pass
+        finally:
+            pass
+        try:
+            raise
+        except ValueError as e:
+            return str(e)
+    return "bad"
+
+
+assert _hs_finally_in_handler() == "kept"
+
+
+def _hs_loop_continue_in_handler() -> str:
+    for i in range(3):
+        try:
+            raise KeyError(str(i))
+        except KeyError:
+            if i < 2:
+                continue
+    try:
+        raise ValueError("after loop")
+    except ValueError:
+        try:
+            raise
+        except ValueError as e:
+            return str(e)
+    return "bad"
+
+
+assert _hs_loop_continue_in_handler() == "after loop"
+
+
+class _HsSwallow:
+    def __enter__(self) -> "_HsSwallow":
+        return self
+
+    def __exit__(self, a: object, b: object, c: object) -> bool:
+        return True
+
+
+def _hs_with_inside_handler() -> str:
+    try:
+        raise ValueError("outer")
+    except ValueError:
+        with _HsSwallow():
+            raise KeyError("swallowed")
+        try:
+            raise
+        except ValueError as e:
+            return str(e)
+    return "bad"
+
+
+assert _hs_with_inside_handler() == "outer"
+
+
 print("All exception tests passed!")
