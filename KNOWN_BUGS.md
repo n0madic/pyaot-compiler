@@ -258,6 +258,10 @@ Two root causes dominate:
       `RT_BYTES_STARTS/ENDS_WITH` declared i8 vs i64, collections/functools
       sentinel descriptors (`core-defs/src/runtime_func_def.rs`,
       `stdlib-defs collections.rs`, `functools.rs`).
+- [x] Mislabelled live descriptors caught by the new `CallRuntime` dst check:
+      stdlib object getters returning a tagged `Value` declared
+      `unary_to_i64` (Raw); `RT_STR_FIND/RFIND/INDEX/RINDEX` declared
+      `gc_roots_result` for a raw i64 position.
 - [ ] `Coercion::HeapToTagged` never produced (`mir/src/lib.rs:1197`).
 - [ ] Stale docs: optimizer crate header, core-defs ranges, runtime
       `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement.

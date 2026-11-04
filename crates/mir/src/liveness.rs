@@ -268,8 +268,12 @@ mod tests {
         // (alloc); print s1. s0 and n2 are dead at the second allocation and
         // cross no allocation while live → no roots. s1 is used by the
         // allocating print → rooted.
+        // Local 2 is a statically-known instance: a field store into it is
+        // a plain store (a `Tagged` base would be shape-checked and could
+        // raise, i.e. allocate).
+        let inst = Repr::Heap(HeapShape::Class(pyaot_utils::ClassId::new(0)));
         let f = func(
-            vec![STR, STR, Repr::Tagged],
+            vec![STR, STR, inst],
             vec![MirBlock {
                 insts: vec![
                     alloc_str(0),
