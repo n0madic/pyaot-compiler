@@ -7,6 +7,7 @@
 # `_fold_<source>()` function called at the end (isolation); module-level
 # classes that cannot be nested inside a function are hoisted here with a prefix.
 from collections import defaultdict, Counter, deque, OrderedDict
+import copy
 
 
 # ===== Hoisted module-level classes (pyaot: classes cannot nest in a function) =====
@@ -2453,6 +2454,78 @@ def _fold_kwargs_missing_required():
         pass
 
 
+# ── review fixes: mixed-kind sort, deque.rotate, copy/deepcopy ──
+def _review_fix_collections():
+    # One comparator for sort/sorted: numbers by value in any mix, tuples and
+    # lists lexicographically, unorderable mixes raise TypeError.
+    assert sorted([1, 0.5, 2]) == [0.5, 1, 2]
+    xs: list[float] = [3.5, 1, 2.0]
+    xs.sort()
+    assert xs == [1, 2.0, 3.5]
+    assert sorted([3, 2**70, 1, 2.5]) == [1, 2.5, 3, 2**70]
+    big = [3**50, 2**80, 2**70]
+    big.sort()
+    assert big == [2**70, 3**50, 2**80]
+    t = [(2, 1), (1, 2), (3, 0), (1, 1)]
+    t.sort()
+    assert t == [(1, 1), (1, 2), (2, 1), (3, 0)]
+    assert sorted([[2, 1], [1, 5], [1, 2]]) == [[1, 2], [1, 5], [2, 1]]
+    assert not ((1, 2) < (0.5, 2))
+    assert (1, 2) < (1.5, 0)
+    raised = False
+    try:
+        sorted([1, "a"])
+    except TypeError:
+        raised = True
+    assert raised
+
+    # rotate with spare ring capacity must permute, not expose empty slots.
+    dq = deque([1, 2, 3])
+    dq.rotate(1)
+    assert list(dq) == [3, 1, 2] and dq[0] == 3
+    dq.rotate(-2)
+    assert list(dq) == [2, 3, 1]
+    dq.append(4)
+    dq.rotate(2)
+    assert list(dq) == [1, 4, 2, 3]
+    assert dq.popleft() == 1 and dq.pop() == 3 and list(dq) == [4, 2]
+
+    # copy/deepcopy over tagged immediates (ints, bools, None).
+    a = [[1, 2], [3, True, None]]
+    b = copy.deepcopy(a)
+    b[0].append(9)
+    assert a == [[1, 2], [3, True, None]] and b == [[1, 2, 9], [3, True, None]]
+    assert copy.copy([1, 2, 3]) == [1, 2, 3]
+    d = {(1, 2): [1, 2], "k": {"x": 1}}
+    d2 = copy.deepcopy(d)
+    assert d2 == d and d2["k"] is not d["k"]
+
+    # copy/deepcopy keep the container kind (deque / defaultdict / Counter)
+    # and never return the original.
+    dq0 = deque([1, [2, 3]], maxlen=5)
+    dq1: deque = copy.copy(dq0)
+    dq1.append(9)
+    assert list(dq0) == [1, [2, 3]] and list(dq1) == [1, [2, 3], 9]
+    assert dq1 is not dq0 and dq1[1] is dq0[1]
+    dq2: deque = copy.deepcopy(dq0)
+    dq2[1].append(4)
+    assert list(dq0) == [1, [2, 3]] and list(dq2) == [1, [2, 3, 4]]
+    dd0: defaultdict = defaultdict(list)
+    dd0["a"].append(1)
+    dd1: defaultdict = copy.copy(dd0)
+    dd1["b"].append(2)
+    assert sorted(dd0.keys()) == ["a"] and sorted(dd1.keys()) == ["a", "b"]
+    dd2: defaultdict = copy.deepcopy(dd0)
+    dd2["a"].append(5)
+    assert dd0["a"] == [1] and dd2["a"] == [1, 5] and dd2["zz"] == []
+    c0 = Counter("aab")
+    c1: Counter = copy.copy(c0)
+    c1["a"] += 10
+    assert c0["a"] == 2 and c1["a"] == 12 and c1 is not c0
+    assert c1.most_common(1) == [("a", 12)]
+
+
+_review_fix_collections()
 _fold_dict_keyerror()
 _fold_kwargs_missing_required()
 

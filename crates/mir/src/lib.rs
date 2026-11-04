@@ -36,7 +36,7 @@ pub use coerce::CoerceInst;
 pub(crate) use coerce::is_legal_checked_coercion;
 pub use cold::cold_blocks;
 pub use liveness::roots_needed;
-pub use verify::{verify, VerifyError};
+pub use verify::{verify, verify_program, VerifyError};
 
 // Re-exported so consumers (`lowering`, `codegen`) can name builtin kinds.
 pub use pyaot_core_defs::BuiltinFunctionKind;
@@ -501,8 +501,11 @@ impl MirInst {
                 op: _,
                 operand,
             } => non_raw(operand),
-            // Truthiness never allocates (tag test / len check).
-            MirInst::Truthy { dst: _, operand: _ } => false,
+            // A raw operand is a register test. A tagged one goes through
+            // `rt_is_truthy`, which on a class instance calls the user's
+            // `__bool__`/`__len__` — arbitrary code that can allocate and
+            // collect, so live heap locals must stay rooted across it.
+            MirInst::Truthy { dst: _, operand } => non_raw(operand),
             // Any call can re-enter user code or the allocating runtime.
             MirInst::Call { .. }
             | MirInst::CallBuiltin { .. }
@@ -516,9 +519,13 @@ impl MirInst {
             | MirInst::MakeClosure { .. }
             | MirInst::MakeCell { .. }
             | MirInst::MakeGenerator { .. } => true,
-            // Field/cell/global/class-attr traffic is load/store on existing
-            // objects (uniform tagged storage, no allocation).
-            MirInst::GetField { .. } | MirInst::SetField { .. } => false,
+            // Field traffic on a statically-known instance is a load/store
+            // (uniform tagged storage, no allocation). A `Tagged` base is
+            // shape-checked at runtime and RAISES TypeError (allocating the
+            // exception) when it is not an instance.
+            MirInst::GetField { base, .. } | MirInst::SetField { base, .. } => {
+                matches!(repr_of(base), Repr::Tagged)
+            }
             // The by-name forms can RAISE AttributeError (allocates).
             MirInst::GetFieldNamed { .. } | MirInst::SetFieldNamed { .. } => true,
             MirInst::IsInstance { .. } => false,
@@ -644,8 +651,10 @@ impl MirInst {
                 l,
                 r,
             } => non_raw(l) || non_raw(r),
-            // Truthiness is a tag test / len check — never raises.
-            MirInst::Truthy { .. } => false,
+            // A raw truthiness test is a register compare. A tagged one may
+            // run a user `__bool__`/`__len__` (side effects, exceptions), so
+            // it must never be deleted as dead.
+            MirInst::Truthy { dst: _, operand } => non_raw(operand),
             // Calls run arbitrary code.
             MirInst::Call { .. }
             | MirInst::CallBuiltin { .. }
@@ -658,9 +667,11 @@ impl MirInst {
             | MirInst::MakeClosure { .. }
             | MirInst::MakeCell { .. }
             | MirInst::MakeGenerator { .. } => false,
+            // A `Tagged`-base field read raises TypeError on a non-instance,
+            // so it is only removable on a statically-known instance.
+            MirInst::GetField { base, .. } => matches!(repr_of(base), Repr::Tagged),
             // Reads of existing objects.
-            MirInst::GetField { .. }
-            | MirInst::GetClassAttr { .. }
+            MirInst::GetClassAttr { .. }
             | MirInst::IsInstance { .. }
             | MirInst::CellGet { .. }
             | MirInst::GlobalGet { .. } => false,

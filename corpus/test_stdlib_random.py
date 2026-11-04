@@ -269,4 +269,18 @@ kwargs_result: list[int] = random.choices([1, 2, 3], weights=[10.0, 1.0, 1.0], k
 assert len(kwargs_result) == 5, f"kwargs choices: expected 5, got {len(kwargs_result)}"
 print("Stdlib keyword arguments passed!")
 
+# ── review fixes: choices() edge cases ──
+assert random.choices([1, 2, 3], k=-1) == []
+assert random.choices([], k=0) == []
+_choices_raised = False
+try:
+    random.choices([1, 2, 3], weights=[1.0], k=2)
+except ValueError:
+    _choices_raised = True
+assert _choices_raised
+random.seed(1)
+_int_weighted: list[int] = random.choices([1, 2, 3], weights=[1, 2, 3], k=4)
+assert _int_weighted == [1, 3, 3, 2], _int_weighted
+print("Stdlib choices edge cases passed!")
+
 print("All random tests passed!")

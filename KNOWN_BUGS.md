@@ -22,56 +22,63 @@ Two root causes dominate:
 - [x] Differential oracle: `PYAOT_PYTHON` selects the interpreter (corpus needs
       3.14 / PEP 649); `PYTHONCOERCECLOCALE=0` for both sides (PEP 538 adds
       `LC_CTYPE` to CPython's `os.environ`).
-- [ ] Differential gate runs every corpus entry at `--opt-level none` AND the
+- [x] Differential gate runs every corpus entry at `--opt-level none` AND the
       default level (Truthy/devirt/inliner bugs diverge between levels).
-- [ ] GC-stress run of the corpus (`RUSTFLAGS="--cfg gc_stress_test"` runtime).
-- [ ] MIR verifier: `Return` operand vs `f.ret`; reject `Return(None)` from
-      non-void (`mir/src/verify.rs:401`).
-- [ ] MIR verifier: `params.len() <= locals.len()` and `locals[i].repr ==
+- [x] GC-stress mode for the gate: `PYAOT_GC_STRESS=1` (+ `PYAOT_CORPUS_FILTER`
+      to pick entries — a full-corpus stress run takes hours).
+- [x] MIR verifier: `Return` operand vs `f.ret` (`mir/src/verify.rs:401`).
+      (`Return(None)` stays legal: codegen materializes a default of `f.ret`.)
+- [x] MIR verifier: `params.len() <= locals.len()` and `locals[i].repr ==
       params[i]` (`verify.rs:370`).
-- [ ] MIR verifier: `CallRuntime` dst vs `def.return_semantic()` — Raw must be
-      `Raw(I64)`, Tagged/Heap must be GC roots (`verify.rs:965`).
+- [x] MIR verifier: `CallRuntime` dst vs an explicit `mir_return_semantic` /
+      `gc_roots_result` — Raw must be `Raw(I64)`, Tagged/Heap must be GC roots
+      (`verify.rs:965`). Un-annotated defs still accept the wide class.
 - [ ] MIR verifier: `Heap(shape)` arg slot must get matching shape or checked
       coercion (`verify.rs:937`); `ContainerResult::Heap` shape (`:1028`).
-- [ ] MIR verifier panics on `MakeClosure` of a zero-param callee
+      Note: no descriptor declares `MirSemantic::Heap` yet, so the arg check
+      is moot until one does; the real gap is the bare-`new` defs whose
+      params default to the wide class (see Phase 7 descriptor cleanup).
+- [x] MIR verifier panics on `MakeClosure` of a zero-param callee
       (`verify.rs:707`, `params[1..]`). ✓
-- [ ] MIR verifier: range-check program FuncIds (entry, generators, vtables,
-      thunks); reject a block that is its own handler.
+- [x] MIR verifier: range-check program FuncIds (entry, generators, vtables,
+      thunks) via `verify_program`; reject a block that is its own handler.
 
 ## Phase 1 — GC / memory safety
 
-- [ ] **C** `Truthy::may_allocate`/`has_side_effects` return false but
+- [x] **C** `Truthy::may_allocate`/`has_side_effects` return false but
       `rt_is_truthy` runs user `__bool__`/`__len__` → unrooted locals freed;
       DCE drops `__bool__` side effects (`mir/src/lib.rs:505`, `:648`). ✓
-- [ ] **M** `GetField`/`SetField` with a `Tagged` base can raise (allocates) —
+- [x] **M** `GetField`/`SetField` with a `Tagged` base can raise (allocates) —
       treat as allocating/side-effecting (`mir/src/lib.rs:521`, `:662`).
-- [ ] **C** `copy.copy`/`copy.deepcopy` deref tagged immediates
+- [x] **C** `copy.copy`/`copy.deepcopy` deref tagged immediates
       (`runtime/src/copy.rs:16`, `:208`): `copy.deepcopy([[1,2]])` segfaults. ✓
-- [ ] **M** deepcopy dict branch: `new_key` unrooted across value copy
-      (`copy.rs:344`); copy of deque/defaultdict/Counter returns the original
-      (`copy.rs:178`, `:499`). ✓ (aliasing)
-- [ ] **C** sort comparators deref tagged immediates on mixed kinds
+- [x] **M** deepcopy dict branch: `new_key` unrooted across value copy
+      (`copy.rs:344`).
+- [x] **M** copy/deepcopy of deque/defaultdict/Counter returns the original
+      (`copy.rs:178`, `:499`). ✓
+- [x] **C** sort comparators deref tagged immediates on mixed kinds
       (`runtime/src/sorted.rs:55`, `list/mutation.rs:433`):
       `sorted([1,0.5,2])`, `(1,2)<(0.5,2)` segfault; `list.sort` has no
       Tuple/Bytes arm (sorts by address); BigInts ordered by address. Merge the
       two comparators. ✓
-- [ ] **C** `sorted()` result list unrooted during `stable_sort` while a user
+- [x] **C** `sorted()` result list unrooted during `stable_sort` while a user
       `__lt__` allocates (`sorted.rs:196`, `:230`). ✓
-- [ ] **C** `deque.rotate` only moves `head` (`runtime/src/deque.rs:371`);
+- [x] **C** `deque.rotate` only moves `head` (`runtime/src/deque.rs:371`);
       `pop`/`popleft` leave stale pointers in vacated slots. ✓
-- [ ] **H** `StringIO.truncate()` past end reads out of bounds
+- [x] **H** `StringIO.truncate()` past end reads out of bounds
       (`runtime/src/stringio.rs:299`). ✓
 - [ ] **M** StringIO positions are byte offsets, not char offsets → invalid
       UTF-8 strings (`stringio.rs:176`). ✓
-- [ ] **H** `random.choices`: negative `k`, short `weights`, int weights all
+- [x] **H** `random.choices`: negative `k`, short `weights`, int weights all
       segfault (`runtime/src/random.rs:333`). ✓
-- [ ] **M** `rt_exc_instance_str` allocates under `EXCEPTION_STATE.borrow_mut`;
+- [x] **M** `rt_exc_instance_str` allocates under `EXCEPTION_STATE.borrow_mut`;
       GC's `try_borrow` silently skips exception roots on conflict
       (`exceptions/ffi.rs:467`).
-- [ ] **L** `rt_obj_eq`/`obj_cmp_ordering` deref `non_null` without `is_ptr`
+- [x] **L** `rt_obj_eq`/`obj_cmp_ordering` deref `non_null` without `is_ptr`
       when the other side is null (`ops/comparison.rs:44`).
-- [ ] **L** `rt_make_list`/`list_insert` don't check `alloc_zeroed` null;
-      `Layout.expect` panics inside `extern "C"`.
+- [x] **L** `rt_make_list`/list growth don't check `alloc_zeroed` null;
+      `Layout.expect` panics inside `extern "C"` (now `MemoryError`). Other
+      containers (dict/set/str/bytes) still use `.expect`.
 
 ## Phase 2 — Root A: unchecked Raw/Heap from inference
 
@@ -208,6 +215,10 @@ Two root causes dominate:
       (`os.path.exists(p)` untyped) (`typeck:1131`). ✓
 - [ ] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
 - [ ] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
+- [ ] **M** `rt_any_getitem` (gradual `<dyn>[i]`) returns None for any
+      unhandled receiver kind instead of raising TypeError / dispatching
+      `__getitem__` (`runtime/src/ops/comparison.rs` `_ => null`). Deque arm
+      added; bytes/bytearray/range/instances still fall through.
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 

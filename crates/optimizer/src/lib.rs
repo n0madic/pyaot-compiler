@@ -30,7 +30,7 @@ pub mod peephole;
 pub(crate) mod testutil;
 
 #[cfg(debug_assertions)]
-use pyaot_mir::verify;
+use pyaot_mir::verify_program;
 use pyaot_mir::{MirProgram, VerifyError};
 
 /// A representation-preserving rewrite over typed MIR. Passes are infallible
@@ -100,10 +100,7 @@ impl PassManager {
 /// Verify every function — debug builds only; a no-op in release.
 #[cfg(debug_assertions)]
 fn verify_all(program: &MirProgram) -> Result<(), VerifyError> {
-    for func in &program.funcs {
-        verify(func, &program.funcs)?;
-    }
-    Ok(())
+    verify_program(program)
 }
 
 #[cfg(not(debug_assertions))]

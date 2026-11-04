@@ -284,7 +284,9 @@ mod tests {
     #[test]
     fn char_table_matches_system_python() {
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/gen_unicode_tables.py");
-        let Ok(out) = std::process::Command::new("python3").arg(script).output() else {
+        // `PYAOT_PYTHON` selects the same oracle as the differential gate.
+        let python = std::env::var("PYAOT_PYTHON").unwrap_or_else(|_| "python3".into());
+        let Ok(out) = std::process::Command::new(python).arg(script).output() else {
             return; // no python3 here — nothing to compare against
         };
         if !out.status.success() {

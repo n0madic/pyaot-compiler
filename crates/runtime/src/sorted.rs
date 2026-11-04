@@ -9,102 +9,53 @@ use pyaot_core_defs::Value;
 
 // Helper functions for sorting
 
-/// Compare two list/tuple elements; both `a` and `b` are tagged `Value` bit-patterns
-/// cast to `*mut Obj`. Dispatches on `Value::tag()` for Int/Bool/None, then on the
-/// object header's `TypeTagKind` for heap objects (Str, Float, …).
+/// The one runtime ordering comparator for sort / `sorted` / `min` / `max`
+/// and element-wise list/tuple ordering. Both `a` and `b` are tagged `Value`
+/// bit-patterns cast to `*mut Obj`.
+///
+/// * numbers (int / bool / bignum / float, in any mix) compare by value
+///   (`bigint::num_cmp`); a NaN compares `Equal` (CPython's `<` is False both
+///   ways, so the sort leaves the pair in place);
+/// * lists and tuples compare lexicographically (recursing here);
+/// * class instances order via `__lt__`;
+/// * everything else goes to `ops::obj_cmp_ordering`, which orders same-type
+///   str/bytes and raises `TypeError` for unorderable mixes (`[1, "a"]`,
+///   `None`), never dereferencing a tagged immediate as a heap header.
 pub(crate) unsafe fn compare_list_elements(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
-    use crate::object::{BytesObj, FloatObj, StrObj, TypeTagKind};
-    use pyaot_core_defs::Value;
+    use crate::object::TypeTagKind;
     use std::cmp::Ordering;
 
-    // Handle null cases
-    if a.is_null() && b.is_null() {
-        return Ordering::Equal;
-    }
-    if a.is_null() {
-        return Ordering::Less;
-    }
-    if b.is_null() {
-        return Ordering::Greater;
-    }
-
-    // Check Value-tagged primitives before heap pointer dereference.
     let va = Value(a as u64);
     let vb = Value(b as u64);
+    // Hot path: two small ints.
     if va.is_int() && vb.is_int() {
         return va.unwrap_int().cmp(&vb.unwrap_int());
     }
-    if va.is_bool() && vb.is_bool() {
-        return va.unwrap_bool().cmp(&vb.unwrap_bool());
+    if a.is_null() || b.is_null() {
+        return (a as usize).cmp(&(b as usize));
     }
-    // Cross-type Int/Bool comparison (Python: bool is int subtype)
-    if (va.is_int() || va.is_bool()) && (vb.is_int() || vb.is_bool()) {
-        let ia: i64 = if va.is_int() {
-            va.unwrap_int()
-        } else {
-            va.unwrap_bool() as i64
-        };
-        let ib: i64 = if vb.is_int() {
-            vb.unwrap_int()
-        } else {
-            vb.unwrap_bool() as i64
-        };
-        return ia.cmp(&ib);
+    if let (Some(na), Some(nb)) = (
+        crate::bigint::classify_num(va),
+        crate::bigint::classify_num(vb),
+    ) {
+        return crate::bigint::num_cmp(&na, &nb).unwrap_or(Ordering::Equal);
     }
-
-    let tag_a = (*a).header.type_tag;
-    let tag_b = (*b).header.type_tag;
-
-    // If types differ, compare by type tag
-    if tag_a != tag_b {
-        return (tag_a as u8).cmp(&(tag_b as u8));
-    }
-
-    match tag_a {
-        TypeTagKind::Str => {
-            let str_a = a as *mut StrObj;
-            let str_b = b as *mut StrObj;
-            let len_a = (*str_a).len;
-            let len_b = (*str_b).len;
-            let data_a = std::slice::from_raw_parts((*str_a).data.as_ptr(), len_a);
-            let data_b = std::slice::from_raw_parts((*str_b).data.as_ptr(), len_b);
-            data_a.cmp(data_b)
-        }
-        TypeTagKind::Bytes => {
-            // Same layout as StrObj; lexicographic byte-slice ordering
-            // (CPython compares bytes by unsigned byte value). Without this
-            // arm bytes elements fall through to pointer-address comparison
-            // below, so `sorted([b"c", b"a"])` would not sort by content.
-            let bytes_a = a as *mut BytesObj;
-            let bytes_b = b as *mut BytesObj;
-            let len_a = (*bytes_a).len;
-            let len_b = (*bytes_b).len;
-            let data_a = std::slice::from_raw_parts((*bytes_a).data.as_ptr(), len_a);
-            let data_b = std::slice::from_raw_parts((*bytes_b).data.as_ptr(), len_b);
-            data_a.cmp(data_b)
-        }
-        TypeTagKind::Float => {
-            let float_a = (*(a as *mut FloatObj)).value;
-            let float_b = (*(b as *mut FloatObj)).value;
-            float_a.partial_cmp(&float_b).unwrap_or(Ordering::Equal)
-        }
-        TypeTagKind::Instance => {
-            // Class instances order via their `__lt__` dunder (CPython sorts
-            // with `<`). Falls back to a stable address ordering when the
-            // class defines no `__lt__`.
-            crate::ops::try_instance_lt_ordering(a, b)
-                .unwrap_or_else(|| (a as usize).cmp(&(b as usize)))
-        }
-        TypeTagKind::Tuple => {
-            // Nested tuples (and sorting a `list[tuple]`) order lexicographically,
-            // not by pointer address — recurses back here element-wise.
-            crate::tuple::tuple_cmp_ordering(a, b)
-        }
-        _ => {
-            // For other types, compare by pointer address
-            (a as usize).cmp(&(b as usize))
+    if va.is_ptr() && vb.is_ptr() {
+        let (tag_a, tag_b) = ((*a).type_tag(), (*b).type_tag());
+        if tag_a == tag_b {
+            match tag_a {
+                TypeTagKind::Tuple => return crate::tuple::tuple_cmp_ordering(a, b),
+                TypeTagKind::List => return crate::list::list_cmp_ordering(a, b),
+                TypeTagKind::Instance => {
+                    if let Some(ord) = crate::ops::try_instance_lt_ordering(a, b) {
+                        return ord;
+                    }
+                }
+                _ => {}
+            }
         }
     }
+    crate::ops::obj_cmp_ordering(a, b)
 }
 
 /// Stable sort for an array of `Value` slots.
@@ -128,6 +79,20 @@ unsafe fn stable_sort(data: *mut pyaot_core_defs::Value, len: usize, reverse: bo
     for (i, elem) in vec.into_iter().enumerate() {
         *data.add(i) = elem;
     }
+}
+
+/// `stable_sort` over a freshly built (otherwise unreachable) result list,
+/// keeping it rooted for the duration of the sort.
+unsafe fn sort_rooted(list: *mut Obj, len: usize, reverse: bool) {
+    let mut roots: [*mut Obj; 1] = [list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+    stable_sort((*(list as *mut crate::object::ListObj)).data, len, reverse);
+    gc_pop();
 }
 
 /// Wrap a raw key-function return value into a tagged `Value` for comparison.
@@ -218,9 +183,10 @@ fn sorted_list_impl(list: *mut Obj, reverse: i64) -> *mut Obj {
             }
             (*new_list_obj).len = len;
 
-            // Sort using stable sort (required for CPython compatibility)
-            let data = (*new_list_obj).data;
-            stable_sort(data, len, reverse != 0);
+            // Sort using stable sort (required for CPython compatibility).
+            // Root the result across the sort: the comparator may run a user
+            // `__lt__` that allocates and triggers a collection.
+            sort_rooted(new_list, len, reverse != 0);
         }
 
         new_list
@@ -251,9 +217,10 @@ fn sorted_tuple_impl(tuple: *mut Obj, reverse: i64) -> *mut Obj {
             }
             (*new_list_obj).len = len;
 
-            // Sort using stable sort (required for CPython compatibility)
-            let data = (*new_list_obj).data;
-            stable_sort(data, len, reverse != 0);
+            // Sort using stable sort (required for CPython compatibility).
+            // Root the result across the sort: the comparator may run a user
+            // `__lt__` that allocates and triggers a collection.
+            sort_rooted(new_list, len, reverse != 0);
         }
 
         new_list

@@ -465,27 +465,30 @@ pub extern "C" fn rt_exc_instance_str(
 ) -> *mut crate::object::Obj {
     // Try to get message from ExceptionState first
     // This works for both built-in and custom exceptions
+    // Copy the message location out of the borrow and allocate AFTER
+    // releasing it: `rt_make_str` may collect, and the GC's root scan cannot
+    // read the exception state while it is mutably borrowed.
     let msg = with_exception_state(|state| {
         let exc = state
             .current_exception
             .as_ref()
             .or(state.handling_exception.as_ref());
-        if let Some(exc) = exc {
-            // Check if this is the same instance
-            if !instance.is_null() && exc.instance == instance {
+        match exc {
+            // Same instance: its owned message buffer (stable across a GC —
+            // the collector never frees exception-state buffers).
+            Some(exc) if !instance.is_null() && exc.instance == instance => {
                 if exc.message_len > 0 && !exc.message.is_null() {
-                    return Some(unsafe {
-                        crate::string::rt_make_str(exc.message, exc.message_len)
-                    });
+                    Some((exc.message, exc.message_len))
+                } else {
+                    Some((std::ptr::null(), 0))
                 }
-                return Some(unsafe { crate::string::rt_make_str(std::ptr::null(), 0) });
             }
+            _ => None,
         }
-        None
     });
 
-    if let Some(msg) = msg {
-        return msg;
+    if let Some((ptr, len)) = msg {
+        return unsafe { crate::string::rt_make_str(ptr, len) };
     }
 
     // Fallback: try to read .args from instance (for lazy-created built-in exception instances)

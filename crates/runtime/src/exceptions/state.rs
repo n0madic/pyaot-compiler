@@ -49,6 +49,11 @@ where
     EXCEPTION_STATE.with(|state| f(&mut state.borrow_mut()))
 }
 
+/// Can the exception state be borrowed right now (no live `borrow_mut`)?
+pub(super) fn exception_state_borrowable() -> bool {
+    EXCEPTION_STATE.with(|state| state.try_borrow().is_ok())
+}
+
 /// Helper to access exception state (read-only, non-panicking).
 /// Used by GC to collect exception pointers. Uses `try_borrow` so it returns a
 /// default value instead of panicking when the RefCell is already mutably borrowed

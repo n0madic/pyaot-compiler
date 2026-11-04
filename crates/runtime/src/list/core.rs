@@ -6,7 +6,7 @@ use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{ListObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
-use std::alloc::{alloc_zeroed, realloc, Layout};
+use std::alloc::realloc;
 
 /// Create a new list with given capacity.
 /// Returns: pointer to allocated ListObj
@@ -29,9 +29,8 @@ pub fn rt_make_list(capacity: i64) -> *mut Obj {
         // `*mut Obj` layout, so existing capacity math and GC assertions
         // survive unchanged.
         if capacity > 0 {
-            let data_layout = Layout::array::<Value>(capacity)
-                .expect("Allocation size overflow - capacity too large");
-            let data_ptr = alloc_zeroed(data_layout) as *mut Value;
+            let data_layout = super::value_layout(capacity);
+            let data_ptr = super::alloc_zeroed_values(data_layout);
             (*list).data = data_ptr;
         } else {
             (*list).data = std::ptr::null_mut();
@@ -203,15 +202,12 @@ pub fn rt_list_push(list: *mut Obj, value: *mut Obj) {
             let data = (*list_obj).data;
 
             if data.is_null() {
-                let new_layout = Layout::array::<Value>(new_capacity)
-                    .expect("Allocation size overflow - capacity too large");
-                let new_data = alloc_zeroed(new_layout) as *mut Value;
+                let new_layout = super::value_layout(new_capacity);
+                let new_data = super::alloc_zeroed_values(new_layout);
                 (*list_obj).data = new_data;
             } else {
-                let old_layout = Layout::array::<Value>(capacity)
-                    .expect("Allocation size overflow - capacity too large");
-                let new_layout = Layout::array::<Value>(new_capacity)
-                    .expect("Allocation size overflow - capacity too large");
+                let old_layout = super::value_layout(capacity);
+                let new_layout = super::value_layout(new_capacity);
                 let new_data =
                     realloc(data as *mut u8, old_layout, new_layout.size()) as *mut Value;
                 if new_data.is_null() {
@@ -264,8 +260,7 @@ pub unsafe fn list_finalize(list: *mut Obj) {
 
     // Free the data array if allocated
     if !data.is_null() && capacity > 0 {
-        let data_layout = Layout::array::<Value>(capacity)
-            .expect("Allocation size overflow - capacity too large");
+        let data_layout = super::value_layout(capacity);
         dealloc(data as *mut u8, data_layout);
     }
 }

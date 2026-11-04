@@ -290,9 +290,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
     // ── verify after lowering (debug): the first MIR is checked before any pass. ──
     #[cfg(debug_assertions)]
     {
-        for func in &mir.funcs {
-            pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
-        }
+        pyaot_mir::verify_program(&mir).map_err(verify_to_error)?;
     }
 
     // ── optimizer: `--opt-level none` is the single conservative switch (empty
@@ -377,10 +375,7 @@ fn compile(cli: &Cli, source: &str) -> Result<()> {
 /// interval that produced a raw divide of a value that is actually a bignum.
 /// Linear in MIR — negligible cost.
 fn verify_pre_codegen(mir: &MirProgram) -> Result<()> {
-    for func in &mir.funcs {
-        pyaot_mir::verify(func, &mir.funcs).map_err(verify_to_error)?;
-    }
-    Ok(())
+    pyaot_mir::verify_program(mir).map_err(verify_to_error)
 }
 
 fn verify_to_error(e: pyaot_mir::VerifyError) -> CompilerError {

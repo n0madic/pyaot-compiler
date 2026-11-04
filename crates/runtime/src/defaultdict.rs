@@ -31,7 +31,7 @@ const FACTORY_NONE: u8 = 255; // No factory (acts like regular dict)
 
 /// Extract the factory_tag from the high byte of a DictObj's entries_capacity.
 #[inline]
-fn get_factory_tag(dict: *mut DictObj) -> u8 {
+pub(crate) fn get_factory_tag(dict: *mut DictObj) -> u8 {
     unsafe { ((*dict).entries_capacity >> FACTORY_TAG_SHIFT) as u8 }
 }
 

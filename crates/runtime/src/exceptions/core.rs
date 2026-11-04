@@ -103,6 +103,13 @@ impl Drop for ExceptionObject {
 /// current and handling exceptions (including cause/context chains) and returns
 /// all non-null instance pointers so the GC can mark them as roots.
 pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
+    // A collection while the exception state is mutably borrowed means some
+    // runtime path allocated under `with_exception_state`: silently skipping
+    // these roots would free live exception instances, so fail loudly.
+    if !super::state::exception_state_borrowable() {
+        eprintln!("fatal: GC ran while the exception state was borrowed (missed root scan)");
+        std::process::abort();
+    }
     with_exception_state_ref(|state| {
         let mut ptrs = Vec::new();
         fn collect_from(exc: &ExceptionObject, ptrs: &mut Vec<*mut crate::object::Obj>) {

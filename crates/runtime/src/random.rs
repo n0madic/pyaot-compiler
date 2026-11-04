@@ -335,28 +335,22 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
     let pop_list = population as *mut ListObj;
     let pop_len = (*pop_list).len;
 
+    // CPython: `k <= 0` yields an empty list (the sampling loop runs zero
+    // times) — never a negative length cast to a huge `usize`.
+    if k <= 0 {
+        return crate::list::rt_make_list(0);
+    }
     if pop_len == 0 {
         raise_exc!(
             pyaot_core_defs::BuiltinExceptionKind::ValueError,
             "Cannot choose from an empty population"
         );
     }
-
     let k = k as usize;
 
-    // Build cumulative weights
-    let mut cum_weights: Vec<f64> = Vec::with_capacity(pop_len);
-    if !weights.is_null() {
-        crate::debug_assert_type_tag!(weights, TypeTagKind::List, "rt_random_choices weights");
-        let weights_list = weights as *mut ListObj;
-        let mut total = 0.0f64;
-        for i in 0..pop_len {
-            let w_obj = (*(*weights_list).data.add(i)).0 as *mut crate::object::Obj;
-            let w = crate::boxing::rt_unbox_float(w_obj);
-            total += w;
-            cum_weights.push(total);
-        }
-    } else {
+    // `weights=None` arrives as a null pointer or the tagged None Value.
+    let weights_given = !weights.is_null() && !Value(weights as u64).is_none();
+    if !weights_given {
         // No weights: use floor(random() * n) like CPython
         let result = crate::list::rt_make_list(k as i64);
         let result_list = result as *mut ListObj;
@@ -364,7 +358,7 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
             let mut rng = rng.borrow_mut();
             let n = pop_len as f64;
             for i in 0..k {
-                let idx = (rng.random() * n).floor() as usize;
+                let idx = ((rng.random() * n).floor() as usize).min(pop_len - 1);
                 *(*result_list).data.add(i) = *(*pop_list).data.add(idx);
             }
         });
@@ -372,9 +366,51 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
         return result;
     }
 
-    let total = *cum_weights
-        .last()
-        .expect("cumulative weights must be non-empty");
+    // Build cumulative weights. The weights list must match the population
+    // length (reading past its end would be an out-of-bounds read), and each
+    // weight may be any real number — int/bool/bignum as well as float.
+    if !Value(weights as u64).is_ptr() || (*weights).header.type_tag != TypeTagKind::List {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::TypeError,
+            "choices() weights must be a list"
+        );
+    }
+    let weights_list = weights as *mut ListObj;
+    if (*weights_list).len != pop_len {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "The number of weights does not match the population"
+        );
+    }
+    let mut cum_weights: Vec<f64> = Vec::with_capacity(pop_len);
+    let mut total = 0.0f64;
+    for i in 0..pop_len {
+        let w = match crate::bigint::classify_num(*(*weights_list).data.add(i)) {
+            Some(crate::bigint::Num::Int(n)) => n as f64,
+            Some(crate::bigint::Num::Float(f)) => f,
+            Some(crate::bigint::Num::Big(b)) => {
+                num_traits::ToPrimitive::to_f64(&b).unwrap_or(f64::INFINITY)
+            }
+            None => raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "choices() weights must be numbers"
+            ),
+        };
+        total += w;
+        cum_weights.push(total);
+    }
+    if total <= 0.0 {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Total of weights must be greater than zero"
+        );
+    }
+    if !total.is_finite() {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Total of weights must be finite"
+        );
+    }
 
     // Build result list
     let result = crate::list::rt_make_list(k as i64);

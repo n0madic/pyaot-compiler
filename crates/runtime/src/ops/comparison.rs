@@ -43,6 +43,12 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     }
     if a.is_null() || b.is_null() {
         let non_null = if a.is_null() { b } else { a };
+        let v = Value(non_null as u64);
+        // The other side may be a tagged immediate (int/bool/None): test the
+        // tag, never dereference it as a header.
+        if !v.is_ptr() {
+            return v.is_none() as i8;
+        }
         unsafe {
             return if (*non_null).type_tag() == TypeTagKind::None {
                 1
@@ -225,7 +231,7 @@ pub extern "C" fn rt_obj_eq_abi(a: Value, b: Value) -> i8 {
 
 /// Helper function to compare two orderable heap objects
 /// Returns Ordering or panics with TypeError for incompatible types
-pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
+pub(crate) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     // Handle null (None) - None is not orderable
@@ -525,7 +531,9 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 let boxed_key =
                     pyaot_core_defs::Value::from_int(index).0 as *mut crate::object::Obj;
                 match (*obj).type_tag() {
-                    TypeTagKind::DefaultDict => crate::defaultdict::rt_defaultdict_get(obj, boxed_key),
+                    TypeTagKind::DefaultDict => {
+                        crate::defaultdict::rt_defaultdict_get(obj, boxed_key)
+                    }
                     TypeTagKind::Counter => crate::counter::rt_counter_get(obj, boxed_key),
                     _ => crate::dict::rt_dict_getitem(obj, boxed_key),
                 }
@@ -534,6 +542,8 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 // String subscript returns single-char string
                 crate::string::rt_str_getchar(obj, index)
             }
+            // A gradual `<dyn deque>[i]` (e.g. the result of `copy.copy(dq)`).
+            TypeTagKind::Deque => crate::deque::rt_deque_get(obj, index),
             _ => std::ptr::null_mut(),
         }
     }

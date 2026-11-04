@@ -300,17 +300,19 @@ pub unsafe fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
-    let new_len = if size < 0 {
+    let requested = if size < 0 {
         (*sio_obj).position
     } else {
-        // Clamp to current length: truncate cannot extend beyond existing content
-        (size as usize).min((*sio_obj).len)
+        size as usize
     };
+    // Truncate never extends: a position/size past the end (e.g. after
+    // `seek(100000)`) leaves the content alone — growing `len` past the
+    // written bytes would expose (and read) memory beyond the buffer.
+    (*sio_obj).len = requested.min((*sio_obj).len);
+    // CPython's truncate() does NOT change the stream position, and returns
+    // the requested size, not the resulting length.
 
-    (*sio_obj).len = new_len;
-    // CPython's truncate() does NOT change the stream position
-
-    new_len as i64
+    requested as i64
 }
 #[export_name = "rt_stringio_truncate"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

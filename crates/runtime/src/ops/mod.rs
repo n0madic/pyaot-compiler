@@ -19,6 +19,7 @@ pub use dunder_dispatch::{
     try_int_dunder, try_iter_dunder, try_repr_dunder, try_str_dunder,
 };
 
+pub(crate) use comparison::obj_cmp_ordering;
 pub use comparison::{
     rt_any_delitem, rt_any_getitem, rt_check_bound, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp,
     rt_obj_contains, rt_obj_eq,

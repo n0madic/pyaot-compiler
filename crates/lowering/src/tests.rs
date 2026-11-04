@@ -17,9 +17,7 @@ fn lowered(src: &str) -> MirProgram {
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     let program = super::lower(&module, &resolve, &interner, &classes).expect("lower");
-    for f in &program.funcs {
-        pyaot_mir::verify(f, &program.funcs).expect("verify");
-    }
+    pyaot_mir::verify_program(&program).expect("verify");
     program
 }
 

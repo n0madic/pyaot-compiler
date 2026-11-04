@@ -9,7 +9,9 @@ use std::collections::HashMap;
 /// Immutable types (Int, Float, Bool, Str, None, Bytes, Tuple) are returned as-is.
 /// Mutable containers (List, Dict, Set, Instance) get a new container with copied references.
 pub unsafe fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
-    if obj.is_null() {
+    // Tagged immediates (int/bool/None) are values, not heap objects: they
+    // are their own copy, and must never be dereferenced as a header.
+    if obj.is_null() || !Value(obj as u64).is_ptr() {
         return obj;
     }
 
@@ -43,12 +45,16 @@ pub unsafe fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
         // ByteArray is MUTABLE — a full-range slice clones the buffer.
         TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_slice(obj, i64::MIN, i64::MAX),
 
-        // Dict - shallow copy (preserves insertion order)
-        TypeTagKind::Dict => {
+        // Deque - shallow copy (same maxlen).
+        TypeTagKind::Deque => crate::deque::rt_deque_copy(obj),
+
+        // Dict / defaultdict / Counter - shallow copy (preserves insertion
+        // order and the container kind, incl. the defaultdict factory)
+        TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
             let orig = obj as *mut DictObj;
             let len = (*orig).len;
 
-            let new_dict = crate::dict::rt_make_dict(len as i64);
+            let new_dict = empty_dict_like(obj, len);
 
             if len > 0 {
                 // Root new_dict while rt_dict_set may trigger GC on resize
@@ -198,9 +204,24 @@ pub extern "C" fn rt_copy_deepcopy_abi(obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_copy_deepcopy(obj.unwrap_ptr()) })
 }
 
+/// A fresh, empty container of the same dict-family kind as `obj` (dict,
+/// defaultdict with the same factory, or Counter), sized for `len` entries.
+unsafe fn empty_dict_like(obj: *mut Obj, len: usize) -> *mut Obj {
+    match (*obj).header.type_tag {
+        TypeTagKind::DefaultDict => crate::defaultdict::rt_make_defaultdict(
+            len as i64,
+            crate::defaultdict::get_factory_tag(obj as *mut DictObj) as i64,
+        ),
+        TypeTagKind::Counter => crate::counter::rt_make_counter_empty(),
+        _ => crate::dict::rt_make_dict(len as i64),
+    }
+}
+
 /// Internal recursive helper for deep copy with cycle detection
 unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>) -> *mut Obj {
-    if obj.is_null() {
+    // Tagged immediates (int/bool/None) are values, not heap objects: they
+    // are their own copy, and must never be dereferenced as a header.
+    if obj.is_null() || !Value(obj as u64).is_ptr() {
         return obj;
     }
 
@@ -311,8 +332,36 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             }
         }
 
-        // Dict - deep copy each key and value
-        TypeTagKind::Dict => {
+        // Deque - deep copy each element (same maxlen)
+        TypeTagKind::Deque => {
+            let obj_addr = obj as usize;
+            if let Some(&cached) = memo.get(&obj_addr) {
+                return cached;
+            }
+            let orig = obj as *mut crate::object::DequeObj;
+            let new_deque = crate::deque::rt_make_deque((*orig).maxlen);
+            memo.insert(obj_addr, new_deque);
+            // Root the new deque and the in-flight element copy across the
+            // recursive copies and `rt_deque_append` (both may allocate).
+            let mut roots: [*mut Obj; 2] = [new_deque, std::ptr::null_mut()];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+            for i in 0..(*orig).len {
+                let idx = ((*orig).head + i) % (*orig).capacity;
+                let elem = (*(*orig).data.add(idx)).0 as *mut Obj;
+                roots[1] = deep_copy_recursive(elem, memo);
+                crate::deque::rt_deque_append(roots[0], roots[1]);
+            }
+            gc_pop();
+            roots[0]
+        }
+
+        // Dict / defaultdict / Counter - deep copy each key and value
+        TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
             let obj_addr = obj as usize;
             if let Some(&cached) = memo.get(&obj_addr) {
                 return cached;
@@ -321,17 +370,20 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             let orig = obj as *mut DictObj;
             let len = (*orig).len;
 
-            let new_dict = crate::dict::rt_make_dict(len as i64);
+            let new_dict = empty_dict_like(obj, len);
 
             // Register in memo before recursing
             memo.insert(obj_addr, new_dict);
 
             if len > 0 {
-                // Root new_dict across recursive allocs and rt_dict_set
-                let mut roots: [*mut Obj; 1] = [new_dict];
+                // Root new_dict across recursive allocs and rt_dict_set, plus
+                // slot 1 for the freshly copied key: it is otherwise held only
+                // by the (untraced) Rust memo while the value copy and
+                // `rt_dict_set` allocate.
+                let mut roots: [*mut Obj; 2] = [new_dict, std::ptr::null_mut()];
                 let mut frame = ShadowFrame {
                     prev: std::ptr::null_mut(),
-                    nroots: 1,
+                    nroots: 2,
                     roots: roots.as_mut_ptr(),
                 };
                 gc_push(&mut frame);
@@ -342,9 +394,10 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                     let key = (*entry).key;
                     if key.0 != 0 {
                         let value = (*entry).value;
-                        let new_key = deep_copy_recursive(key.0 as *mut Obj, memo);
+                        roots[1] = deep_copy_recursive(key.0 as *mut Obj, memo);
                         let new_value = deep_copy_recursive(value.0 as *mut Obj, memo);
-                        crate::dict::rt_dict_set(roots[0], new_key, new_value);
+                        crate::dict::rt_dict_set(roots[0], roots[1], new_value);
+                        roots[1] = std::ptr::null_mut();
                         memo.insert(obj_addr, roots[0]);
                     }
                 }

@@ -27,7 +27,38 @@ pub(crate) fn list_grow_capacity(capacity: usize) -> usize {
     }
 }
 
+/// Layout of an `n`-slot `Value` buffer. A size overflow (e.g. `[0] * 2**60`)
+/// raises `MemoryError` instead of panicking across the `extern "C"` boundary.
+pub(crate) fn value_layout(n: usize) -> std::alloc::Layout {
+    match std::alloc::Layout::array::<pyaot_core_defs::Value>(n) {
+        Ok(layout) => layout,
+        Err(_) => unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::MemoryError,
+                "list size overflow"
+            )
+        },
+    }
+}
+
+/// Zeroed `Value` buffer for `layout`; raises `MemoryError` when the
+/// allocator fails rather than returning a null data pointer to write through.
+///
+/// # Safety
+/// `layout` must have a non-zero size.
+pub(crate) unsafe fn alloc_zeroed_values(layout: std::alloc::Layout) -> *mut pyaot_core_defs::Value {
+    let p = std::alloc::alloc_zeroed(layout) as *mut pyaot_core_defs::Value;
+    if p.is_null() {
+        raise_exc!(
+            crate::exceptions::ExceptionType::MemoryError,
+            "cannot allocate list storage"
+        );
+    }
+    p
+}
+
 // Re-export all public functions
+pub(crate) use compare::list_cmp_ordering;
 pub use compare::{rt_list_cmp, rt_list_eq};
 pub use convert::{
     rt_list_from_bytes, rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set,
