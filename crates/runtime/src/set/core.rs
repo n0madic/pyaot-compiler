@@ -60,6 +60,7 @@ pub(super) fn set_resize(set: *mut SetObj, new_capacity: usize) {
         (*set).entries = new_entries;
         (*set).capacity = new_capacity;
         (*set).len = 0;
+        (*set).tombstones = 0;
 
         // Rehash existing entries using triangular probing (power-of-2 capacity)
         let mask = new_capacity - 1;
@@ -137,6 +138,7 @@ pub fn rt_make_set(capacity: i64) -> *mut Obj {
         let set = obj as *mut SetObj;
         (*set).len = 0;
         (*set).capacity = capacity;
+        (*set).tombstones = 0;
 
         // Allocate entries array separately
         let entries_layout = Layout::array::<SetEntry>(capacity)
@@ -443,5 +445,77 @@ unsafe fn find_set_extremum_with_key(
         i64::from(extremum_slot.unwrap_bool()) as *mut Obj
     } else {
         extremum_slot.0 as *mut Obj
+    }
+}
+
+/// Build a fresh mutable set from any iterable (iterator protocol). The caller
+/// must keep `iterable` alive (rooted) across the call.
+pub(crate) fn set_from_iterable(iterable: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    let set = rt_make_set(8);
+    unsafe {
+        // Root the set, the iterator and the current element: iteration and
+        // `rt_set_add` (resize) may allocate.
+        let mut roots: [*mut Obj; 3] = [set, iterable, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+        roots[1] = crate::iterator::rt_iter_value_dyn(roots[1]);
+        loop {
+            let elem = crate::iterator::rt_iter_next_no_exc(roots[1]);
+            if elem.is_null() {
+                break;
+            }
+            roots[2] = elem;
+            super::ops::rt_set_add(roots[0], roots[2]);
+        }
+        gc_pop();
+        roots[0]
+    }
+}
+
+/// Is `obj` a heap set or frozenset (the physical `SetObj` layout)?
+///
+/// # Safety
+/// `obj` must be null, a tagged immediate, or a valid object pointer.
+pub(crate) unsafe fn is_set_family(obj: *mut Obj) -> bool {
+    let v = Value(obj as u64);
+    v.is_ptr()
+        && !obj.is_null()
+        && matches!(
+            (*obj).type_tag(),
+            crate::object::TypeTagKind::Set | crate::object::TypeTagKind::FrozenSet
+        )
+}
+
+/// Run `f(set, other_as_set)`: CPython's set METHODS accept any iterable as
+/// `other`, so a non-set operand (list, tuple, dict, range, generator, …) is
+/// first collected into a temporary set (rooted, together with `set`, for the
+/// duration of `f`). A set/frozenset operand is passed through untouched; a
+/// null (`None`) operand is passed through for the callee's own handling.
+pub(crate) fn with_set_operand<R>(
+    set: *mut Obj,
+    other: *mut Obj,
+    f: impl FnOnce(*mut Obj, *mut Obj) -> R,
+) -> R {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    unsafe {
+        if other.is_null() || is_set_family(other) {
+            return f(set, other);
+        }
+        let mut roots: [*mut Obj; 3] = [set, other, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+        roots[2] = set_from_iterable(roots[1]);
+        let r = f(roots[0], roots[2]);
+        gc_pop();
+        r
     }
 }

@@ -2529,4 +2529,47 @@ _review_fix_collections()
 _fold_dict_keyerror()
 _fold_kwargs_missing_required()
 
+
+# --- set methods accept any iterable `other`; tombstone-aware resizing ---
+def _set_methods_any_iterable() -> None:
+    s = {1.5}
+    s.update([2])
+    assert sorted(s) == [1.5, 2]
+    assert sorted({1, 2}.union((3,))) == [1, 2, 3]
+    assert sorted({1, 2}.union({7: "a"})) == [1, 2, 7]
+    assert {1, 2}.issubset([1, 2, 3])
+    assert not {1, 5}.issubset((1, 2))
+    assert {1, 2}.issuperset(range(2)) is False
+    assert {0, 1, 2}.issuperset(range(2))
+    assert {1, 2}.isdisjoint([3, 4])
+    assert not {1, 2}.isdisjoint([2])
+    t = {0, 1, 2, 3, 4}
+    t.difference_update(range(3))
+    assert sorted(t) == [3, 4]
+    t.intersection_update([3, 9])
+    assert t == {3}
+    t.symmetric_difference_update([3, 7])
+    assert t == {7}
+    assert sorted({1, 2, 3}.difference([2])) == [1, 3]
+    assert sorted({1, 2, 3}.intersection(x for x in [2, 3, 4])) == [2, 3]
+    assert sorted({1, 2}.symmetric_difference([2, 5])) == [1, 5]
+    assert sorted(frozenset([1, 2]).union([5])) == [1, 2, 5]
+    u: set[int] = set()
+    for i in range(2000):
+        u.add(i)
+        u.discard(i)
+    assert len(u) == 0
+    for i in range(100):
+        u.add(i)
+    for i in range(0, 100, 2):
+        u.remove(i)
+    assert len(u) == 50 and sum(u) == 2500
+    u.clear()
+    u.add(3)
+    assert u.pop() == 3 and len(u) == 0
+
+
+_set_methods_any_iterable()
+
+
 print("All collections tests passed!")

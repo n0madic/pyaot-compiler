@@ -234,6 +234,12 @@ Two root causes dominate:
       `Dyn` receiver dispatches by runtime tag (`rt_obj_method` gained
       generator / StringIO / BytesIO / file arms). `throw()` was never
       hijacked; it is now an explicit "not supported" error.
+- [x] **C** set methods taking an `other` operand (`update`, `union`,
+      `intersection`, `difference`, `symmetric_difference`, the `*_update`
+      forms, `issubset`/`issuperset`/`isdisjoint`) cast `other` to `SetObj`
+      unchecked: `s.update([2])` read a list as a set. Fixed: a non-set
+      `other` is collected from any iterable first (`set/core.rs`
+      `with_set_operand`). Corpus: test_collections.py.
 - [ ] **L** `generator.throw()` unsupported (needs resume-protocol support
       for injecting an exception at the paused yield).
 - [ ] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
@@ -271,7 +277,11 @@ Two root causes dominate:
       devirt `single_def` clones (`devirt.rs:173`); inline size recompute +
       env var per refusal (`inline.rs:131`); no FuncRef/DataId cache
       (`codegen lib.rs:1981`); linear generator dispatch (`:943`).
-- [ ] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
+- [x] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
+      Fixed: SetObj tracks a tombstone count (layout extension) so resizing
+      uses fill = len + tombstones without the O(capacity) scan per add; a
+      mostly-tombstone table is compacted in place. Corpus:
+      test_collections.py.
 - [ ] `iconst` not masked for I8/I32; unchecked int tag shift of literals
       (`codegen lib.rs:2572`, `:1254`).
 - [ ] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),

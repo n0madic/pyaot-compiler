@@ -13,6 +13,11 @@ use super::core::find_set_slot;
 /// Check if all elements of a are in b (subset test)
 /// Returns: 1 if a is subset of b, 0 otherwise
 pub fn rt_set_issubset(a: *mut Obj, b: *mut Obj) -> i8 {
+    // `set.issubset(iterable)` accepts any iterable `b` (CPython).
+    super::core::with_set_operand(a, b, issubset_sets)
+}
+
+fn issubset_sets(a: *mut Obj, b: *mut Obj) -> i8 {
     if a.is_null() || b.is_null() {
         return 0;
     }
@@ -51,8 +56,8 @@ pub extern "C" fn rt_set_issubset_abi(a: Value, b: Value) -> i8 {
 /// Check if all elements of b are in a (superset test)
 /// Returns: 1 if a is superset of b, 0 otherwise
 pub fn rt_set_issuperset(a: *mut Obj, b: *mut Obj) -> i8 {
-    // a is superset of b if b is subset of a
-    rt_set_issubset(b, a)
+    // a is superset of b if b is subset of a (`b` may be any iterable).
+    super::core::with_set_operand(a, b, |a, b| issubset_sets(b, a))
 }
 #[export_name = "rt_set_issuperset"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -63,6 +68,10 @@ pub extern "C" fn rt_set_issuperset_abi(a: Value, b: Value) -> i8 {
 /// Check if sets have no elements in common (disjoint test)
 /// Returns: 1 if sets are disjoint, 0 otherwise
 pub fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
+    super::core::with_set_operand(a, b, isdisjoint_sets)
+}
+
+fn isdisjoint_sets(a: *mut Obj, b: *mut Obj) -> i8 {
     if a.is_null() || b.is_null() {
         return 1;
     }
@@ -113,7 +122,7 @@ pub fn rt_set_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     if crate::set::rt_set_len(a) != crate::set::rt_set_len(b) {
         return 0;
     }
-    rt_set_issubset(a, b)
+    issubset_sets(a, b)
 }
 #[export_name = "rt_set_eq"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

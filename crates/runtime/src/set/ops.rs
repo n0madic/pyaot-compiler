@@ -21,28 +21,18 @@ pub fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_add");
         let set_obj = set as *mut SetObj;
 
-        // Check load factor and resize if needed.
-        // Count tombstones to prevent table degradation from repeated add/remove cycles:
-        // after many deletions the table fills with tombstones, but `len` stays low so
-        // the standard len-only check never triggers a resize. We include tombstones in
-        // the fill count so the table is compacted once (fill / capacity) >= 0.75.
-        // The scan is O(capacity) in the worst case, but that is the same order as the
-        // resize itself, so the amortised cost per element remains O(1).
-        let mut tombstone_count = 0usize;
+        // Resize on FILL (live entries + tombstones), tracked incrementally
+        // in `tombstones`, so repeated add/remove cycles cannot saturate the
+        // table with tombstones. A table that is mostly tombstones is
+        // compacted at the same capacity instead of doubling.
         let cap = (*set_obj).capacity;
-        if (*set_obj).len * 4 >= cap * 2 {
-            // Only scan when len is already above 50% — below that, tombstones alone
-            // cannot push fill past 75%, so the cheap len-only check is sufficient.
-            let entries = (*set_obj).entries;
-            for i in 0..cap {
-                if (*entries.add(i)).elem == TOMBSTONE {
-                    tombstone_count += 1;
-                }
-            }
-        }
-        let fill = (*set_obj).len + tombstone_count;
+        let fill = (*set_obj).len + (*set_obj).tombstones;
         if fill * 4 >= cap * 3 {
-            let new_capacity = cap * 2;
+            let new_capacity = if (*set_obj).len * 2 < cap {
+                cap
+            } else {
+                cap * 2
+            };
             set_resize(set_obj, new_capacity);
         }
 
@@ -51,7 +41,11 @@ pub fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
 
         if slot >= 0 {
             let entry = (*set_obj).entries.add(slot as usize);
-            let is_new = (*entry).elem.0 == 0 || (*entry).elem == TOMBSTONE;
+            let reuses_tombstone = (*entry).elem == TOMBSTONE;
+            let is_new = (*entry).elem.0 == 0 || reuses_tombstone;
+            if reuses_tombstone {
+                (*set_obj).tombstones -= 1;
+            }
             if is_new {
                 (*entry).hash = hash;
                 (*entry).elem = pyaot_core_defs::Value(elem as u64);
@@ -120,6 +114,7 @@ pub fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
             // Mark as tombstone
             (*entry).elem = TOMBSTONE;
             (*set_obj).len -= 1;
+            (*set_obj).tombstones += 1;
         } else {
             raise_exc!(
                 crate::exceptions::ExceptionType::KeyError,
@@ -152,6 +147,7 @@ pub fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
             // Mark as tombstone
             (*entry).elem = TOMBSTONE;
             (*set_obj).len -= 1;
+            (*set_obj).tombstones += 1;
         }
         // If not found, just do nothing (unlike remove)
     }
@@ -181,6 +177,7 @@ pub fn rt_set_clear(set: *mut Obj) {
             (*entry).elem = pyaot_core_defs::Value(0);
         }
         (*set_obj).len = 0;
+        (*set_obj).tombstones = 0;
     }
 }
 #[export_name = "rt_set_clear"]
@@ -263,6 +260,7 @@ pub fn rt_set_pop(set: *mut Obj) -> *mut Obj {
                 // Mark as tombstone and decrease length
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
+                (*set_obj).tombstones += 1;
                 return elem.0 as *mut Obj;
             }
         }
@@ -280,15 +278,19 @@ pub extern "C" fn rt_set_pop_abi(set: Value) -> Value {
     Value::from_ptr(rt_set_pop(set.unwrap_ptr()))
 }
 
-/// Add all elements from another set
+/// `set.update(other)` — add every element of `other` (any iterable)
 pub fn rt_set_update(set: *mut Obj, other: *mut Obj) {
+    super::core::with_set_operand(set, other, |set, other| rt_set_update_sets(set, other))
+}
+
+fn rt_set_update_sets(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
 
     unsafe {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_update");
-        debug_assert_type_tag!(other, TypeTagKind::Set, "rt_set_update");
+        debug_assert_set_family!(other, "rt_set_update");
 
         let other_obj = other as *mut SetObj;
         let capacity = (*other_obj).capacity;
@@ -311,13 +313,19 @@ pub extern "C" fn rt_set_update_abi(set: Value, other: Value) {
 
 /// Update set to intersection with another set
 pub fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
+    super::core::with_set_operand(set, other, |set, other| {
+        rt_set_intersection_update_sets(set, other)
+    })
+}
+
+fn rt_set_intersection_update_sets(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
 
     unsafe {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_intersection_update");
-        debug_assert_type_tag!(other, TypeTagKind::Set, "rt_set_intersection_update");
+        debug_assert_set_family!(other, "rt_set_intersection_update");
 
         let set_obj = set as *mut SetObj;
         let capacity = (*set_obj).capacity;
@@ -330,6 +338,7 @@ pub fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
                 // Not in other, remove from set
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
+                (*set_obj).tombstones += 1;
             }
         }
     }
@@ -342,13 +351,19 @@ pub extern "C" fn rt_set_intersection_update_abi(set: Value, other: Value) {
 
 /// Update set to difference (remove elements in another set)
 pub fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
+    super::core::with_set_operand(set, other, |set, other| {
+        rt_set_difference_update_sets(set, other)
+    })
+}
+
+fn rt_set_difference_update_sets(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
 
     unsafe {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_difference_update");
-        debug_assert_type_tag!(other, TypeTagKind::Set, "rt_set_difference_update");
+        debug_assert_set_family!(other, "rt_set_difference_update");
 
         let set_obj = set as *mut SetObj;
         let capacity = (*set_obj).capacity;
@@ -361,6 +376,7 @@ pub fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
                 // In other, remove from set
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
+                (*set_obj).tombstones += 1;
             }
         }
     }
@@ -373,17 +389,19 @@ pub extern "C" fn rt_set_difference_update_abi(set: Value, other: Value) {
 
 /// Update set to symmetric difference
 pub fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
+    super::core::with_set_operand(set, other, |set, other| {
+        rt_set_symmetric_difference_update_sets(set, other)
+    })
+}
+
+fn rt_set_symmetric_difference_update_sets(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
 
     unsafe {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_symmetric_difference_update");
-        debug_assert_type_tag!(
-            other,
-            TypeTagKind::Set,
-            "rt_set_symmetric_difference_update"
-        );
+        debug_assert_set_family!(other, "rt_set_symmetric_difference_update");
 
         let other_obj = other as *mut SetObj;
 
@@ -407,6 +425,7 @@ pub fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
             if elem.0 != 0 && elem != TOMBSTONE && rt_set_contains(other, elem.0 as *mut Obj) != 0 {
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
+                (*set_obj).tombstones += 1;
             }
         }
 
