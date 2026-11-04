@@ -208,6 +208,12 @@ pub extern "C" fn rt_obj_add_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        // A set-like dict view operand: `set(a) - b` (CPython dictviews_sub).
+        if let Some(r) =
+            crate::dict_view::try_view_setop(a, b, crate::dict_view::ViewSetOp::Sub)
+        {
+            return r;
+        }
         if either_is_instance(a, b) {
             if let Some(result) = try_class_dunder(a, b, FNV_SUB, FNV_RSUB) {
                 return result;
@@ -512,12 +518,20 @@ pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
 
 macro_rules! bitwise_op {
     ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr) => {
-        bitwise_op!($name, $abi, $export, $num, $fwd, $refl, None);
+        bitwise_op!($name, $abi, $export, $num, $fwd, $refl, None, None);
     };
-    ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr, $logic:expr) => {
+    ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr, $logic:expr, $view:expr) => {
         #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub fn $name(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             unsafe {
+                // A set-like dict view operand (`d.keys() & s`, `s | d.items()`):
+                // the result is a fresh `set` (CPython dictviews_and/or/xor).
+                let view: Option<crate::dict_view::ViewSetOp> = $view;
+                if let Some(op) = view {
+                    if let Some(r) = crate::dict_view::try_view_setop(a, b, op) {
+                        return r;
+                    }
+                }
                 // Class instance operand: route through user-defined bitwise
                 // dunders (`__and__`/`__rand__`, etc.) following CPython's
                 // forward-then-reflected protocol — the same as `rt_obj_add`.
@@ -566,7 +580,8 @@ bitwise_op!(
     num_bitand,
     FNV_AND,
     FNV_RAND,
-    Some(|x, y| x & y)
+    Some(|x, y| x & y),
+    Some(crate::dict_view::ViewSetOp::And)
 );
 bitwise_op!(
     rt_obj_bitor,
@@ -575,7 +590,8 @@ bitwise_op!(
     num_bitor,
     FNV_OR,
     FNV_ROR,
-    Some(|x, y| x | y)
+    Some(|x, y| x | y),
+    Some(crate::dict_view::ViewSetOp::Or)
 );
 bitwise_op!(
     rt_obj_bitxor,
@@ -584,7 +600,8 @@ bitwise_op!(
     num_bitxor,
     FNV_XOR,
     FNV_RXOR,
-    Some(|x, y| x ^ y)
+    Some(|x, y| x ^ y),
+    Some(crate::dict_view::ViewSetOp::Xor)
 );
 bitwise_op!(
     rt_obj_lshift,

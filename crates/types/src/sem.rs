@@ -10,6 +10,7 @@ use pyaot_utils::{ClassId, InternedString};
 
 use crate::builtin_classes::{
     BUILTIN_DEFAULTDICT_CLASS_ID, BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID,
+    BUILTIN_DICT_ITEMS_CLASS_ID, BUILTIN_DICT_KEYS_CLASS_ID, BUILTIN_DICT_VALUES_CLASS_ID,
     BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
     BUILTIN_TUPLE_VAR_CLASS_ID,
 };
@@ -46,6 +47,16 @@ impl Sig {
     pub fn fixed_arity(&self) -> usize {
         self.params.len() - usize::from(self.varargs) - usize::from(self.kwargs)
     }
+}
+
+/// Which of the three live dict views a [`SemTy::dict_view`] is. `Keys` and
+/// `Items` are set-like (`& | - ^`, subset comparisons, `isdisjoint`);
+/// `Values` is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictViewKind {
+    Keys,
+    Values,
+    Items,
 }
 
 /// The semantic (Python-level) type.
@@ -175,6 +186,28 @@ impl SemTy {
         }
     }
 
+    /// The live `dict_keys[K]` view returned by `dict.keys()`.
+    pub fn dict_keys_of(k: SemTy) -> SemTy {
+        SemTy::Generic {
+            base: BUILTIN_DICT_KEYS_CLASS_ID,
+            args: vec![k],
+        }
+    }
+    /// The live `dict_values[V]` view returned by `dict.values()`.
+    pub fn dict_values_of(v: SemTy) -> SemTy {
+        SemTy::Generic {
+            base: BUILTIN_DICT_VALUES_CLASS_ID,
+            args: vec![v],
+        }
+    }
+    /// The live `dict_items[K, V]` view returned by `dict.items()`.
+    pub fn dict_items_of(k: SemTy, v: SemTy) -> SemTy {
+        SemTy::Generic {
+            base: BUILTIN_DICT_ITEMS_CLASS_ID,
+            args: vec![k, v],
+        }
+    }
+
     /// `Optional[T]` sugar (`Union[T, None]`), built through the lattice `join`
     /// so the result is a canonical union: a nested union is flattened, a
     /// member already `None` is not duplicated, `Optional[Dyn]` is `Dyn`, and
@@ -240,6 +273,24 @@ impl SemTy {
             || self.list_elem().is_some()
             || self.tuple_elems().is_some()
             || self.tuple_var_elem().is_some()
+    }
+    /// If this is one of the three live dict views, its kind plus the element
+    /// type ITERATION yields (`K` for keys, `V` for values, `tuple[K, V]` for
+    /// items).
+    pub fn dict_view(&self) -> Option<(DictViewKind, SemTy)> {
+        let SemTy::Generic { base, args } = self else {
+            return None;
+        };
+        let arg = |i: usize| args.get(i).cloned().unwrap_or(SemTy::Dyn);
+        if *base == BUILTIN_DICT_KEYS_CLASS_ID {
+            Some((DictViewKind::Keys, arg(0)))
+        } else if *base == BUILTIN_DICT_VALUES_CLASS_ID {
+            Some((DictViewKind::Values, arg(0)))
+        } else if *base == BUILTIN_DICT_ITEMS_CLASS_ID {
+            Some((DictViewKind::Items, SemTy::tuple_of(vec![arg(0), arg(1)])))
+        } else {
+            None
+        }
     }
     pub fn deque_elem(&self) -> Option<&SemTy> {
         match self {

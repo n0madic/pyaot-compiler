@@ -177,6 +177,10 @@ pub unsafe fn py_hash(obj: *mut Obj) -> Result<i64, String> {
         TypeTagKind::Set => Err("set".into()),
         TypeTagKind::ByteArray => Err("bytearray".into()),
         TypeTagKind::Deque => Err("collections.deque".into()),
+        // The set-like views define `__eq__` (so `__hash__` is None); a values
+        // view keeps identity hashing (the default arm).
+        TypeTagKind::DictKeys => Err("dict_keys".into()),
+        TypeTagKind::DictItems => Err("dict_items".into()),
         // Everything else (files, closures, iterators, generators, …) has
         // identity hashing in CPython.
         _ => Ok(py_hash_identity(obj as usize)),

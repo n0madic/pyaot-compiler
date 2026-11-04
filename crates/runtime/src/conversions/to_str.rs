@@ -463,8 +463,48 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             }
             crate::instance::instance_default_repr(obj)
         }
+        TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+            dict_view_repr_string(obj)
+        }
         _ => format!("<object at {:p}>", obj),
     }
+}
+
+/// Build the repr of a live dict view over the dict's current contents:
+/// `dict_keys(['a', 'b'])`, `dict_values([1, 2])`,
+/// `dict_items([('a', 1), ('b', 2)])` (CPython `dictview_repr`; `str()` is the
+/// same). Shared by `str()`/`repr()` (here) and the stdout print path.
+pub(crate) unsafe fn dict_view_repr_string(obj: *mut Obj) -> String {
+    use crate::object::{DictObj, DictViewObj};
+    let tag = (*obj).type_tag();
+    let dict = (*(obj as *mut DictViewObj)).dict as *mut DictObj;
+    let mut s = String::from(tag.type_name());
+    s.push_str("([");
+    let mut first = true;
+    for i in 0..(*dict).entries_len {
+        let entry = (*dict).entries.add(i);
+        let key = (*entry).key;
+        if key.0 == 0 {
+            continue;
+        }
+        if !first {
+            s.push_str(", ");
+        }
+        first = false;
+        match tag {
+            TypeTagKind::DictKeys => obj_repr_string(&mut s, key.0 as *mut Obj),
+            TypeTagKind::DictValues => obj_repr_string(&mut s, (*entry).value.0 as *mut Obj),
+            _ => {
+                s.push('(');
+                obj_repr_string(&mut s, key.0 as *mut Obj);
+                s.push_str(", ");
+                obj_repr_string(&mut s, (*entry).value.0 as *mut Obj);
+                s.push(')');
+            }
+        }
+    }
+    s.push_str("])");
+    s
 }
 
 /// Build the repr string of a `Counter` — `Counter({k: c, ...})` with entries in

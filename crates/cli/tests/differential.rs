@@ -91,6 +91,11 @@ const PHASE_CORPUS: &[&str] = &[
     // test_collections_dict_set_bytes.py; folds p4_methods, p15_tuple_slice_slot,
     // p21_container_methods, p35_counter, p51_container_aug_ops).
     "test_collections.py",
+    // Live dict views (dict_keys / dict_values / dict_items): liveness after
+    // mutation, iteration + size-change RuntimeError, `in`, set operators,
+    // `==`/subset ordering, repr, reversed, Dyn-receiver dispatch, and the
+    // self-less `def m(*args)` method binding.
+    "test_dict_views.py",
     // ── Builtins & strings ──
     // Scalar/introspection builtins, zip(N≥3), int methods, conversions,
     // isinstance-tuple, type(), builtins-as-values (folds p17_type_builtin,

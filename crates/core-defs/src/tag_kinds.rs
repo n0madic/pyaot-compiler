@@ -194,6 +194,13 @@ define_tag_kinds! {
     // `ListObj`: header + len + capacity + separately-allocated `*mut u8`
     // buffer). Modeled as a `RuntimeObject` — no element-type precision.
     ByteArray = 32 => "ByteArray" => "<class 'bytearray'>" => "bytearray",
+    // Live dict views (`dict.keys()` / `.values()` / `.items()`): a
+    // `DictViewObj` (header + one pointer to the viewed dict-family object).
+    // They hold no snapshot — every operation (len / iter / `in` / set ops /
+    // repr) reads the live dict, so later mutations of the dict are visible.
+    DictKeys = 33 => "DictKeys" => "<class 'dict_keys'>" => "dict_keys",
+    DictValues = 34 => "DictValues" => "<class 'dict_values'>" => "dict_values",
+    DictItems = 35 => "DictItems" => "<class 'dict_items'>" => "dict_items",
 }
 
 #[cfg(test)]
@@ -258,7 +265,9 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(30), Some(TypeTagKind::Closure));
         assert_eq!(TypeTagKind::from_tag(31), Some(TypeTagKind::FrozenSet));
         assert_eq!(TypeTagKind::from_tag(32), Some(TypeTagKind::ByteArray));
-        assert_eq!(TypeTagKind::from_tag(33), None);
+        assert_eq!(TypeTagKind::from_tag(33), Some(TypeTagKind::DictKeys));
+        assert_eq!(TypeTagKind::from_tag(35), Some(TypeTagKind::DictItems));
+        assert_eq!(TypeTagKind::from_tag(36), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

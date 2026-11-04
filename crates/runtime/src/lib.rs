@@ -175,6 +175,7 @@ pub mod math_ops;
 pub mod bytearray;
 pub mod bytes;
 pub mod dict;
+pub mod dict_view;
 pub mod frozenset;
 pub mod hash_table_utils;
 pub mod list;

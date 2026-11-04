@@ -4141,6 +4141,12 @@ impl<'a> FnLower<'a> {
         if matches!(recv_ty, SemTy::Dyn | SemTy::Union(_)) {
             return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
         }
+        // A live dict view (`d.keys().isdisjoint(s)`) has no static method
+        // table: its few methods dispatch on the view's runtime tag through
+        // the same `rt_obj_method` seam (typeck types the result).
+        if recv_ty.dict_view().is_some() {
+            return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
+        }
         // A generator (typed `Iterator(T)`): `send(v)` / `close()` lower to the
         // generator ops. Decided by the receiver's type — never by the method
         // name alone, so a StringIO/file/user-class `.close()` keeps its own
@@ -4470,6 +4476,24 @@ impl<'a> FnLower<'a> {
                 )
             })?;
         let ret = self.sigs[fid.index()].ret.clone();
+        // A self-less `def m(*args)` (no fixed parameter at all): CPython binds
+        // the instance as `args[0]`, so the receiver is packed into the
+        // `*args` tuple ahead of the call-site positionals instead of filling
+        // a (nonexistent) `self` slot.
+        let sig = &self.sigs[fid.index()];
+        if sig.varargs && sig.params.len() == 1 + usize::from(sig.kwargs) {
+            let mut all = Vec::with_capacity(args.len() + 1);
+            all.push(recv);
+            all.extend_from_slice(args);
+            let argvals = self.build_call_operands(fid, false, &all, kwargs, span)?;
+            let dst = self.alloc_temp(ret.clone());
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: fid,
+                args: argvals,
+            });
+            return Ok((dst, ret));
+        }
         let self_param = self.sigs[fid.index()].params[0].clone();
         let (rl, rr) = self.lower_expr(recv)?;
         let self_arg = self.coerce(rl, rr, self_param)?;
@@ -5729,11 +5753,11 @@ impl<'a> FnLower<'a> {
                     self.none_value()
                 }
                 M::Extend if argn == 1 => {
-                    self.emit_container(
-                        ContainerOp::ListExtend,
-                        vec![recv_arg, a[0].clone()],
-                        None,
-                    )?;
+                    // `rt_list_extend` reads a `ListObj`; any other iterable
+                    // (a dict view, set, tuple, generator, …) is materialized
+                    // into a list through the iterator protocol first.
+                    let src = self.materialize_list_from(a[0].0, a[0].1.clone())?;
+                    self.emit_container(ContainerOp::ListExtend, vec![recv_arg, src], None)?;
                     self.none_value()
                 }
                 // `list.remove(x)` — mutate in place (ValueError on miss, raised
@@ -7094,14 +7118,20 @@ impl<'a> FnLower<'a> {
                 if args.is_empty() {
                     return self.empty_container(C::DictNew, result_heap);
                 }
-                let (pl, pr) = self.lower_expr(args[0])?;
+                let (mut pl, mut pr) = self.lower_expr(args[0])?;
                 // `dict(d)` on a known dict is a copy, not an iteration of
                 // key/value PAIRS (`rt_dict_from_pairs` expects a pair list).
-                let op = if self.func.exprs[args[0]].ty.dict_kv().is_some() {
+                let arg_ty = self.func.exprs[args[0]].ty.clone();
+                let op = if arg_ty.dict_kv().is_some() {
                     C::DictCopy
                 } else {
                     C::DictFromPairs
                 };
+                // `dict(d.items())`: materialize the live view's pairs into the
+                // list `rt_dict_from_pairs` reads.
+                if arg_ty.dict_view().is_some() {
+                    (pl, pr) = self.materialize_list_from(pl, pr)?;
+                }
                 let (dst, ret) = self.emit_container(op, vec![(pl, pr)], Some(result_heap))?;
                 Ok((dst.unwrap(), ret))
             }

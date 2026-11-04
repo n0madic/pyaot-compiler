@@ -189,6 +189,9 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Request => rt_emit!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
         TypeTagKind::NotImplemented => rt_emit!("NotImplemented"),
         TypeTagKind::Closure => rt_emit!("<{} at {:p}>", TypeTagKind::Closure.type_name(), obj),
+        TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+            rt_emit!("{}", crate::conversions::dict_view_repr_string(obj))
+        }
     }
 }
 
@@ -478,6 +481,9 @@ pub fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::NotImplemented => rt_emit!("NotImplemented"),
             TypeTagKind::Closure => {
                 rt_emit!("<{} at {:p}>", TypeTagKind::Closure.type_name(), obj)
+            }
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                rt_emit!("{}", crate::conversions::dict_view_repr_string(obj))
             }
         }
     }

@@ -76,6 +76,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `tuple` | ✅ | Fixed-arity & homogeneous; lexicographic compare |
 | `dict` | ✅ | Insertion-ordered; merge `|`/`|=`, `fromkeys`; `d[k]` on a missing key raises `KeyError(k)` (typed and dynamic bases; a dynamic `defaultdict`/`Counter` keeps its own miss rule) |
 | `set` | ✅ | `\| & - ^`, `pop`, and update/relational methods |
+| dict views (`dict_keys`/`dict_values`/`dict_items`) | ✅ | `keys()`/`values()`/`items()` return LIVE views (later dict mutation visible): `len`, iteration ("dictionary changed size during iteration" RuntimeError), `in`, `reversed`, repr, `list`/`sorted`/`tuple`/`set`/`dict` of a view; keys/items views are set-like (`& \| - ^` → `set`, `==`/`<`/`<=` vs sets/views, `isdisjoint`); subscripting raises TypeError; typed and `Dyn` receivers. Gaps: `mapping` attribute; typed `Counter.keys()/values()/items()` still return list snapshots |
 | `range` | ✅ | Lazy iterator, negative/variable step |
 | `NoneType` | ✅ | `None` sentinel, `is`/`is not` |
 | `frozenset` | ✅ | Pragmatic core: ctors, protocol, hashable (dict key/set elem), `\| & - ^`, union/intersection/difference/symmetric_difference/copy/issubset/issuperset/isdisjoint. Gap: ordering (`< <=`), multi-element repr order follows set model |
@@ -107,7 +108,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Feature | Status | Notes |
 |---|---|---|
 | Positional / default params | ✅ | Mutable defaults eval-once (CPython aliasing) |
-| `*args` | ✅ | |
+| `*args` | ✅ | Incl. a self-less method `def m(*args)` (the instance is packed as `args[0]`; direct calls — not an overridden/virtual one) |
 | `**kwargs` | ✅ | |
 | Keyword-only / positional-only params | ✅ | `kwonlyargs` / `posonlyargs`; a keyword named like a positional-only param goes to `**kwargs` |
 | Keyword arguments at call site | ✅ | Eval-order preserving |
