@@ -29,6 +29,7 @@ impl<'a> FnLowerer<'a> {
             Expr::Constant(c) => self.lower_constant(&c.value, span),
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());
+                self.seen_names.insert(name);
                 // `NotImplemented` (§4a) resolves to the runtime singleton — the
                 // dunder-fallback control-flow signal. Intercepted before the
                 // scope lookup (no user shadows the builtin in the corpus) so a

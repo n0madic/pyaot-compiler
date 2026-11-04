@@ -672,6 +672,22 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
+        // A keyword construction of a user class: bind the keywords against
+        // its `__init__` (minus `self`) at compile time.
+        if let Expr::Name(n) = c.func.as_ref() {
+            if !c.keywords.is_empty() {
+                let iname = self.intern(n.id.as_str());
+                if !self.scope.contains_key(&iname)
+                    && self.global_read_slot(iname).is_none()
+                    && self.ctx.class_map.contains_key(n.id.as_str())
+                {
+                    let key = format!("#init:{}", n.id.as_str());
+                    if let Some(info) = self.ctx.top_defs.get(&key).cloned() {
+                        return self.lower_direct_known_call(&info, n.id.as_str(), c, span);
+                    }
+                }
+            }
+        }
         self.lower_indirect_or_unknown_call(c, span)
     }
 

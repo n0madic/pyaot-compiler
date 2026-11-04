@@ -991,9 +991,14 @@ fn verify_call_runtime(
             ParamType::I8 => *got == RAW_I8,
             ParamType::I32 => *got == Repr::Raw(RawKind::I32),
             ParamType::I64 => match def.param_semantic(i) {
-                MirSemantic::Tagged | MirSemantic::Heap(_) => {
-                    matches!(got, Repr::Tagged | Repr::Heap(_))
-                }
+                MirSemantic::Tagged => matches!(got, Repr::Tagged | Repr::Heap(_)),
+                // A typed heap slot takes that exact shape, or a gradual
+                // `Tagged` value the runtime validates itself.
+                MirSemantic::Heap(tag) => match got {
+                    Repr::Tagged => true,
+                    Repr::Heap(shape) => heap_shape_tag(shape) == Some(tag),
+                    _ => false,
+                },
                 MirSemantic::Raw => {
                     matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
                 }
@@ -1031,9 +1036,12 @@ fn verify_call_runtime(
                 // and a heap pointer must never land in an untraced raw one
                 // (PITFALLS B5). Un-annotated defs keep the wide class.
                 ReturnType::I64 => match (def.mir_return_semantic, def.gc_roots_result) {
-                    (Some(MirSemantic::Tagged | MirSemantic::Heap(_)), _) | (None, true) => {
-                        got.is_gc_root()
-                    }
+                    (Some(MirSemantic::Heap(tag)), _) => match got {
+                        Repr::Tagged => true,
+                        Repr::Heap(shape) => heap_shape_tag(shape) == Some(tag),
+                        _ => false,
+                    },
+                    (Some(MirSemantic::Tagged), _) | (None, true) => got.is_gc_root(),
                     (Some(MirSemantic::Raw), _) => *got == RAW_I64,
                     (None, false) => {
                         matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
@@ -1096,7 +1104,7 @@ fn verify_call_container(
                 ContainerResult::Value => *got == TAGGED,
                 ContainerResult::Int => *got == RAW_I64,
                 ContainerResult::Bool => *got == RAW_I8,
-                ContainerResult::Heap => matches!(got, Repr::Heap(_)),
+                ContainerResult::Heap => heap_family_ok(op, got),
                 ContainerResult::None => unreachable!(),
             };
             if !ok {
@@ -1108,6 +1116,56 @@ fn verify_call_container(
         }
     }
     Ok(())
+}
+
+/// The runtime type tag a typed heap shape denotes (for a descriptor's
+/// `MirSemantic::Heap(tag)` slot).
+fn heap_shape_tag(shape: &HeapShape) -> Option<pyaot_core_defs::TypeTagKind> {
+    use pyaot_core_defs::TypeTagKind as T;
+    Some(match shape {
+        HeapShape::Str => T::Str,
+        HeapShape::Bytes => T::Bytes,
+        HeapShape::List(_) => T::List,
+        HeapShape::Dict(..) => T::Dict,
+        HeapShape::Set(_) => T::Set,
+        HeapShape::Tuple(_) | HeapShape::TupleVar(_) => T::Tuple,
+        HeapShape::Class(_) => T::Instance,
+        HeapShape::BigInt => T::BigInt,
+        HeapShape::Iterator(_) => T::Iterator,
+        HeapShape::RuntimeObj(t) => *t,
+    })
+}
+
+/// A heap-producing container op's `dst` must be of the op's container
+/// family (a `ListConcat` never lands in a `dict` slot). Ops whose result
+/// family is not fixed here accept any heap shape.
+fn heap_family_ok(op: ContainerOp, got: &Repr) -> bool {
+    use ContainerOp as C;
+    let Repr::Heap(shape) = got else {
+        return false;
+    };
+    let family_ok = |pred: fn(&HeapShape) -> bool| pred(shape);
+    match op {
+        C::ListNew | C::ListConcat | C::ListRepeat | C::ListFromIter | C::ListCopy | C::Sorted => {
+            family_ok(|s| matches!(s, HeapShape::List(_)))
+        }
+        C::DictNew | C::DictFromPairs | C::DictCopy | C::DictMerge => {
+            family_ok(|s| matches!(s, HeapShape::Dict(..)))
+        }
+        C::SetNew
+        | C::SetUnion
+        | C::SetIntersection
+        | C::SetDifference
+        | C::SetSymmetricDifference
+        | C::SetCopy => family_ok(|s| matches!(s, HeapShape::Set(_))),
+        C::TupleNew | C::TupleConcat | C::TupleFromIter => {
+            family_ok(|s| matches!(s, HeapShape::Tuple(_) | HeapShape::TupleVar(_)))
+        }
+        C::BytesConcat | C::BytesRepeat | C::BytesFromList | C::BytesZero | C::BytesFromStr => {
+            family_ok(|s| matches!(s, HeapShape::Bytes))
+        }
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -1301,6 +1359,35 @@ mod tests {
             verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::BitAnd), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_container_result_of_wrong_family() {
+        // ListConcat(a, b) must land in a list slot, never a dict slot.
+        let mk = |dst: Repr| {
+            single_block(
+                vec![Repr::Tagged, Repr::Tagged, dst],
+                vec![MirInst::CallContainer {
+                    dst: Some(LocalId::new(2)),
+                    op: ContainerOp::ListConcat,
+                    args: vec![
+                        Operand::Local(LocalId::new(0)),
+                        Operand::Local(LocalId::new(1)),
+                    ],
+                }],
+                MirTerminator::Return(None),
+            )
+        };
+        let bad = mk(Repr::Heap(HeapShape::Dict(
+            Box::new(Repr::Tagged),
+            Box::new(Repr::Tagged),
+        )));
+        let good = mk(Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))));
+        assert!(matches!(
+            verify(&bad, &[]),
+            Err(VerifyError::ContainerResultRepr { .. })
+        ));
+        assert_eq!(verify(&good, &[]), Ok(()));
     }
 
     #[test]

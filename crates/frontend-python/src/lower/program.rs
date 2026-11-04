@@ -811,6 +811,54 @@ impl<'a> ProgramLowerer<'a> {
         for (key, info) in &col.imported_funcs {
             top_defs.insert(key.clone(), info.clone());
         }
+        // Constructor signatures (`#init:Cls`): each class's `__init__` minus
+        // `self` — its own, else the nearest same-module base's — so a keyword
+        // construction `Cls(a, y=1)` is adapted to positional slots at compile
+        // time exactly like a call to a module-level function.
+        let class_defs_by_name: HashMap<&str, &StmtClassDef> =
+            classdefs.iter().map(|c| (c.name.as_str(), *c)).collect();
+        for cdef in &classdefs {
+            let mut cur: Option<&StmtClassDef> = Some(cdef);
+            let mut init: Option<&StmtFunctionDef> = None;
+            for _ in 0..32 {
+                let Some(c) = cur else { break };
+                init = c.body.iter().find_map(|s| match s {
+                    Stmt::FunctionDef(f) if f.name.as_str() == "__init__" => Some(f),
+                    _ => None,
+                });
+                if init.is_some() {
+                    break;
+                }
+                cur = c.bases.first().and_then(|b| match b {
+                    Expr::Name(n) => class_defs_by_name.get(n.id.as_str()).copied(),
+                    _ => None,
+                });
+            }
+            let Some(init) = init else { continue };
+            let fname = self.interner.intern("__init__");
+            // A signature this pre-context cannot express (a mutable method
+            // default lives in a per-method slot) keeps the positional-only
+            // construction path.
+            let Ok(parsed) = parse_params(
+                &mut *self.interner,
+                &pre_ctx,
+                init.args.as_ref(),
+                &FirstParam::SkipCls,
+                fname,
+            ) else {
+                continue;
+            };
+            top_defs.insert(
+                format!("#init:{}", cdef.name.as_str()),
+                TopDefInfo {
+                    fixed: parsed.fixed,
+                    kwonly: parsed.kwonly,
+                    varargs: parsed.varargs,
+                    kwargs: parsed.kwargs,
+                    ret: SemTy::Dyn,
+                },
+            );
+        }
         // The general module context carries NO `default_slots`: decorated defs,
         // the module-init body, and classes/methods all reject non-literal
         // defaults. Only the top-level-def lowering (`defs_ctx`) sees the slots.

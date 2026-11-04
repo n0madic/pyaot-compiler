@@ -43,6 +43,7 @@ impl<'a> FnLowerer<'a> {
             cur_handler: None,
             stamped: HashSet::new(),
             pending: Vec::new(),
+            seen_names: HashSet::new(),
             cur_line: None,
             stmt_line: None,
             scope_stack: Vec::new(),

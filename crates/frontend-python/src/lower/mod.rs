@@ -562,6 +562,9 @@ pub(crate) struct FnLowerer<'a> {
     /// earlier operands are staged into temporaries first to keep Python's
     /// left-to-right evaluation order (KNOWN_BUGS Phase 4).
     pending: Vec<Idx<HirExpr>>,
+    /// Names this function has referenced so far (source order) — a later
+    /// `global x` of one of them is CPython's SyntaxError.
+    seen_names: HashSet<InternedString>,
     /// Last `HirStmt::Line` marker emitted into the CURRENT block (real
     /// tracebacks). Reset on every `switch` — codegen's srcloc state follows
     /// emission order, so each block must re-establish its line.

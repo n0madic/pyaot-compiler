@@ -187,6 +187,9 @@ impl<'a> FnLowerer<'a> {
             }
             Stmt::Return(r) => {
                 let span = to_span(r.range());
+                if self.is_main {
+                    return Err(parse_error("'return' outside function", span));
+                }
                 // In a generator, `return` ends the generator (exhaust). The
                 // returned value (StopIteration.value) is out of scope (6E).
                 if self.gen.is_some() {
@@ -249,7 +252,19 @@ impl<'a> FnLowerer<'a> {
             }
             // Binding-analysis inputs only (Phase 6B): the declarations were
             // consumed by `freevars` / the module pre-scan; nothing to emit.
-            Stmt::Global(_) | Stmt::Nonlocal(_) => Ok(false),
+            Stmt::Global(g) => {
+                for n in &g.names {
+                    let name = self.intern(n.as_str());
+                    if self.seen_names.contains(&name) {
+                        return Err(parse_error(
+                            format!("name '{}' is used prior to global declaration", n.as_str()),
+                            to_span(g.range()),
+                        ));
+                    }
+                }
+                Ok(false)
+            }
+            Stmt::Nonlocal(_) => Ok(false),
             Stmt::Delete(d) => self.lower_delete(d),
             // A PEP 695 `type X = T` alias is a compile-time annotation binding
             // (collected in the module pre-scan into `type_aliases`); it emits no
@@ -1072,6 +1087,7 @@ impl<'a> FnLowerer<'a> {
     /// `global` declaration — an undeclared assignment binds locally, as in
     /// CPython); else a fresh local.
     pub(super) fn resolve_write_place(&mut self, name: InternedString, ty: SemTy) -> Place {
+        self.seen_names.insert(name);
         if let Some(b) = self.scope.get(&name).copied() {
             return Place::Bind(b);
         }

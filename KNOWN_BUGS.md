@@ -33,11 +33,11 @@ Two root causes dominate:
 - [x] MIR verifier: `CallRuntime` dst vs an explicit `mir_return_semantic` /
       `gc_roots_result` — Raw must be `Raw(I64)`, Tagged/Heap must be GC roots
       (`verify.rs:965`). Un-annotated defs still accept the wide class.
-- [ ] MIR verifier: `Heap(shape)` arg slot must get matching shape or checked
+- [x] MIR verifier: `Heap(shape)` arg slot must get matching shape or checked
       coercion (`verify.rs:937`); `ContainerResult::Heap` shape (`:1028`).
-      Note: no descriptor declares `MirSemantic::Heap` yet, so the arg check
-      is moot until one does; the real gap is the bare-`new` defs whose
-      params default to the wide class (see Phase 7 descriptor cleanup).
+      A descriptor slot / result declared `MirSemantic::Heap(tag)` now takes
+      exactly that shape (or a gradual `Tagged`), and a heap-producing
+      container op's `dst` must be of the op's family.
 - [x] MIR verifier panics on `MakeClosure` of a zero-param callee
       (`verify.rs:707`, `params[1..]`). ✓
 - [x] MIR verifier: range-check program FuncIds (entry, generators, vtables,
@@ -215,8 +215,11 @@ Regressions: `corpus/test_eval_order.py`.
       (`frontend statements.rs:288`). ✓
 - [x] **M** `print(file=sys.stderr)` sticky global switch; a raising `__str__`
       leaves stdout redirected (`lowering:1283`). ✓
-- [ ] **L** module-level `return`, `global x` after use accepted; `C(x=1)`
-      misleading error; generator diagnostics use `Span::dummy()`.
+- [x] **L** module-level `return`, `global x` after use accepted; `C(x=1)`
+      misleading error; generator diagnostics use `Span::dummy()`. (Both are
+      now errors. Keyword construction `C(a, y=1)` binds against `__init__`
+      at compile time — a valid `C(y=1)` used to be rejected too. Generator
+      diagnostics point at the `def`.)
 
 ## Phase 5 — runtime / stdlib semantics
 

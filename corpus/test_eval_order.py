@@ -51,6 +51,15 @@ class Bad:
         raise RuntimeError("boom")
 
 
+class Pt:
+    def __init__(self, a: int, b: int = 2, *, c: str = "c") -> None:
+        self.s = str(a) + "-" + str(b) + "-" + c
+
+
+class SubPt(Pt):
+    pass
+
+
 def classify(x) -> str:
     match x:
         case [a, b]:
@@ -154,7 +163,14 @@ def test_with_and_print() -> None:
         pass
 
 
+def test_keyword_construction() -> None:
+    assert Pt(b=5, a=1).s == "1-5-c"
+    assert Pt(1, c="z").s == "1-2-z"
+    assert SubPt(a=7).s == "7-2-c"
+
+
 test_left_to_right()
+test_keyword_construction()
 test_inplace()
 test_unbound()
 test_closures_and_genexprs()

@@ -496,8 +496,10 @@ pub(super) fn lower_generator_def(
     ret_ty: SemTy,
     enclosing: Option<ClassId>,
     is_nested: bool,
+    def_span: Span,
 ) -> Result<()> {
-    let span = Span::dummy();
+    // Diagnostics and the exhaust path point at the generator's `def`.
+    let span = def_span;
     // A `yield` in the body of an `except` handler or a `finally` block is out
     // of scope (a try/with body or `else` clause is supported) — reject cleanly
     // rather than miscompile.

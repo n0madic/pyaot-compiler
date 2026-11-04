@@ -342,6 +342,7 @@ pub(super) fn lower_callable(
             ret_ty,
             enclosing,
             nested.is_some(),
+            span,
         )?;
         return Ok(fid);
     }
