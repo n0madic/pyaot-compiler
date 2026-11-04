@@ -430,6 +430,30 @@ impl<'a> ProgramLowerer<'a> {
                 other => top.push(other),
             }
         }
+        // A module-level `def` / `class` name is bound statically to ONE
+        // definition, so a second definition of the same name would silently
+        // re-bind every call site — including the calls that run before it.
+        // Reject it loudly instead of miscompiling.
+        {
+            let mut seen: HashMap<&str, ()> = HashMap::new();
+            for stmt in &body {
+                let (name, range) = match stmt {
+                    Stmt::FunctionDef(f) => (f.name.as_str(), f.range()),
+                    Stmt::ClassDef(c) => (c.name.as_str(), c.range()),
+                    _ => continue,
+                };
+                if seen.insert(name, ()).is_some() {
+                    return Err(CompilerError::semantic_error(
+                        format!(
+                            "`{name}` is defined more than once at module level; \
+                             redefining a module-level function or class is not \
+                             supported (rename one of the definitions)"
+                        ),
+                        to_span(range),
+                    ));
+                }
+            }
+        }
 
         // ── ClassIds from the program-global counter (no per-module remap). ──
         let mut class_map: ClassNameMap = HashMap::new();

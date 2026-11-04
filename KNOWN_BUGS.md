@@ -130,29 +130,43 @@ and descriptor results). Regressions: `corpus/test_inference_soundness.py`.
 
 ## Phase 3 — Root B: static dispatch ignores overrides
 
-- [ ] **C** `lower_virtual_call` checks override arity only for kw/short
+Fixed with per-member runtime-class dispatchers (`lowering/src/dispatch.rs`):
+a member a subclass resolves differently (dunder, property, static/class
+method or class attribute through an instance, ABI-incompatible method
+override) is called through a synthesized function that switches on
+`rt_instance_class_id`; typeck joins every definition's type. Regressions:
+`corpus/test_override_dispatch.py`.
+
+- [x] **C** `lower_virtual_call` checks override arity only for kw/short
       calls → SIGSEGV with an extra defaulted param (`lowering:4430`). ✓
-- [ ] **C** method/dunder/property result type from static class only
+- [x] **C** method/dunder/property result type from static class only
       (`typeck:2245`, `:2407`, `:2373`) → `1e-323`, segfaults. ✓
-- [ ] **H** `concrete_dunder` → `None` when overridden → falls to runtime op
+- [x] **H** `concrete_dunder` → `None` when overridden → falls to runtime op
       that doesn't dispatch instances: `len(b)==0`, wrong `str(b)`, `b<b`
       TypeError (`lowering:4555`). ✓
-- [ ] **H** properties, class attrs, `getattr` fold resolved on static class
+- [x] **H** properties, class attrs, `getattr` fold resolved on static class
       (`lowering:3206`, `:3407`, `:3310`). ✓
-- [ ] **H** `inst.classattr = v` writes the class slot (`lowering:3424`). ✓
-- [ ] **M** `inst.sm()`/`inst.cm()` bind statically (`lowering:4308`). ✓
-- [ ] **M** `cls` in `@classmethod` folded to defining class
+- [x] **H** `inst.classattr = v` writes the class slot (`lowering:3424`). ✓
+      (a class attribute assigned through an instance gets a shadow instance
+      field; an unassigned one reads the class value — `rt_value_or`)
+- [x] **M** `inst.sm()`/`inst.cm()` bind statically (`lowering:4308`). ✓
+- [x] **M** `cls` in `@classmethod` folded to defining class
       (`frontend-python/src/lower/expressions.rs:36`, `lower/calls.rs:75`). ✓
-- [ ] **M** redefined method: first definition wins (`semantics/src/lib.rs:344`,
+      (per-subclass copies of inherited classmethods; same-module bases only)
+- [x] **M** redefined method: first definition wins (`semantics/src/lib.rs:344`,
       `frontend lower/classes.rs:841`). ✓
-- [ ] **M** static/class/property/class-attr not inherited
+- [x] **M** static/class/property/class-attr not inherited
       (`semantics:362`); COMPILER_STATUS rows marked ✅. ✓
-- [ ] **H** `exception_base` only via first user parent (`semantics:407`). ✓
-- [ ] **H** runtime registers one parent per class → `isinstance(C(), B)` false
+- [x] **H** `exception_base` only via first user parent (`semantics:407`). ✓
+- [x] **H** runtime registers one parent per class → `isinstance(C(), B)` false
       for `class C(A, B)` (`runtime/src/vtable.rs:222`, `:80`). ✓
-- [ ] **H** duplicate top-level def/class / def rebound by assignment resolved
+      (contract addition: `rt_register_class_ancestor`)
+- [x] **H** duplicate top-level def/class / def rebound by assignment resolved
       statically with no diagnostic (`frontend lower/program.rs:750`). ✓
-- [ ] **L** `poke(b: Base): b.y = 3` (field only on Sub) rejected by semantics.
+      (a redefined module-level `def`/`class` is now a compile error;
+      `f = g` rebinding already compiled correctly)
+- [x] **L** `poke(b: Base): b.y = 3` (field only on Sub) rejected by semantics.
+      (resolved by name at run time)
 
 ## Phase 4 — evaluation order, scopes, statements
 
@@ -295,5 +309,6 @@ and descriptor results). Regressions: `corpus/test_inference_soundness.py`.
       `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement.
 - [ ] Duplication: arg-tuple / kwargs-dict packing in lowering
       (`:1893`, `:3933`, `:4183`); `materialize_const` vs `lower_const`.
-- [ ] COMPILER_STATUS: downgrade in-place dunders, MI/C3 at runtime,
-      inherited static/class/property, `super()` to 🟡 until fixed.
+- [ ] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until
+      fixed. (MI/C3 at runtime and inherited static/class/property are fixed
+      — Phase 3.)

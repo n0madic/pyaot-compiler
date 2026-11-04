@@ -198,6 +198,11 @@ struct DecoratedDef {
 /// stable regardless of nesting), plus the per-module thunk memo.
 pub(crate) struct Shared {
     funcs: Vec<Option<HirFunction>>,
+    /// Per class: its effective `@classmethod` definitions (own plus inherited,
+    /// not redefined) with the namespace they were written in. A subclass in
+    /// the same namespace re-lowers each inherited one with `cls` bound to
+    /// ITSELF, so `Sub.make()` / `inst.cm()` see `cls is Sub` (Root B).
+    class_cms: HashMap<ClassId, Vec<(u32, StmtFunctionDef)>>,
     /// Owning namespace id per `FuncId` (parallel to `funcs`), set at reserve
     /// time from `current_ns` (Phase 8). Every function — including synthetics
     /// (thunks / lambdas / generator resumes) — belongs to the module being
@@ -271,6 +276,7 @@ impl Shared {
             deletable_globals: HashMap::new(),
             deletable_fields: HashSet::new(),
             dyn_method_names: HashSet::new(),
+            class_cms: HashMap::new(),
             method_uniform_thunks: HashMap::new(),
             iternext_thunks: HashMap::new(),
             copy_thunks: HashMap::new(),

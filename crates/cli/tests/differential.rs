@@ -125,6 +125,8 @@ const PHASE_CORPUS: &[&str] = &[
     "test_gc_stress.py",
     // Inference soundness regressions (KNOWN_BUGS Phase 2, Root A).
     "test_inference_soundness.py",
+    // Override dispatch regressions (KNOWN_BUGS Phase 3, Root B).
+    "test_override_dispatch.py",
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",
     "test_import.py",
@@ -172,7 +174,9 @@ fn phase_corpus_matches_cpython() {
         .to_path_buf();
     let runtime_lib = ensure_runtime_lib(&target_dir);
     let corpus_dir = workspace_root().join("corpus");
-    let out_dir = std::env::temp_dir().join("pyaot_phase1");
+    // Per-process: two concurrent gate runs must not overwrite (and then
+    // exec a half-written) binary of each other ("Text file busy").
+    let out_dir = std::env::temp_dir().join(format!("pyaot_phase1_{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).expect("create temp out dir");
 
     // The default gate is PHASE_CORPUS; `PYAOT_NET_TESTS` adds the live-network

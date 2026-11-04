@@ -487,6 +487,12 @@ pub static RT_FILE_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_file_nam
 
 /// rt_is_truthy(obj: *mut Obj) -> i8
 pub static RT_IS_TRUTHY: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_truthy");
+/// rt_value_or(v, d) -> Value — `v`, or `d` when `v` is the empty (null)
+/// slot: an unassigned instance field shadowing a class attribute.
+pub static RT_VALUE_OR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_value_or");
+/// rt_instance_class_id(obj) -> i64 — a user instance's class id, else -1.
+pub static RT_INSTANCE_CLASS_ID: RuntimeFuncDef =
+    RuntimeFuncDef::unary_to_i64("rt_instance_class_id");
 /// rt_is_none(obj: *mut Obj) -> i8
 pub static RT_IS_NONE: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_none");
 /// rt_is(a: *mut Obj, b: *mut Obj) -> i8 — bit-identity (`a is b`).

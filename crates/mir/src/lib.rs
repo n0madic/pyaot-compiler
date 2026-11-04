@@ -84,6 +84,10 @@ pub struct MirClass {
     pub qualname: InternedString,
     /// Direct runtime parent (255 = none), for `rt_register_class`.
     pub parent: Option<ClassId>,
+    /// Every user ancestor (the MRO minus the class itself), registered with
+    /// `rt_register_class_ancestor` so `isinstance` / `except` see all bases of
+    /// a multiply-inheriting class, not just the first.
+    pub ancestors: Vec<ClassId>,
     /// The builtin exception tag this class derives from (Phase 7C). With no
     /// user `parent`, `__pyaot_classinit` registers the tag as the runtime
     /// parent (builtin tags ARE runtime class ids), so `rt_exc_isinstance_class`

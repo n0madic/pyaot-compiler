@@ -127,10 +127,10 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Class definition, fields, methods | ✅ | |
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
-| Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice |
+| Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice; every MRO ancestor is registered at run time (`isinstance` / `except` see all bases); members overridden in a subclass dispatch on the receiver's runtime class |
 | `super()` | ✅ | |
 | `@property` | ✅ | |
-| `@staticmethod` / `@classmethod` | ✅ | `cls` is a compile-time alias of the enclosing class (`cls()` / `cls.attr` / `cls.method`); statically enclosing class, not a runtime subclass. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
+| `@staticmethod` / `@classmethod` | ✅ | Inherited along the MRO. `cls` is a compile-time alias of the class the method is reached through (each subclass gets its own copy of an inherited classmethod — same-module bases), so `Sub.make()` builds a `Sub`. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
 | Iterator protocol (`__iter__`/`__next__`) | ✅ | Per-class compiled iter-next thunk |
 | `__slots__` | 🟡 | Accepted but ignored (no layout effect) |

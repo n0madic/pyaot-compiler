@@ -76,6 +76,27 @@ static INSTANCE_ITERNEXT_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
 
 /// Register a class with its parent
+/// Per-class ancestor bitsets (one bit per class id): every base along the
+/// class's MRO, so a multiply-inheriting class `C(A, B)` is a subclass of `B`
+/// too — the parent chain alone only reaches `A`.
+static ANCESTORS: RegistryStorage<[u64; MAX_CLASSES / 64], MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([[0; MAX_CLASSES / 64]; MAX_CLASSES]));
+
+/// Record `ancestor_id` as an ancestor of `class_id` (contract addition,
+/// emitted by `__pyaot_classinit` for each MRO entry).
+#[no_mangle]
+pub extern "C" fn rt_register_class_ancestor(class_id: u8, ancestor_id: u8) {
+    unsafe {
+        let a = ancestor_id as usize;
+        (*ANCESTORS.0.get())[class_id as usize][a / 64] |= 1u64 << (a % 64);
+    }
+}
+
+fn has_registered_ancestor(class_id: u8, ancestor_id: u8) -> bool {
+    let a = ancestor_id as usize;
+    unsafe { (*ANCESTORS.0.get())[class_id as usize][a / 64] & (1u64 << (a % 64)) != 0 }
+}
+
 #[no_mangle]
 pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
     unsafe {
@@ -224,24 +245,46 @@ pub extern "C" fn rt_class_inherits_from(child_class_id: u8, target_class_id: u8
     if child_class_id == target_class_id {
         return 1;
     }
+    if parent_chain_reaches(child_class_id, target_class_id)
+        || has_registered_ancestor(child_class_id, target_class_id)
+    {
+        return 1;
+    }
+    // Multiple inheritance: every registered ancestor (MRO entry) of the class
+    // contributes its own parent chain — e.g. the builtin exception hierarchy
+    // above an exception base reached through a non-first base.
+    let row = unsafe { (*ANCESTORS.0.get())[child_class_id as usize] };
+    for (w, bits) in row.iter().enumerate() {
+        let mut b = *bits;
+        while b != 0 {
+            let a = (w * 64 + b.trailing_zeros() as usize) as u8;
+            b &= b - 1;
+            if parent_chain_reaches(a, target_class_id) {
+                return 1;
+            }
+        }
+    }
+    0
+}
 
-    // Walk up the parent chain
-    let mut current = child_class_id;
+/// Walk `class_id`'s registered parent chain looking for `target`.
+fn parent_chain_reaches(class_id: u8, target: u8) -> bool {
+    let mut current = class_id;
     unsafe {
         let registry = &*CLASS_REGISTRY.0.get();
         // Limit iterations to MAX_CLASSES to prevent infinite loops from circular inheritance
         for _ in 0..MAX_CLASSES {
+            if current == target {
+                return true;
+            }
             let parent = registry[current as usize].parent_class_id;
             if parent == NO_PARENT {
-                return 0;
-            }
-            if parent == target_class_id {
-                return 1;
+                return false;
             }
             current = parent;
         }
     }
-    0
+    false
 }
 
 // ==================== Built-in Exception Class Registration ====================

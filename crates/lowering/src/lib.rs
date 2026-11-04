@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+mod dispatch;
 pub mod legalize;
 
 use std::collections::HashMap;
@@ -65,7 +66,7 @@ pub fn lower(
     }
     // Signature table (ABI = f(param Repr)), needed before lowering bodies so
     // calls — including forward / recursive ones — coerce args correctly.
-    let sigs: Vec<FnSig> = module
+    let mut sigs: Vec<FnSig> = module
         .functions
         .iter()
         .enumerate()
@@ -95,7 +96,10 @@ pub fn lower(
             kwargs: f.kwargs,
         })
         .collect();
-    let mut funcs = Vec::with_capacity(module.functions.len());
+    // Runtime-class dispatchers for members overridden below a receiver's
+    // static class (Root B): their FuncIds follow the HIR functions.
+    let dispatchers = dispatch::plan(module, classes, interner, &mut sigs);
+    let mut funcs = Vec::with_capacity(sigs.len());
     for (i, func) in module.functions.iter().enumerate() {
         let ret_repr = sigs[i].ret.clone();
         let mut fl = FnLower::new(
@@ -109,8 +113,27 @@ pub fn lower(
             &module.deletable_fields,
             &module.global_annotations,
             ret_repr,
+            &dispatchers,
         );
         funcs.push(fl.lower()?);
+    }
+    let stubs: Vec<HirFunction> = dispatchers.specs.iter().map(dispatch::stub_function).collect();
+    for (spec, stub) in dispatchers.specs.iter().zip(&stubs) {
+        debug_assert_eq!(spec.fid.index(), funcs.len());
+        let mut fl = FnLower::new(
+            stub,
+            resolve,
+            interner,
+            &mut str_pool,
+            &sigs,
+            classes,
+            &module.deletable_globals,
+            &module.deletable_fields,
+            &module.global_annotations,
+            Repr::Tagged,
+            &dispatchers,
+        );
+        funcs.push(fl.lower_dispatcher(spec)?);
     }
     // The codegen-facing class registration data (`__pyaot_classinit`). Qualname
     // bytes go into the string pool so codegen can build the `StrObj`.
@@ -207,6 +230,9 @@ fn build_mir_classes(
         let class_attr_inits = info
             .class_attrs
             .iter()
+            // Only the class's OWN attributes live in its storage; inherited
+            // ones are read from the defining base (`ClassAttrInfo::owner`).
+            .filter(|a| a.owner == info.class_id)
             .map(|a| (a.attr_idx, class_attr_const(&a.init, interner, str_pool)))
             .collect();
         // Lazy user-class iterator protocol: if this class defines (own or
@@ -236,6 +262,7 @@ fn build_mir_classes(
             name: info.name,
             qualname: info.qualname,
             parent: info.parent,
+            ancestors: info.mro.iter().skip(1).copied().collect(),
             exception_base: info.exception_base.map(|k| k.tag()),
             field_count: info.field_count(),
             vtable,
@@ -293,6 +320,8 @@ struct FnLower<'a> {
     global_annotations: &'a HashMap<u32, SemTy>,
     /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
     ret_repr: Repr,
+    /// Runtime-class dispatchers for overridden members ([`dispatch`]).
+    dispatch: &'a dispatch::Dispatchers,
     locals: Vec<LocalDecl>,
     /// Finalized + reserved MIR blocks (placeholders until sealed).
     blocks: Vec<MirBlock>,
@@ -334,6 +363,7 @@ impl<'a> FnLower<'a> {
         deletable_fields: &'a std::collections::HashSet<InternedString>,
         global_annotations: &'a HashMap<u32, SemTy>,
         ret_repr: Repr,
+        dispatch: &'a dispatch::Dispatchers,
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
         // temporaries are appended after.
@@ -355,6 +385,7 @@ impl<'a> FnLower<'a> {
             deletable_fields,
             global_annotations,
             ret_repr,
+            dispatch,
             locals,
             blocks: Vec::new(),
             block_map: HashMap::new(),
@@ -408,6 +439,116 @@ impl<'a> FnLower<'a> {
             blocks: std::mem::take(&mut self.blocks),
             entry,
         })
+    }
+
+    /// Emit the body of a runtime-class dispatcher ([`dispatch`]): select the
+    /// definition the receiver's actual class resolves to, call it with each
+    /// argument coerced (checked) to its parameter repr — parameters only the
+    /// selected override declares take its own defaults — and return the result
+    /// on the `Tagged` baseline.
+    fn lower_dispatcher(&mut self, spec: &dispatch::DispatchSpec) -> Result<MirFunction> {
+        let entry = self.reserve_block();
+        self.cur_id = entry;
+        self.cur_insts = Vec::new();
+        let recv = LocalId::new(0);
+        let cls = self.alloc_temp(Repr::Raw(RawKind::I64));
+        self.emit(MirInst::CallRuntime {
+            dst: Some(cls),
+            def: &pyaot_core_defs::runtime_func_def::RT_INSTANCE_CLASS_ID,
+            args: vec![Operand::Local(recv)],
+        });
+        for (ks, target) in &spec.arms {
+            let arm = self.reserve_block();
+            for k in ks {
+                let kc = self.emit_const(Repr::Raw(RawKind::I64), Const::Int(k.0 as i64));
+                let eq = self.alloc_temp(Repr::Raw(RawKind::I8));
+                self.emit(MirInst::Compare {
+                    dst: eq,
+                    op: MCmpOp::Eq,
+                    l: Operand::Local(cls),
+                    r: Operand::Local(kc),
+                });
+                let next = self.reserve_block();
+                self.seal(MirTerminator::Branch {
+                    cond: Operand::Local(eq),
+                    then: arm,
+                    else_: next,
+                });
+                self.switch(next);
+            }
+            // Fallthrough continues in the current block; emit the arm aside.
+            let fallthrough = self.cur_id;
+            let pending = std::mem::take(&mut self.cur_insts);
+            self.switch(arm);
+            self.emit_dispatch_arm(spec.kind, *target, spec.n_params)?;
+            self.cur_id = fallthrough;
+            self.cur_insts = pending;
+        }
+        self.emit_dispatch_arm(spec.kind, spec.base, spec.n_params)?;
+        let params = vec![Repr::Tagged; spec.n_params];
+        Ok(MirFunction {
+            name: spec.name,
+            file: spec.file,
+            params,
+            ret: Repr::Tagged,
+            locals: std::mem::take(&mut self.locals),
+            blocks: std::mem::take(&mut self.blocks),
+            entry,
+        })
+    }
+
+    /// One dispatcher arm: call / read `target` and `Return` its value.
+    fn emit_dispatch_arm(
+        &mut self,
+        kind: dispatch::MemberKind,
+        target: dispatch::Target,
+        n_params: usize,
+    ) -> Result<()> {
+        use dispatch::{MemberKind, Target};
+        let result = match target {
+            Target::Attr { owner, idx } => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::GetClassAttr {
+                    dst,
+                    class_id: owner,
+                    attr_idx: idx,
+                });
+                dst
+            }
+            Target::Func(fid) => {
+                let sig = &self.sigs[fid.index()];
+                let tparams = sig.params.clone();
+                let tdefaults = sig.defaults.clone();
+                let tret = sig.ret.clone();
+                // Dispatcher param `i` feeds target param `i` (methods /
+                // properties pass the receiver) or `i - 1` (a static/class method
+                // reached through an instance: the receiver only selects).
+                let skip = usize::from(kind == MemberKind::StaticViaInst);
+                let mut args = Vec::with_capacity(tparams.len());
+                for (j, want) in tparams.iter().enumerate() {
+                    let src = j + skip;
+                    let v = if src < n_params {
+                        self.coerce(LocalId::new(src as u32), Repr::Tagged, want.clone())?
+                    } else {
+                        let (dl, dr) = match tdefaults.get(j).cloned().flatten() {
+                            Some(d) => self.materialize_default(&d)?,
+                            None => self.none_value()?,
+                        };
+                        self.coerce(dl, dr, want.clone())?
+                    };
+                    args.push(Operand::Local(v));
+                }
+                let dst = self.alloc_temp(tret.clone());
+                self.emit(MirInst::Call {
+                    dst: Some(dst),
+                    func: fid,
+                    args,
+                });
+                self.coerce(dst, tret, Repr::Tagged)?
+            }
+        };
+        self.seal(MirTerminator::Return(Some(Operand::Local(result))));
+        Ok(())
     }
 
     // ── block builder ──────────────────────────────────────────────────────
@@ -3279,7 +3420,8 @@ impl<'a> FnLower<'a> {
                         span,
                     )
                 })?;
-            return self.read_class_attr(cid, attr.attr_idx, result_repr);
+            let (owner, idx) = (attr.owner, attr.attr_idx);
+            return self.read_class_attr(owner, idx, result_repr);
         }
 
         let bt = self.func.exprs[value].ty.clone();
@@ -3291,6 +3433,10 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.property(name))
                 .map(|p| p.getter)
             {
+                let getter = self
+                    .dispatch
+                    .get(cid, name, dispatch::MemberKind::PropGet)
+                    .unwrap_or(getter);
                 let (bl, br) = self.lower_expr(value)?;
                 return self.emit_dunder_call(getter, vec![(bl, br)]);
             }
@@ -3301,15 +3447,24 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.field_slot(name))
                 .is_some();
             if !is_field {
-                if let Some(idx) = self
+                if let Some((owner, idx)) = self
                     .classes
                     .get(cid)
                     .and_then(|i| i.class_attr(name))
-                    .map(|a| a.attr_idx)
+                    .map(|a| (a.owner, a.attr_idx))
                 {
+                    // A subclass redefining the attribute: select by the
+                    // receiver's runtime class (Root B).
+                    if let Some(disp) = self.dispatch.get(cid, name, dispatch::MemberKind::ClassAttr)
+                    {
+                        let (bl, br) = self.lower_expr(value)?;
+                        let (r, rr) = self.emit_dunder_call(disp, vec![(bl, br)])?;
+                        let c = self.coerce(r, rr, result_repr.clone())?;
+                        return Ok((c, result_repr));
+                    }
                     // Evaluate the receiver for side effects, then read the class slot.
                     let _ = self.lower_expr(value)?;
-                    return self.read_class_attr(cid, idx, result_repr);
+                    return self.read_class_attr(owner, idx, result_repr);
                 }
             }
         }
@@ -3318,8 +3473,10 @@ impl<'a> FnLower<'a> {
         // RUNTIME by name hash (Phase 8H, D4) — `rt_getattr_name` raises
         // AttributeError on a miss/non-instance. Method-calls on `Dyn` stay a
         // loud compile error (no generic thunk for an unknown signature).
-        // Other unknown receivers keep the loud `field_slot` error.
-        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+        // Other unknown receivers keep the loud `field_slot` error. A field that
+        // only a SUBCLASS of the static class declares is resolved the same
+        // by-name way (the receiver may really be that subclass).
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) || self.field_only_below(&bt, name) {
             let (bl, br) = self.lower_expr(value)?;
             let base = self.coerce(bl, br, Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Tagged);
@@ -3355,6 +3512,42 @@ impl<'a> FnLower<'a> {
             self.emit_check_bound(dst, 2, name)?
         } else {
             dst
+        };
+        // A field shadowing a class attribute (`inst.n = v` on a class with a
+        // class-level `n`): an instance that never assigned it still reads the
+        // class attribute — CPython's instance-dict-then-class lookup.
+        let dst = match class_of(&bt, self.classes).and_then(|cid| {
+            self.classes
+                .get(cid)
+                .and_then(|i| i.class_attr(name))
+                .map(|a| (cid, a.owner, a.attr_idx))
+        }) {
+            Some((cid, owner, idx)) => {
+                let ca = match self.dispatch.get(cid, name, dispatch::MemberKind::ClassAttr) {
+                    Some(disp) => {
+                        let bt_ = self.coerce(bl, self.local_repr(bl), Repr::Tagged)?;
+                        let (r, rr) = self.emit_dunder_call(disp, vec![(bt_, Repr::Tagged)])?;
+                        self.coerce(r, rr, Repr::Tagged)?
+                    }
+                    None => {
+                        let d = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::GetClassAttr {
+                            dst: d,
+                            class_id: owner,
+                            attr_idx: idx,
+                        });
+                        d
+                    }
+                };
+                let out = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(out),
+                    def: &pyaot_core_defs::runtime_func_def::RT_VALUE_OR,
+                    args: vec![Operand::Local(dst), Operand::Local(ca)],
+                });
+                out
+            }
+            None => dst,
         };
         // The field's static type drives the read's representation; the
         // Tagged→repr coercion is guarded by `typeck::check_repr_boundaries`.
@@ -3462,11 +3655,11 @@ impl<'a> FnLower<'a> {
 
         // (a) `ClassName.attr = v` → class-level attribute write (Phase 5D).
         if let Some(cid) = self.class_name_ref(base) {
-            let idx = self
+            let (cid, idx) = self
                 .classes
                 .get(cid)
                 .and_then(|i| i.class_attr(name))
-                .map(|a| a.attr_idx)
+                .map(|a| (a.owner, a.attr_idx))
                 .ok_or_else(|| {
                     CompilerError::semantic_error(
                         format!("class has no attribute `.{}`", self.interner.resolve(name)),
@@ -3492,6 +3685,10 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.property(name))
                 .and_then(|p| p.setter)
             {
+                let setter = self
+                    .dispatch
+                    .get(cid, name, dispatch::MemberKind::PropSet)
+                    .unwrap_or(setter);
                 let (bl, br) = self.lower_expr(base)?;
                 let (vl, vr) = self.lower_expr(value)?;
                 self.emit_dunder_call(setter, vec![(bl, br), (vl, vr)])?;
@@ -3524,8 +3721,9 @@ impl<'a> FnLower<'a> {
         }
 
         // (d) Instance field write. A `Dyn` receiver writes by name hash at
-        // runtime (Phase 8H, D4) — AttributeError on a miss/non-instance.
-        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+        // runtime (Phase 8H, D4) — AttributeError on a miss/non-instance. So
+        // does a field only a subclass of the static class declares.
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) || self.field_only_below(&bt, name) {
             let (bl, br) = self.lower_expr(base)?;
             let bt = self.coerce(bl, br, Repr::Tagged)?;
             let (vl, vr) = self.lower_expr(value)?;
@@ -4437,6 +4635,23 @@ impl<'a> FnLower<'a> {
             }
             None => return Ok(None),
         };
+        // `instance.staticmethod()` / `instance.classmethod()` where a subclass
+        // redefines it: the receiver's runtime class selects (Root B).
+        if let Some(r) = recv {
+            if let Some(disp) = self.dispatch.get(cid, name, dispatch::MemberKind::StaticViaInst) {
+                let (rl, rr) = self.lower_expr(r)?;
+                let rt = self.coerce(rl, rr, Repr::Tagged)?;
+                let mut argvals = vec![Operand::Local(rt)];
+                argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Call {
+                    dst: Some(dst),
+                    func: disp,
+                    args: argvals,
+                });
+                return Ok(Some((dst, Repr::Tagged)));
+            }
+        }
         // Evaluate the receiver for side effects (`instance.staticmethod()`).
         if let Some(r) = recv {
             let _ = self.lower_expr(r)?;
@@ -4519,6 +4734,23 @@ impl<'a> FnLower<'a> {
                     span,
                 )
             })?;
+        // An override with a different calling convention (an extra defaulted
+        // parameter, other reprs) cannot share the vtable call's ABI: route
+        // through the runtime-class dispatcher, which binds each override's
+        // own parameters (Root B).
+        if let Some(disp) = self.dispatch.get(cid, method_name, dispatch::MemberKind::Method) {
+            let (rl, rr) = self.lower_expr(recv)?;
+            let self_arg = self.coerce(rl, rr, Repr::Tagged)?;
+            let mut argvals = vec![Operand::Local(self_arg)];
+            argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: disp,
+                args: argvals,
+            });
+            return Ok((dst, Repr::Tagged));
+        }
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         // Keyword/default adaptation happens at the CALL SITE against the
@@ -4655,6 +4887,24 @@ impl<'a> FnLower<'a> {
     /// overridden in a subclass — else the dynamic path is needed), return its
     /// resolved `FuncId`. Used to compiler-route the dunders the runtime does *not*
     /// dispatch (`__eq__`/`__len__`/`__getitem__`/…) to a direct devirtualized call.
+    /// True iff `name` is not a field of `ty`'s class but is one of some
+    /// subclass of it — an access that must resolve by name at run time.
+    fn field_only_below(&self, ty: &SemTy, name: InternedString) -> bool {
+        let Some(cid) = class_of(ty, self.classes) else {
+            return false;
+        };
+        let Some(info) = self.classes.get(cid) else {
+            return false;
+        };
+        info.field_slot(name).is_none()
+            && info.property(name).is_none()
+            && info.class_attr(name).is_none()
+            && self
+                .classes
+                .iter()
+                .any(|k| k.mro.contains(&cid) && k.field_slot(name).is_some())
+    }
+
     fn concrete_dunder(&self, ty: &SemTy, name: &str) -> Option<FuncId> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
@@ -4663,7 +4913,11 @@ impl<'a> FnLower<'a> {
             .iter()
             .find(|m| self.interner.resolve(m.name) == name)?;
         if self.classes.method_overridden_below(cid, m.name) {
-            return None;
+            // A subclass overrides it: the runtime-class dispatcher selects the
+            // receiver's actual definition (Root B).
+            return self
+                .dispatch
+                .get(cid, m.name, dispatch::MemberKind::Method);
         }
         Some(m.func_id)
     }

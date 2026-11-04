@@ -225,6 +225,7 @@ struct RuntimeFns {
     make_instance: FuncId,
     instance_get_field: FuncId,
     instance_set_field: FuncId,
+    register_class_ancestor: FuncId,
     register_class: FuncId,
     register_class_field_count: FuncId,
     register_class_qualname: FuncId,
@@ -486,6 +487,7 @@ impl RuntimeFns {
             instance_get_field: d("rt_instance_get_field", &[ti, ti], &[ti])?,
             instance_set_field: d("rt_instance_set_field", &[ti, ti, ti], &[])?,
             register_class: d("rt_register_class", &[t8, t8], &[])?,
+            register_class_ancestor: d("rt_register_class_ancestor", &[t8, t8], &[])?,
             register_class_field_count: d("rt_register_class_field_count", &[t8, ti], &[])?,
             register_class_qualname: d("rt_register_class_qualname", &[ti, ti], &[])?,
             // Inheritance / dispatch. The vtable ptr is a code/data address (i64);
@@ -1013,6 +1015,18 @@ fn emit_classinit(
             let parent8 = builder.ins().iconst(types::I32, parent);
             let rc = module.declare_func_in_func(rt.register_class, builder.func);
             builder.ins().call(rc, &[cid8, parent8]);
+            // Every user ancestor (multiple inheritance), plus the builtin
+            // exception base reached through a non-first base.
+            let mut extra: Vec<i64> = c.ancestors.iter().map(|a| a.0 as i64).collect();
+            if let Some(t) = c.exception_base {
+                extra.push(t as i64);
+            }
+            for a in extra {
+                let cidx = builder.ins().iconst(types::I32, c.class_id.0 as i64);
+                let av = builder.ins().iconst(types::I32, a);
+                let ra = module.declare_func_in_func(rt.register_class_ancestor, builder.func);
+                builder.ins().call(ra, &[cidx, av]);
+            }
 
             // Exception classes also register their bare name for display.
             if c.exception_base.is_some() {

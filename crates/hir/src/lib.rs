@@ -1860,8 +1860,13 @@ pub struct PropertyInfo {
 pub struct ClassAttrInfo {
     pub name: InternedString,
     pub ty: SemTy,
+    /// The slot index inside `owner`'s class-attribute storage.
     pub attr_idx: u32,
     pub init: ClassAttrInit,
+    /// The class whose body defines the attribute (the storage owner). An
+    /// inherited entry points at the defining base; `owner == class_id` marks
+    /// the class's own attributes (the ones it initializes).
+    pub owner: ClassId,
 }
 
 impl ClassInfo {

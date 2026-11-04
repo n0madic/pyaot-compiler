@@ -790,6 +790,7 @@ pub(super) fn lower_class(
     let mut properties: Vec<HirProperty> = Vec::new();
     let mut class_attrs: Vec<HirClassAttr> = Vec::new();
     let mut field_annotations: Vec<(InternedString, SemTy)> = Vec::new();
+    let mut own_cms: Vec<(u32, StmtFunctionDef)> = Vec::new();
 
     // Lower a method body into the shared table, returning its FuncId.
     let lower_method = |interner: &mut StringInterner,
@@ -896,6 +897,7 @@ pub(super) fn lower_class(
                             None,
                         )?;
                         class_methods.push((method_name, fid));
+                        own_cms.push((shared.current_ns, m.clone()));
                     }
                     MethodDecor::Property => {
                         let (fid, ty) = lower_method(
@@ -1017,6 +1019,48 @@ pub(super) fn lower_class(
     // names). Only `self`-receiver methods are scanned — a `@staticmethod`/
     // `classmethod` (`cls`/other first param, incl. `__new__`) has no instance
     // fields — mirroring `discover_fields`'s self-write scan.
+    // Inherited `@classmethod`s re-bound to THIS class: CPython passes the
+    // class the method is called through as `cls`, and `cls` is folded at
+    // compile time, so each subclass gets its own copy of every inherited
+    // classmethod it does not redefine (same-namespace bases only — a base from
+    // another module resolves its body's names in that module's scope).
+    let own_names: HashSet<InternedString> = methods
+        .iter()
+        .chain(static_methods.iter())
+        .chain(class_methods.iter())
+        .map(|(n, _)| *n)
+        .chain(properties.iter().map(|p| p.name))
+        .chain(class_attrs.iter().map(|a| a.name))
+        .collect();
+    let mut effective_cms = own_cms;
+    for bname in &base_names {
+        let Some((bid, _)) = ctx.class_map.get(interner.resolve(*bname)).copied() else {
+            continue;
+        };
+        let inherited = shared.class_cms.get(&bid).cloned().unwrap_or_default();
+        for (ns, m) in inherited {
+            let mname = interner.intern(m.name.as_str());
+            if own_names.contains(&mname)
+                || effective_cms.iter().any(|(_, e)| e.name.as_str() == m.name.as_str())
+            {
+                continue;
+            }
+            if ns == shared.current_ns {
+                let (fid, _) = lower_method(
+                    interner,
+                    shared,
+                    &m,
+                    "",
+                    FirstParam::ClsMethod { class_id, name },
+                    None,
+                )?;
+                class_methods.push((mname, fid));
+            }
+            effective_cms.push((ns, m));
+        }
+    }
+    shared.class_cms.insert(class_id, effective_cms);
+
     for stmt in &cdef.body {
         let Stmt::FunctionDef(m) = stmt else { continue };
         let first_param = m

@@ -80,7 +80,7 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, BuiltinFunctionKind, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
+    BinOp, BuiltinFunctionKind, ClassInfo, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
     HirFunction, HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
 use pyaot_types::{repr_of, RawKind, Repr, SemTy, Sig, TypeLattice};
@@ -2397,15 +2397,19 @@ impl<'a> Sweeper<'a> {
             return SemTy::Never;
         }
         if let Some(cid) = class_of(&recv, self.classes) {
+            let resolve = |info: &ClassInfo| {
+                info.method(method_name)
+                    .or_else(|| info.static_method(method_name))
+                    .or_else(|| info.class_method(method_name))
+                    .map(|m| m.func_id)
+            };
+            // A subclass override may run instead (virtual dispatch / the
+            // runtime-class dispatcher): join every definition's return.
             let ret = self
                 .classes
                 .get(cid)
-                .and_then(|info| {
-                    info.method(method_name)
-                        .or_else(|| info.static_method(method_name))
-                        .or_else(|| info.class_method(method_name))
-                })
-                .map(|m| self.callee_ret_ty(m.func_id));
+                .and_then(resolve)
+                .map(|_| self.family_join(cid, |k| resolve(k).map(|f| self.callee_ret_ty(f))));
             return match ret {
                 // Substitute the generic type params for a `Stack[int]` receiver.
                 Some(t) => self.apply_subst(&recv, t),
@@ -2534,21 +2538,31 @@ impl<'a> Sweeper<'a> {
         let Some(info) = self.classes.get(cid) else {
             return SemTy::Dyn;
         };
-        let raw = if let Some(p) = info.property(name) {
-            p.ty.clone()
+        let raw = if info.property(name).is_some() {
+            // A subclass may override the property: the read dispatches on the
+            // receiver's runtime class, so its type joins every definition.
+            self.family_join(cid, |k| k.property(name).map(|p| p.ty.clone()))
         } else if let Some(t) = info.field_ty(name) {
             // B10: an unannotated field of a non-generic defining class reads
             // its solver variable (`Never` while still climbing — the working
             // bottom, exactly like `callee_ret_ty`). Annotated /
             // generic-class fields keep the static type.
-            if let Some(d) = defining_class(self.classes, cid, name) {
-                if let Some(&vi) = self.field_vars.get(&(d, name)) {
-                    return self.field_var_ty(vi);
-                }
+            let ft = match defining_class(self.classes, cid, name)
+                .and_then(|d| self.field_vars.get(&(d, name)).copied())
+            {
+                Some(vi) => self.field_var_ty(vi),
+                None => t.clone(),
+            };
+            // A field shadowing a class attribute reads the class value while
+            // unassigned on the instance.
+            if info.class_attr(name).is_some() {
+                let ca = self.family_join(cid, |k| k.class_attr(name).map(|a| a.ty.clone()));
+                join_tys(&[ft, ca], self.classes)
+            } else {
+                ft
             }
-            t.clone()
-        } else if let Some(a) = info.class_attr(name) {
-            a.ty.clone()
+        } else if info.class_attr(name).is_some() {
+            self.family_join(cid, |k| k.class_attr(name).map(|a| a.ty.clone()))
         } else {
             return SemTy::Dyn;
         };
@@ -2604,7 +2618,24 @@ impl<'a> Sweeper<'a> {
             .methods
             .iter()
             .find(|m| self.interner.resolve(m.name) == name)?;
-        Some(self.callee_ret_ty(m.func_id))
+        let mname = m.name;
+        // Overrides below `cid` dispatch on the receiver's runtime class.
+        Some(self.family_join(cid, |k| k.method(mname).map(|m| self.callee_ret_ty(m.func_id))))
+    }
+
+    /// Join `get(K)` over `cid` and every subclass `K` of it (the classes an
+    /// instance statically typed `cid` can really have) — the type of a member
+    /// a subclass may override. Classes where `get` yields nothing are skipped.
+    fn family_join(&self, cid: ClassId, get: impl Fn(&ClassInfo) -> Option<SemTy>) -> SemTy {
+        let mut tys: Vec<SemTy> = Vec::new();
+        for k in self.classes.iter() {
+            if k.class_id == cid || k.mro.contains(&cid) {
+                if let Some(t) = get(k) {
+                    tys.push(t);
+                }
+            }
+        }
+        join_tys(&tys, self.classes)
     }
 
     /// Result type of a subscript read `base[index]`, from the base's container
