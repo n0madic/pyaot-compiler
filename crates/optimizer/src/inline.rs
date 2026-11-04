@@ -101,11 +101,24 @@ impl OptimizationPass for Inline {
         let mut order: Vec<usize> = (0..program.funcs.len()).collect();
         order.sort_by_key(|&i| scc_of[i]);
 
+        // Current (grown) size of every function, maintained incrementally:
+        // a function's body changes only while it is the caller, so its entry
+        // is refreshed right after; callees are always final by then.
+        let mut sizes: Vec<usize> = program.funcs.iter().map(real_size).collect();
+        let ctx = InlineCtx {
+            scc_of: &scc_of,
+            original_ok: &original_ok,
+            max_insts: self.max_insts,
+            debug: std::env::var_os("PYAOT_INLINE_DEBUG").is_some(),
+        };
+
         for caller in order {
             if is_thunk[caller] {
                 continue;
             }
-            inline_into(program, caller, &scc_of, &original_ok, self.max_insts);
+            if inline_into(program, caller, &ctx, &sizes) {
+                sizes[caller] = real_size(&program.funcs[caller]);
+            }
         }
     }
 }
@@ -121,16 +134,28 @@ struct CalleeBody {
     entry: BlockId,
 }
 
-fn inline_into(
-    program: &mut MirProgram,
-    caller: usize,
-    scc_of: &[usize],
-    original_ok: &[bool],
+/// Program-wide inputs of one inlining run, computed once.
+struct InlineCtx<'a> {
+    scc_of: &'a [usize],
+    original_ok: &'a [bool],
     max_insts: usize,
-) {
+    /// `PYAOT_INLINE_DEBUG` is set: log every refused call site.
+    debug: bool,
+}
+
+/// Splice every eligible call in `caller`; `sizes` holds each function's
+/// current size (callees are final). Returns whether anything was spliced.
+fn inline_into(program: &mut MirProgram, caller: usize, ctx: &InlineCtx<'_>, sizes: &[usize]) -> bool {
+    let InlineCtx {
+        scc_of,
+        original_ok,
+        max_insts,
+        debug,
+    } = *ctx;
     // Worklist of caller-origin blocks to scan; continuation blocks created
     // by a splice join it, callee-copied blocks do not.
     let mut work: Vec<usize> = (0..program.funcs[caller].blocks.len()).collect();
+    let mut changed = false;
 
     while let Some(bi) = work.pop() {
         // Find the first eligible call in this block (immutable scan).
@@ -139,7 +164,7 @@ fn inline_into(
             funcs[caller].blocks[bi].insts.iter().enumerate().find_map(|(i, inst)| {
                 if let MirInst::Call { func, .. } = inst {
                     let callee = func.index();
-                    let grown: usize = real_size(&funcs[callee]);
+                    let grown = sizes[callee];
                     if callee != caller
                         && scc_of[callee] != scc_of[caller]
                         && original_ok[callee]
@@ -147,7 +172,7 @@ fn inline_into(
                     {
                         return Some((i, callee));
                     }
-                    if std::env::var_os("PYAOT_INLINE_DEBUG").is_some() {
+                    if debug {
                         eprintln!(
                             "inline refuse: caller={caller} callee={callee} scc={}/{} ok={} grown={grown}",
                             scc_of[callee], scc_of[caller], original_ok[callee],
@@ -163,9 +188,11 @@ fn inline_into(
 
         let body = clone_body(&program.funcs[callee], FuncId::new(callee as u32));
         let cont = splice(&mut program.funcs[caller], bi, inst_idx, &body);
+        changed = true;
         // The continuation holds the rest of this block — keep scanning it.
         work.push(cont);
     }
+    changed
 }
 
 /// The set of functions that are the target of some `MakeClosure` (the uniform

@@ -5,9 +5,12 @@
 
 use std::cell::UnsafeCell;
 
-/// Maximum number of classes supported.
-/// Limited by u8 class_id type. User-defined classes start at
-/// `FIRST_USER_CLASS_ID`, leaving the rest of the u8 range for user classes. Programs exceeding this limit need a wider class_id type.
+/// Maximum number of classes supported (the whole u8 `class_id` space).
+/// Ids below [`FIRST_USER_CLASS_ID`] are taken by built-in exceptions, the
+/// reserved stdlib exception slots and the builtin generic types (see
+/// `pyaot_core_defs::FIRST_USER_CLASS_ID` for the exact ranges); user classes
+/// get `FIRST_USER_CLASS_ID..NO_PARENT`. Programs exceeding this limit need a
+/// wider class_id type.
 const MAX_CLASSES: usize = 256;
 
 /// Sentinel value for "no parent" (class is at the root of hierarchy)
@@ -314,8 +317,8 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
     });
 }
 
-/// The first class ID the compiler assigns to user classes (builtin exception
-/// tags, reserved stdlib exception slots and builtin generic types come first).
+/// The first class ID the frontend assigns to user classes — re-exported from
+/// `pyaot_core_defs` (the single source of truth for the class-id ranges).
 pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::FIRST_USER_CLASS_ID;
 
 // ==================== Method Name Registry (for Protocol dispatch) ====================

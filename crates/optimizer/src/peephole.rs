@@ -41,6 +41,9 @@ type CoerceMap = HashMap<LocalId, (LocalId, Repr, Repr)>;
 fn coerce_round_trips(f: &mut MirFunction) {
     for block in &mut f.blocks {
         let mut seen: CoerceMap = HashMap::new();
+        // Reverse index: source local → the tracked coerce dsts reading it, so
+        // a write invalidates its dependents without scanning all of `seen`.
+        let mut by_src: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
         for inst in &mut block.insts {
             // Try the rewrite BEFORE recording this instruction's own write.
             // A CHECKED narrowing folds too: its source provably came out of
@@ -64,10 +67,15 @@ fn coerce_round_trips(f: &mut MirFunction) {
             }
 
             // Any write kills entries it invalidates (the dst itself, and any
-            // tracked coerce whose source it overwrites).
+            // tracked coerce whose source it overwrites). A stale `by_src`
+            // entry is harmless: removal re-checks the recorded source.
             if let Some(dst) = inst.dst() {
                 seen.remove(&dst);
-                seen.retain(|_, (src, _, _)| *src != dst);
+                for dep in by_src.remove(&dst).unwrap_or_default() {
+                    if seen.get(&dep).is_some_and(|(src, _, _)| *src == dst) {
+                        seen.remove(&dep);
+                    }
+                }
             }
 
             // Record a fresh unchecked coerce AFTER the kill (its own dst).
@@ -75,32 +83,70 @@ fn coerce_round_trips(f: &mut MirFunction) {
                 if !c.checked() && c.from() != c.to() {
                     let Operand::Local(src) = *c.src();
                     seen.insert(c.dst(), (src, c.from().clone(), c.to().clone()));
+                    by_src.entry(src).or_default().push(c.dst());
                 }
             }
         }
     }
 }
 
-/// Resolve `target` through chains of empty `Jump`-only blocks (loop-safe).
-fn resolve_target(f: &MirFunction, mut target: BlockId) -> BlockId {
-    let mut visited = vec![false; f.blocks.len()];
-    loop {
-        let block = &f.blocks[target.index()];
-        if visited[target.index()] || !block.insts.is_empty() {
-            return target;
+/// Resolve every block through chains of empty `Jump`-only blocks, in one
+/// memoized pass (each block is walked once overall). Loop-safe: a block on a
+/// cycle of empty forwarders resolves to itself, and a chain leading into such
+/// a cycle resolves to the block where it enters the cycle.
+fn resolve_targets(f: &MirFunction) -> Vec<BlockId> {
+    const UNSEEN: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let n = f.blocks.len();
+    let mut state = vec![UNSEEN; n];
+    let mut resolved: Vec<BlockId> = (0..n).map(|i| BlockId::new(i as u32)).collect();
+    let mut path: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if state[start] == DONE {
+            continue;
         }
-        visited[target.index()] = true;
-        match block.term {
-            MirTerminator::Jump(next) => target = next,
-            _ => return target,
+        let mut cur = start;
+        // Walk forward until the chain ends, rejoins a resolved block, or
+        // loops back onto the current path.
+        let target = loop {
+            match state[cur] {
+                DONE => break resolved[cur],
+                ON_PATH => {
+                    // A cycle: its members resolve to themselves; the path
+                    // prefix leading into it resolves to `cur`.
+                    let at = path.iter().position(|&b| b == cur).expect("on path");
+                    for &b in &path[at..] {
+                        state[b] = DONE;
+                    }
+                    path.truncate(at);
+                    break BlockId::new(cur as u32);
+                }
+                _ => {}
+            }
+            let block = &f.blocks[cur];
+            match block.term {
+                MirTerminator::Jump(next) if block.insts.is_empty() => {
+                    state[cur] = ON_PATH;
+                    path.push(cur);
+                    cur = next.index();
+                }
+                _ => {
+                    state[cur] = DONE;
+                    break BlockId::new(cur as u32);
+                }
+            }
+        };
+        for b in path.drain(..) {
+            state[b] = DONE;
+            resolved[b] = target;
         }
     }
+    resolved
 }
 
 fn thread_jumps(f: &mut MirFunction) {
-    let resolved: Vec<BlockId> = (0..f.blocks.len())
-        .map(|i| resolve_target(f, BlockId::new(i as u32)))
-        .collect();
+    let resolved = resolve_targets(f);
     let r = |t: BlockId| resolved[t.index()];
     for block in &mut f.blocks {
         // Handler annotations thread the same way: an empty handler block
@@ -238,6 +284,32 @@ mod tests {
                 (vec![], MirTerminator::Jump(BlockId::new(1))),
             ],
         );
+        thread_jumps(&mut f);
+        verify_ok(&f);
+    }
+
+    #[test]
+    fn memoized_resolution_matches_chain_walk() {
+        // 0 → 1 → 2 → 3 (return); 4 → 5 → 6 → 5 (an empty cycle entered at 5);
+        // 7 → 2 rejoins the first chain after it is already resolved.
+        let mut f = function(
+            vec![],
+            vec![
+                (vec![], MirTerminator::Jump(BlockId::new(1))),
+                (vec![], MirTerminator::Jump(BlockId::new(2))),
+                (vec![], MirTerminator::Jump(BlockId::new(3))),
+                (vec![], MirTerminator::Return(None)),
+                (vec![], MirTerminator::Jump(BlockId::new(5))),
+                (vec![], MirTerminator::Jump(BlockId::new(6))),
+                (vec![], MirTerminator::Jump(BlockId::new(5))),
+                (vec![], MirTerminator::Jump(BlockId::new(2))),
+            ],
+        );
+        let r: Vec<u32> = super::resolve_targets(&f)
+            .iter()
+            .map(|b| b.index() as u32)
+            .collect();
+        assert_eq!(r, vec![3, 3, 3, 3, 5, 5, 6, 3]);
         thread_jumps(&mut f);
         verify_ok(&f);
     }

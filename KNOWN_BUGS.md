@@ -428,18 +428,31 @@ Regressions: `corpus/test_eval_order.py`.
       `ZeroDivisionError` — contract change) and `Unary::Neg` (`fneg`); a
       float against an int literal with `|v| <= 2^53` stays raw too. Corpus:
       test_raw_fastpaths.py.
-- [ ] Quadratic: liveness worklist + per-alloc local scan
+- [x] Quadratic: liveness worklist + per-alloc local scan
       (`mir/src/liveness.rs:96`); peephole `resolve_target` (`peephole.rs:83`);
       devirt `single_def` clones (`devirt.rs:173`); inline size recompute +
       env var per refusal (`inline.rs:131`); no FuncRef/DataId cache
       (`codegen lib.rs:1981`); linear generator dispatch (`:943`).
+      Fixed: liveness on bitsets with an O(1)-membership worklist and an
+      allocation-epoch rooting pass (linear in instructions); memoized
+      one-pass jump-target resolution and a reverse source index for the
+      coerce round-trip kill set; `single_def` borrows instead of cloning;
+      inline keeps an incremental size table and reads `PYAOT_INLINE_DEBUG`
+      once; per-function `FuncRef`/`GlobalValue` caches; the generator
+      dispatcher is a `Switch` (jump table). Unit tests in liveness /
+      peephole; corpus gate unchanged.
 - [x] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
       Fixed: SetObj tracks a tombstone count (layout extension) so resizing
       uses fill = len + tombstones without the O(capacity) scan per add; a
       mostly-tombstone table is compacted in place. Corpus:
       test_collections.py.
-- [ ] `iconst` not masked for I8/I32; unchecked int tag shift of literals
-      (`codegen lib.rs:2572`, `:1254`).
+- [x] `iconst` not masked for I8/I32; unchecked int tag shift of literals
+      (`codegen lib.rs:2572`, `:1254`). Fixed: narrow raw immediates are
+      masked to their width; a tagged `Const::Int` outside the fixnum range is
+      boxed via `rt_box_i64` instead of shift-tagged (the frontend already
+      emits `BigIntLit` for such literals, so this is a safety net). Both
+      const materializers share `tagged_immediate`/`heap_const_ctor`. Unit
+      tests in codegen.
 - [ ] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),
       `RT_BYTES_STARTS/ENDS_WITH` declared i8 vs i64, collections/functools
       sentinel descriptors (`core-defs/src/runtime_func_def.rs`,
@@ -448,9 +461,11 @@ Regressions: `corpus/test_eval_order.py`.
       stdlib object getters returning a tagged `Value` declared
       `unary_to_i64` (Raw); `RT_STR_FIND/RFIND/INDEX/RINDEX` declared
       `gc_roots_result` for a raw i64 position.
-- [ ] `Coercion::HeapToTagged` never produced (`mir/src/lib.rs:1197`).
-- [ ] Stale docs: optimizer crate header, core-defs ranges, runtime
-      `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement.
+- [x] `Coercion::HeapToTagged` never produced (`mir/src/lib.rs:1197`).
+      Removed: `Heap → Tagged` widening is (and was) classified `Noop`.
+- [x] Stale docs: optimizer crate header, core-defs ranges, runtime
+      `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement. (The
+      `verify_call_container` doc was already above its function.)
 - [ ] Duplication: arg-tuple / kwargs-dict packing in lowering
       (`:1893`, `:3933`, `:4183`); `materialize_const` vs `lower_const`.
 - [ ] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until

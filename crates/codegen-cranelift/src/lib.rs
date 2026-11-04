@@ -26,14 +26,14 @@ use std::path::Path;
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::{
     condcodes::FloatCC, condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
-    ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
+    ExceptionTableData, ExceptionTableItem, FuncRef, GlobalValue, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
     StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_codegen::FinalizedMachExceptionHandler;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{
     default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module, ModuleReloc,
 };
@@ -916,8 +916,8 @@ pub fn compile(
 /// Emit `__pyaot_generator_resume(gen) -> gen`: the dispatcher the runtime's
 /// `rt_generator_next/send/close` call (Phase 6E). It loads the generator's
 /// stored `func_id` (a `u32` at the frozen `GENERATOR_FUNC_ID_OFFSET`) and
-/// compare-chains it against each `gen_id` → calls the matching resume fn and
-/// returns its result; an unmatched id (or an empty table) traps. The resume
+/// switches on it (jump table) → calls the matching resume fn and returns its
+/// result; an unmatched id (or an empty table) traps. The resume
 /// fns have the compiled signature `(gen: i64) -> i64`, so the dispatcher
 /// reuses the platform pointer type as the `Value` ABI.
 fn emit_generator_dispatch(
@@ -953,25 +953,28 @@ fn emit_generator_dispatch(
             let func_id_val = builder
                 .ins()
                 .load(types::I32, MemFlags::trusted(), gen, offset);
-            // Compare-chain: for each gen_id, if func_id == gen_id call its
-            // resume fn and return; else fall to the next test.
-            for (gen_id, resume_fid) in program.generators.iter().enumerate() {
-                let matches = builder.create_block();
-                let next = builder.create_block();
-                let want = builder.ins().iconst(types::I32, gen_id as i64);
-                let eq = builder.ins().icmp(IntCC::Equal, func_id_val, want);
-                builder.ins().brif(eq, matches, &[], next, &[]);
-
-                builder.switch_to_block(matches);
-                builder.seal_block(matches);
+            // `Switch` lowers to a jump table / binary search over the dense
+            // `gen_id`s (O(1)/O(log n) per resume, not a linear compare chain):
+            // each case calls its resume fn and returns its result.
+            let default = builder.create_block();
+            let mut switch = Switch::new();
+            let mut cases = Vec::with_capacity(program.generators.len());
+            for gen_id in 0..program.generators.len() {
+                let b = builder.create_block();
+                switch.set_entry(gen_id as u128, b);
+                cases.push(b);
+            }
+            switch.emit(&mut builder, func_id_val, default);
+            for (b, resume_fid) in cases.into_iter().zip(&program.generators) {
+                builder.switch_to_block(b);
+                builder.seal_block(b);
                 let fref = module.declare_func_in_func(func_ids[resume_fid.index()], builder.func);
                 let call = builder.ins().call(fref, &[gen]);
                 let res = builder.inst_results(call)[0];
                 builder.ins().return_(&[res]);
-
-                builder.switch_to_block(next);
-                builder.seal_block(next);
             }
+            builder.switch_to_block(default);
+            builder.seal_block(default);
             // Unmatched func_id → trap (a corrupt generator object).
             builder.ins().trap(TrapCode::unwrap_user(2));
             builder.finalize();
@@ -1247,6 +1250,53 @@ fn thunk_addr(
     builder.ins().func_addr(ptr_ty, fref)
 }
 
+/// The tagged `Value` bits of an immediate constant, or `None` when the
+/// constant needs a runtime constructor: a float (boxed or raw), a heap
+/// literal (`Str`/`Bytes`/`BigIntStr`), or an `Int` outside the 61-bit fixnum
+/// range — shifting such an int into the tag would silently drop its high
+/// bits, so it is boxed through `rt_box_i64` instead. (The frontend turns
+/// out-of-range literals into `BigIntLit`, so the last case is a safety net,
+/// not a hot path.) Shared by function bodies and the class-attribute
+/// initializers so the two encodings cannot drift.
+fn tagged_immediate(val: &Const) -> Option<i64> {
+    match val {
+        Const::Int(i) if tag::int_fits(*i) => Some((*i << tag::INT_SHIFT) | tag::INT_TAG as i64),
+        Const::Int(_) => None,
+        Const::Bool(b) => Some(((*b as i64) << tag::BOOL_SHIFT) | tag::BOOL_TAG as i64),
+        Const::None => Some(tag::NONE_TAG as i64),
+        // The null-pointer `Value` — raw bits 0 (pointer tag, null payload):
+        // the stdlib "absent optional object" sentinel (Phase 8B).
+        Const::NullPtr => Some(0),
+        // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
+        Const::Unbound => Some(tag::RESERVED_TAG as i64),
+        Const::Float(_) | Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_) => None,
+    }
+}
+
+/// The runtime constructor `(ptr, len) -> Value` and string-pool id of a heap
+/// literal constant, or `None` for a scalar.
+fn heap_const_ctor(rt: &RuntimeFns, val: &Const) -> Option<(FuncId, InternedString)> {
+    match val {
+        // Intern literals so equal strings share one object (PITFALLS B8).
+        Const::Str(id) => Some((rt.make_str_interned, *id)),
+        Const::Bytes(id) => Some((rt.make_bytes, *id)),
+        Const::BigIntStr(id) => Some((rt.bigint_from_str, *id)),
+        _ => None,
+    }
+}
+
+/// An `iconst` immediate for a narrow raw type: Cranelift requires the
+/// immediate of an `I8`/`I32` constant to fit the type, so negative values are
+/// masked to their low bits (two's complement, same machine value).
+fn masked_imm(ty: Type, i: i64) -> i64 {
+    match ty.bits() {
+        64 => i,
+        bits => i & ((1i64 << bits) - 1),
+    }
+}
+
+/// Materialize a class-attribute initializer constant as a tagged `Value`
+/// (outside any `FnGen`: `__pyaot_classinit` has no MIR locals).
 fn materialize_const(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -1255,18 +1305,6 @@ fn materialize_const(
     ptr_ty: Type,
     val: &Const,
 ) -> Result<Value> {
-    let str_data = |module: &mut ObjectModule,
-                    builder: &mut FunctionBuilder,
-                    id: InternedString|
-     -> Result<(Value, Value)> {
-        let (data_id, len) = *data_ids
-            .get(&id)
-            .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
-        let gv = module.declare_data_in_func(data_id, builder.func);
-        let ptr = builder.ins().global_value(ptr_ty, gv);
-        let len_val = builder.ins().iconst(types::I64, len as i64);
-        Ok((ptr, len_val))
-    };
     let call1 = |module: &mut ObjectModule,
                  builder: &mut FunctionBuilder,
                  fid: FuncId,
@@ -1276,44 +1314,29 @@ fn materialize_const(
         let inst = builder.ins().call(fref, args);
         builder.inst_results(inst)[0]
     };
-    let v = match val {
-        Const::Int(i) => {
-            let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
-            builder.ins().iconst(types::I64, tagged)
-        }
-        Const::Bool(b) => {
-            let tagged = if *b {
-                ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
-            } else {
-                tag::BOOL_TAG as i64
-            };
-            builder.ins().iconst(types::I64, tagged)
-        }
-        Const::None => builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
-        // Never produced for class-attr initializers; materialize the raw null
-        // Value for exhaustiveness.
-        Const::NullPtr => builder.ins().iconst(types::I64, 0),
-        // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
-        Const::Unbound => builder.ins().iconst(types::I64, tag::RESERVED_TAG as i64),
+    if let Some(bits) = tagged_immediate(val) {
+        return Ok(builder.ins().iconst(types::I64, bits));
+    }
+    if let Some((ctor, id)) = heap_const_ctor(rt, val) {
+        let (data_id, len) = *data_ids
+            .get(&id)
+            .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
+        let gv = module.declare_data_in_func(data_id, builder.func);
+        let ptr = builder.ins().global_value(ptr_ty, gv);
+        let len_val = builder.ins().iconst(types::I64, len as i64);
+        return Ok(call1(module, builder, ctor, &[ptr, len_val]));
+    }
+    Ok(match val {
         Const::Float(f) => {
             let fv = builder.ins().f64const(*f);
             call1(module, builder, rt.box_float, &[fv])
         }
-        Const::Str(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            // Intern literals so equal strings share one object (PITFALLS B8).
-            call1(module, builder, rt.make_str_interned, &[ptr, len])
+        Const::Int(i) => {
+            let raw = builder.ins().iconst(types::I64, *i);
+            call1(module, builder, rt.box_i64, &[raw])
         }
-        Const::Bytes(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            call1(module, builder, rt.make_bytes, &[ptr, len])
-        }
-        Const::BigIntStr(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            call1(module, builder, rt.bigint_from_str, &[ptr, len])
-        }
-    };
-    Ok(v)
+        other => return Err(cg_error(format!("unmaterializable class-attr constant {other:?}"))),
+    })
 }
 
 /// Emit the unwind-table data object: `count` 24-byte records
@@ -1691,6 +1714,8 @@ fn translate_function(
                 .enumerate()
                 .map(|(i, key)| (key, i as u32))
                 .collect(),
+            fref_cache: HashMap::new(),
+            gv_cache: HashMap::new(),
         };
 
         for (bi, mblock) in mf.blocks.iter().enumerate() {
@@ -2076,6 +2101,9 @@ struct FnGen<'a, 'b> {
     /// `(line, inline chain)` → index into [`inline_locs`]'s table: the
     /// srcloc of an `InlinedLine` is `INLINE_SRCLOC | index`.
     inline_loc_ids: HashMap<(u32, Vec<InlineFrame>), u32>,
+    /// Per-function import caches (see [`Self::func_ref`] / [`Self::str_data`]).
+    fref_cache: HashMap<FuncId, FuncRef>,
+    gv_cache: HashMap<DataId, GlobalValue>,
 }
 
 impl FnGen<'_, '_> {
@@ -2158,6 +2186,18 @@ impl FnGen<'_, '_> {
             .collect()
     }
 
+    /// The function's import (`FuncRef`) for `fid`, declared once per
+    /// function: `declare_func_in_func` appends a fresh external-function
+    /// entry on every call, so uncached it grows linearly per call site.
+    fn func_ref(&mut self, fid: FuncId) -> FuncRef {
+        if let Some(r) = self.fref_cache.get(&fid) {
+            return *r;
+        }
+        let r = self.module.declare_func_in_func(fid, self.builder.func);
+        self.fref_cache.insert(fid, r);
+        r
+    }
+
     /// Call a runtime/user function, returning its single result (if any).
     /// Inside a protected block, any callee that can raise is routed through
     /// a `CallConv::Tail` trampoline emitted as a `try_call` whose
@@ -2166,7 +2206,7 @@ impl FnGen<'_, '_> {
     /// calls in unprotected blocks) stay plain `call`s with no unwind
     /// metadata.
     fn call(&mut self, fid: FuncId, args: &[Value]) -> Option<Value> {
-        let fref = self.module.declare_func_in_func(fid, self.builder.func);
+        let fref = self.func_ref(fid);
         let sig_ref = self.builder.func.dfg.ext_funcs[fref].signature;
         let params = self.builder.func.dfg.signatures[sig_ref].params.clone();
         let args = self.adapt_args(&params, args);
@@ -2174,7 +2214,7 @@ impl FnGen<'_, '_> {
             if !self.rt.never_raises.contains(&fid) {
                 let sig = self.builder.func.dfg.signatures[sig_ref].clone();
                 let tramp = self.trampolines.direct(self.module, fid, &sig);
-                let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+                let tref = self.func_ref(tramp);
                 let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
                 return self.emit_protected_call(tramp_sig_ref, h, |b, et| {
                     b.ins().try_call(tref, &args, et)
@@ -2194,7 +2234,7 @@ impl FnGen<'_, '_> {
         if let Some(h) = self.cur_handler {
             let sig = self.builder.func.dfg.signatures[sig_ref].clone();
             let tramp = self.trampolines.indirect(self.module, &sig);
-            let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+            let tref = self.func_ref(tramp);
             let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
             let mut targs = args.to_vec();
             targs.push(callee);
@@ -2702,9 +2742,7 @@ impl FnGen<'_, '_> {
         // runtime, and a later allocation must not collect it.
         self.def_local(dst, env);
 
-        let fref = self
-            .module
-            .declare_func_in_func(self.func_ids[func.index()], self.builder.func);
+        let fref = self.func_ref(self.func_ids[func.index()]);
         let addr = self.builder.ins().func_addr(self.ptr_ty, fref);
         let shifted = self.builder.ins().ishl_imm(addr, tag::INT_SHIFT as i64);
         let tagged_addr = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
@@ -2763,49 +2801,32 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_const(&mut self, dst: LocalId, val: &Const) -> Result<()> {
+        let dst_repr = &self.locals[dst.index()].repr;
         let v = match val {
-            Const::Int(i) => {
-                // A raw-repr destination takes the plain integer in its register
-                // class (Phase 8B descriptor-ABI immediates — field indexes, arg
-                // counts); a Tagged one takes the int-tagged Value bits.
-                if let Repr::Raw(_) = &self.locals[dst.index()].repr {
-                    let ty = clif_ty(&self.locals[dst.index()].repr);
-                    self.builder.ins().iconst(ty, *i)
-                } else {
-                    let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
-                    self.builder.ins().iconst(types::I64, tagged)
-                }
+            // A raw-repr destination takes the plain integer in its register
+            // class (Phase 8B descriptor-ABI immediates — field indexes, arg
+            // counts); the immediate is masked to the width of a narrow
+            // (`I8`/`I32`) type, which Cranelift requires to fit.
+            Const::Int(i) if matches!(dst_repr, Repr::Raw(_)) => {
+                let ty = clif_ty(dst_repr);
+                self.builder.ins().iconst(ty, masked_imm(ty, *i))
             }
-            // The null-pointer `Value` — raw bits 0 (pointer tag, null payload):
-            // the stdlib "absent optional object" sentinel (Phase 8B).
-            Const::NullPtr => self.builder.ins().iconst(types::I64, 0),
-            Const::Bool(b) => {
-                let tagged = if *b {
-                    ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
-                } else {
-                    tag::BOOL_TAG as i64
-                };
-                self.builder.ins().iconst(types::I64, tagged)
-            }
-            Const::None => self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
-            // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
-            Const::Unbound => self
-                .builder
-                .ins()
-                .iconst(types::I64, tag::RESERVED_TAG as i64),
+            // The verifier admits a float constant only into `Raw(F64)`.
             Const::Float(f) => self.builder.ins().f64const(*f),
-            Const::Str(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                // Intern literals so equal strings share one object (PITFALLS B8).
-                self.call(self.rt.make_str_interned, &[ptr, len]).unwrap()
-            }
-            Const::BigIntStr(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                self.call(self.rt.bigint_from_str, &[ptr, len]).unwrap()
-            }
-            Const::Bytes(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                self.call(self.rt.make_bytes, &[ptr, len]).unwrap()
+            _ => {
+                if let Some(bits) = tagged_immediate(val) {
+                    self.builder.ins().iconst(types::I64, bits)
+                } else if let Some((ctor, id)) = heap_const_ctor(self.rt, val) {
+                    let (ptr, len) = self.str_data(id)?;
+                    self.call(ctor, &[ptr, len]).unwrap()
+                } else if let Const::Int(i) = val {
+                    // Out of fixnum range: never shift-tag it (the high bits
+                    // would be lost) — box it as a `BigInt`.
+                    let raw = self.builder.ins().iconst(types::I64, *i);
+                    self.call(self.rt.box_i64, &[raw]).unwrap()
+                } else {
+                    return Err(cg_error(format!("unmaterializable constant {val:?}")));
+                }
             }
         };
         self.def_local(dst, v);
@@ -2818,7 +2839,14 @@ impl FnGen<'_, '_> {
             .data_ids
             .get(&id)
             .ok_or_else(|| cg_error("missing data object for interned string"))?;
-        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let gv = match self.gv_cache.get(&data_id) {
+            Some(gv) => *gv,
+            None => {
+                let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+                self.gv_cache.insert(data_id, gv);
+                gv
+            }
+        };
         let ptr = self.builder.ins().global_value(self.ptr_ty, gv);
         let len_val = self.builder.ins().iconst(types::I64, len as i64);
         Ok((ptr, len_val))
@@ -3051,7 +3079,7 @@ impl FnGen<'_, '_> {
             .ok_or_else(|| cg_error(format!("illegal coercion {from:?} -> {to:?}")))?;
         let s = self.use_operand(src);
         let v = match kind {
-            Coercion::Noop | Coercion::HeapToTagged | Coercion::TaggedToHeap => s,
+            Coercion::Noop | Coercion::TaggedToHeap => s,
             Coercion::BoxFloat => self.call(self.rt.box_float, &[s]).unwrap(),
             Coercion::UnboxFloat => {
                 self.builder
@@ -3584,7 +3612,33 @@ fn cmp_op_tag(op: ContainerCmpOp) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::traceback_name;
+    use super::{masked_imm, tagged_immediate, traceback_name};
+    use cranelift_codegen::ir::types;
+    use pyaot_core_defs::{Value, INT_MAX, INT_MIN};
+    use pyaot_mir::Const;
+
+    #[test]
+    fn tagged_immediates_match_value_encoding() {
+        for i in [0, 1, -1, INT_MAX, INT_MIN] {
+            assert_eq!(
+                tagged_immediate(&Const::Int(i)),
+                Some(Value::from_int(i).0 as i64)
+            );
+        }
+        // Out of the fixnum range: never shift-tagged (boxed instead).
+        assert_eq!(tagged_immediate(&Const::Int(INT_MAX + 1)), None);
+        assert_eq!(tagged_immediate(&Const::Int(i64::MIN)), None);
+        assert_eq!(tagged_immediate(&Const::Float(1.0)), None);
+        assert_eq!(tagged_immediate(&Const::NullPtr), Some(0));
+    }
+
+    #[test]
+    fn narrow_immediates_are_masked() {
+        assert_eq!(masked_imm(types::I8, -1), 0xff);
+        assert_eq!(masked_imm(types::I32, -2), 0xffff_fffe);
+        assert_eq!(masked_imm(types::I8, 5), 5);
+        assert_eq!(masked_imm(types::I64, -1), -1);
+    }
 
     #[test]
     fn traceback_names_match_cpython_co_name() {

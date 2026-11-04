@@ -32,9 +32,51 @@ use pyaot_utils::LocalId;
 
 use crate::{MirFunction, MirInst, MirTerminator, Operand};
 
+/// A dense bitset over local indices (word-parallel dataflow).
+#[derive(Clone, PartialEq, Eq)]
+struct Bits(Vec<u64>);
+
+impl Bits {
+    fn new(n: usize) -> Self {
+        Bits(vec![0; n.div_ceil(64)])
+    }
+    fn get(&self, i: usize) -> bool {
+        (self.0[i / 64] >> (i % 64)) & 1 == 1
+    }
+    fn set(&mut self, i: usize) {
+        self.0[i / 64] |= 1 << (i % 64);
+    }
+    fn clear(&mut self, i: usize) {
+        self.0[i / 64] &= !(1 << (i % 64));
+    }
+    fn union_with(&mut self, o: &Bits) {
+        for (a, b) in self.0.iter_mut().zip(&o.0) {
+            *a |= *b;
+        }
+    }
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().enumerate().flat_map(|(w, &word)| {
+            let mut bits = word;
+            std::iter::from_fn(move || {
+                if bits == 0 {
+                    return None;
+                }
+                let t = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                Some(w * 64 + t)
+            })
+        })
+    }
+}
+
 /// For each local (by index): must it get a GC root slot? `true` only for
 /// locals whose `Repr::is_gc_root()` holds AND whose liveness crosses an
 /// allocation point (see module docs).
+///
+/// Complexity: the dataflow runs on word-parallel bitsets over a worklist with
+/// O(1) membership; the rooting pass is linear in the instruction count (plus
+/// one sweep of the live set per block), using an allocation *epoch* counter
+/// instead of scanning every local at every allocation point.
 pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     let nlocals = f.locals.len();
     let nblocks = f.blocks.len();
@@ -42,58 +84,54 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     // ── per-block use/def summaries ──
     // block_use: read before any write within the block (backward scan);
     // block_def: written anywhere in the block.
-    let mut block_use = vec![vec![false; nlocals]; nblocks];
-    let mut block_def = vec![vec![false; nlocals]; nblocks];
+    let mut block_use = vec![Bits::new(nlocals); nblocks];
+    let mut block_def = vec![Bits::new(nlocals); nblocks];
     for (bi, b) in f.blocks.iter().enumerate() {
         let (use_b, def_b) = (&mut block_use[bi], &mut block_def[bi]);
         // Backward: a use before an earlier (in scan order: later in program
         // order) def stays a use; a def kills uses below it.
-        term_uses(&b.term, |l| {
-            use_b[l.index()] = true;
-        });
+        term_uses(&b.term, |l| use_b.set(l.index()));
         for inst in b.insts.iter().rev() {
             if let Some(d) = inst.dst() {
-                use_b[d.index()] = false;
-                def_b[d.index()] = true;
+                use_b.clear(d.index());
+                def_b.set(d.index());
             }
-            inst_uses(inst, |l| {
-                use_b[l.index()] = true;
-            });
+            inst_uses(inst, |l| use_b.set(l.index()));
         }
     }
 
     // ── classic backward worklist: live_in/live_out per block ──
     // A protected block's handler is a CFG successor (control can transfer
     // there from any raising instruction in the block).
+    let succs: Vec<Vec<usize>> = f.blocks.iter().map(successors).collect();
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nblocks];
-    for (bi, b) in f.blocks.iter().enumerate() {
-        for s in successors(b) {
+    for (bi, ss) in succs.iter().enumerate() {
+        for &s in ss {
             preds[s].push(bi);
         }
     }
-    let mut live_in = vec![vec![false; nlocals]; nblocks];
-    let mut live_out = vec![vec![false; nlocals]; nblocks];
+    let mut live_in = vec![Bits::new(nlocals); nblocks];
+    let mut live_out = vec![Bits::new(nlocals); nblocks];
     let mut work: Vec<usize> = (0..nblocks).collect();
+    let mut in_work = vec![true; nblocks];
     while let Some(bi) = work.pop() {
+        in_work[bi] = false;
         // live_out = ∪ live_in[succ]
-        let mut out = vec![false; nlocals];
-        for s in successors(&f.blocks[bi]) {
-            for (o, i) in out.iter_mut().zip(&live_in[s]) {
-                *o |= *i;
-            }
+        let mut out = Bits::new(nlocals);
+        for &s in &succs[bi] {
+            out.union_with(&live_in[s]);
         }
         // live_in = use ∪ (out \ def)
         let mut inn = block_use[bi].clone();
-        for l in 0..nlocals {
-            if out[l] && !block_def[bi][l] {
-                inn[l] = true;
-            }
+        for ((i, o), d) in inn.0.iter_mut().zip(&out.0).zip(&block_def[bi].0) {
+            *i |= *o & !*d;
         }
         live_out[bi] = out;
         if inn != live_in[bi] {
             live_in[bi] = inn;
             for &p in &preds[bi] {
-                if !work.contains(&p) {
+                if !in_work[p] {
+                    in_work[p] = true;
                     work.push(p);
                 }
             }
@@ -101,44 +139,65 @@ pub fn roots_needed(f: &MirFunction) -> Vec<bool> {
     }
 
     // ── second backward pass: root locals live across / used by allocations ──
+    // `epoch` counts the allocation points passed so far (backward) and
+    // `since[l]` is the epoch at which `l` most recently became live. A local
+    // whose live range (ending, backward, at its def or the block entry) saw
+    // the epoch advance was live after some allocating instruction.
     let mut needed = vec![false; nlocals];
+    let mut since = vec![0u64; nlocals];
+    let mut epoch: u64 = 0;
     for (bi, b) in f.blocks.iter().enumerate() {
         // `live` tracks liveness AFTER the instruction under the cursor.
         let mut live = live_out[bi].clone();
-        // Terminators never allocate (setjmp/branch/return), so start below
-        // them: fold their uses into `live` and walk the instructions.
-        term_uses(&b.term, |l| {
-            live[l.index()] = true;
-        });
+        // Terminators never allocate (branch/return), so start below them:
+        // fold their uses into `live` and walk the instructions.
+        term_uses(&b.term, |l| live.set(l.index()));
+        for l in live.iter() {
+            since[l] = epoch;
+        }
         for inst in b.insts.iter().rev() {
-            let def = inst.dst();
-            if inst.may_allocate(&f.locals) {
-                // needs_root(l) ⇐ l ∈ uses(I) ∪ (live_after(I) \ {def(I)})
-                for l in 0..nlocals {
-                    if live[l] && def.map(LocalId::index) != Some(l) {
-                        needed[l] = true;
+            // The def ends its live range here. The allocation (if any)
+            // precedes the definition, so it never counts for `def` itself.
+            if let Some(d) = inst.dst() {
+                let d = d.index();
+                if live.get(d) {
+                    if epoch > since[d] {
+                        needed[d] = true;
                     }
+                    live.clear(d);
                 }
-                inst_uses(inst, |l| {
-                    needed[l.index()] = true;
-                });
             }
-            if let Some(d) = def {
-                live[d.index()] = false;
+            let allocates = inst.may_allocate(&f.locals);
+            if allocates {
+                // needs_root(l) ⇐ l ∈ live_after(I) \ {def(I)}: every local
+                // live at this point crosses the new epoch.
+                epoch += 1;
             }
             inst_uses(inst, |l| {
-                live[l.index()] = true;
+                let l = l.index();
+                // The runtime does not root its own arguments.
+                if allocates {
+                    needed[l] = true;
+                }
+                if !live.get(l) {
+                    live.set(l);
+                    since[l] = epoch;
+                }
             });
+        }
+        // The block entry ends every remaining live range.
+        for l in live.iter() {
+            if epoch > since[l] {
+                needed[l] = true;
+            }
         }
     }
 
     // ── handler rule (see module docs) ──
     for b in &f.blocks {
         if let Some(handler) = b.handler {
-            for l in 0..nlocals {
-                if live_in[handler.index()][l] {
-                    needed[l] = true;
-                }
+            for l in live_in[handler.index()].iter() {
+                needed[l] = true;
             }
         }
     }

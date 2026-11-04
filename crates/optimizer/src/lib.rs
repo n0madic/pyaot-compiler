@@ -1,22 +1,25 @@
 //! # optimizer — passes over typed MIR
 //!
-//! Representation-preserving rewrites over typed MIR: devirtualize,
-//! flatten-properties, inline, constfold, peephole, dce, cold-block annotation,
-//! plus monomorphization. An [`OptimizationPass`] trait + a [`PassManager`] drive
-//! them.
+//! Representation-preserving rewrites over typed MIR, driven by a
+//! [`PassManager`] of [`OptimizationPass`]es:
+//!
+//! * [`constfold`] — fold constant arithmetic / comparisons / branches;
+//! * [`peephole`] — coerce round-trip elimination, jump threading;
+//! * [`dce`] — dead-instruction and unreachable-block removal;
+//! * [`inline`] — bottom-up splicing of small direct callees;
+//! * [`devirt`] — monomorphic value-position `CallIndirect` → direct `Call`.
+//!
+//! [`PassManager::phase9`] is the default pipeline (`--opt-level speed`);
+//! [`PassManager::phase1`] is the empty `--opt-level none` pipeline. Cold-block
+//! layout is not a pass here: codegen reads [`pyaot_mir::cold_blocks`] on the
+//! final MIR.
 //!
 //! Hard rule: passes read [`pyaot_types::Repr`] off MIR values — never any
 //! inference-internal state. This crate depends on `mir` + `types` but **not**
 //! `typeck`; the dependency graph structurally prevents reading inference state
 //! (Principle 6). Optimization may not change representation correctness, so the
-//! verifier runs at the entry boundary and after every pass in debug builds.
-//!
-//! ## Phase 1 scope
-//!
-//! [`PassManager::phase1`] is an **empty** pipeline: it still runs
-//! [`pyaot_mir::verify`] at the boundary (in debug), proving the verifier
-//! discipline holds from the first MIR ever produced — before any pass exists to
-//! perturb it.
+//! verifier runs at the entry boundary and after every pass in debug builds —
+//! including for the empty pipeline.
 
 #![forbid(unsafe_code)]
 
