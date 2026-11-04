@@ -58,6 +58,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |
 | f-strings | ✅ | Conversions, nested fields, dynamic format specs |
+| printf-style `str % args` | ✅ | Full `%[(key)][flags][width][.prec]type` grammar (`*` width/precision, `#0- +`, `d i u o x X e E f F g G c r s a %`), tuple / mapping / single argument, CPython error messages |
 | f-string `=` self-doc (`f"{x=}"`) | ❌ | PEP 501 spec form not implemented |
 
 ---
@@ -88,7 +89,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 
 | Group | Status | Notes |
 |---|---|---|
-| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization |
+| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization. Dynamic paths are exact like CPython: `int / int` correctly rounded (`10**400 / 10**399`), float `//`/`%` via `fmod` (`1.0 // 0.1 == 9.0`), `OverflowError` for an int too large for a float; gradual `seq * n` for str/list/tuple/bytes |
+| Mixed int/float comparison | ✅ | Exact on the dynamic paths (`2**53 + 1 != 2.0**53`); a statically typed `int` vs `float` compare still converts the int to a double |
 | Matrix multiply `@` | ✅ | `__matmul__` / `__rmatmul__` |
 | Bitwise `& \| ^ ~ << >>` | ✅ | |
 | Comparison `< <= > >= == !=` | ✅ | Rich-comparison dunders, chained compares |
@@ -205,9 +207,9 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `map`, `filter` | ✅ | Eager desugar (single iterable) |
 | `sorted`, `reversed`, `min`, `max`, `sum` | ✅ | `key=` / `reverse=` |
 | `abs`, `round`, `pow`, `divmod` | ✅ | |
-| `all`, `any`, `id`, `hash` | ✅ | |
+| `all`, `any`, `id`, `hash` | ✅ | `hash()` matches CPython for int / bignum / float / bool / None / tuple (mod `2**61-1`, xxHash tuple hash); str/bytes hashes differ (CPython's are randomized). Instances: `__hash__`, unhashable with `__eq__` but no `__hash__`, else identity. Dict/set keys use the same hash and `__eq__` |
 | `bin`, `hex`, `oct`, `ord`, `chr` | ✅ | |
-| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language; user `__repr__`/`__format__` |
+| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language (CPython float rules: no-type-code repr-like form, `g` decided after rounding, `-0.0`, `nan`/`inf` case, grouping inside `0`-padding, `_` groups of 4 for hex); user `__repr__`/`__format__` |
 | `int`, `float`, `bool` | ✅ | Incl. `int(str, base)` with CPython's literal grammar (one sign, radix prefix + optional `_`, base-0 leading-zero rule); `int()` of a big int / out-of-range float yields a bignum |
 | `list`, `dict`, `set`, `tuple`, `bytes` | ✅ | |
 | `type(x)` (1-arg) | ✅ | |

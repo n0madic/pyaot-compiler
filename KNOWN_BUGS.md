@@ -106,8 +106,11 @@ Two root causes dominate:
 - [ ] **H** Raw(I64)→Tagged `TagInt` unchecked: `math.factorial(20)` wraps,
       `factorial(25)` OverflowError (`stdlib-defs/src/modules/math.rs:121`,
       codegen `lib.rs:2684`). ✓
-- [ ] **H** `abs()` truncates out-of-fixnum results; no BigInt arm in
+- [x] **H** `abs()` truncates out-of-fixnum results; no BigInt arm in
       `abs`/`float` (`runtime/src/builtins.rs:267`, `:200`). ✓
+      Fixed: abs() boxes via the bignum-aware constructor and has a BigInt
+      arm; float(bigint) is correctly rounded with OverflowError. Corpus:
+      test_core_types.py.
 - [ ] **M** bignum arg to raw-Int stdlib param → codegen error "illegal
       coercion Heap(BigInt) -> Raw(I64)" (`math.gcd(3e18-ish ints)`). ✓
 - [ ] **L** `sum(list[float])` on empty list typed Float → `0.0` (`typeck:1987`). ✓
@@ -190,19 +193,32 @@ Two root causes dominate:
       that pops it. Corpus: test_exceptions.py handling-stack section.
 - [ ] **M** `super().__init__(msg)` in Exception subclass doesn't compile
       (`lowering:4364`). ✓
-- [ ] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`
+- [x] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`
       raises (`runtime/src/hash_table_utils.rs:46`, `:243`; `builtins.rs:350`). ✓
-- [ ] **H** instance keys ignore `__hash__`/`__eq__`; `hash(obj)` without
+      Fixed: one CPython-exact hash (crate::hash::py_hash) feeds both hash()
+      and the tables; bignum/float keys compare by value. Corpus:
+      test_core_types.py numeric-tower section.
+- [x] **H** instance keys ignore `__hash__`/`__eq__`; `hash(obj)` without
       `__hash__` raises (`hash_table_utils.rs:96`). ✓
-- [ ] **M** int/float mixed ops via lossy f64; `1.0 // 0.1` = 10.0;
+      Fixed: keys dispatch __hash__/__eq__; plain instances hash by identity;
+      __eq__ without __hash__ is unhashable (namedtuple now synthesizes
+      __hash__). Corpus: test_collections.py instance-keys section.
+- [x] **M** int/float mixed ops via lossy f64; `1.0 // 0.1` = 10.0;
       `10**400/10**399` nan (`runtime/src/bigint.rs:163`, `:146`, `:339`;
       `ops/comparison.rs:116`). ✓
+      Fixed on the runtime (dynamic) paths: correctly rounded int/int, fmod-
+      based float floordiv/mod, exact int-vs-float compare/eq, OverflowError
+      on int->float overflow. A statically typed Raw int-vs-float compare
+      still converts in codegen. Corpus: test_core_types.py.
 - [ ] **M** str/bytes `repr` always single quotes (`conversions/repr.rs:19`,
       `print.rs:66`). ✓
 - [ ] **M** strip/split whitespace only ` \t\n\r` (`string/trim.rs:31`,
       `slice_utils.rs:47`). ✓
-- [ ] **M** Dyn `str % x`, `[1]*3`, `tuple * int` raise TypeError
+- [x] **M** Dyn `str % x`, `[1]*3`, `tuple * int` raise TypeError
       (`ops/arithmetic.rs:400`, `:269`; `lowering:5780`). ✓
+      Fixed: printf-style formatting (runtime percent_format.rs, also the
+      static path, which had none) and gradual str/list/tuple/bytes repetition
+      (new rt_tuple_repeat). Corpus: test_strings.py, test_core_types.py.
 - [ ] **H** json: key order sorted (no `preserve_order`), big ints truncated,
       NaN, non-str keys (`runtime/Cargo.toml:35`, `json.rs:137`). ✓
 - [ ] **M** `random.sample` algorithm differs from CPython; BigInt seed
@@ -216,9 +232,12 @@ Two root causes dominate:
 - [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
 - [ ] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
-- [ ] **M** format-shared: float with no type code, `g` exponent before
+- [x] **M** format-shared: float with no type code, `g` exponent before
       rounding, `-0.0` sign, `NaN` case, grouping/`0` flag
       (`format-shared/src/lib.rs:398`, `:417`, `:137`, `:386`). ✓
+      Fixed: format_float rewritten on CPython's PyOS_double_to_string rules;
+      int/float grouping inside 0-padding, 4-digit _ groups for hex. Corpus:
+      test_strings.py.
 - [ ] **M** typeck rejects `Dyn` for `TypeSpec::Str/Bool` stdlib params
       (`os.path.exists(p)` untyped) (`typeck:1131`). ✓
 - [ ] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓

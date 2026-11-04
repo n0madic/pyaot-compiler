@@ -2572,4 +2572,52 @@ def _set_methods_any_iterable() -> None:
 _set_methods_any_iterable()
 
 
+# --- instance keys use __hash__/__eq__; default identity hash ---
+class _HkPoint:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _HkPoint) and self.x == other.x and self.y == other.y
+
+    def __hash__(self) -> int:
+        return hash((self.x, self.y))
+
+
+class _HkPlain:
+    pass
+
+
+class _HkEqOnly:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+
+def _instance_hash_keys() -> None:
+    d = {_HkPoint(1, 2): "a"}
+    assert d[_HkPoint(1, 2)] == "a"
+    assert _HkPoint(1, 2) in {_HkPoint(1, 2), _HkPoint(3, 4)}
+    assert len({_HkPoint(1, 2), _HkPoint(1, 2), _HkPoint(2, 1)}) == 2
+    assert hash(_HkPoint(1, 2)) == hash((1, 2))
+    assert [_HkPoint(1, 2), _HkPoint(3, 4)].index(_HkPoint(3, 4)) == 1
+    o = _HkPlain()
+    assert hash(o) == hash(o)
+    s = {o}
+    assert o in s and _HkPlain() not in s
+    raised = 0
+    try:
+        hash(_HkEqOnly())
+    except TypeError as e:
+        raised += str(e) == "unhashable type: '_HkEqOnly'"
+    try:
+        hash([1])
+    except TypeError as e:
+        raised += str(e) == "unhashable type: 'list'"
+    assert raised == 2
+
+
+_instance_hash_keys()
+
+
 print("All collections tests passed!")

@@ -393,3 +393,31 @@ pub unsafe fn try_instance_lt_ordering(a: *mut Obj, b: *mut Obj) -> Option<std::
     }
     Some(Ordering::Equal)
 }
+
+/// Does `class_id` define (or inherit) a user `__eq__`? A class that does
+/// without a `__hash__` is unhashable (CPython sets `__hash__ = None`).
+pub fn instance_defines_eq(class_id: u8) -> bool {
+    unsafe { !lookup_dunder_func(class_id, FNV_EQ).is_null() }
+}
+
+/// The bare class name of a user class (for `unhashable type: 'C'`-style
+/// messages): the registered qualname's last component, else `object`.
+pub fn instance_class_name(class_id: u8) -> String {
+    match crate::instance::lookup_class_qualname(class_id) {
+        Some(qn) => qn.rsplit('.').next().unwrap_or("object").to_string(),
+        None => "object".to_string(),
+    }
+}
+
+/// Instance-aware equality for hash-table keys: the user `__eq__` (forward,
+/// then reflected) when either side is an instance defining one; `None` to
+/// fall back to the builtin comparison (identity for plain instances).
+///
+/// # Safety
+/// `a` and `b` must be valid object pointers or tagged immediates.
+pub unsafe fn try_instance_key_eq(a: *mut Obj, b: *mut Obj) -> Option<bool> {
+    if !is_instance(a) && !is_instance(b) {
+        return None;
+    }
+    try_instance_eq(a, b).map(|r| r != 0)
+}

@@ -54,11 +54,187 @@ pub unsafe fn classify_num(v: Value) -> Option<Num> {
     None
 }
 
+/// Convert an operand to `float` for a mixed int/float operation. Like
+/// CPython, an int too large for a double raises `OverflowError` instead of
+/// silently becoming `inf`.
 fn to_f64(n: &Num) -> f64 {
     match n {
         Num::Int(i) => *i as f64,
-        Num::Big(b) => b.to_f64().unwrap_or(f64::INFINITY),
+        Num::Big(b) => bigint_to_f64(b),
         Num::Float(f) => *f,
+    }
+}
+
+/// `float(n)` for a bignum: correctly rounded (via [`int_true_divide`] by
+/// one); `OverflowError` beyond the double range, as CPython.
+pub fn bigint_to_f64(b: &BigInt) -> f64 {
+    let f = int_true_divide(b, &BigInt::from(1));
+    if f.is_infinite() {
+        unsafe {
+            crate::raise_exc!(
+                ExceptionType::OverflowError,
+                "int too large to convert to float"
+            )
+        }
+    }
+    f
+}
+
+/// `int / int` correctly rounded (CPython's `long_true_divide`): exact when
+/// both fit in 53 bits, else an exact big-integer quotient with >= 55
+/// significant bits plus a sticky bit, rounded once to a double.
+fn int_true_divide(a: &BigInt, b: &BigInt) -> f64 {
+    const DBL_MANT_DIG: i64 = 53;
+    if let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) {
+        if x.unsigned_abs() < (1u64 << 53) && y.unsigned_abs() < (1u64 << 53) {
+            return x as f64 / y as f64;
+        }
+    }
+    let negative = a.is_negative() != b.is_negative();
+    let (na, nb) = (a.abs(), b.abs());
+    if na.is_zero() {
+        return if negative { -0.0 } else { 0.0 };
+    }
+    let diff = na.bits() as i64 - nb.bits() as i64;
+    // Scale so the quotient has DBL_MANT_DIG + 2 or + 3 bits.
+    let shift = DBL_MANT_DIG + 2 - diff;
+    let (num, den) = if shift >= 0 {
+        (na << (shift as usize), nb)
+    } else {
+        (na, nb << ((-shift) as usize))
+    };
+    let (q, r) = num.div_rem(&den);
+    let mut q = q.to_u64().expect("scaled quotient fits in 64 bits");
+    if !r.is_zero() {
+        q |= 1; // sticky bit: the true quotient lies strictly above q
+    }
+    // Result = q * 2**-shift. Its binary exponent decides normal vs overflow.
+    let q_bits = 64 - q.leading_zeros() as i64;
+    let exp = q_bits - shift; // result is in [2**(exp-1), 2**exp)
+    if exp > 1024 {
+        // Out of the double range: the caller raises its own OverflowError.
+        return if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    let mag = if exp >= -1021 {
+        // Normal range: round q to 53 bits once (u64 -> f64 is correctly
+        // rounded, ties-to-even), then scale exactly by a power of two.
+        ldexp(q as f64, -shift)
+    } else {
+        // Subnormal: round to the coarser subnormal grid directly.
+        let drop = (-1074 + shift) as u32; // bits below 2**-1074
+        let keep = if drop >= 64 { 0 } else { q >> drop };
+        let rem = if drop >= 64 {
+            q
+        } else {
+            q & ((1u64 << drop) - 1)
+        };
+        let half = if drop == 0 || drop > 64 {
+            0
+        } else {
+            1u64 << (drop - 1)
+        };
+        let up = drop > 0 && drop <= 64 && (rem > half || (rem == half && keep & 1 == 1));
+        ldexp((keep + up as u64) as f64, -1074)
+    };
+    if negative {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// `x * 2**e` without intermediate overflow/underflow (for the exponent
+/// ranges [`int_true_divide`] produces).
+fn ldexp(mut x: f64, mut e: i64) -> f64 {
+    while e > 1000 {
+        x *= 2f64.powi(1000);
+        e -= 1000;
+    }
+    while e < -1000 {
+        x *= 2f64.powi(-1000);
+        e += 1000;
+    }
+    x * 2f64.powi(e as i32)
+}
+
+/// CPython's `float_divmod`: `(floor(x / y), x mod y)` computed from `fmod`
+/// so the quotient is consistent with the remainder (`1.0 // 0.1 == 9.0`).
+pub fn float_divmod(vx: f64, wx: f64) -> (f64, f64) {
+    let mut m = vx % wx; // fmod
+    let mut div = (vx - m) / wx;
+    if m != 0.0 {
+        if (wx < 0.0) != (m < 0.0) {
+            m += wx;
+            div -= 1.0;
+        }
+    } else {
+        m = 0.0f64.copysign(wx);
+    }
+    let floordiv = if div != 0.0 {
+        let mut f = div.floor();
+        if div - f > 0.5 {
+            f += 1.0;
+        }
+        f
+    } else {
+        0.0f64.copysign(vx / wx)
+    };
+    (floordiv, m)
+}
+
+/// Exact ordering of an integer against a float (CPython compares int vs
+/// float exactly, never through a lossy conversion). `None` for NaN.
+pub fn cmp_int_float(i: &BigInt, f: f64) -> Option<Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    if f.is_infinite() {
+        return Some(if f > 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        });
+    }
+    if let Some(x) = i.to_i64() {
+        if x.unsigned_abs() <= (1u64 << 53) {
+            return (x as f64).partial_cmp(&f);
+        }
+    }
+    let fl = f.floor();
+    let fl_big = float_to_bigint_exact(fl);
+    match i.cmp(&fl_big) {
+        Ordering::Equal if f > fl => Some(Ordering::Less),
+        ord => Some(ord),
+    }
+}
+
+/// The exact integer value of a finite, integral `f`.
+fn float_to_bigint_exact(f: f64) -> BigInt {
+    if f == 0.0 {
+        return BigInt::zero();
+    }
+    let bits = f.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i64;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (mant, e) = if exp == 0 {
+        (frac, -1074)
+    } else {
+        (frac | (1u64 << 52), exp - 1075)
+    };
+    let mut v = BigInt::from(mant);
+    if e >= 0 {
+        v <<= e as usize;
+    } else {
+        v >>= (-e) as usize; // exact for an integral float
+    }
+    if f < 0.0 {
+        -v
+    } else {
+        v
     }
 }
 
@@ -143,6 +319,23 @@ pub fn num_mul(a: Num, b: Num) -> *mut Obj {
 
 /// `/` — Python 3 true division always yields a float.
 pub fn num_truediv(a: Num, b: Num) -> *mut Obj {
+    if !is_float(&a) && !is_float(&b) {
+        // int / int: correctly rounded, never via two lossy conversions.
+        let bb = to_big(&b);
+        if bb.is_zero() {
+            unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
+        }
+        let q = int_true_divide(&to_big(&a), &bb);
+        if q.is_infinite() {
+            unsafe {
+                crate::raise_exc!(
+                    ExceptionType::OverflowError,
+                    "integer division result too large for a float"
+                )
+            }
+        }
+        return crate::boxing::rt_box_float(q);
+    }
     let fb = to_f64(&b);
     if fb == 0.0 {
         unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
@@ -154,23 +347,13 @@ pub fn num_floordiv(a: Num, b: Num) -> *mut Obj {
     if is_float(&a) || is_float(&b) {
         let fb = to_f64(&b);
         if fb == 0.0 {
-            unsafe {
-                crate::raise_exc!(
-                    ExceptionType::ZeroDivisionError,
-                    "float floor division by zero"
-                )
-            };
+            unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
         }
-        return crate::boxing::rt_box_float((to_f64(&a) / fb).floor());
+        return crate::boxing::rt_box_float(float_divmod(to_f64(&a), fb).0);
     }
     let bb = to_big(&b);
     if bb.is_zero() {
-        unsafe {
-            crate::raise_exc!(
-                ExceptionType::ZeroDivisionError,
-                "integer division or modulo by zero"
-            )
-        };
+        unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
     }
     // `div_floor` rounds toward -inf (CPython floor division).
     make_int_value(to_big(&a).div_floor(&bb))
@@ -180,23 +363,13 @@ pub fn num_mod(a: Num, b: Num) -> *mut Obj {
     if is_float(&a) || is_float(&b) {
         let fb = to_f64(&b);
         if fb == 0.0 {
-            unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "float modulo") };
+            unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
         }
-        let fa = to_f64(&a);
-        let mut r = fa % fb;
-        if r != 0.0 && (r < 0.0) != (fb < 0.0) {
-            r += fb;
-        }
-        return crate::boxing::rt_box_float(r);
+        return crate::boxing::rt_box_float(float_divmod(to_f64(&a), fb).1);
     }
     let bb = to_big(&b);
     if bb.is_zero() {
-        unsafe {
-            crate::raise_exc!(
-                ExceptionType::ZeroDivisionError,
-                "integer division or modulo by zero"
-            )
-        };
+        unsafe { crate::raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") };
     }
     // `mod_floor` gives a result with the divisor's sign (CPython modulo).
     make_int_value(to_big(&a).mod_floor(&bb))
@@ -347,13 +520,15 @@ pub fn num_invert(a: Num) -> *mut Obj {
 
 // ── comparisons ──────────────────────────────────────────────────────────────
 
-/// Compare two numerics (int/bignum exact, float-involved via `f64`). Returns
+/// Compare two numerics exactly (int vs float included, as CPython). Returns
 /// `None` only on NaN.
 pub fn num_cmp(a: &Num, b: &Num) -> Option<Ordering> {
-    if is_float(a) || is_float(b) {
-        return to_f64(a).partial_cmp(&to_f64(b));
+    match (a, b) {
+        (Num::Float(x), Num::Float(y)) => x.partial_cmp(y),
+        (Num::Float(x), i) => cmp_int_float(&to_big(i), *x).map(Ordering::reverse),
+        (i, Num::Float(y)) => cmp_int_float(&to_big(i), *y),
+        _ => Some(to_big(a).cmp(&to_big(b))),
     }
-    Some(to_big(a).cmp(&to_big(b)))
 }
 
 pub fn num_eq(a: &Num, b: &Num) -> bool {
@@ -370,4 +545,13 @@ pub unsafe extern "C" fn rt_bigint_from_str(ptr: *const u8, len: usize) -> Value
     let text = std::str::from_utf8(bytes).unwrap_or("0").trim();
     let big = text.parse::<BigInt>().unwrap_or_else(|_| BigInt::zero());
     Value::from_ptr(make_int_value(big))
+}
+
+/// [`cmp_int_float`] for a machine integer (no allocation on the common
+/// `|i| <= 2**53` path).
+pub fn cmp_i64_float(i: i64, f: f64) -> Option<Ordering> {
+    if i.unsigned_abs() <= (1u64 << 53) {
+        return (i as f64).partial_cmp(&f);
+    }
+    cmp_int_float(&BigInt::from(i), f)
 }
