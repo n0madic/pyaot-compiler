@@ -288,7 +288,7 @@ pub(crate) unsafe fn do_http_request(
         }
         Err(e) => {
             crate::raise_exc!(
-                crate::exceptions::ExceptionType::IOError,
+                crate::exceptions::ExceptionType::OSError,
                 "{}: {}",
                 error_prefix,
                 e

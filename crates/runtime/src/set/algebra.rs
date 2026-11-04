@@ -14,6 +14,11 @@ use super::ops::{rt_set_add, rt_set_copy};
 /// Create a new set with all elements from both sets (union)
 /// Returns: pointer to new SetObj containing elements from a and b
 pub fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    // The method form accepts any iterable `b` (CPython).
+    super::core::with_set_operand(a, b, |a, b| rt_set_union_sets(a, b))
+}
+
+fn rt_set_union_sets(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -66,6 +71,11 @@ pub extern "C" fn rt_set_union_abi(a: Value, b: Value) -> Value {
 /// Create a new set with elements in both sets (intersection)
 /// Returns: pointer to new SetObj containing elements in both a and b
 pub fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    // The method form accepts any iterable `b` (CPython).
+    super::core::with_set_operand(a, b, |a, b| rt_set_intersection_sets(a, b))
+}
+
+fn rt_set_intersection_sets(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -124,6 +134,11 @@ pub extern "C" fn rt_set_intersection_abi(a: Value, b: Value) -> Value {
 /// Create a new set with elements in a but not in b (difference)
 /// Returns: pointer to new SetObj containing elements in a but not in b
 pub fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    // The method form accepts any iterable `b` (CPython).
+    super::core::with_set_operand(a, b, |a, b| rt_set_difference_sets(a, b))
+}
+
+fn rt_set_difference_sets(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -182,6 +197,11 @@ pub extern "C" fn rt_set_difference_abi(a: Value, b: Value) -> Value {
 /// Create a new set with elements in exactly one of the sets (symmetric difference)
 /// Returns: pointer to new SetObj containing elements in a or b but not both
 pub fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    // The method form accepts any iterable `b` (CPython).
+    super::core::with_set_operand(a, b, |a, b| rt_set_symmetric_difference_sets(a, b))
+}
+
+fn rt_set_symmetric_difference_sets(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {

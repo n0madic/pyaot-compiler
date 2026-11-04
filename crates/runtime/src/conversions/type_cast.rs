@@ -273,6 +273,12 @@ pub fn rt_type_name(obj: *mut Obj) -> *mut Obj {
                 let bytes = s.as_bytes();
                 return rt_make_str(bytes.as_ptr(), bytes.len());
             }
+            // A builtin / stdlib exception class (no user qualname).
+            if let Some((name, _)) = crate::exceptions::exception_class_name(obj) {
+                let s = format!("<class '{}'>", name);
+                let bytes = s.as_bytes();
+                return rt_make_str(bytes.as_ptr(), bytes.len());
+            }
         }
         // Get type_class directly from the type tag - single source of truth in core-defs
         let type_class_str = (*obj).header.type_tag.type_class();

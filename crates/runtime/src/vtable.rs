@@ -6,8 +6,8 @@
 use std::cell::UnsafeCell;
 
 /// Maximum number of classes supported.
-/// Limited by u8 class_id type. User-defined classes start at FIRST_USER_CLASS_ID (29),
-/// allowing ~227 user classes. Programs exceeding this limit need a wider class_id type.
+/// Limited by u8 class_id type. User-defined classes start at
+/// `FIRST_USER_CLASS_ID`, leaving the rest of the u8 range for user classes. Programs exceeding this limit need a wider class_id type.
 const MAX_CLASSES: usize = 256;
 
 /// Sentinel value for "no parent" (class is at the root of hierarchy)
@@ -294,93 +294,29 @@ use std::sync::Once;
 static INIT_BUILTIN_EXCEPTIONS: Once = Once::new();
 
 /// Initialize built-in exception classes in the class registry.
-/// This maps exception type tags (0-27) to class IDs with proper inheritance:
-/// - Exception (0) is the root (no parent)
-/// - All other built-in exceptions inherit from Exception (0)
+/// Builtin exception tags ARE runtime class ids; each one's parent comes from
+/// the single-source parent column in `core-defs` (`BuiltinExceptionKind::
+/// parent`), so the registry walk (`rt_class_inherits_from`) reproduces
+/// CPython's exception tree (`FileNotFoundError ⊂ OSError ⊂ Exception ⊂
+/// BaseException`, `KeyError ⊂ LookupError`, `SystemExit ⊂ BaseException`, …).
 ///
 /// This function is idempotent and thread-safe.
 #[no_mangle]
 pub extern "C" fn rt_init_builtin_exception_classes() {
     INIT_BUILTIN_EXCEPTIONS.call_once(|| unsafe {
         let registry = &mut *CLASS_REGISTRY.0.get();
-
-        // BaseException (28) - ultimate root, no parent
-        registry[pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() as usize] = ClassInfo {
-            parent_class_id: NO_PARENT,
-            field_count: 0,
-        };
-
-        // Exception (0) inherits from BaseException (28)
-        registry[pyaot_core_defs::BuiltinExceptionKind::Exception.tag() as usize] = ClassInfo {
-            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::BaseException.tag(),
-            field_count: 0,
-        };
-
-        // SystemExit, KeyboardInterrupt, GeneratorExit inherit from BaseException (NOT Exception)
-        let base_exc_tag = pyaot_core_defs::BuiltinExceptionKind::BaseException.tag();
-        for &tag in &[
-            pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag(),
-        ] {
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: base_exc_tag,
-                field_count: 0,
-            };
-        }
-
-        // All other built-in exceptions (tags 1-27 except 7, 20, 21) inherit from Exception (0)
-        let exception_tag = pyaot_core_defs::BuiltinExceptionKind::Exception.tag();
         for kind in pyaot_core_defs::BuiltinExceptionKind::ALL {
-            let tag = kind.tag();
-            // Skip Exception (0), BaseException (28), and BaseException-only types
-            if tag == exception_tag
-                || tag == base_exc_tag
-                || tag == pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag()
-                || tag == pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag()
-                || tag == pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag()
-            {
-                continue;
-            }
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: exception_tag,
-                field_count: 0,
-            };
-        }
-
-        // UnboundLocalError is a subclass of NameError in CPython (the loop
-        // above defaulted it to Exception); fix its parent so
-        // `except NameError:` also catches it.
-        registry[pyaot_core_defs::BuiltinExceptionKind::UnboundLocalError.tag() as usize] =
-            ClassInfo {
-                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::NameError.tag(),
-                field_count: 0,
-            };
-
-        // §9 encode/decode error hierarchy (the loop defaulted these to
-        // Exception). LookupError stays under Exception (correct); UnicodeError ⊂
-        // ValueError; Unicode{En,De}codeError ⊂ UnicodeError. This MRO is what
-        // makes `except ValueError:` catch a `UnicodeEncodeError`, matching
-        // CPython.
-        registry[pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag() as usize] = ClassInfo {
-            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            field_count: 0,
-        };
-        for &tag in &[
-            pyaot_core_defs::BuiltinExceptionKind::UnicodeEncodeError.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::UnicodeDecodeError.tag(),
-        ] {
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag(),
+            registry[kind.tag() as usize] = ClassInfo {
+                parent_class_id: kind.parent().map_or(NO_PARENT, |p| p.tag()),
                 field_count: 0,
             };
         }
     });
 }
 
-/// Get the first available class ID for user classes.
-/// Built-in exception classes use IDs 0-28, so user classes start at 29.
-pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT;
+/// The first class ID the compiler assigns to user classes (builtin exception
+/// tags, reserved stdlib exception slots and builtin generic types come first).
+pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::FIRST_USER_CLASS_ID;
 
 // ==================== Method Name Registry (for Protocol dispatch) ====================
 // Maps (class_id, method_name_hash) → vtable_slot for name-based virtual dispatch.

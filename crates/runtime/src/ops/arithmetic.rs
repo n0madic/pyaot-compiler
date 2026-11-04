@@ -84,7 +84,7 @@ pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
     if b == 0 {
-        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "integer modulo by zero") }
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
     }
     if a == i64::MIN && b == -1 {
         unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") }
@@ -266,22 +266,36 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         } else {
             vb_tagged.primitive_type().unwrap()
         };
-        // String repetition: str * int or int * str
-        if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Int {
-            let count = if vb_tagged.is_int() {
-                vb_tagged.unwrap_int()
-            } else {
-                0
+        // Sequence repetition through the gradual path: `seq * n` / `n * seq`
+        // for str / list / tuple / bytes (CPython `sq_repeat`). `n` may be an
+        // int, a bool or a bignum.
+        let is_seq = |t: TypeTagKind| {
+            matches!(
+                t,
+                TypeTagKind::Str | TypeTagKind::List | TypeTagKind::Tuple | TypeTagKind::Bytes
+            )
+        };
+        let is_count = |t: TypeTagKind| {
+            matches!(
+                t,
+                TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::BigInt
+            )
+        };
+        let seq_count = if is_seq(tag_a) && is_count(tag_b) {
+            Some((a, tag_a, vb_tagged))
+        } else if is_count(tag_a) && is_seq(tag_b) {
+            Some((b, tag_b, va_tagged))
+        } else {
+            None
+        };
+        if let Some((seq, seq_tag, count_v)) = seq_count {
+            let count = repeat_count(count_v);
+            return match seq_tag {
+                TypeTagKind::Str => crate::string::rt_str_mul(seq, count),
+                TypeTagKind::List => crate::list::rt_list_repeat(seq, count),
+                TypeTagKind::Tuple => crate::tuple::rt_tuple_repeat(seq, count),
+                _ => crate::bytes::rt_bytes_repeat(seq, count),
             };
-            return crate::string::rt_str_mul(a, count);
-        }
-        if tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Str {
-            let count = if va_tagged.is_int() {
-                va_tagged.unwrap_int()
-            } else {
-                0
-            };
-            return crate::string::rt_str_mul(b, count);
         }
         match (
             crate::bigint::classify_num(va_tagged),
@@ -396,9 +410,33 @@ pub extern "C" fn rt_obj_floordiv_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_floordiv(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
+/// The repeat count of `seq * n`: an int / bool, or a bignum (which can only
+/// be a negative count → empty, or an impossible allocation).
+unsafe fn repeat_count(v: Value) -> i64 {
+    if v.is_int() {
+        return v.unwrap_int();
+    }
+    if v.is_bool() {
+        return v.unwrap_bool() as i64;
+    }
+    match crate::bigint::classify_num(v) {
+        Some(crate::bigint::Num::Big(b)) if num_traits::Signed::is_negative(&b) => 0,
+        _ => raise_exc!(
+            ExceptionType::OverflowError,
+            "cannot fit 'int' into an index-sized integer"
+        ),
+    }
+}
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        // `str % args` — printf-style formatting (the left operand decides,
+        // even when `args` is a class instance: `'%s' % obj`).
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Str {
+            return crate::percent_format::percent_format(a, b);
+        }
         if either_is_instance(a, b) {
             if let Some(result) = try_class_dunder(a, b, FNV_MOD, FNV_RMOD) {
                 return result;

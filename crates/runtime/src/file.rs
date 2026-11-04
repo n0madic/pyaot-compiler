@@ -217,7 +217,7 @@ pub unsafe fn rt_file_open(filename: *mut Obj, mode: *mut Obj, encoding: *mut Ob
                 }
                 _ => format!("{}: '{}'", e, filename_str),
             };
-            raise_exc_string!(crate::exceptions::ExceptionType::IOError, msg);
+            raise_exc_string!(crate::exceptions::ExceptionType::OSError, msg);
         }
     }
 }
@@ -273,7 +273,7 @@ pub unsafe fn rt_file_read(file: *mut Obj) -> *mut Obj {
                     Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
                     Err(e) => {
                         raise_exc!(
-                            crate::exceptions::ExceptionType::IOError,
+                            crate::exceptions::ExceptionType::OSError,
                             "read error: {}",
                             e
                         );
@@ -283,7 +283,7 @@ pub unsafe fn rt_file_read(file: *mut Obj) -> *mut Obj {
         }
         Err(e) => {
             raise_exc!(
-                crate::exceptions::ExceptionType::IOError,
+                crate::exceptions::ExceptionType::OSError,
                 "read error: {}",
                 e
             );
@@ -337,7 +337,7 @@ pub unsafe fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
                     Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
                     Err(e) => {
                         raise_exc!(
-                            crate::exceptions::ExceptionType::IOError,
+                            crate::exceptions::ExceptionType::OSError,
                             "read error: {}",
                             e
                         );
@@ -347,7 +347,7 @@ pub unsafe fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
         }
         Err(e) => {
             raise_exc!(
-                crate::exceptions::ExceptionType::IOError,
+                crate::exceptions::ExceptionType::OSError,
                 "read error: {}",
                 e
             );
@@ -404,7 +404,7 @@ pub unsafe fn rt_file_readline(file: *mut Obj) -> *mut Obj {
             }
             Err(e) => {
                 raise_exc!(
-                    crate::exceptions::ExceptionType::IOError,
+                    crate::exceptions::ExceptionType::OSError,
                     "read error: {}",
                     e
                 );
@@ -422,7 +422,7 @@ pub unsafe fn rt_file_readline(file: *mut Obj) -> *mut Obj {
             Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
             Err(e) => {
                 raise_exc!(
-                    crate::exceptions::ExceptionType::IOError,
+                    crate::exceptions::ExceptionType::OSError,
                     "read error: {}",
                     e
                 );
@@ -456,7 +456,7 @@ pub unsafe fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     let mut raw = Vec::new();
     if let Err(e) = limited.read_to_end(&mut raw) {
         raise_exc!(
-            crate::exceptions::ExceptionType::IOError,
+            crate::exceptions::ExceptionType::OSError,
             "read error: {}",
             e
         );
@@ -510,7 +510,7 @@ pub unsafe fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             Err(e) => {
                 crate::gc::gc_pop();
                 raise_exc!(
-                    crate::exceptions::ExceptionType::IOError,
+                    crate::exceptions::ExceptionType::OSError,
                     "read error: {}",
                     e
                 );
@@ -589,7 +589,7 @@ pub unsafe fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
                     Ok(b) => b,
                     Err(e) => {
                         raise_exc!(
-                            crate::exceptions::ExceptionType::IOError,
+                            crate::exceptions::ExceptionType::OSError,
                             "write error: {}",
                             e
                         );
@@ -617,7 +617,7 @@ pub unsafe fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
         Ok(()) => bytes.len() as i64,
         Err(e) => {
             raise_exc!(
-                crate::exceptions::ExceptionType::IOError,
+                crate::exceptions::ExceptionType::OSError,
                 "write error: {}",
                 e
             );
@@ -671,7 +671,7 @@ pub unsafe fn rt_file_flush(file: *mut Obj) {
 
     if let Err(e) = handle.flush() {
         raise_exc!(
-            crate::exceptions::ExceptionType::IOError,
+            crate::exceptions::ExceptionType::OSError,
             "flush error: {}",
             e
         );

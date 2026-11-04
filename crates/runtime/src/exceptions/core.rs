@@ -64,6 +64,28 @@ pub struct ExceptionObject {
     pub instance: *mut crate::object::Obj,
 }
 
+impl ExceptionObject {
+    /// A deep copy (owned message buffer, cause/context chains, traceback);
+    /// the GC-managed `instance` is shared — it is the same Python object.
+    pub fn deep_clone(&self) -> ExceptionObject {
+        // SAFETY: `message`/`message_len` describe this object's own buffer.
+        let (message, message_len, message_capacity) =
+            unsafe { copy_message_to_owned(self.message, self.message_len) };
+        ExceptionObject {
+            exc_type: self.exc_type,
+            custom_class_id: self.custom_class_id,
+            message,
+            message_len,
+            message_capacity,
+            cause: self.cause.as_ref().map(|c| Box::new(c.deep_clone())),
+            context: self.context.as_ref().map(|c| Box::new(c.deep_clone())),
+            suppress_context: self.suppress_context,
+            traceback: self.traceback.clone(),
+            instance: self.instance,
+        }
+    }
+}
+
 impl Drop for ExceptionObject {
     fn drop(&mut self) {
         // Free the message buffer if allocated.
@@ -126,7 +148,7 @@ pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
         if let Some(ref exc) = state.current_exception {
             collect_from(exc, &mut ptrs);
         }
-        if let Some(ref exc) = state.handling_exception {
+        for exc in state.handling_stack.iter().flatten() {
             collect_from(exc, &mut ptrs);
         }
         // A pending `from CAUSE` value (`raise X from caught_var`) holds the
@@ -169,7 +191,7 @@ pub(super) unsafe fn raise_with_owned_message(
 ) -> ! {
     // Capture implicit context from any exception being handled
     // This implements Python's __context__ (PEP 3134)
-    let context = with_exception_state(|state| state.handling_exception.take());
+    let context = with_exception_state(|state| state.new_context(std::ptr::null_mut()));
 
     // Capture traceback at the point of raise
     let traceback = Some(crate::traceback::capture_traceback());
@@ -555,4 +577,39 @@ pub fn register_class_name(class_id: u8, name: *const u8, len: usize) {
 /// Get the registered name for an exception class
 pub(super) fn get_registered_exception_name(class_id: u8) -> Option<String> {
     unsafe { (*EXCEPTION_NAME_REGISTRY.0.get())[class_id as usize].clone() }
+}
+
+// ==================== Instance messages (BaseException.__init__) ====================
+
+thread_local! {
+    /// Message set by `BaseException.__init__(msg)` on a user exception
+    /// instance (`super().__init__(msg)` in a class with no user parent
+    /// `__init__`), keyed by instance address. User exception instances have
+    /// no `.args` slot of their own; the entry is dropped when the instance is
+    /// swept (`forget_instance_message`), so a reused address never sees a
+    /// stale message.
+    static INSTANCE_MESSAGES: std::cell::RefCell<std::collections::HashMap<usize, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Record `msg` as the exception message of `instance`.
+pub fn set_instance_message(instance: *mut crate::object::Obj, msg: String) {
+    INSTANCE_MESSAGES.with(|m| {
+        m.borrow_mut().insert(instance as usize, msg);
+    });
+}
+
+/// The message recorded for `instance` by `BaseException.__init__`, if any.
+pub fn instance_message(instance: *mut crate::object::Obj) -> Option<String> {
+    INSTANCE_MESSAGES.with(|m| m.borrow().get(&(instance as usize)).cloned())
+}
+
+/// Drop `instance`'s recorded message (the GC is sweeping it).
+pub fn forget_instance_message(instance: *mut crate::object::Obj) {
+    INSTANCE_MESSAGES.with(|m| {
+        let mut m = m.borrow_mut();
+        if !m.is_empty() {
+            m.remove(&(instance as usize));
+        }
+    });
 }

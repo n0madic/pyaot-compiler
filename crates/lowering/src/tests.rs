@@ -928,19 +928,30 @@ fn stdlib_math_ceil_returns_raw_i64() {
 }
 
 #[test]
-fn stdlib_random_seed_appends_arg_count() {
-    // `random.seed(42)` is a pass_arg_count descriptor: the descriptor's two
-    // raw-i64 params are the seed plus the user-written arg count (1).
+fn stdlib_randrange_appends_arg_count() {
+    // `random.randrange(10)` is a pass_arg_count descriptor: three raw-i64
+    // params (start, stop, step — the latter two default-filled) plus the
+    // user-written arg count (1).
+    let p = lowered("import random\nprint(random.randrange(10))\n");
+    let calls = runtime_calls(&p);
+    let rr = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_random_randrange")
+        .expect("randrange call");
+    assert_eq!(rr.1, vec![Repr::Raw(RawKind::I64); 4]);
+}
+
+#[test]
+fn stdlib_random_seed_takes_a_tagged_value() {
+    // `random.seed(a)` accepts any int (bignums included), float, str or None,
+    // so its one param is a Tagged `Value`.
     let p = lowered("import random\nrandom.seed(42)\nprint(random.random())\n");
     let calls = runtime_calls(&p);
     let seed = calls
         .iter()
         .find(|(s, _, _)| *s == "rt_random_seed")
         .expect("seed call");
-    assert_eq!(
-        seed.1,
-        vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)]
-    );
+    assert_eq!(seed.1, vec![Repr::Tagged]);
     assert_eq!(seed.2, None, "void descriptor has no dst");
 }
 

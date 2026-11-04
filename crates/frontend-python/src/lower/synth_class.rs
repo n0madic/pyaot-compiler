@@ -15,7 +15,8 @@
 //!
 //! 2. **`collections.namedtuple`** (`Name = namedtuple('Name', [...])`, qualified
 //!    or bare — also recognized by name): rewrites the assignment into a class
-//!    with synthesized `__init__`/`__repr__`/`__eq__`/`__len__`/`__getitem__`.
+//!    with synthesized `__init__`/`__repr__`/`__eq__`/`__hash__`/`__len__`/
+//!    `__getitem__`.
 //!    `__len__` + `__getitem__` give positional indexing (`p[0]`) and
 //!    tuple-unpacking (`a, b = p`, which the unpack lowering drives via
 //!    `len`+subscript, not the iterator protocol).
@@ -357,6 +358,7 @@ fn build_namedtuple_class(
         synth_getitem(&fields, range),
         synth_iter(&fields, range),
         synth_contains(&fields, range),
+        synth_hash(&fields, range),
     ];
     Ok(StmtClassDef {
         range,
@@ -737,6 +739,35 @@ fn synth_getitem(fields: &[SynthField], range: TextRange) -> Stmt {
         range,
     );
     mk_funcdef("__getitem__", args, body, None, range)
+}
+
+/// `def __hash__(self) -> int: return hash((self.f0, self.f1, …))`
+/// (namedtuple). A namedtuple IS a tuple in CPython, so it hashes like the
+/// tuple of its fields; without this the synthesized `__eq__` would make it
+/// unhashable (a class defining `__eq__` but not `__hash__`).
+fn synth_hash(fields: &[SynthField], range: TextRange) -> Stmt {
+    let tuple = Expr::Tuple(rustpython_parser::ast::ExprTuple {
+        range,
+        elts: fields
+            .iter()
+            .map(|f| mk_self_attr(f.name.as_str(), range))
+            .collect(),
+        ctx: ExprContext::Load,
+    });
+    let call = Expr::Call(ExprCall {
+        range,
+        func: Box::new(mk_name("hash", ExprContext::Load, range)),
+        args: vec![tuple],
+        keywords: vec![],
+    });
+    let args = mk_arguments(vec![mk_arg("self", None, None, range)], range);
+    mk_funcdef(
+        "__hash__",
+        args,
+        vec![mk_return(call, range)],
+        Some(mk_name("int", ExprContext::Load, range)),
+        range,
+    )
 }
 
 /// `def __iter__(self): yield self.f0; yield self.f1; …` (namedtuple). A

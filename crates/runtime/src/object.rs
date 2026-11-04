@@ -273,6 +273,9 @@ pub struct SetObj {
     pub len: usize,      // Number of active entries
     pub capacity: usize, // Total slots in entries array
     pub entries: *mut SetEntry,
+    /// Number of TOMBSTONE slots (deleted entries not yet compacted away).
+    /// `len + tombstones` is the table's fill, which drives resizing.
+    pub tombstones: usize,
 }
 
 /// Instance object (user-defined class instance)

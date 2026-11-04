@@ -1992,4 +1992,115 @@ def _fold_p29_format() -> None:
 _fold_p29_format()
 
 
+# ===== SECTION: printf-style `%` formatting and format-spec edges =====
+
+def _pf_ident(x):
+    return x
+
+
+def _percent_format() -> None:
+    x = 5
+    assert "%d items" % x == "5 items"
+    assert "%s-%s" % ("a", 3) == "a-3"
+    assert (
+        "%5.2f|%-6d|%+d|% d|%05d|%x|%#x|%#o|%X" % (3.14159, 42, 7, 7, -42, 255, 255, 8, 255)
+        == " 3.14|42    |+7| 7|-0042|ff|0xff|0o10|FF"
+    )
+    assert "%(name)s is %(age)d" % {"name": "Bob", "age": 30} == "Bob is 30"
+    assert "%r %c %c %%" % ("hi", 65, "z") == "'hi' A z %"
+    assert "%e %g %G %.3g %10.4e" % (12345.678, 0.00001234, 1e20, 2.0, -0.5) == (
+        "1.234568e+04 1.234e-05 1E+20 2 -5.0000e-01"
+    )
+    assert "%*d|%-*d|%.*f" % (5, 1, 4, 2, 2, 1.23456) == "    1|2   |1.23"
+    assert "%s" % [1, 2] == "[1, 2]"
+    assert "%s" % (1,) == "1"
+    assert "%d" % 3.9 == "3"
+    assert "%d" % 10**30 == "1000000000000000000000000000000"
+    assert "%.3s" % "abcdef" == "abc"
+    assert "%f %F" % (float("inf"), float("nan")) == "inf NAN"
+    assert "%5s|%-5s|" % ("ab", "cd") == "   ab|cd   |"
+    assert "%s and %s" % (True, None) == "True and None"
+    assert "%.0f %.1f %08.3f" % (2.5, -0.05, -3.14159) == "2 -0.1 -003.142"
+    assert _pf_ident("%d-%s") % _pf_ident((5, "x")) == "5-x"
+    errors: list[str] = []
+    try:
+        "%d %d" % (1,)
+    except TypeError as e:
+        errors.append(str(e))
+    try:
+        "%d" % (1, 2)
+    except TypeError as e:
+        errors.append(str(e))
+    try:
+        "%d" % "s"
+    except TypeError as e:
+        errors.append(str(e))
+    assert errors == [
+        "not enough arguments for format string",
+        "not all arguments converted during string formatting",
+        "%d format: a real number is required, not str",
+    ]
+
+
+def _format_spec_edges() -> None:
+    assert format(1.0, ".3") == "1.0"
+    assert format(1234.5, ".3") == "1.23e+03"
+    assert format(12.0, ".2") == "1.2e+01"
+    assert format(_pf_ident(12.0), "") == "12.0"
+    assert format(1e16, "") == "1e+16"
+    assert f"{9.9999:.3g}" == "10"
+    assert f"{0.00009999:.3g}" == "0.0001"
+    assert f"{99999.5:.5g}" == "1e+05"
+    assert f"{-0.0:+.1f}" == "-0.0"
+    assert f"{float('nan'):f}" == "nan"
+    assert f"{float('inf'):F}" == "INF"
+    assert f"{float('nan'):+}" == "+nan"
+    assert f"{1234.5:010,.1f}" == "0,001,234.5"
+    assert f"{1234:010,}" == "00,001,234"
+    assert f"{1234:010_x}" == "0_0000_04d2"
+    assert f"{0xDEADBEEF:_X}" == "DEAD_BEEF"
+    assert f"{5.0:.0}" == "5e+00"
+    assert f"{1.0:#g}" == "1.00000"
+    assert f"{100.0:.2}" == "1e+02"
+    assert f"{0.1:.17}" == "0.10000000000000001"
+    assert f"{-1.5:08.2f}" == "-0001.50"
+    v = _pf_ident(2.5)
+    assert f"{v:.0f}" == "2"
+
+
+_percent_format()
+_format_spec_edges()
+
+
+# ===== SECTION: repr quoting and Unicode whitespace =====
+
+def _repr_quoting_and_whitespace() -> None:
+    assert repr("it's") == '"it\'s"'
+    assert repr('say "hi"') == "'say \"hi\"'"
+    assert repr("both ' and \"") == "'both \\' and \"'"
+    assert str(["it's", 'a"b']) == "[\"it's\", 'a\"b']"
+    assert repr(b"it's") == 'b"it\'s"'
+    assert repr(b'a"b') == "b'a\"b'"
+    assert repr(b"\n\x00\x7f") == "b'\\n\\x00\\x7f'"
+    assert ascii("it's é") == '"it\'s \\xe9"'
+    assert ascii("\x01") == "'\\x01'"
+    assert str({"k'": "v"}) == "{\"k'\": 'v'}"
+    assert repr(" x ") == "'\\xa0x\\u2003'"
+    s = "  hello \x0b\x0c\x1c "
+    assert s.strip() == "hello"
+    assert s.lstrip() == "hello \x0b\x0c\x1c "
+    assert s.rstrip() == "  hello"
+    assert "a b\x0bc d".split() == ["a", "b", "c", "d"]
+    assert " a  b ".split(None, 1) == ["a", "b "]
+    assert "a b  c ".rsplit(None, 1) == ["a b", "c"]
+    assert b" a\x0bb\x0c ".split() == [b"a", b"b"]
+    assert b"\x0b ab \x0c".strip() == b"ab"
+    assert "éa".lstrip("é") == "a"
+    assert "aé".rstrip("é") == "a"
+    assert "èa".lstrip("é") == "èa"
+
+
+_repr_quoting_and_whitespace()
+
+
 print("All string tests passed!")

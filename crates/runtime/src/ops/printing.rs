@@ -140,9 +140,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
             let bytes = std::slice::from_raw_parts(data, len);
             if let Ok(text) = std::str::from_utf8(bytes) {
                 let mut s = String::with_capacity(len + 2);
-                s.push('\'');
-                crate::conversions::repr_escape_into(&mut s, text);
-                s.push('\'');
+                crate::conversions::repr_str_into(&mut s, text);
                 rt_emit!("{}", s);
             }
         }
@@ -430,7 +428,11 @@ pub fn rt_print_obj(obj: *mut Obj) {
                 // `Union[T, NotImplementedT]` dunder return, §4).
                 match crate::ops::try_str_dunder(obj) {
                     Some(str_obj) if !str_obj.is_null() => rt_print_str_obj(str_obj),
-                    _ => rt_emit!("{}", crate::instance::instance_default_repr(obj)),
+                    // An exception prints its message (`str(e)`).
+                    _ => match crate::exceptions::exception_str(obj) {
+                        Some(msg) => rt_emit!("{}", msg),
+                        None => rt_emit!("{}", crate::instance::instance_default_repr(obj)),
+                    },
                 }
             }
             TypeTagKind::Iterator => rt_emit!("<iterator>"),

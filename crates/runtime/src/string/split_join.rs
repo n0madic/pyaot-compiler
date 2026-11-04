@@ -49,7 +49,9 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
         // (dropping middle words) used to live.
         if sep.is_null() {
             let data = std::slice::from_raw_parts(src_data, src_len);
-            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, false) {
+            for (start, end) in
+                crate::slice_utils::str_whitespace_field_ranges(data, maxsplit, false)
+            {
                 let word = rt_make_str(src_data.add(start), end - start);
                 rt_list_push(list, word);
             }
@@ -598,7 +600,9 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
         // post-hoc list reversal is needed.
         if sep.is_null() {
             let data = std::slice::from_raw_parts(src_data, src_len);
-            for (start, end) in crate::slice_utils::whitespace_field_ranges(data, maxsplit, true) {
+            for (start, end) in
+                crate::slice_utils::str_whitespace_field_ranges(data, maxsplit, true)
+            {
                 let word = rt_make_str(src_data.add(start), end - start);
                 rt_list_push(list, word);
             }

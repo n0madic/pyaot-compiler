@@ -119,7 +119,7 @@ pub unsafe fn raise_value_error(msg: &str) -> ! {
 /// This function never returns (marked with `!`).
 #[inline(never)]
 pub unsafe fn raise_io_error(msg: &str) -> ! {
-    raise_exc!(ExceptionType::IOError, "{}", msg)
+    raise_exc!(ExceptionType::OSError, "{}", msg)
 }
 
 /// Raise an IOError exception, taking ownership of a heap-allocated message.
@@ -133,7 +133,7 @@ pub unsafe fn raise_io_error(msg: &str) -> ! {
 /// This function never returns (marked with `!`).
 #[inline(never)]
 pub unsafe fn raise_io_error_owned(msg: String) -> ! {
-    crate::raise_exc_string!(ExceptionType::IOError, msg)
+    crate::raise_exc_string!(ExceptionType::OSError, msg)
 }
 
 /// Extract a heap pointer from a tagged Value, raising TypeError if the

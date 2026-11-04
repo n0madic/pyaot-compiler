@@ -12,7 +12,7 @@ pub use to_str::{
     rt_obj_to_str, rt_str_to_float, rt_str_to_int,
 };
 
-pub(crate) use repr::repr_escape_into;
+pub(crate) use repr::{bytes_repr_into, repr_str_into};
 
 pub(crate) use to_str::counter_repr_string;
 

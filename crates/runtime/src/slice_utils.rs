@@ -42,20 +42,48 @@ pub fn normalize_slice_positive(start: i64, end: i64, len: i64) -> (i64, i64) {
     (start, end)
 }
 
-/// ASCII whitespace used by `str`/`bytes` whitespace splitting.
+/// `bytes` whitespace (CPython's `Py_ISSPACE`): space, `\t\n\r\x0b\x0c`.
+/// Used by the argument-less `bytes.split()` / `strip()` / `fromhex()`.
 #[inline]
-fn is_split_whitespace(c: u8) -> bool {
-    c == b' ' || c == b'\t' || c == b'\n' || c == b'\r'
+pub fn is_bytes_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
 /// Compute the `(start, end)` byte ranges of the whitespace-delimited fields
-/// produced by `split(None, maxsplit)` (`reverse = false`) or
-/// `rsplit(None, maxsplit)` (`reverse = true`), in left-to-right order.
-///
-/// Shared by `str` and `bytes` (the only type-specific part is allocating the
-/// field objects from each range). CPython semantics, including the previously
-/// broken maxsplit case:
-/// - runs of consecutive ASCII whitespace are a single separator;
+/// produced by `bytes.split(None, maxsplit)` (`reverse = false`) or
+/// `bytes.rsplit(None, maxsplit)` (`reverse = true`), in left-to-right order.
+/// See [`field_ranges`] for the semantics.
+pub fn whitespace_field_ranges(data: &[u8], maxsplit: i64, reverse: bool) -> Vec<(usize, usize)> {
+    let bounds: Vec<usize> = (0..=data.len()).collect();
+    field_ranges(&bounds, |i| is_bytes_space(data[i]), maxsplit, reverse)
+}
+
+/// [`whitespace_field_ranges`] for a `str` (UTF-8 bytes): fields split on
+/// Unicode whitespace (`str.isspace()`), ranges in BYTE offsets.
+pub fn str_whitespace_field_ranges(
+    data: &[u8],
+    maxsplit: i64,
+    reverse: bool,
+) -> Vec<(usize, usize)> {
+    let text = String::from_utf8_lossy(data);
+    if text.len() != data.len() {
+        // Invalid UTF-8 cannot occur for a StrObj; fall back to bytes rules.
+        return whitespace_field_ranges(data, maxsplit, reverse);
+    }
+    let mut bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    bounds.push(data.len());
+    let chars: Vec<char> = text.chars().collect();
+    field_ranges(
+        &bounds,
+        |i| crate::string::is_py_space(chars[i]),
+        maxsplit,
+        reverse,
+    )
+}
+
+/// The whitespace-split algorithm over `n = bounds.len() - 1` units (bytes or
+/// characters; unit `i` spans `bounds[i]..bounds[i + 1]`). CPython semantics:
+/// - runs of consecutive whitespace are a single separator;
 /// - leading/trailing whitespace produces no empty fields;
 /// - once `maxsplit` splits have been made, the rest of the string is a single
 ///   field with its *interior* whitespace preserved — for `split` the trailing
@@ -64,53 +92,56 @@ fn is_split_whitespace(c: u8) -> bool {
 ///   (`"  a b c".rsplit(None, 1) == ["  a b", "c"]`).
 ///
 /// `maxsplit < 0` means unlimited.
-pub fn whitespace_field_ranges(data: &[u8], maxsplit: i64, reverse: bool) -> Vec<(usize, usize)> {
+fn field_ranges(
+    bounds: &[usize],
+    is_ws: impl Fn(usize) -> bool,
+    maxsplit: i64,
+    reverse: bool,
+) -> Vec<(usize, usize)> {
     let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
-    let n = data.len();
+    let n = bounds.len() - 1;
     let mut ranges: Vec<(usize, usize)> = Vec::new();
 
     if !reverse {
         let mut i = 0usize;
         let mut splits = 0i64;
         loop {
-            while i < n && is_split_whitespace(data[i]) {
+            while i < n && is_ws(i) {
                 i += 1;
             }
             if i >= n {
                 break;
             }
             if splits >= max {
-                // Remainder field — interior + trailing whitespace preserved.
-                ranges.push((i, n));
+                ranges.push((bounds[i], bounds[n]));
                 break;
             }
             let start = i;
-            while i < n && !is_split_whitespace(data[i]) {
+            while i < n && !is_ws(i) {
                 i += 1;
             }
-            ranges.push((start, i));
+            ranges.push((bounds[start], bounds[i]));
             splits += 1;
         }
     } else {
         let mut j = n;
         let mut splits = 0i64;
         loop {
-            while j > 0 && is_split_whitespace(data[j - 1]) {
+            while j > 0 && is_ws(j - 1) {
                 j -= 1;
             }
             if j == 0 {
                 break;
             }
             if splits >= max {
-                // Remainder field — interior + leading whitespace preserved.
-                ranges.push((0, j));
+                ranges.push((bounds[0], bounds[j]));
                 break;
             }
             let end = j;
-            while j > 0 && !is_split_whitespace(data[j - 1]) {
+            while j > 0 && !is_ws(j - 1) {
                 j -= 1;
             }
-            ranges.push((j, end));
+            ranges.push((bounds[j], bounds[end]));
             splits += 1;
         }
         ranges.reverse();

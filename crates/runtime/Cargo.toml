@@ -14,7 +14,8 @@ default = ["stdlib-full"]
 # Include all stdlib modules with external dependencies
 stdlib-full = ["stdlib-json", "stdlib-regex", "stdlib-crypto", "stdlib-base64", "stdlib-network"]
 # Individual stdlib features
-stdlib-json = ["dep:serde_json"]
+# The json codec is implemented in-tree (json.rs), with no external dependency.
+stdlib-json = []
 stdlib-regex = ["dep:regex-lite"]
 stdlib-crypto = ["dep:sha2", "dep:md-5", "dep:sha1"]
 stdlib-base64 = ["dep:base64"]
@@ -32,7 +33,6 @@ num-integer = "0.1"
 
 # Optional stdlib dependencies
 regex-lite = { version = "0.1", optional = true }
-serde_json = { version = "1", optional = true }
 ureq = { version = "3", optional = true, features = ["platform-verifier"] }
 sha2 = { version = "0.10", optional = true }
 sha1 = { version = "0.10", optional = true }

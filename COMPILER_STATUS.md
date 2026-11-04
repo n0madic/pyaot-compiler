@@ -58,6 +58,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |
 | f-strings | ✅ | Conversions, nested fields, dynamic format specs |
+| printf-style `str % args` | ✅ | Full `%[(key)][flags][width][.prec]type` grammar (`*` width/precision, `#0- +`, `d i u o x X e E f F g G c r s a %`), tuple / mapping / single argument, CPython error messages |
 | f-string `=` self-doc (`f"{x=}"`) | ❌ | PEP 501 spec form not implemented |
 
 ---
@@ -88,7 +89,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 
 | Group | Status | Notes |
 |---|---|---|
-| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization |
+| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization. Dynamic paths are exact like CPython: `int / int` correctly rounded (`10**400 / 10**399`), float `//`/`%` via `fmod` (`1.0 // 0.1 == 9.0`), `OverflowError` for an int too large for a float; gradual `seq * n` for str/list/tuple/bytes |
+| Mixed int/float comparison | ✅ | Exact on the dynamic paths (`2**53 + 1 != 2.0**53`); a statically typed `int` vs `float` compare still converts the int to a double |
 | Matrix multiply `@` | ✅ | `__matmul__` / `__rmatmul__` |
 | Bitwise `& \| ^ ~ << >>` | ✅ | |
 | Comparison `< <= > >= == !=` | ✅ | Rich-comparison dunders, chained compares |
@@ -115,7 +117,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Decorators / decorator factories | ✅ | |
 | Recursion | ✅ | |
 | First-class functions / callables as values | ✅ | Uniform value-call ABI |
-| Generators (`yield`, `send`, `close`, `yield from`) | ✅ | `send`/`close` dispatch by receiver type (static generator or `Dyn` by runtime tag); `throw()` unsupported (compile-time error) |
+| Generators (`yield`, `send`, `close`, `throw`, `yield from`) | ✅ | `send`/`close` dispatch by receiver type (static generator or `Dyn` by runtime tag); `throw(exc)` raises at the suspended `yield` (statically-typed generator receiver; one exception-instance argument) |
 | Generator expressions | ✅ | |
 
 ---
@@ -128,7 +130,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice; every MRO ancestor is registered at run time (`isinstance` / `except` see all bases); members overridden in a subclass dispatch on the receiver's runtime class |
-| `super()` | ✅ | |
+| `super()` | ✅ | `super().__init__([msg])` in an exception class whose parents define no `__init__` records the message (`BaseException.__init__`) |
 | `@property` | ✅ | |
 | `@staticmethod` / `@classmethod` | ✅ | Inherited along the MRO. `cls` is a compile-time alias of the class the method is reached through (each subclass gets its own copy of an inherited classmethod — same-module bases), so `Sub.make()` builds a `Sub`. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
@@ -175,7 +177,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Multiple `except` clauses | ✅ | |
 | Exception binding `except E as e` | ✅ | |
 | Custom exception subclasses | ✅ | |
-| Built-in exception hierarchy | ✅ | `ValueError`, `TypeError`, `IndexError`, `IOError`, … |
+| Built-in exception hierarchy | ✅ | All concrete CPython builtin exceptions with their real parents (`except OSError` catches `FileNotFoundError`, `except LookupError` catches `KeyError`, `ArithmeticError`, `ConnectionError` subtree, …); `IOError`/`EnvironmentError` are aliases of `OSError`. No `Warning` hierarchy, no `ExceptionGroup` |
+| Bare `raise` / `__context__` with nested handlers | ✅ | Runtime handling stack (CPython `exc_info` stack): every handler exit pops it, including exceptional exits via a cleanup landing pad. Boundary: a generator suspended inside a handler does not save/restore its entry |
 | Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table`; CPython frame names (`m`, `inner`, `<lambda>`, generator name; dispatch thunks hidden); inlined frames kept under optimization (inline chains). No source-line echo |
 | `except*` / `ExceptionGroup` | ❌ | Not implemented |
 
@@ -204,9 +207,9 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `map`, `filter` | ✅ | Eager desugar (single iterable) |
 | `sorted`, `reversed`, `min`, `max`, `sum` | ✅ | `key=` / `reverse=` |
 | `abs`, `round`, `pow`, `divmod` | ✅ | |
-| `all`, `any`, `id`, `hash` | ✅ | |
+| `all`, `any`, `id`, `hash` | ✅ | `hash()` matches CPython for int / bignum / float / bool / None / tuple (mod `2**61-1`, xxHash tuple hash); str/bytes hashes differ (CPython's are randomized). Instances: `__hash__`, unhashable with `__eq__` but no `__hash__`, else identity. Dict/set keys use the same hash and `__eq__` |
 | `bin`, `hex`, `oct`, `ord`, `chr` | ✅ | |
-| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language; user `__repr__`/`__format__` |
+| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language (CPython float rules: no-type-code repr-like form, `g` decided after rounding, `-0.0`, `nan`/`inf` case, grouping inside `0`-padding, `_` groups of 4 for hex); user `__repr__`/`__format__` |
 | `int`, `float`, `bool` | ✅ | Incl. `int(str, base)` with CPython's literal grammar (one sign, radix prefix + optional `_`, base-0 leading-zero rule); `int()` of a big int / out-of-range float yields a bignum |
 | `list`, `dict`, `set`, `tuple`, `bytes` | ✅ | |
 | `type(x)` (1-arg) | ✅ | |
@@ -253,11 +256,11 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Module | Status | Notes |
 |---|---|---|
 | `math` | ✅ | Core functions + constants; `factorial`/`gcd`/`lcm`/`comb`/`perm` are exact on big ints |
-| `random` | ✅ | |
+| `random` | ✅ | MT19937 identical to CPython: `seed` (any-size int, float, str, None), `random`/`randint`/`randrange`/`choice`/`choices`/`shuffle`/`sample`/`uniform`/`gauss` produce CPython's sequences |
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
-| `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |
-| `json` | ✅ | Object types, `ensure_ascii` (gated `stdlib-json`) |
+| `re` | ✅ | `search`/`match`/`sub` + `Match` (`group`/`groups`/`start`/`end`/`span`); `sub` replacement templates follow CPython (`\1`, `\g<name>`, escapes, errors). Engine is `regex-lite` (no backreferences/lookaround in patterns; empty-match adjacency may differ) (gated `stdlib-regex`) |
+| `json` | ✅ | `dumps`/`loads`/`dump`/`load`, CPython-exact output with default options: insertion order, big ints, `NaN`/`Infinity`, int/float/bool/None keys, `ensure_ascii`, `JSONDecodeError` messages (raised as `ValueError`). In-tree codec (no external crate). No `indent`/`sort_keys`/`separators`/`default` kwargs |
 | `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath`; constants `sep`/`linesep`/`pathsep`/`curdir`/`pardir`/`extsep`/`devnull` |
 | `subprocess` | ✅ | |
 | `itertools` | ✅ | |

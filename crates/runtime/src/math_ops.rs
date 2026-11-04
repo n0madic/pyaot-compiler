@@ -355,20 +355,34 @@ pub extern "C" fn rt_math_perm(n: Value, k: Value) -> Value {
 /// When base is NaN (sentinel), computes natural logarithm.
 /// Otherwise computes log(x) / log(base) like CPython.
 #[no_mangle]
-pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
+pub extern "C" fn rt_math_log(x: f64, base: f64, arg_count: i64) -> f64 {
+    // `arg_count` (user-written argument count) tells `log(x)` from
+    // `log(x, base)` — no in-band sentinel, so `log(x, nan)` is `nan`.
+    let domain_error = || unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::ValueError,
+            "expected a positive input"
+        )
+    };
     if x <= 0.0 {
+        domain_error();
+    }
+    if arg_count < 2 {
+        return x.ln();
+    }
+    if base <= 0.0 {
+        domain_error();
+    }
+    let den = base.ln();
+    if den == 0.0 {
         unsafe {
             raise_exc!(
-                crate::exceptions::ExceptionType::ValueError,
-                "math domain error"
+                crate::exceptions::ExceptionType::ZeroDivisionError,
+                "division by zero"
             )
         }
     }
-    if base.is_nan() {
-        x.ln()
-    } else {
-        x.ln() / base.ln()
-    }
+    x.ln() / den
 }
 
 /// Logarithm base 2: math.log2(x) -> f64

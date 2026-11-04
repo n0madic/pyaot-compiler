@@ -136,4 +136,55 @@ s_from: str = dumps([1, 2, 3])
 assert s_from == "[1, 2, 3]", "s_from should equal \"[1, 2, 3]\""
 print("from json import dumps/loads passed")
 
+
+# --- CPython-exact codec: key order, big ints, NaN/Infinity, non-str keys ---
+def _json_cpython_exact() -> None:
+    assert json.dumps({"b": 1, "a": [1.5, 10**30, None, True]}) == (
+        '{"b": 1, "a": [1.5, 1000000000000000000000000000000, null, true]}'
+    )
+    assert json.dumps({False: 0}) == "{\"false\": 0}"
+    assert json.dumps({1: "x", 2.5: "y", None: "n"}) == (
+        '{"1": "x", "2.5": "y", "null": "n"}'
+    )
+    assert json.dumps([float("nan"), float("inf"), -float("inf"), 1e22, 0.1]) == (
+        "[NaN, Infinity, -Infinity, 1e+22, 0.1]"
+    )
+    assert json.dumps("é\n\"\u0001\U0001F600") == '"\\u00e9\\n\\"\\u0001\\ud83d\\ude00"'
+    d = json.loads('{"z": 1, "a": 2, "m": [3, 12345678901234567890123, -0.5e3, Infinity]}')
+    assert list(d.keys()) == ["z", "a", "m"]
+    assert d["m"] == [3, 12345678901234567890123, -500.0, float("inf")]
+    assert json.loads('"\\ud83d\\ude00 \\u00e9"') == "\U0001F600 é"
+    nan = json.loads("NaN")
+    assert nan != nan
+    msgs: list[str] = []
+    for bad in ["[1, 2", "", '{"a" 1}', "[1] x", "{'a': 1}"]:
+        try:
+            json.loads(bad)
+        except ValueError as e:
+            msgs.append(str(e))
+    assert msgs == [
+        "Expecting ',' delimiter: line 1 column 6 (char 5)",
+        "Expecting value: line 1 column 1 (char 0)",
+        "Expecting ':' delimiter: line 1 column 6 (char 5)",
+        "Extra data: line 1 column 5 (char 4)",
+        "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+    ]
+    errs: list[str] = []
+    try:
+        json.dumps({(1, 2): 3})
+    except TypeError as e:
+        errs.append(str(e))
+    try:
+        json.dumps({1, 2})
+    except TypeError as e:
+        errs.append(str(e))
+    assert errs == [
+        "keys must be str, int, float, bool or None, not tuple",
+        "Object of type set is not JSON serializable",
+    ]
+
+
+_json_cpython_exact()
+
+
 print("All json module tests passed!")

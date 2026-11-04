@@ -135,13 +135,13 @@ pub static MATH_LOG: StdlibFunctionDef = StdlibFunctionDef {
     runtime_name: "rt_math_log",
     params: &[
         ParamDef::required("x", TypeSpec::Float),
-        ParamDef::optional_with_default("base", TypeSpec::Float, ConstValue::Float(f64::NAN)),
+        ParamDef::optional_with_default("base", TypeSpec::Float, ConstValue::Float(0.0)),
     ],
     return_type: TypeSpec::Float,
     min_args: 1,
     max_args: 2,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_log", &[P_F64, P_F64], Some(R_F64), false),
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    codegen: RuntimeFuncDef::new("rt_math_log", &[P_F64, P_F64, P_I64], Some(R_F64), false),
 };
 
 /// math.log2(x) - logarithm base 2

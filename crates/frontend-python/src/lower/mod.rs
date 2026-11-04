@@ -404,8 +404,11 @@ enum ScopeCtx {
     },
     /// A `try` body protected by an except handler. Cleanup: exit the region.
     TryFrame { outer: Option<Idx<HirBlock>> },
-    /// An `except` handler body. Cleanup: `EndHandling`.
-    Handler,
+    /// A handling block entered by `StartHandling` (an `except` body, the
+    /// exceptional-edge `finally` body), run under its own cleanup landing pad
+    /// (see `FnLowerer::begin_handling`). Cleanup: exit that region (back to
+    /// `outer`) + `EndHandling`.
+    Handler { outer: Option<Idx<HirBlock>> },
     /// A `try` body protected by a finally handler. Cleanup: exit the region +
     /// the re-lowered (cloned) finalbody.
     Finally {

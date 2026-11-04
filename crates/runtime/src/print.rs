@@ -58,23 +58,12 @@ pub extern "C" fn rt_print_str_obj_abi(str_obj: Value) {
 /// Shared by bytes printing and `bytearray`'s `bytearray(b'...')` repr.
 pub(crate) fn format_bytes_repr(data: *const u8, len: usize) -> String {
     let mut s = String::with_capacity(len + 3); // b'' + escapes
-    s.push_str("b'");
-    for i in 0..len {
-        let byte = unsafe { *data.add(i) };
-        match byte {
-            b'\\' => s.push_str("\\\\"),
-            b'\'' => s.push_str("\\'"),
-            b'\n' => s.push_str("\\n"),
-            b'\r' => s.push_str("\\r"),
-            b'\t' => s.push_str("\\t"),
-            0x20..=0x7E => s.push(byte as char),
-            _ => {
-                use std::fmt::Write;
-                let _ = write!(s, "\\x{:02x}", byte);
-            }
-        }
-    }
-    s.push('\'');
+    let bytes = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    crate::conversions::bytes_repr_into(&mut s, bytes);
     s
 }
 
@@ -168,7 +157,7 @@ pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
             // I/O error — raise IOError (CPython raises OSError for I/O errors, not EOFError)
             unsafe {
                 crate::raise_exc!(
-                    crate::exceptions::ExceptionType::IOError,
+                    crate::exceptions::ExceptionType::OSError,
                     "error reading from stdin: {}",
                     e
                 );

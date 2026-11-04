@@ -54,6 +54,16 @@ unsafe fn all_chars(str_obj: *mut Obj, who: &str, pred: fn(char) -> bool) -> i8 
     }
 }
 
+/// `c.isspace()` — Unicode whitespace (CPython's `Py_UNICODE_ISSPACE`), the
+/// set the argument-less `str.strip()` / `str.split()` use.
+#[inline]
+pub(crate) fn is_py_space(c: char) -> bool {
+    if c.is_ascii() {
+        return matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1f');
+    }
+    char_flags(c) & FLAG_SPACE != 0
+}
+
 /// Packed Unicode flags of `c` (0 = no tracked property). Binary search over the
 /// generated, sorted range table (O(log n), no alloc).
 #[inline]

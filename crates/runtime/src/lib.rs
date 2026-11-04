@@ -225,6 +225,7 @@ pub mod counter;
 pub mod defaultdict;
 pub mod deque;
 pub mod format;
+pub mod percent_format;
 pub mod functools;
 #[cfg(feature = "stdlib-crypto")]
 pub mod hashlib;

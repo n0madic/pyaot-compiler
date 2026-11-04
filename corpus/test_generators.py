@@ -1,6 +1,8 @@
 # Comprehensive generator tests
 # Tests: creation, next(), for loops, send(), close()
 
+from typing import Iterator
+
 # =============================================================================
 # Basic generator definitions
 # =============================================================================
@@ -1427,5 +1429,140 @@ def test_send_close_dispatch():
 
 
 test_send_close_dispatch()
+
+
+# ===== SECTION: gradual subscript kinds; close() on non-generators / unstarted =====
+
+class _GiSeq:
+    def __getitem__(self, i: int) -> int:
+        return i * 10
+
+
+def _gi_ident(x):
+    return x
+
+
+def _gi_gen() -> Iterator[int]:
+    yield 1
+
+
+def _gradual_getitem_and_close() -> None:
+    assert _gi_ident(b"abc")[1] == 98
+    assert _gi_ident(bytearray(b"xyz"))[-1] == 122
+    assert _gi_ident(_GiSeq())[3] == 30
+    msgs: list[str] = []
+    try:
+        _gi_ident(3.5)[0]
+    except TypeError as e:
+        msgs.append(str(e))
+    try:
+        _gi_ident({1, 2})[0]
+    except TypeError as e:
+        msgs.append(str(e))
+    assert msgs == ["'float' object is not subscriptable", "'set' object is not subscriptable"]
+    g = _gi_gen()
+    g.close()  # never started: just marked finished
+    assert list(g) == []
+    it: Iterator[int] = iter([1, 2])
+    raised = False
+    try:
+        it.close()
+    except AttributeError:
+        raised = True
+    assert raised
+
+
+_gradual_getitem_and_close()
+
+
+# ===== SECTION: generator.throw() =====
+
+class _ThBoom(ValueError):
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+
+
+class _ThOther(Exception):
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+
+
+_th_log: list[str] = []
+
+
+def _th_catching() -> Iterator[int]:
+    try:
+        yield 1
+        yield 2
+    except ValueError as e:
+        _th_log.append("caught " + str(e))
+    yield 3
+
+
+def _th_finally() -> Iterator[int]:
+    try:
+        yield 1
+    finally:
+        _th_log.append("finally")
+
+
+def _th_plain() -> Iterator[int]:
+    yield 1
+    yield 2
+
+
+def _th_returning() -> Iterator[int]:
+    try:
+        yield 1
+    except ValueError:
+        return
+
+
+def _generator_throw() -> None:
+    g = _th_catching()
+    assert next(g) == 1
+    assert g.throw(_ThBoom("boom")) == 3
+    assert list(g) == []
+    g = _th_finally()
+    next(g)
+    propagated = ""
+    try:
+        g.throw(_ThOther("k"))
+    except _ThOther as e:
+        propagated = str(e)
+    assert propagated == "k"
+    assert list(g) == []
+    g = _th_plain()
+    unstarted = ""
+    try:
+        g.throw(_ThOther("early"))
+    except _ThOther as e:
+        unstarted = str(e)
+    assert unstarted == "early"
+    assert list(g) == []
+    g = _th_returning()
+    next(g)
+    stopped = False
+    try:
+        g.throw(_ThBoom("x"))
+    except StopIteration:
+        stopped = True
+    assert stopped
+    rethrown = ""
+    try:
+        raise KeyError("kk")
+    except KeyError as caught:
+        g = _th_catching()
+        next(g)
+        try:
+            g.throw(caught)
+        except KeyError as e2:
+            rethrown = str(e2)
+    assert rethrown == "'kk'"
+    assert _th_log == ["caught boom", "finally"]
+
+
+_generator_throw()
+
 
 print("All generator tests passed!")

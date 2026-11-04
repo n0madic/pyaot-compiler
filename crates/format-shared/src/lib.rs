@@ -146,61 +146,77 @@ pub fn parse_format_spec(spec_str: &str) -> Result<FormatSpec, String> {
 /// Insert a grouping separator every 3 digits from the right.
 /// `digits` must contain only ASCII digit characters (no sign, no prefix).
 pub fn insert_grouping(digits: &str, sep: char) -> String {
-    let len = digits.len();
-    if len <= 3 {
-        return digits.to_string();
-    }
-    let mut result = String::with_capacity(len + len / 3);
-    let first_group = len % 3;
-    if first_group > 0 {
-        result.push_str(&digits[..first_group]);
-    }
-    let mut i = first_group;
-    while i < len {
-        if !result.is_empty() {
-            result.push(sep);
+    insert_grouping_n(digits, sep, 3)
+}
+
+/// [`insert_grouping`] with an explicit group size (CPython groups `_` by 4
+/// for `b`/`o`/`x`/`X`).
+pub fn insert_grouping_n(digits: &str, sep: char, group: usize) -> String {
+    let chars: Vec<char> = digits.chars().collect();
+    let mut out = String::with_capacity(chars.len() + chars.len() / group);
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % group == 0 {
+            out.push(sep);
         }
-        result.push_str(&digits[i..i + 3]);
-        i += 3;
+        out.push(*c);
     }
-    result
+    out
 }
 
 /// Apply grouping separators to a formatted integer or float string.
 pub fn apply_grouping_to_number(s: &str, sep: char) -> String {
+    apply_grouping_to_number_n(s, sep, 3)
+}
+
+/// Split a formatted number into `(lead, int_digits, rest)`: sign and
+/// `0x`-style prefix, the integer digits, and everything after them.
+fn split_number(s: &str, hex: bool) -> (&str, &str, &str) {
     let chars: &[u8] = s.as_bytes();
     let mut i = 0;
-
-    let sign_len = if !chars.is_empty() && matches!(chars[0], b'+' | b'-' | b' ') {
-        1
-    } else {
-        0
-    };
-    i += sign_len;
-
-    let prefix_len = if i + 1 < chars.len()
+    if !chars.is_empty() && matches!(chars[0], b'+' | b'-' | b' ') {
+        i = 1;
+    }
+    if i + 1 < chars.len()
         && chars[i] == b'0'
         && matches!(chars[i + 1], b'x' | b'X' | b'b' | b'B' | b'o' | b'O')
     {
-        2
-    } else {
-        0
-    };
-    i += prefix_len;
-
-    let digit_start = i;
-    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 2;
+    }
+    let start = i;
+    while i < chars.len() && (chars[i].is_ascii_digit() || (hex && chars[i].is_ascii_hexdigit())) {
         i += 1;
     }
-    let digit_end = i;
-    let tail = &s[digit_end..];
+    (&s[..start], &s[start..i], &s[i..])
+}
 
-    let sign = &s[..sign_len];
-    let prefix = &s[sign_len..sign_len + prefix_len];
-    let digits = &s[digit_start..digit_end];
+/// [`apply_grouping_to_number`] with an explicit group size.
+pub fn apply_grouping_to_number_n(s: &str, sep: char, group: usize) -> String {
+    let (lead, digits, tail) = split_number(s, group == 4);
+    format!("{}{}{}", lead, insert_grouping_n(digits, sep, group), tail)
+}
 
-    let grouped = insert_grouping(digits, sep);
-    format!("{}{}{}{}", sign, prefix, grouped, tail)
+/// Group a number (`grouping`) and pad it to `spec.width`. With the `0` flag
+/// (fill `0`, align `=`) the separators continue into the zero padding, as
+/// CPython does (`format(1234, '010,')` → `00,001,234`).
+fn group_and_pad(s: &str, spec: &FormatSpec, group: usize) -> String {
+    let Some(sep) = spec.grouping else {
+        return apply_padding(s, spec);
+    };
+    let zero_fill = spec.fill == '0' && spec.align == Some('=');
+    match (zero_fill, spec.width) {
+        (true, Some(width)) => {
+            let (lead, digits, rest) = split_number(s, group == 4);
+            let mut digits = digits.to_string();
+            loop {
+                let g = insert_grouping_n(&digits, sep, group);
+                if lead.chars().count() + g.chars().count() + rest.chars().count() >= width {
+                    return format!("{}{}{}", lead, g, rest);
+                }
+                digits.insert(0, '0');
+            }
+        }
+        _ => apply_padding(&apply_grouping_to_number_n(s, sep, group), spec),
+    }
 }
 
 /// Apply padding to a string according to the format spec.
@@ -387,118 +403,221 @@ pub fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
         if !matches!(type_spec, 'd' | 'n' | 'b' | 'o' | 'x' | 'X') {
             return Err(format!("Cannot specify '{}' with '{}'", sep, type_spec));
         }
-        result = apply_grouping_to_number(&result, sep);
+        if sep == ',' && !matches!(type_spec, 'd' | 'n') {
+            return Err(format!("Cannot specify ',' with '{}'.", type_spec));
+        }
     }
-
-    Ok(apply_padding(&result, spec))
+    let group = if matches!(type_spec, 'b' | 'o' | 'x' | 'X') {
+        4
+    } else {
+        3
+    };
+    Ok(group_and_pad(&result, spec, group))
 }
 
-/// Format a float value according to a parsed `FormatSpec`.
-pub fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
-    let type_spec = spec.type_spec.unwrap_or('g');
-    let precision = spec.precision.unwrap_or(6);
+/// Decimal digits of a finite, non-negative `v`: `(digits, decpt)` with
+/// `v ≈ 0.d1d2d3… × 10**decpt`. `sig = None` gives the shortest round-trip
+/// digits (repr); `Some(n)` rounds correctly to `n >= 1` significant digits.
+fn decimal_digits(v: f64, sig: Option<usize>) -> (String, i32) {
+    if v == 0.0 {
+        return ("0".to_string(), 1);
+    }
+    let s = match sig {
+        Some(n) => format!("{:.*e}", n - 1, v),
+        None => format!("{:e}", v),
+    };
+    let (mant, exp) = s.split_once('e').expect("LowerExp output has an exponent");
+    let exp: i32 = exp.parse().expect("integer exponent");
+    let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+    (digits, exp + 1)
+}
 
-    let mut result = match type_spec {
-        'f' | 'F' => format!("{:.prec$}", value, prec = precision),
-        'e' => fix_exponent_format(&format!("{:.prec$e}", value, prec = precision)),
-        'E' => {
-            fix_exponent_format(&format!("{:.prec$e}", value, prec = precision)).replace('e', "E")
+/// Place a decimal point into `digits` at `decpt` (fixed notation).
+fn fixed_from_digits(digits: &str, decpt: i32) -> String {
+    let n = digits.len() as i32;
+    if decpt <= 0 {
+        format!("0.{}{}", "0".repeat((-decpt) as usize), digits)
+    } else if decpt >= n {
+        format!("{}{}", digits, "0".repeat((decpt - n) as usize))
+    } else {
+        format!(
+            "{}.{}",
+            &digits[..decpt as usize],
+            &digits[decpt as usize..]
+        )
+    }
+}
+
+/// Exponent notation from `digits`: `d[.ddd]e±XX` (at least two exponent
+/// digits, as CPython).
+fn exp_from_digits(digits: &str, decpt: i32, upper: bool) -> String {
+    let mut s = String::new();
+    s.push_str(&digits[..1]);
+    if digits.len() > 1 {
+        s.push('.');
+        s.push_str(&digits[1..]);
+    }
+    let e = decpt - 1;
+    s.push(if upper { 'E' } else { 'e' });
+    s.push(if e < 0 { '-' } else { '+' });
+    s.push_str(&format!("{:02}", e.unsigned_abs()));
+    s
+}
+
+/// CPython's `PyOS_double_to_string` for a finite, non-negative `v`, without
+/// sign. `mode`: `'f'`/`'e'`/`'g'` (with `precision`) or `'r'` (repr,
+/// shortest digits). `add_dot_0` is the "no type code" flag: like `g`, but a
+/// fixed-notation result always keeps a fractional digit, and the switch to
+/// exponent notation happens one decimal position earlier.
+pub fn float_body(
+    v: f64,
+    mode: char,
+    precision: usize,
+    alternate: bool,
+    add_dot_0: bool,
+) -> String {
+    let upper = mode.is_ascii_uppercase();
+    match mode.to_ascii_lowercase() {
+        'f' => {
+            let mut s = format!("{:.*}", precision, v);
+            if alternate && precision == 0 {
+                s.push('.');
+            }
+            s
         }
-        'g' | 'G' => {
-            let prec = if precision == 0 { 1 } else { precision };
-            let abs_val = value.abs();
-            let formatted = if abs_val == 0.0 {
-                let mut s = format!("{:.prec$}", value, prec = prec.saturating_sub(1));
-                if !spec.alternate && s.contains('.') {
-                    s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-                }
-                s
+        'e' => {
+            let (mut digits, decpt) = decimal_digits(v, Some(precision + 1));
+            if v == 0.0 {
+                digits = "0".repeat(precision + 1);
+            }
+            let mut s = exp_from_digits(&digits, decpt, upper);
+            if alternate && precision == 0 {
+                let e_pos = s.find(['e', 'E']).unwrap_or(s.len());
+                s.insert(e_pos, '.');
+            }
+            s
+        }
+        mode @ ('g' | 'r') => {
+            let (mut digits, decpt) = if mode == 'r' {
+                decimal_digits(v, None)
             } else {
-                let exp = abs_val.log10().floor() as i32;
-                if exp >= -4 && exp < prec as i32 {
-                    let fixed_prec = (prec as i32 - 1 - exp).max(0) as usize;
-                    let mut s = format!("{:.prec$}", value, prec = fixed_prec);
-                    if !spec.alternate && s.contains('.') {
-                        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-                    }
-                    s
-                } else {
-                    let exp_prec = prec.saturating_sub(1);
-                    let mut s = format!("{:.prec$e}", value, prec = exp_prec);
-                    if !spec.alternate && s.contains('.') {
-                        if let Some(e_pos) = s.find('e') {
-                            let (mantissa, exp_part) = s.split_at(e_pos);
-                            let trimmed = mantissa.trim_end_matches('0').trim_end_matches('.');
-                            s = format!("{}{}", trimmed, exp_part);
-                        }
-                    }
-                    fix_exponent_format(&s)
-                }
+                decimal_digits(v, Some(precision.max(1)))
             };
-            if type_spec == 'G' {
-                formatted.replace('e', "E")
+            let p = if mode == 'r' {
+                17
             } else {
-                formatted
+                precision.max(1) as i32
+            };
+            let use_exp = if mode == 'r' {
+                decpt <= -4 || decpt > 16
+            } else {
+                decpt <= -4 || decpt > if add_dot_0 { p - 1 } else { p }
+            };
+            if alternate && mode == 'g' {
+                // `#`: keep trailing zeros up to the precision.
+                while (digits.len() as i32) < p {
+                    digits.push('0');
+                }
+            } else {
+                let trimmed = digits.trim_end_matches('0');
+                digits = if trimmed.is_empty() {
+                    "0".to_string()
+                } else {
+                    trimmed.to_string()
+                };
             }
-        }
-        '%' => format!("{:.prec$}%", value * 100.0, prec = precision),
-        'n' => {
-            let prec = if precision == 0 { 1 } else { precision };
-            let abs_val = value.abs();
-            if abs_val == 0.0 {
-                let mut s = format!("{:.prec$}", value, prec = prec.saturating_sub(1));
-                if s.contains('.') {
-                    s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+            if use_exp {
+                exp_from_digits(&digits, decpt, upper)
+            } else {
+                let mut s = fixed_from_digits(&digits, decpt);
+                if !s.contains('.') && (add_dot_0 || alternate) {
+                    s.push_str(if add_dot_0 { ".0" } else { "." });
                 }
                 s
-            } else {
-                let exp = abs_val.log10().floor() as i32;
-                if exp >= -4 && exp < prec as i32 {
-                    let fixed_prec = (prec as i32 - 1 - exp).max(0) as usize;
-                    let mut s = format!("{:.prec$}", value, prec = fixed_prec);
-                    if s.contains('.') {
-                        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-                    }
-                    s
-                } else {
-                    fix_exponent_format(&format!(
-                        "{:.prec$e}",
-                        value,
-                        prec = prec.saturating_sub(1)
-                    ))
-                }
             }
         }
-        _ => {
+        _ => unreachable!("float_body mode"),
+    }
+}
+
+/// `repr(x)` / `str(x)` of a float, exactly as CPython.
+pub fn float_repr(v: f64) -> String {
+    if v.is_nan() {
+        return "nan".to_string();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "inf" } else { "-inf" }.to_string();
+    }
+    let body = float_body(v.abs(), 'r', 0, false, true);
+    if v.is_sign_negative() {
+        format!("-{}", body)
+    } else {
+        body
+    }
+}
+
+/// Format a float value according to a parsed `FormatSpec` (CPython's
+/// `format_float_internal`): no type code is repr-like (`add_dot_0`), `g`
+/// decides fixed vs exponent AFTER rounding, `-0.0` keeps its sign, `nan` /
+/// `inf` are lower-case (upper-case for `F`/`E`/`G`), and grouping continues
+/// into `0`-flag padding.
+pub fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
+    let (mode, precision, add_dot_0) = match spec.type_spec {
+        None => match spec.precision {
+            None => ('r', 0, true),
+            Some(p) => ('g', p, true),
+        },
+        Some(t @ ('f' | 'F' | 'e' | 'E' | 'g' | 'G')) => (t, spec.precision.unwrap_or(6), false),
+        Some('n') => ('g', spec.precision.unwrap_or(6), false),
+        Some('%') => ('%', spec.precision.unwrap_or(6), false),
+        Some(t) => {
             return Err(format!(
                 "Unknown format code '{}' for object of type 'float'",
-                type_spec
+                t
             ))
         }
     };
-
-    if type_spec == 'F' {
-        result = result.replace("inf", "INF").replace("nan", "NAN");
-    }
-
-    if value >= 0.0 || value.is_nan() {
-        if let Some(sign) = spec.sign {
-            match sign {
-                '+' => result = format!("+{}", result),
-                ' ' => result = format!(" {}", result),
-                _ => {}
-            }
-        }
-    }
-
     if let Some(sep) = spec.grouping {
-        if !matches!(type_spec, 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | '%' | 'n') {
-            return Err(format!("Cannot specify '{}' with '{}'", sep, type_spec));
+        if spec.type_spec == Some('n') {
+            return Err(format!("Cannot specify '{}' with 'n'.", sep));
         }
-        result = apply_grouping_to_number(&result, sep);
     }
-
-    Ok(apply_padding(&result, spec))
+    let upper = matches!(mode, 'F' | 'E' | 'G');
+    let negative = value.is_sign_negative() && !value.is_nan();
+    let magnitude = value.abs();
+    let mut body = if value.is_nan() {
+        "nan".to_string()
+    } else if value.is_infinite() {
+        "inf".to_string()
+    } else if mode == '%' {
+        format!(
+            "{}%",
+            float_body(magnitude * 100.0, 'f', precision, spec.alternate, false)
+        )
+    } else {
+        float_body(magnitude, mode, precision, spec.alternate, add_dot_0)
+    };
+    if !value.is_finite() && mode == '%' {
+        body.push('%');
+    }
+    if upper {
+        body = body.to_uppercase();
+    }
+    let sign = if negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+    let result = format!("{}{}", sign, body);
+    if !value.is_finite() {
+        // No grouping / zero-fill digits for nan/inf: plain padding.
+        return Ok(apply_padding(&result, spec));
+    }
+    Ok(group_and_pad(&result, spec, 3))
 }
 
 /// Format a string value according to a parsed `FormatSpec`.
@@ -626,6 +745,55 @@ mod tests {
         assert_eq!(format_float_spec(0.25, ".1%").unwrap(), "25.0%");
         assert_eq!(format_float_spec(0.0001234, ".2e").unwrap(), "1.23e-04");
         assert_eq!(format_float_spec(1234.5, ",.2f").unwrap(), "1,234.50");
+    }
+
+    #[test]
+    fn test_float_cpython_edges() {
+        let cases: &[(f64, &str, &str)] = &[
+            (1.0, ".3", "1.0"),
+            (1234.5, ".3", "1.23e+03"),
+            (12.0, ".2", "1.2e+01"),
+            (12.0, "", "12.0"),
+            (1e16, "", "1e+16"),
+            (1e-5, "", "1e-05"),
+            (0.0001, "", "0.0001"),
+            (123.456, "10", "   123.456"),
+            (f64::NAN, "f", "nan"),
+            (f64::INFINITY, "F", "INF"),
+            (-0.0, "+.1f", "-0.0"),
+            (-0.0, "", "-0.0"),
+            (9.9999, ".3g", "10"),
+            (0.00009999, ".3g", "0.0001"),
+            (99999.5, ".5g", "1e+05"),
+            (1234567.0, ",.2f", "1,234,567.00"),
+            (1234.5, "010,.1f", "0,001,234.5"),
+            (1e100, ".3", "1e+100"),
+            (5.0, ".0", "5e+00"),
+            (2.5, ".0f", "2"),
+            (-1.5, "08.2f", "-0001.50"),
+            (1.0, "#g", "1.00000"),
+            (1.0, "g", "1"),
+            (100.0, ".2", "1e+02"),
+            (1.0, "%", "100.000000%"),
+            (f64::NAN, "+", "+nan"),
+            (f64::NAN, "010", "0000000nan"),
+            (123456789.0, ",g", "1.23457e+08"),
+            (0.1, ".17", "0.10000000000000001"),
+        ];
+        for (v, spec, want) in cases {
+            assert_eq!(
+                &format_float_spec(*v, spec).unwrap(),
+                want,
+                "{} {:?}",
+                v,
+                spec
+            );
+        }
+        assert_eq!(format_int_spec(1234, "010,").unwrap(), "00,001,234");
+        assert_eq!(format_int_spec(1234, "010_x").unwrap(), "0_0000_04d2");
+        assert_eq!(float_repr(0.1), "0.1");
+        assert_eq!(float_repr(1e22), "1e+22");
+        assert_eq!(float_repr(-2.5), "-2.5");
     }
 
     #[test]

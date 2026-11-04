@@ -9,7 +9,7 @@ use pyaot_core_defs::Value;
 /// Helper to get type name for error messages.
 /// Delegates to TypeTagKind::type_name() from core-defs (single source of truth).
 #[inline]
-pub(super) fn type_name(tag: TypeTagKind) -> &'static str {
+pub(crate) fn type_name(tag: TypeTagKind) -> &'static str {
     tag.type_name()
 }
 
@@ -123,41 +123,26 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     // 1.0`, etc. A tagged Int/Bool on one side and a heap-boxed FloatObj on
     // the other should compare as f64 to match CPython.
     if !va.is_ptr() || !vb.is_ptr() {
-        let primitive_as_f64 = |v: Value| -> Option<f64> {
-            if v.is_int() {
-                Some(v.unwrap_int() as f64)
-            } else if v.is_bool() {
-                Some(if v.unwrap_bool() { 1.0 } else { 0.0 })
-            } else {
-                None
-            }
-        };
-        let heap_float_as_f64 = |p: *mut Obj| -> Option<f64> {
-            if p.is_null() {
-                return None;
-            }
-            unsafe {
-                if (*p).type_tag() == TypeTagKind::Float {
-                    Some((*(p as *mut FloatObj)).value)
-                } else {
-                    None
-                }
-            }
-        };
-        let f_a = if va.is_ptr() {
-            heap_float_as_f64(a)
+        // Exact int-vs-float equality (`2**53 + 1 != 2.0**53`).
+        let (prim, heap) = if va.is_ptr() { (vb, a) } else { (va, b) };
+        let int_val = if prim.is_int() {
+            prim.unwrap_int()
+        } else if prim.is_bool() {
+            prim.unwrap_bool() as i64
         } else {
-            primitive_as_f64(va)
+            return 0;
         };
-        let f_b = if vb.is_ptr() {
-            heap_float_as_f64(b)
-        } else {
-            primitive_as_f64(vb)
-        };
-        return match (f_a, f_b) {
-            (Some(x), Some(y)) if x == y => 1,
-            _ => 0,
-        };
+        if heap.is_null() {
+            return 0;
+        }
+        unsafe {
+            if (*heap).type_tag() != TypeTagKind::Float {
+                return 0;
+            }
+            let f = (*(heap as *mut FloatObj)).value;
+            return (crate::bigint::cmp_i64_float(int_val, f) == Some(std::cmp::Ordering::Equal))
+                as i8;
+        }
     }
 
     // Both are real heap pointers — safe to dereference.
@@ -268,27 +253,30 @@ pub(crate) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
         };
         return ia.cmp(&ib);
     }
-    // Int (tagged) vs Float (heap) — promote int to float
-    if va.is_int() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
-        let fa = va.unwrap_int() as f64;
-        let fb = (*(b as *mut FloatObj)).value;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    // Int/Bool (tagged) vs Float (heap) — exact comparison (never through a
+    // lossy int -> float conversion). NaN orders as Greater (unchanged).
+    let small_int = |v: Value| -> Option<i64> {
+        if v.is_int() {
+            Some(v.unwrap_int())
+        } else if v.is_bool() {
+            Some(v.unwrap_bool() as i64)
+        } else {
+            None
+        }
+    };
+    if let Some(i) = small_int(va) {
+        if vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
+            let fb = (*(b as *mut FloatObj)).value;
+            return crate::bigint::cmp_i64_float(i, fb).unwrap_or(Ordering::Greater);
+        }
     }
-    if vb.is_int() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
-        let fa = (*(a as *mut FloatObj)).value;
-        let fb = vb.unwrap_int() as f64;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
-    }
-    // Bool (tagged) vs Float (heap) — same as Int vs Float
-    if va.is_bool() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
-        let fa = va.unwrap_bool() as i64 as f64;
-        let fb = (*(b as *mut FloatObj)).value;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
-    }
-    if vb.is_bool() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
-        let fa = (*(a as *mut FloatObj)).value;
-        let fb = vb.unwrap_bool() as i64 as f64;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    if let Some(i) = small_int(vb) {
+        if va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
+            let fa = (*(a as *mut FloatObj)).value;
+            return crate::bigint::cmp_i64_float(i, fa)
+                .map(Ordering::reverse)
+                .unwrap_or(Ordering::Greater);
+        }
     }
     // Tagged None is not orderable
     if va.is_none() || vb.is_none() {
@@ -544,7 +532,36 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
             }
             // A gradual `<dyn deque>[i]` (e.g. the result of `copy.copy(dq)`).
             TypeTagKind::Deque => crate::deque::rt_deque_get(obj, index),
-            _ => std::ptr::null_mut(),
+            // `bytes[i]` is an int (`rt_bytes_get` raises IndexError).
+            TypeTagKind::Bytes => {
+                pyaot_core_defs::Value::from_int(crate::bytes::rt_bytes_get(obj, index)).0
+                    as *mut Obj
+            }
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_get(obj, index),
+            // A class instance subscripts through its `__getitem__`.
+            TypeTagKind::Instance => {
+                let key = pyaot_core_defs::Value::from_int(index).0 as *mut Obj;
+                match super::dunder_dispatch::try_class_dunder(
+                    obj,
+                    key,
+                    super::dunder_dispatch::FNV_GETITEM,
+                    0,
+                ) {
+                    Some(v) => v,
+                    None => raise_exc!(
+                        crate::exceptions::ExceptionType::TypeError,
+                        "'{}' object is not subscriptable",
+                        crate::ops::instance_class_name(
+                            (*(obj as *const crate::object::InstanceObj)).class_id
+                        )
+                    ),
+                }
+            }
+            other => raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "'{}' object is not subscriptable",
+                type_name(other)
+            ),
         }
     }
 }

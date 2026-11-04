@@ -9,6 +9,7 @@
 //! Functions that return int/float/bool box their result for uniform handling.
 
 use crate::boxing;
+use num_traits::Signed;
 use crate::object::{FloatObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 
@@ -213,6 +214,13 @@ pub fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
         unsafe {
             match (*obj).type_tag() {
                 TypeTagKind::Float => (*(obj as *mut FloatObj)).value,
+                TypeTagKind::BigInt => {
+                    // Correctly rounded; OverflowError beyond the double range.
+                    match crate::bigint::classify_num(v) {
+                        Some(crate::bigint::Num::Big(b)) => crate::bigint::bigint_to_f64(&b),
+                        _ => unreachable!("BigInt classifies as Num::Big"),
+                    }
+                }
                 TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
                 TypeTagKind::Instance => {
                     // CPython: float(obj) dispatches to obj.__float__(). The
@@ -264,7 +272,10 @@ pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
     // Check tagged primitives before heap dereference.
     let v = Value(obj as u64);
     if v.is_int() {
-        return pyaot_core_defs::Value::from_int(v.unwrap_int().abs()).0 as *mut crate::object::Obj;
+        // `abs(-2**60)` leaves the fixnum range: box through the bignum-aware
+        // constructor (never truncate).
+        let i = v.unwrap_int();
+        return crate::bigint::make_int_value(num_bigint::BigInt::from(i).abs());
     }
     if v.is_bool() {
         // abs(True) = 1, abs(False) = 0
@@ -276,6 +287,10 @@ pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
             TypeTagKind::Float => {
                 let value = (*(obj as *mut FloatObj)).value;
                 boxing::rt_box_float(value.abs())
+            }
+            TypeTagKind::BigInt => {
+                let b = &(*(obj as *mut crate::object::BigIntObj)).value;
+                crate::bigint::make_int_value(b.abs())
             }
             // `abs(instance)` dispatches the user `__abs__` dunder (§6); CPython
             // raises `TypeError` when the class defines none.
@@ -294,65 +309,14 @@ pub extern "C" fn rt_builtin_abs_abi(obj: Value) -> Value {
 }
 
 /// hash(obj) -> *mut Obj (boxed Int)
-/// Returns hash value of hashable object.
-/// CPython 3.12's fixed `hash(None)` constant (`0xFCA86420`). The builtin
-/// `hash()` returns this for `None`; the dict-key hashing path keeps its own 0.
-const HASH_NONE: i64 = 0xFCA8_6420;
-
+/// CPython's `hash()` value (see [`crate::hash::py_hash`]): exact numeric
+/// hashes (int / bignum / float / bool agree), CPython's tuple hash, instance
+/// `__hash__` / identity; `TypeError` for an unhashable value. The result may
+/// exceed the fixnum range (hashes span the full `Py_hash_t`), so it is boxed
+/// through the bignum-aware constructor.
 pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
-    // Check tagged primitives before heap dereference.
-    let v = Value(obj as u64);
-    let value = if obj.is_null() || v.is_none() {
-        // CPython 3.12 gives `None` a FIXED non-zero hash (`0xFCA86420`),
-        // distinct from the dict-key hashing path (`hash_hashable_obj`, which
-        // keeps the legacy 0 for bucket placement). `hash(None)` the builtin
-        // must be non-zero to match the oracle.
-        HASH_NONE
-    } else if v.is_int() {
-        crate::hash::rt_hash_int(v.unwrap_int())
-    } else if v.is_bool() {
-        crate::hash::rt_hash_bool(if v.unwrap_bool() { 1 } else { 0 })
-    } else {
-        unsafe {
-            match (*obj).type_tag() {
-                TypeTagKind::Float => {
-                    let float_obj = obj as *mut FloatObj;
-                    let fv = (*float_obj).value;
-                    if fv == 0.0 {
-                        0 // hash(-0.0) == hash(0.0) == 0
-                    } else if fv.fract() == 0.0 && fv.is_finite() {
-                        // Integer-valued float: same hash as the equivalent integer
-                        crate::hash::rt_hash_int(fv as i64)
-                    } else {
-                        // Non-integer float: use bit representation as input to the scramble
-                        crate::hash::rt_hash_int(fv.to_bits() as i64)
-                    }
-                }
-                TypeTagKind::Str => crate::hash::rt_hash_str(obj),
-                TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
-                // A frozenset is hashable: normalize its order-independent
-                // content hash through `rt_hash_int` into the valid Py_hash_t
-                // domain (mirrors how str/tuple hashes are boxed).
-                TypeTagKind::FrozenSet => {
-                    crate::hash::rt_hash_int(crate::frozenset::rt_frozenset_hash(obj))
-                }
-                TypeTagKind::None => HASH_NONE,
-                // A class instance hashes via its `__hash__` dunder (CPython:
-                // `hash(obj)` = `type(obj).__hash__(obj)`); a class without one
-                // is unhashable. The dunder result is already a boxed int Value,
-                // so return it directly (it may be a bignum — never re-box).
-                TypeTagKind::Instance => {
-                    if let Some(h) = crate::ops::try_hash_dunder(obj) {
-                        return h;
-                    }
-                    raise_type_error("unhashable type")
-                }
-                _ => raise_type_error("unhashable type"),
-            }
-        }
-    };
-    // Box the result
-    pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
+    let h = unsafe { crate::hash::py_hash_or_raise(obj) };
+    crate::bigint::make_int_value(num_bigint::BigInt::from(h))
 }
 #[export_name = "rt_builtin_hash"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

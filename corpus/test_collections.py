@@ -2555,4 +2555,124 @@ _review_lattice_joins()
 _fold_dict_keyerror()
 _fold_kwargs_missing_required()
 
+
+# --- set methods accept any iterable `other`; tombstone-aware resizing ---
+def _set_methods_any_iterable() -> None:
+    s = {1.5}
+    s.update([2])
+    assert sorted(s) == [1.5, 2]
+    assert sorted({1, 2}.union((3,))) == [1, 2, 3]
+    assert sorted({1, 2}.union({7: "a"})) == [1, 2, 7]
+    assert {1, 2}.issubset([1, 2, 3])
+    assert not {1, 5}.issubset((1, 2))
+    assert {1, 2}.issuperset(range(2)) is False
+    assert {0, 1, 2}.issuperset(range(2))
+    assert {1, 2}.isdisjoint([3, 4])
+    assert not {1, 2}.isdisjoint([2])
+    t = {0, 1, 2, 3, 4}
+    t.difference_update(range(3))
+    assert sorted(t) == [3, 4]
+    t.intersection_update([3, 9])
+    assert t == {3}
+    t.symmetric_difference_update([3, 7])
+    assert t == {7}
+    assert sorted({1, 2, 3}.difference([2])) == [1, 3]
+    assert sorted({1, 2, 3}.intersection(x for x in [2, 3, 4])) == [2, 3]
+    assert sorted({1, 2}.symmetric_difference([2, 5])) == [1, 5]
+    assert sorted(frozenset([1, 2]).union([5])) == [1, 2, 5]
+    u: set[int] = set()
+    for i in range(2000):
+        u.add(i)
+        u.discard(i)
+    assert len(u) == 0
+    for i in range(100):
+        u.add(i)
+    for i in range(0, 100, 2):
+        u.remove(i)
+    assert len(u) == 50 and sum(u) == 2500
+    u.clear()
+    u.add(3)
+    assert u.pop() == 3 and len(u) == 0
+
+
+_set_methods_any_iterable()
+
+
+# --- instance keys use __hash__/__eq__; default identity hash ---
+class _HkPoint:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _HkPoint) and self.x == other.x and self.y == other.y
+
+    def __hash__(self) -> int:
+        return hash((self.x, self.y))
+
+
+class _HkPlain:
+    pass
+
+
+class _HkEqOnly:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+
+def _instance_hash_keys() -> None:
+    d = {_HkPoint(1, 2): "a"}
+    assert d[_HkPoint(1, 2)] == "a"
+    assert _HkPoint(1, 2) in {_HkPoint(1, 2), _HkPoint(3, 4)}
+    assert len({_HkPoint(1, 2), _HkPoint(1, 2), _HkPoint(2, 1)}) == 2
+    assert hash(_HkPoint(1, 2)) == hash((1, 2))
+    assert [_HkPoint(1, 2), _HkPoint(3, 4)].index(_HkPoint(3, 4)) == 1
+    o = _HkPlain()
+    assert hash(o) == hash(o)
+    s = {o}
+    assert o in s and _HkPlain() not in s
+    raised = 0
+    try:
+        hash(_HkEqOnly())
+    except TypeError as e:
+        raised += str(e) == "unhashable type: '_HkEqOnly'"
+    try:
+        hash([1])
+    except TypeError as e:
+        raised += str(e) == "unhashable type: 'list'"
+    assert raised == 2
+
+
+_instance_hash_keys()
+
+
+# --- dict subclasses satisfy isinstance(x, dict); OrderedDict(iterable) ---
+def _coll_ident(x):
+    return x
+
+
+def _dict_subclasses_and_ordereddict() -> None:
+    dd = defaultdict(int)
+    assert isinstance(_coll_ident(dd), dict)
+    assert isinstance(_coll_ident(Counter()), dict)
+    assert isinstance(_coll_ident(OrderedDict()), dict)
+    assert isinstance(dd, dict)
+    assert isinstance(Counter("ab"), dict)
+    od = OrderedDict([("a", 1), ("b", 2)])
+    assert list(od.items()) == [("a", 1), ("b", 2)]
+    od2 = OrderedDict({"z": 26, "y": 25})
+    assert list(od2.keys()) == ["z", "y"]
+    assert list(OrderedDict(zip("ab", [1, 2])).values()) == [1, 2]
+    assert len(OrderedDict()) == 0
+    raised = ""
+    try:
+        OrderedDict([(1, 2, 3)])
+    except ValueError as e:
+        raised = str(e)
+    assert raised == "too many values to unpack (expected 2)"
+
+
+_dict_subclasses_and_ordereddict()
+
+
 print("All collections tests passed!")

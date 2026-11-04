@@ -4,19 +4,106 @@ use crate::object::Obj;
 use crate::string::rt_make_str;
 use pyaot_core_defs::Value;
 
-/// Escape a string for repr() output, matching CPython behavior.
+/// The quote CPython's `repr()` picks for a str/bytes body: `'`, unless the
+/// body contains `'` and no `"`.
+pub(crate) fn repr_quote_for(has_single: bool, has_double: bool) -> char {
+    if has_single && !has_double {
+        '"'
+    } else {
+        '\''
+    }
+}
+
+/// `repr(text)` appended to `s`, quotes included (CPython's quote choice:
+/// double quotes when the text contains `'` but no `"`).
+pub(crate) fn repr_str_into(s: &mut String, text: &str) {
+    repr_str_into_impl(s, text, false)
+}
+
+/// `ascii(text)` appended to `s`: like [`repr_str_into`], but every non-ASCII
+/// character is escaped.
+pub(crate) fn ascii_str_into(s: &mut String, text: &str) {
+    repr_str_into_impl(s, text, true)
+}
+
+fn repr_str_into_impl(s: &mut String, text: &str, ascii_only: bool) {
+    use std::fmt::Write;
+    let quote = repr_quote_for(text.contains('\''), text.contains('"'));
+    s.push(quote);
+    if !ascii_only {
+        repr_escape_into(s, text, quote);
+    } else {
+        for ch in text.chars() {
+            let cp = ch as u32;
+            match ch {
+                '\\' => s.push_str("\\\\"),
+                '\n' => s.push_str("\\n"),
+                '\r' => s.push_str("\\r"),
+                '\t' => s.push_str("\\t"),
+                c if c == quote => {
+                    s.push('\\');
+                    s.push(c);
+                }
+                c if (0x20..0x7f).contains(&cp) => s.push(c),
+                _ if cp <= 0xFF => {
+                    let _ = write!(s, "\\x{:02x}", cp);
+                }
+                _ if cp <= 0xFFFF => {
+                    let _ = write!(s, "\\u{:04x}", cp);
+                }
+                _ => {
+                    let _ = write!(s, "\\U{:08x}", cp);
+                }
+            }
+        }
+    }
+    s.push(quote);
+}
+
+/// `repr(bytes)` body with the `b` prefix and CPython's quote choice
+/// (`b"it's"`), escaping `\t\n\r`, the backslash, the chosen quote and every
+/// byte outside printable ASCII as `\xNN`.
+pub(crate) fn bytes_repr_into(s: &mut String, data: &[u8]) {
+    use std::fmt::Write;
+    let quote = repr_quote_for(data.contains(&b'\''), data.contains(&b'"'));
+    s.push('b');
+    s.push(quote);
+    for &byte in data {
+        match byte {
+            b'\\' => s.push_str("\\\\"),
+            b'\n' => s.push_str("\\n"),
+            b'\r' => s.push_str("\\r"),
+            b'\t' => s.push_str("\\t"),
+            b if b as char == quote => {
+                s.push('\\');
+                s.push(quote);
+            }
+            0x20..=0x7E => s.push(byte as char),
+            _ => {
+                let _ = write!(s, "\\x{:02x}", byte);
+            }
+        }
+    }
+    s.push(quote);
+}
+
+/// Escape a string body for repr() output (quotes NOT included), matching
+/// CPython; `quote` is the delimiter in use, the only quote that is escaped.
 ///
-/// - `\n`, `\r`, `\t`, `\\`, `\'`: named escapes
+/// - `\n`, `\r`, `\t`, `\\`, the delimiter quote: named escapes
 /// - Control chars (U+0000-U+001F, U+007F-U+009F): `\xNN`
 /// - Non-printable U+0100..U+FFFF: `\uXXXX`
 /// - Non-printable U+10000+: `\UXXXXXXXX`
 /// - All other printable Unicode: literal
-pub(crate) fn repr_escape_into(s: &mut String, text: &str) {
+pub(crate) fn repr_escape_into(s: &mut String, text: &str, quote: char) {
     use std::fmt::Write;
     for ch in text.chars() {
         match ch {
             '\\' => s.push_str("\\\\"),
-            '\'' => s.push_str("\\'"),
+            c if c == quote => {
+                s.push('\\');
+                s.push(c);
+            }
             '\n' => s.push_str("\\n"),
             '\r' => s.push_str("\\r"),
             '\t' => s.push_str("\\t"),
@@ -48,6 +135,11 @@ fn is_printable_unicode(c: char) -> bool {
     let cp = c as u32;
     if cp < 0x80 {
         return (0x20..0x7F).contains(&cp);
+    }
+    // Separators (Zs/Zl/Zp) other than the ASCII space are non-printable:
+    // `repr('\xa0')` is `'\xa0'`, `repr(' ')` is `' '`.
+    if crate::string::is_py_space(c) {
+        return false;
     }
     // Non-printable ranges from Unicode (simplified — covers the common cases)
     // Cf (format) characters

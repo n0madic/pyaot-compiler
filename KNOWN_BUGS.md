@@ -117,8 +117,11 @@ and descriptor results). Regressions: `corpus/test_inference_soundness.py`.
       codegen `lib.rs:2684`). ✓ (`TagInt` boxes out-of-range via the new
       `rt_box_i64`; factorial/gcd/lcm/comb/perm take and return tagged ints —
       contract change)
-- [ ] **H** `abs()` truncates out-of-fixnum results; no BigInt arm in
+- [x] **H** `abs()` truncates out-of-fixnum results; no BigInt arm in
       `abs`/`float` (`runtime/src/builtins.rs:267`, `:200`). ✓
+      Fixed: abs() boxes via the bignum-aware constructor and has a BigInt
+      arm; float(bigint) is correctly rounded with OverflowError. Corpus:
+      test_core_types.py.
 - [x] **M** bignum arg to raw-Int stdlib param → codegen error "illegal
       coercion Heap(BigInt) -> Raw(I64)" (`math.gcd(3e18-ish ints)`). ✓
       (routed through the checked unbox; `rt_unbox_int` raises OverflowError
@@ -217,50 +220,125 @@ Regressions: `corpus/test_eval_order.py`.
 
 ## Phase 5 — runtime / stdlib semantics
 
-- [ ] **H** exception hierarchy flat: no parent column, `except OSError` /
+- [x] **H** exception hierarchy flat: no parent column, `except OSError` /
       `LookupError` / `RuntimeError` miss subclasses; IOError not alias
       (`core-defs/src/exceptions.rs:168`, `runtime/src/vtable.rs:289`). ✓
-- [ ] **H** `handling_exception` is a single slot, not a stack — bare `raise`
+      Fixed: parent column in core-defs seeds the runtime registry; tag 10 is
+      now ArithmeticError and IOError/EnvironmentError alias OSError; the
+      remaining concrete builtin exceptions were added (stdlib exception
+      reserve cut 32 -> 8 to keep the u8 class-id budget). Corpus:
+      test_exceptions.py hierarchy section.
+- [x] **H** `handling_exception` is a single slot, not a stack — bare `raise`
       after an inner handled exception fails (`exceptions/ffi.rs:110`). ✓
-- [ ] **M** `super().__init__(msg)` in Exception subclass doesn't compile
+      Fixed: runtime handling stack; the frontend wraps every handling block
+      (except body, exceptional finally, with-exit) in a cleanup landing pad
+      that pops it. Corpus: test_exceptions.py handling-stack section.
+- [x] **M** `super().__init__(msg)` in Exception subclass doesn't compile
       (`lowering:4364`). ✓
-- [ ] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`
+      Fixed: super().__init__([msg]) reaching the builtin exception base
+      lowers to new rt_exc_set_instance_message (a GC-swept side table of
+      instance messages read by str(e), repr(e) and the raise). Multi-argument
+      BaseException.__init__ stays a clean compile error. Corpus:
+      test_exceptions.py.
+- [x] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`
       raises (`runtime/src/hash_table_utils.rs:46`, `:243`; `builtins.rs:350`). ✓
-- [ ] **H** instance keys ignore `__hash__`/`__eq__`; `hash(obj)` without
+      Fixed: one CPython-exact hash (crate::hash::py_hash) feeds both hash()
+      and the tables; bignum/float keys compare by value. Corpus:
+      test_core_types.py numeric-tower section.
+- [x] **H** instance keys ignore `__hash__`/`__eq__`; `hash(obj)` without
       `__hash__` raises (`hash_table_utils.rs:96`). ✓
-- [ ] **M** int/float mixed ops via lossy f64; `1.0 // 0.1` = 10.0;
+      Fixed: keys dispatch __hash__/__eq__; plain instances hash by identity;
+      __eq__ without __hash__ is unhashable (namedtuple now synthesizes
+      __hash__). Corpus: test_collections.py instance-keys section.
+- [x] **M** int/float mixed ops via lossy f64; `1.0 // 0.1` = 10.0;
       `10**400/10**399` nan (`runtime/src/bigint.rs:163`, `:146`, `:339`;
       `ops/comparison.rs:116`). ✓
-- [ ] **M** str/bytes `repr` always single quotes (`conversions/repr.rs:19`,
+      Fixed on the runtime (dynamic) paths: correctly rounded int/int, fmod-
+      based float floordiv/mod, exact int-vs-float compare/eq, OverflowError
+      on int->float overflow. A statically typed Raw int-vs-float compare
+      still converts in codegen. Corpus: test_core_types.py.
+- [x] **M** str/bytes `repr` always single quotes (`conversions/repr.rs:19`,
       `print.rs:66`). ✓
-- [ ] **M** strip/split whitespace only ` \t\n\r` (`string/trim.rs:31`,
+      Fixed: one quote-choosing repr/ascii/bytes-repr helper
+      (conversions/repr.rs) used by every repr path; Zs/Zl/Zp separators
+      escape like CPython. Corpus: test_strings.py repr section.
+- [x] **M** strip/split whitespace only ` \t\n\r` (`string/trim.rs:31`,
       `slice_utils.rs:47`). ✓
-- [ ] **M** Dyn `str % x`, `[1]*3`, `tuple * int` raise TypeError
+      Fixed: str strip/split use str.isspace (full Unicode), chars-strips are
+      per code point (no more split UTF-8); bytes use ASCII whitespace incl.
+      \x0b \x0c. Corpus: test_strings.py.
+- [x] **M** Dyn `str % x`, `[1]*3`, `tuple * int` raise TypeError
       (`ops/arithmetic.rs:400`, `:269`; `lowering:5780`). ✓
-- [ ] **H** json: key order sorted (no `preserve_order`), big ints truncated,
+      Fixed: printf-style formatting (runtime percent_format.rs, also the
+      static path, which had none) and gradual str/list/tuple/bytes repetition
+      (new rt_tuple_repeat). Corpus: test_strings.py, test_core_types.py.
+- [x] **H** json: key order sorted (no `preserve_order`), big ints truncated,
       NaN, non-str keys (`runtime/Cargo.toml:35`, `json.rs:137`). ✓
-- [ ] **M** `random.sample` algorithm differs from CPython; BigInt seed
+      Fixed: in-tree encoder/decoder replaces serde_json (dependency dropped):
+      insertion order, exact big ints, NaN/Infinity, converted non-str keys,
+      CPython error messages. Corpus: test_stdlib_json.py.
+- [x] **M** `random.sample` algorithm differs from CPython; BigInt seed
       (`random.rs:465`). ✓
-- [ ] **M** `isinstance(x, dict)` false for defaultdict/Counter
+      Fixed: CPython's Random.sample (pool vs selected-set) over list/tuple;
+      seed() takes a tagged value (any-size int, float via hash, str via
+      sha512, None). Corpus: test_stdlib_random.py.
+- [x] **M** `isinstance(x, dict)` false for defaultdict/Counter
       (`runtime/src/instance.rs:312`). ✓
-- [ ] **M** sentinel defaults: `time.gmtime(-1.0)`, `randrange(step=0)`,
+      Fixed in rt_isinstance_builtin (defaultdict/Counter tags) and the static
+      fold (Counter). Corpus: test_collections.py.
+- [x] **M** sentinel defaults: `time.gmtime(-1.0)`, `randrange(step=0)`,
       `log(x, nan)` (`stdlib-defs time.rs:63`, `random.rs:99`, `math.rs:133`). ✓
-- [ ] **M** `OrderedDict(iterable)` declared as `(capacity: Int)`
+      Fixed: ctime/localtime/gmtime, randrange and math.log pass the user-
+      written arg count (pass_arg_count) instead of in-band sentinels;
+      timestamps floor like CPython. Corpus: test_stdlib_time.py,
+      test_stdlib_random.py, test_stdlib_math.py.
+- [x] **M** `OrderedDict(iterable)` declared as `(capacity: Int)`
       (`stdlib-defs collections.rs:21`). ✓
+      Fixed: OrderedDict([arg]) maps to new rt_dict_from_any (mapping copy or
+      iterable of pairs). Corpus: test_collections.py.
 - [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
-- [ ] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
-- [ ] **M** format-shared: float with no type code, `g` exponent before
+      Still open (needs a front-half change): they are typed and built as
+      `list` snapshots. Correct for the common uses on an unmutated dict
+      (iteration, `len`, `in`, `list()`/`sorted()`); wrong after a later
+      mutation of the dict (`ks = d.keys(); d[k] = v; len(ks)`), and the
+      set-like operations (`d.keys() == {...}`, `d.keys() & s`) raise
+      TypeError (list vs set). A real fix is a `dict_keys`/`dict_items`
+      view object (new runtime tag over the live `DictObj`, set-like ops)
+      plus typeck typing `keys()` as a view instead of `list[K]`.
+- [x] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
+      Fixed: CPython parse_template semantics (escapes, octal, `\N`,
+      `\g<name>`/`\g<N>`, bad-escape and invalid-group errors); group(n) out of
+      range raises IndexError. Corpus: test_stdlib_re.py.
+- [x] **M** format-shared: float with no type code, `g` exponent before
       rounding, `-0.0` sign, `NaN` case, grouping/`0` flag
       (`format-shared/src/lib.rs:398`, `:417`, `:137`, `:386`). ✓
-- [ ] **M** typeck rejects `Dyn` for `TypeSpec::Str/Bool` stdlib params
+      Fixed: format_float rewritten on CPython's PyOS_double_to_string rules;
+      int/float grouping inside 0-padding, 4-digit _ groups for hex. Corpus:
+      test_strings.py.
+- [x] **M** typeck rejects `Dyn` for `TypeSpec::Str/Bool` stdlib params
       (`os.path.exists(p)` untyped) (`typeck:1131`). ✓
-- [ ] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
-- [ ] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
-- [ ] **M** `rt_any_getitem` (gradual `<dyn>[i]`) returns None for any
+      Fixed: Dyn/Union admitted; lowering guards a gradual str argument with
+      the checked Tagged->Heap(Str) coercion (TypeError on a non-str), bool
+      already uses rt_unbox_bool. Corpus: test_stdlib_os.py.
+- [x] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
+      Fixed: the panic (saturating cut). Calling such a self-less *args method
+      still fails later in lowering (`illegal coercion Heap(Class) ->
+      Heap(TupleVar)`: self is not packed into *args) — left to the Phase 3
+      method-call rework.
+- [x] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
+      Fixed: type() of builtin/stdlib exception instances names the exception
+      class; repr(e) is Name(args) (a user exception renders its message, not
+      the full constructor args); str() of a gradual exception is its message;
+      raise KeyError(k) stores repr(k) like CPython's KeyError.__str__.
+      Corpus: test_exceptions.py.
+- [x] **M** `rt_any_getitem` (gradual `<dyn>[i]`) returns None for any
       unhandled receiver kind instead of raising TypeError / dispatching
       `__getitem__` (`runtime/src/ops/comparison.rs` `_ => null`). Deque arm
       added; bytes/bytearray/range/instances still fall through.
+      Fixed: bytes/bytearray arms, instance __getitem__ dispatch, TypeError
+      (not subscriptable) otherwise. There is no runtime range object (range
+      lowers to an iterator). Corpus: test_generators.py.
 - [x] **H** `.close()` / `.send(v)` were lowered as generator ops by method
       NAME in the frontend, hijacking StringIO/BytesIO/file/user-class
       methods (`s.close()` was a silent no-op). Now ordinary method calls:
@@ -268,11 +346,26 @@ Regressions: `corpus/test_eval_order.py`.
       `Dyn` receiver dispatches by runtime tag (`rt_obj_method` gained
       generator / StringIO / BytesIO / file arms). `throw()` was never
       hijacked; it is now an explicit "not supported" error.
-- [ ] **L** `generator.throw()` unsupported (needs resume-protocol support
+- [x] **C** set methods taking an `other` operand (`update`, `union`,
+      `intersection`, `difference`, `symmetric_difference`, the `*_update`
+      forms, `issubset`/`issuperset`/`isdisjoint`) cast `other` to `SetObj`
+      unchecked: `s.update([2])` read a list as a set. Fixed: a non-set
+      `other` is collected from any iterable first (`set/core.rs`
+      `with_set_operand`). Corpus: test_collections.py.
+- [x] **L** `generator.throw()` unsupported (needs resume-protocol support
       for injecting an exception at the paused yield).
-- [ ] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
+      Fixed: rt_generator_throw arms a pending exception and resumes; the
+      resume point's closing query (rt_generator_is_closing) raises it at the
+      suspended yield, inside the generator's own handlers. Boundaries: one
+      exception-instance argument (no legacy (type, value, tb) form); a
+      builtin exception must be a caught/bound instance (builtin constructors
+      are not value expressions). Corpus: test_generators.py.
+- [x] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
       silent no-op (`rt_generator_close` ignores non-generators); CPython
       raises AttributeError.
+      Fixed: AttributeError for a non-generator; closing a never-started
+      generator just marks it finished (it used to run it and raise
+      RuntimeError). Corpus: test_generators.py.
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 
@@ -333,7 +426,11 @@ Regressions: `corpus/test_eval_order.py`.
       devirt `single_def` clones (`devirt.rs:173`); inline size recompute +
       env var per refusal (`inline.rs:131`); no FuncRef/DataId cache
       (`codegen lib.rs:1981`); linear generator dispatch (`:943`).
-- [ ] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
+- [x] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
+      Fixed: SetObj tracks a tombstone count (layout extension) so resizing
+      uses fill = len + tombstones without the O(capacity) scan per add; a
+      mostly-tombstone table is compacted in place. Corpus:
+      test_collections.py.
 - [ ] `iconst` not masked for I8/I32; unchecked int tag shift of literals
       (`codegen lib.rs:2572`, `:1254`).
 - [ ] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),

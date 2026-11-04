@@ -339,7 +339,13 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
         k::STR => heap_tag_is(obj, TypeTagKind::Str),
         k::BYTES => heap_tag_is(obj, TypeTagKind::Bytes),
         k::LIST => heap_tag_is(obj, TypeTagKind::List),
-        k::DICT => heap_tag_is(obj, TypeTagKind::Dict),
+        // `defaultdict` and `Counter` are dict subclasses (OrderedDict is a
+        // plain `Dict` at runtime).
+        k::DICT => {
+            heap_tag_is(obj, TypeTagKind::Dict)
+                || heap_tag_is(obj, TypeTagKind::DefaultDict)
+                || heap_tag_is(obj, TypeTagKind::Counter)
+        }
         k::SET => heap_tag_is(obj, TypeTagKind::Set),
         k::TUPLE => heap_tag_is(obj, TypeTagKind::Tuple),
         k::FROZENSET => heap_tag_is(obj, TypeTagKind::FrozenSet),
@@ -518,6 +524,10 @@ pub(crate) fn lookup_class_qualname(class_id: u8) -> Option<String> {
 /// `obj` must be a valid object pointer or a tagged primitive `Value`.
 pub(crate) unsafe fn instance_default_repr(obj: *mut Obj) -> String {
     use crate::object::InstanceObj;
+    // An exception instance's default repr is `Name(args)` (`ValueError('x')`).
+    if let Some(r) = crate::exceptions::exception_repr(obj) {
+        return r;
+    }
     let v = Value(obj as u64);
     if v.is_ptr() && !obj.is_null() && (*obj).type_tag() == TypeTagKind::Instance {
         let class_id = (*(obj as *const InstanceObj)).class_id;

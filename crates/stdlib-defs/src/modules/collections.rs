@@ -16,21 +16,18 @@ use pyaot_core_defs::RuntimeFuncDef;
 // Dict already preserves insertion order. OrderedDict adds move_to_end and
 // popitem(last=True/False). The constructor maps to rt_make_dict.
 
-/// OrderedDict() constructor -- creates an empty ordered dict (same as dict)
-/// The capacity parameter maps to rt_make_dict(capacity); default 0 = use default size.
+/// OrderedDict([iterable_or_mapping]) constructor -- a dict (dicts preserve
+/// insertion order) built like `dict(arg)`: empty, a mapping copy, or an
+/// iterable of key/value pairs.
 static ORDERED_DICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "OrderedDict",
-    runtime_name: "rt_make_dict",
-    params: &[ParamDef::optional_with_default(
-        "capacity",
-        TypeSpec::Int,
-        ConstValue::Int(0),
-    )],
+    runtime_name: "rt_dict_from_any",
+    params: &[ParamDef::optional("iterable", TypeSpec::Any)],
     return_type: TypeSpec::Dict(&TypeSpec::Any, &TypeSpec::Any),
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_dict", &[P_I64], Some(R_I64), false),
+    hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_dict_from_any", &[P_I64], Some(R_I64), false),
 };
 
 /// OrderedDict.move_to_end(key, last=True)

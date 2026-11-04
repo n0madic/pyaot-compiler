@@ -54,13 +54,18 @@ impl<'a> FnLowerer<'a> {
         // Exceptional edge (runs under the OUTER handler). Park the in-flight
         // exception (so a nested raise chains it as __context__), run the
         // finalbody, then re-raise it.
+        // The finalbody and its re-raise run in a handling region: its
+        // cleanup pad pops the handling stack whichever way it is left.
         self.switch(exc_b);
-        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        let cleanup = self.begin_handling();
+        self.scope_stack.push(ScopeCtx::Handler { outer });
         self.lower_body(&t.finalbody)?;
+        self.scope_stack.pop();
         if self.cur_open() {
             self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
             self.seal(HirTerminator::Unreachable);
         }
+        self.end_handling_region(cleanup, outer);
 
         self.switch(join);
         Ok(())
@@ -167,11 +172,12 @@ impl<'a> FnLowerer<'a> {
                 );
                 self.bind_exc_name(name.as_str(), bind_ty, cur);
             }
-            self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
-            self.scope_stack.push(ScopeCtx::Handler);
+            let cleanup = self.begin_handling();
+            self.scope_stack.push(ScopeCtx::Handler { outer });
             self.lower_body(&h.body)?;
             self.scope_stack.pop();
             if self.cur_open() {
+                self.exit_protected(outer);
                 self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
                 if let Some((iname, prev)) = prev_binding {
                     self.unbind_exc_name(iname, prev, hspan);
@@ -180,6 +186,7 @@ impl<'a> FnLowerer<'a> {
             } else if let Some((iname, prev)) = prev_binding {
                 self.restore_exc_scope(iname, prev);
             }
+            self.end_handling_region(cleanup, outer);
             self.switch(next_test);
         }
 
@@ -690,7 +697,7 @@ impl<'a> FnLowerer<'a> {
             target: e_local,
             value: cur,
         });
-        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        let cleanup = self.begin_handling();
         let recv2 = self.local_ref(mgr, span);
         let e0 = self.local_ref(e_local, span);
         let type_name = self.intern("type");
@@ -734,11 +741,14 @@ impl<'a> FnLowerer<'a> {
             else_: reraise_b,
         });
         self.switch(swallow_b);
+        self.exit_protected(outer);
         self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
         self.seal(HirTerminator::Jump(join));
+        self.cur_handler = Some(cleanup);
         self.switch(reraise_b);
         self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
         self.seal(HirTerminator::Unreachable);
+        self.end_handling_region(cleanup, outer);
 
         self.switch(join);
         Ok(())
