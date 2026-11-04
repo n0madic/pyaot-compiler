@@ -1057,6 +1057,15 @@ pub enum ContainerOp {
     ZipN,
     /// `list(iter)` → a fresh list materialized from a pre-wrapped iterator.
     ListFromIter,
+    /// The source of a positional unpack (`a, b = v`, `for k, v in …`): `v`
+    /// itself when it is an int-indexable sequence (`list`/`tuple`/`str`/
+    /// `bytes`), else `list(v)` via the iterator protocol, so the `len` +
+    /// integer-subscript unpack strategy is correct for ANY iterable (a dict
+    /// must not be keyed by `0`/`1`). Arg 0 is the RAW iterable (not
+    /// pre-wrapped). Frontend-only: lowering resolves it from the inferred type
+    /// — identity for a known sequence, `rt_unpack_seq` (a run-time shape check)
+    /// for `Dyn`, a list materialization otherwise — so no MIR op carries it.
+    UnpackSource,
     /// `tuple(iter)` → a fresh tuple from a pre-wrapped iterator.
     TupleFromIter,
     /// `dict(pairs)` → a fresh dict from a list of key/value pairs.
@@ -1339,6 +1348,7 @@ impl ContainerOp {
             | ContainerOp::IterNext
             | ContainerOp::IterExhausted
             | ContainerOp::ListFromIter
+            | ContainerOp::UnpackSource
             | ContainerOp::TupleFromIter
             | ContainerOp::DictFromPairs
             | ContainerOp::BytesFromList
@@ -1411,6 +1421,7 @@ impl ContainerOp {
             | ContainerOp::StrGet
             | ContainerOp::AnyGetItem
             | ContainerOp::IterNext
+            | ContainerOp::UnpackSource
             | ContainerOp::ListPop
             | ContainerOp::DictGetDefault
             | ContainerOp::DictPopM

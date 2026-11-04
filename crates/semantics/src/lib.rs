@@ -238,8 +238,24 @@ pub fn collect_classes(
         c3_linearize(c.class_id, &parents, &mut mro_cache, &mut visiting)?;
     }
 
-    // Build each class's resolved info.
+    // Build each class's resolved info in BASE-FIRST (topological) order, so
+    // every base's resolved layout is in `table` before any subclass merges it.
+    // ClassId order is not enough: the frontend numbers top-level classes before
+    // classes nested in module-level control flow, so `class Sub(Base)` can
+    // precede an `if ...: class Base` it legitimately inherits from. A reversed
+    // MRO lists a class's ancestors before the class itself. (A base bound
+    // *later at run time* is a forward reference — the frontend rejects that in
+    // source order, where the information lives.)
+    let mut build_order: Vec<&HirClass> = Vec::with_capacity(module.classes.len());
+    let mut ordered: HashSet<ClassId> = HashSet::new();
     for c in &module.classes {
+        for id in mro_cache[&c.class_id].iter().rev() {
+            if ordered.insert(*id) {
+                build_order.push(by_id[id]);
+            }
+        }
+    }
+    for c in build_order {
         let mro = mro_cache[&c.class_id].clone();
         let parent = parents[&c.class_id].first().copied();
 
@@ -247,7 +263,7 @@ pub fn collect_classes(
         //
         // Slot-stability requires a field to occupy the SAME slot in a class as in
         // every base that declares it. Building each base's *already-resolved*
-        // layout (bases are processed first — lower class_id) as a prefix gives
+        // layout (bases are processed first — see `build_order`) as a prefix gives
         // single inheritance the parent-first guarantee for free. Multiple
         // inheritance where two bases place *different* fields at the same slot has
         // **no** consistent layout (`B{a,b}` + `C{a,c}` both want slot 1) — reject
@@ -255,26 +271,11 @@ pub fn collect_classes(
         // (PITFALLS "fail loud"; method dispatch is by-name and stays correct).
         let mut fields: Vec<FieldInfo> = Vec::new();
         for base in &parents[&c.class_id] {
-            let binfo = match table.get(*base) {
-                Some(b) => b,
-                None => {
-                    // A user-class base that is not yet in `table` was declared
-                    // LATER in the file (a forward reference). CPython binds class
-                    // statements at run time, so `class Sub(Base): ...` before
-                    // `class Base: ...` raises `NameError: name 'Base' is not
-                    // defined`. Reject it here rather than silently dropping the
-                    // base's field layout (which made pyaot accept and mis-run a
-                    // program CPython rejects). A base absent from `by_id` is a
-                    // builtin (Exception/Protocol/object) with no user field
-                    // layout — skip it as before.
-                    if let Some(bhc) = by_id.get(base) {
-                        return Err(CompilerError::semantic_error(
-                            format!("name `{}` is not defined", interner.resolve(bhc.name)),
-                            Span::dummy(),
-                        ));
-                    }
-                    continue;
-                }
+            // Base-first build order guarantees every user base is present; a
+            // base absent from `table` is a builtin (Exception/Protocol/object)
+            // with no user field layout.
+            let Some(binfo) = table.get(*base) else {
+                continue;
             };
             for (bslot, bf) in binfo.fields.iter().enumerate() {
                 match fields.get(bslot) {
@@ -600,6 +601,18 @@ mod tests {
         collect_classes(&module, &ns, &interner)
     }
 
+    /// True iff `src` is rejected by the frontend (source-order checks such as
+    /// forward base references) or by `collect_classes`.
+    fn rejected(src: &str) -> bool {
+        let mut interner = StringInterner::new();
+        let Ok(mut module) = pyaot_frontend_python::parse(src, &mut interner) else {
+            return true;
+        };
+        let ns = NamespaceTable::single(module.functions.len());
+        resolve(&mut module, &ns, &interner).expect("resolve");
+        collect_classes(&module, &ns, &interner).is_err()
+    }
+
     #[test]
     fn rejects_mi_with_conflicting_field_layouts() {
         // B places `b` at slot 1, C places `c` at slot 1 — no consistent layout for
@@ -716,36 +729,38 @@ class A(B):
 class B(A):
     pass
 ";
-        assert!(try_collect(mutual).is_err());
+        assert!(rejected(mutual));
 
         let self_cycle = "\
 class A(A):
     pass
 ";
-        assert!(try_collect(self_cycle).is_err());
+        assert!(rejected(self_cycle));
     }
 
     #[test]
-    fn rejects_forward_base_reference() {
-        // A base class declared LATER than its subclass is a forward reference;
-        // CPython raises `NameError` at the `class Sub(Base):` line. Reject it
-        // rather than silently dropping the base's field layout.
-        let forward = "\
+    fn base_layout_resolved_regardless_of_class_id_order() {
+        // ClassIds are not base-first: a top-level class can get a LOWER id
+        // than a base nested in module-level control flow. The base's field
+        // layout must still be merged (forward references in *execution* order
+        // are rejected by the frontend, which sees source order).
+        let src = "\
+if True:
+    class Base:
+        def __init__(self):
+            self.x = 1
 class Sub(Base):
-    pass
-class Base:
-    pass
+    def __init__(self):
+        self.x = 2
+        self.y = 3
 ";
-        assert!(try_collect(forward).is_err());
-
-        // The normal (base-before-subclass) order is accepted.
-        let normal = "\
-class Base:
-    pass
-class Sub(Base):
-    pass
-";
-        assert!(try_collect(normal).is_ok());
+        let (t, i) = collected(src);
+        let sub = t
+            .iter()
+            .find(|c| i.resolve(c.name) == "Sub")
+            .expect("Sub is collected");
+        let names: Vec<&str> = sub.fields.iter().map(|f| i.resolve(f.name)).collect();
+        assert_eq!(names, ["x", "y"], "Base's `x` must keep slot 0 in Sub");
     }
 
     #[test]

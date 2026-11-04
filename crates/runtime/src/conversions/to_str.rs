@@ -63,7 +63,6 @@ pub extern "C" fn rt_none_to_str_abi() -> Value {
 pub fn rt_str_to_int(str_obj: *mut Obj) -> *mut Obj {
     use crate::bigint::make_int_value;
     use crate::object::StrObj;
-    use num_bigint::BigInt;
 
     if str_obj.is_null() {
         unsafe {
@@ -82,9 +81,7 @@ pub fn rt_str_to_int(str_obj: *mut Obj) -> *mut Obj {
 
         if let Ok(s) = std::str::from_utf8(bytes) {
             let trimmed = s.trim_matches(|c: char| c.is_whitespace());
-            let parsed = super::type_cast::strip_int_underscores(trimmed)
-                .filter(|c| !c.is_empty())
-                .and_then(|c| BigInt::parse_bytes(c.as_bytes(), 10));
+            let parsed = super::type_cast::parse_int_literal(trimmed, 10);
             match parsed {
                 Some(big) => make_int_value(big),
                 None => {

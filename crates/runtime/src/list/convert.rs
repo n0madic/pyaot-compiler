@@ -353,3 +353,52 @@ pub fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut Obj {
 pub extern "C" fn rt_list_tail_to_tuple_bool_abi(list: Value, start: i64) -> Value {
     Value::from_ptr(rt_list_tail_to_tuple_bool(list.unwrap_ptr(), start))
 }
+
+/// The source of a positional unpack (`a, b = v`, `for k, v in …`) whose static
+/// type is unknown (`Dyn`). The compiler's unpack strategy reads `len(src)` and
+/// `src[i]`, which is only correct for an int-indexable sequence: a
+/// list / tuple / str / bytes is returned unchanged (no copy on the hot
+/// tuple-unpack path); any other iterable (dict, set, generator, `zip`/`map`,
+/// a user iterator) is materialized into a fresh list through the iterator
+/// protocol (a dict unpacks its KEYS, never `d[0]`). A non-iterable raises
+/// `TypeError` from `rt_iter_value`.
+///
+/// Runtime contract addition (`ContainerOp::UnpackSource` lowering).
+pub fn rt_unpack_seq(v: Value) -> Value {
+    use crate::object::TypeTagKind;
+    if !v.is_ptr() {
+        // SAFETY: static message; `raise_exc!` diverges.
+        unsafe {
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "cannot unpack non-iterable object"
+            );
+        }
+    }
+    let p = v.unwrap_ptr::<Obj>();
+    // SAFETY: a tagged pointer is a live heap object.
+    let tag = unsafe { (*p).type_tag() };
+    if matches!(
+        tag,
+        TypeTagKind::List | TypeTagKind::Tuple | TypeTagKind::Str | TypeTagKind::Bytes
+    ) {
+        return v;
+    }
+    let it = Value::from_ptr(crate::iterator::rt_iter_value_dyn(p));
+    // Root the (unreachable-from-the-caller) iterator across the list
+    // allocations `rt_list_from_iter` performs.
+    let mut roots: [*mut Obj; 1] = [it.unwrap_ptr()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+    let list = rt_list_from_iter(roots[0]);
+    gc_pop();
+    Value::from_ptr(list)
+}
+#[export_name = "rt_unpack_seq"]
+pub extern "C" fn rt_unpack_seq_abi(v: Value) -> Value {
+    rt_unpack_seq(v)
+}

@@ -551,6 +551,15 @@ impl<'a> ProgramLowerer<'a> {
             }
         }
 
+        // Forward base references (`class Sub(Base)` executed before `class
+        // Base`) are a CPython `NameError`; detect them here, in source order —
+        // ClassIds are not source-ordered across top-level vs nested classes.
+        {
+            let module_classes: HashSet<&str> =
+                own_classes.iter().map(|(n, _, _)| n.as_str()).collect();
+            check_class_forward_bases(&body, &module_classes, &mut HashSet::new())?;
+        }
+
         // Module-level type variables (Phase 5E).
         let mut module_type_vars: TypeVarSet = HashMap::new();
         for stmt in &top {
@@ -845,11 +854,11 @@ impl<'a> ProgramLowerer<'a> {
             };
             // The decorated wrapper's slot holds the uniform thunk over the renamed
             // `<orig>` body (`orig_name` resolves to it). All params are fixed
-            // (varargs/kwargs/kw-only rejected above), `pass_env=false` (top-level).
+            // (varargs/kwargs/kw-only rejected above), no env (top-level).
             let target = UniformTarget {
                 name: orig_name,
                 ret,
-                pass_env: false,
+                env: ThunkEnv::Absent,
                 fixed: parsed
                     .fixed
                     .iter()

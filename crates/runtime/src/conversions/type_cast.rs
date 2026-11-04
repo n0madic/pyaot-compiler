@@ -337,28 +337,72 @@ pub extern "C" fn rt_obj_default_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_obj_default_repr(obj.unwrap_ptr()))
 }
 
-/// Strip CPython-style digit-group underscores from a numeric literal body.
+/// Strip CPython-style digit-group underscores from a digit run.
 ///
 /// CPython allows a single `_` only *between* two digits (it may not lead,
-/// trail, double up, or sit next to a sign). Returns `None` on a malformed
-/// placement so the caller raises `ValueError`, matching CPython.
-pub(crate) fn strip_int_underscores(s: &str) -> Option<String> {
+/// trail, or double up). Returns `None` on a malformed placement so the caller
+/// raises `ValueError`, matching CPython. The input carries no sign or radix
+/// prefix — [`parse_int_literal`] strips those first.
+fn strip_int_underscores(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'_' {
-            let prev_ok =
-                i > 0 && bytes[i - 1] != b'_' && bytes[i - 1] != b'+' && bytes[i - 1] != b'-';
+            let prev_ok = i > 0 && bytes[i - 1] != b'_';
             let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
             if !prev_ok || !next_ok {
                 return None;
             }
-            // skip the underscore
         } else {
             out.push(b as char);
         }
     }
     Some(out)
+}
+
+/// Parse a whitespace-trimmed `int(s, base)` literal with CPython's grammar.
+///
+/// `base` is `0` (radix auto-detected from a `0x`/`0o`/`0b` prefix, decimal
+/// otherwise) or `2..=36` (the caller validates the range). The grammar is: at
+/// most ONE sign, then an optional radix prefix (only when it matches `base`,
+/// or any prefix under base 0), then — after a prefix only — one optional `_`,
+/// then digits with single `_` separators. Under base 0 a prefix-less decimal
+/// may not have a leading zero unless every digit is zero (`010` is invalid,
+/// `0_0` is fine). The sign and prefix are handled here rather than by
+/// `BigInt::parse_bytes`, which would accept a doubled sign (`-+5`) and an
+/// arbitrary underscore placement. Returns `None` on any malformed literal.
+pub(crate) fn parse_int_literal(s: &str, base: u32) -> Option<BigInt> {
+    let (negative, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let prefix_radix = match rest.as_bytes() {
+        [b'0', b'x' | b'X', ..] => Some(16),
+        [b'0', b'o' | b'O', ..] => Some(8),
+        [b'0', b'b' | b'B', ..] => Some(2),
+        _ => None,
+    };
+    let (radix, body, had_prefix) = match prefix_radix {
+        Some(p) if base == 0 || base == p => (p, &rest[2..], true),
+        _ => (if base == 0 { 10 } else { base }, rest, false),
+    };
+    let body = if had_prefix {
+        body.strip_prefix('_').unwrap_or(body)
+    } else {
+        body
+    };
+    let digits = strip_int_underscores(body)?;
+    // Only alphanumeric digits may remain (no second sign, no stray `_`);
+    // `parse_bytes` then validates each digit against the radix.
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    if base == 0 && !had_prefix && digits.starts_with('0') && digits.bytes().any(|c| c != b'0') {
+        return None;
+    }
+    let magnitude = BigInt::parse_bytes(digits.as_bytes(), radix)?;
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 /// Convert string to integer with given base.
@@ -385,43 +429,17 @@ pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> *mut Obj {
         if let Ok(s_str) = std::str::from_utf8(bytes) {
             let trimmed = s_str.trim();
 
-            // Handle prefixes for auto-detection when base is 0
-            let (actual_base, trimmed_str) = if base == 0 {
-                if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
-                    (16, &trimmed[2..])
-                } else if trimmed.starts_with("0b") || trimmed.starts_with("0B") {
-                    (2, &trimmed[2..])
-                } else if trimmed.starts_with("0o") || trimmed.starts_with("0O") {
-                    (8, &trimmed[2..])
-                } else {
-                    (10, trimmed)
-                }
-            } else {
-                // Only strip a prefix when it matches the requested base.
-                // CPython raises ValueError for mismatches such as int("0b10", 16).
-                let trimmed_str = match base {
-                    16 if trimmed.starts_with("0x") || trimmed.starts_with("0X") => &trimmed[2..],
-                    2 if trimmed.starts_with("0b") || trimmed.starts_with("0B") => &trimmed[2..],
-                    8 if trimmed.starts_with("0o") || trimmed.starts_with("0O") => &trimmed[2..],
-                    _ => trimmed,
-                };
-                (base as u32, trimmed_str)
-            };
-
-            if !(2..=36).contains(&actual_base) {
+            if base != 0 && !(2..=36).contains(&base) {
                 raise_exc!(
                     crate::exceptions::ExceptionType::ValueError,
                     "int() base must be >= 2 and <= 36, or 0"
                 );
             }
 
-            // Strip digit-group underscores, then parse as a BigInt so values
-            // beyond i64 range succeed (CPython int is arbitrary precision).
-            let cleaned = strip_int_underscores(trimmed_str);
-            let parsed = cleaned
-                .as_deref()
-                .filter(|c| !c.is_empty())
-                .and_then(|c| BigInt::parse_bytes(c.as_bytes(), actual_base));
+            // Sign, radix prefix and digit-group underscores per CPython's
+            // grammar, parsed as a BigInt so values beyond i64 range succeed
+            // (CPython int is arbitrary precision).
+            let parsed = parse_int_literal(trimmed, base as u32);
             match parsed {
                 Some(big) => make_int_value(big),
                 None => {
@@ -448,3 +466,52 @@ pub extern "C" fn rt_str_to_int_with_base_abi(s: Value, base: i64) -> Value {
 // Suppress unused import warning
 #[allow(unused_imports)]
 use ObjHeader as _;
+
+#[cfg(test)]
+mod tests {
+    use super::parse_int_literal;
+    use num_bigint::BigInt;
+
+    fn p(s: &str, base: u32) -> Option<BigInt> {
+        parse_int_literal(s, base)
+    }
+
+    #[test]
+    fn int_literal_signs() {
+        assert_eq!(p("+5", 10), Some(BigInt::from(5)));
+        assert_eq!(p("-5", 10), Some(BigInt::from(-5)));
+        // At most one sign (`BigInt::parse_bytes` alone accepts `-+5`).
+        assert_eq!(p("-+5", 10), None);
+        assert_eq!(p("+-5", 10), None);
+        assert_eq!(p("--5", 10), None);
+        assert_eq!(p("-", 10), None);
+    }
+
+    #[test]
+    fn int_literal_underscores_and_prefixes() {
+        assert_eq!(p("1_000", 10), Some(BigInt::from(1000)));
+        assert_eq!(p("_1", 10), None);
+        assert_eq!(p("1_", 10), None);
+        assert_eq!(p("1__0", 10), None);
+        assert_eq!(p("-_1", 10), None);
+        // One `_` may follow a radix prefix.
+        assert_eq!(p("0x_ff", 16), Some(BigInt::from(255)));
+        assert_eq!(p("0b_1", 0), Some(BigInt::from(1)));
+        assert_eq!(p("-0x1f", 16), Some(BigInt::from(-31)));
+        assert_eq!(p("0x__f", 16), None);
+        assert_eq!(p("0x", 16), None);
+        // A prefix that does not match the base is ordinary digits.
+        assert_eq!(p("0b1", 16), Some(BigInt::from(0xb1)));
+        assert_eq!(p("0x10", 10), None);
+    }
+
+    #[test]
+    fn int_literal_base_zero_leading_zeros() {
+        assert_eq!(p("010", 0), None);
+        assert_eq!(p("0_0", 0), Some(BigInt::from(0)));
+        assert_eq!(p("10", 0), Some(BigInt::from(10)));
+        assert_eq!(p("0o17", 0), Some(BigInt::from(15)));
+        // Base 10 explicitly allows leading zeros.
+        assert_eq!(p("010", 10), Some(BigInt::from(10)));
+    }
+}

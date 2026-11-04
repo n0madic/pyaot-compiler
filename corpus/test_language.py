@@ -298,4 +298,50 @@ _p8h_lang()
 _p8h_comp_elem()
 _p8h_sum()
 
+# A base defined inside module-level control flow, BEFORE a top-level subclass
+# (valid Python); the base's field layout must be inherited.
+if True:
+
+    class _CfBase:
+        def __init__(self):
+            self.x = 1
+
+
+class _CfSub(_CfBase):
+    def __init__(self):
+        self.x = 2
+        self.y = 3
+
+
+_cf = _CfSub()
+assert (_cf.x, _cf.y) == (2, 3)
+
+
+# A method declared without a named positional: through a dynamic receiver the
+# instance binds into `*args`, or (no `*args`) the bound call is a TypeError.
+class _VarargsRecv:
+    def count(*args):
+        return len(args)
+
+    def none():
+        return 5
+
+
+def _varargs_recv_obj(flag: bool) -> object:
+    if flag:
+        return _VarargsRecv()
+    return 0
+
+
+_vr = _varargs_recv_obj(True)
+assert _vr.count() == 1, "the receiver binds into *args"
+assert _vr.count(1, 2) == 3
+assert _VarargsRecv.none() == 5
+try:
+    _vr.none()
+    assert False, "a method with no positional slot rejects the receiver"
+except TypeError:
+    pass
+print("class-shape regressions passed")
+
 print("All language feature tests passed!")

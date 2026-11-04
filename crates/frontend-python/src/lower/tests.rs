@@ -333,6 +333,29 @@ print(add(1, 2))
     }
 
     #[test]
+    fn keyword_matching_positional_only_param_goes_to_kwargs() {
+        // `a` is positional-only, so `a=2` is NOT a second value for it: CPython
+        // routes it into `**kw` (`(1, {'a': 2})`). Must lower cleanly.
+        let (_m, _i) = parsed("def f(a, /, **kw):\n    return (a, kw)\nprint(f(1, a=2))\n");
+    }
+
+    #[test]
+    fn rejects_forward_base_reference() {
+        // A base bound LATER in execution order is a CPython `NameError`.
+        let err = parse_err("class Sub(Base):\n    pass\nclass Base:\n    pass\n");
+        assert!(err.contains("`Base` is not defined"), "got: {err}");
+        // The base-in-module-level-control-flow-first order is valid Python.
+        let (_m, _i) = parsed(
+            "if True:\n    class Base:\n        pass\nclass Sub(Base):\n    pass\nprint(Sub())\n",
+        );
+        // A class inside a function may name a module class defined later: the
+        // function body runs after every module-level class is bound.
+        let (_m, _i) = parsed(
+            "def make():\n    class Inner(Base):\n        pass\n    return Inner()\nclass Base:\n    pass\nprint(make())\n",
+        );
+    }
+
+    #[test]
     fn accepts_no_self_method_called_via_class() {
         // A method declared without `self` (`def m():`) is callable via the class
         // as a plain function (`C.m()`) — must lower cleanly, not panic.

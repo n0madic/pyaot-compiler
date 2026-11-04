@@ -3842,4 +3842,16 @@ test_static_method_value()
 test_lambda_variadic()
 
 
+def _posonly_kw(a, /, **kw):
+    return (a, kw)
+
+
+def test_posonly_name_in_kwargs():
+    # `a` is positional-only, so `a=2` is an ordinary keyword (into `**kw`).
+    assert _posonly_kw(1, a=2) == (1, {"a": 2})
+    assert _posonly_kw(3) == (3, {})
+
+
+test_posonly_name_in_kwargs()
+
 print("All function tests passed!")

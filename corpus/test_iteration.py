@@ -2600,4 +2600,53 @@ def _review_mutation_during_iteration():
 _review_mutation_during_iteration()
 
 
+# ===== SECTION: positional unpack of any iterable; temporaries during iteration =====
+def _review_unpack_any_iterable():
+    x, y = {"p": 1, "q": 2}
+    assert (x, y) == ("p", "q"), "a dict unpacks its keys"
+    (only,) = {7}
+    assert only == 7
+    m, n = map(lambda v: v * 2, [3, 4])
+    assert (m, n) == (6, 8)
+    h, *rest = "hey"
+    assert h == "h" and rest == ["e", "y"]
+    o: object = {"k1": 1, "k2": 2}
+    u, w = o
+    assert (u, w) == ("k1", "k2"), "a Dyn dict unpacks its keys too"
+    t: object = (5, 6)
+    u, w = t
+    assert (u, w) == (5, 6)
+    acc = 0
+    for k, v in {"a": 1, "b": 2}.items():
+        acc += v
+    assert acc == 3
+    try:
+        a, b = 5
+        assert False, "an int is not iterable"
+    except TypeError:
+        pass
+
+
+def _make_squares(n: int) -> dict[int, int]:
+    d = {}
+    for i in range(n):
+        d[i] = i * i
+    return d
+
+
+def _review_iterate_temporaries():
+    total = 0
+    for _ in range(50):
+        for k in _make_squares(10):
+            total += k
+        for k in reversed(_make_squares(4)):
+            total += k
+        for v in {1, 2, 3}:
+            total += v
+    assert total == 50 * (45 + 6 + 6), "iterating unrooted temporary dicts/sets"
+
+
+_review_unpack_any_iterable()
+_review_iterate_temporaries()
+
 print("All iteration and comprehension tests passed!")

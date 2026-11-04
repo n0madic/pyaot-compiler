@@ -264,6 +264,16 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     // (1) Callee locals append after the caller's (params are locals 0..P).
     caller.locals.extend(body.locals.iter().cloned());
 
+    // The source line in effect at the call (L8), read BEFORE the CFG is
+    // rewritten: the last LineMarker in the call block's prefix, else the line
+    // every path reaches the call block with (the statement's marker may sit in
+    // a predecessor — e.g. the call is in the join block of a ternary).
+    let call_line = caller.blocks[bi].insts[..inst_idx]
+        .iter()
+        .rev()
+        .find_map(line_of)
+        .or_else(|| line_at_block_entry(caller, bi));
+
     // (3) Split the call block. The suffix + original terminator move to the
     // continuation block; the call block ends by jumping into the callee.
     let block = &mut caller.blocks[bi];
@@ -275,13 +285,10 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
     // Continuation block source line (L8): the inlined callee's blocks set their
     // own srclocs in between, so the suffix would otherwise inherit a stale line
     // at codegen (Cranelift's sticky `set_srcloc`). Prepend the call statement's
-    // line — the most recent LineMarker in the call block's prefix — so a raise
-    // in the suffix before any later marker is attributed to the call site.
+    // line so a raise in the suffix before any later marker is attributed to the
+    // call site.
     if !matches!(suffix.first(), Some(MirInst::LineMarker(_))) {
-        if let Some(line) = block.insts.iter().rev().find_map(|i| match i {
-            MirInst::LineMarker(l) => Some(*l),
-            _ => None,
-        }) {
+        if let Some(line) = call_line {
             suffix.insert(0, MirInst::LineMarker(line));
         }
     }
@@ -467,6 +474,68 @@ fn call_graph_sccs(funcs: &[MirFunction]) -> Vec<usize> {
         }
     }
     scc_of
+}
+
+fn line_of(inst: &MirInst) -> Option<u32> {
+    match inst {
+        MirInst::LineMarker(l) => Some(*l),
+        _ => None,
+    }
+}
+
+/// The source line in effect on entry to block `bi`: forward dataflow over the
+/// CFG (terminator + handler edges), where a block's exit line is its last
+/// LineMarker, else its entry line. `None` when no line is set yet on some path
+/// or predecessors disagree — then no marker is synthesized (never a guess).
+fn line_at_block_entry(f: &MirFunction, bi: usize) -> Option<u32> {
+    // `Unvisited` is the optimistic top; `Line(None)` is "unknown / conflict".
+    #[derive(Clone, Copy, PartialEq)]
+    enum L {
+        Unvisited,
+        Line(Option<u32>),
+    }
+    fn meet(a: L, b: L) -> L {
+        match (a, b) {
+            (L::Unvisited, x) | (x, L::Unvisited) => x,
+            (L::Line(x), L::Line(y)) if x == y => L::Line(x),
+            _ => L::Line(None),
+        }
+    }
+    let n = f.blocks.len();
+    let last_marker: Vec<Option<u32>> = f
+        .blocks
+        .iter()
+        .map(|b| b.insts.iter().rev().find_map(line_of))
+        .collect();
+    let mut entry = vec![L::Unvisited; n];
+    entry[f.entry.index()] = L::Line(None);
+    let mut work: Vec<usize> = vec![f.entry.index()];
+    while let Some(b) = work.pop() {
+        let exit = match last_marker[b] {
+            Some(l) => L::Line(Some(l)),
+            None => entry[b],
+        };
+        let blk = &f.blocks[b];
+        let mut succ: Vec<usize> = match &blk.term {
+            MirTerminator::Return(_) | MirTerminator::Unreachable => vec![],
+            MirTerminator::Jump(t) => vec![t.index()],
+            MirTerminator::Branch { then, else_, .. } => vec![then.index(), else_.index()],
+        };
+        if let Some(h) = blk.handler {
+            succ.push(h.index());
+        }
+        for s in succ {
+            let m = meet(entry[s], exit);
+            if m != entry[s] {
+                entry[s] = m;
+                work.push(s);
+            }
+        }
+    }
+    match entry[bi] {
+        L::Line(l) => l,
+        L::Unvisited => None,
+    }
 }
 
 #[cfg(test)]
@@ -860,5 +929,50 @@ mod tests {
             );
         }
         verify_all(&p);
+    }
+
+    #[test]
+    fn entry_line_flows_through_marker_free_join() {
+        use super::line_at_block_entry;
+        use crate::testutil::function;
+        // b0: line 7, branch → b1 / b2 (no markers) → b3 (join, no marker).
+        let f = function(
+            vec![Repr::Raw(RawKind::I8)],
+            vec![
+                (
+                    vec![MirInst::LineMarker(7)],
+                    MirTerminator::Branch {
+                        cond: op(0),
+                        then: BlockId::new(1),
+                        else_: BlockId::new(2),
+                    },
+                ),
+                (vec![], MirTerminator::Jump(BlockId::new(3))),
+                (vec![], MirTerminator::Jump(BlockId::new(3))),
+                (vec![], MirTerminator::Return(None)),
+            ],
+        );
+        assert_eq!(line_at_block_entry(&f, 3), Some(7));
+        // Predecessors that disagree → no line (never a guess).
+        let g = function(
+            vec![Repr::Raw(RawKind::I8)],
+            vec![
+                (
+                    vec![MirInst::LineMarker(7)],
+                    MirTerminator::Branch {
+                        cond: op(0),
+                        then: BlockId::new(1),
+                        else_: BlockId::new(2),
+                    },
+                ),
+                (
+                    vec![MirInst::LineMarker(8)],
+                    MirTerminator::Jump(BlockId::new(3)),
+                ),
+                (vec![], MirTerminator::Jump(BlockId::new(3))),
+                (vec![], MirTerminator::Return(None)),
+            ],
+        );
+        assert_eq!(line_at_block_entry(&g, 3), None);
     }
 }

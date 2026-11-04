@@ -2899,6 +2899,11 @@ impl FnGen<'_, '_> {
             ContainerOp::Zip => self.rt.zip_new,
             ContainerOp::ZipN => self.rt.zipn_new,
             ContainerOp::ListFromIter => self.rt.list_from_iter,
+            // Resolved by lowering (identity / `rt_unpack_seq` / list
+            // materialization); never a MIR `CallContainer`.
+            ContainerOp::UnpackSource => {
+                return Err(cg_error("UnpackSource must be resolved by lowering"))
+            }
             ContainerOp::TupleFromIter => self.rt.tuple_from_iter,
             ContainerOp::DictFromPairs => self.rt.dict_from_pairs,
             ContainerOp::BytesFromList => self.rt.make_bytes_from_list,

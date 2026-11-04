@@ -2508,6 +2508,18 @@ impl<'a> Sweeper<'a> {
                 SemTy::Iterator(Box::new(SemTy::tuple_of(elems)))
             }
             C::ListFromIter => SemTy::list_of(iter_elem_ty(&arg0(), self.classes)),
+            // A known sequence unpacks in place (keeps a fixed tuple's per-slot
+            // types); `Dyn` stays gradual (the run-time shape check may return
+            // either the value or a list); `Never` is the in-progress bottom.
+            // Any other iterable is materialized into a list of its elements.
+            C::UnpackSource => {
+                let a = arg0();
+                if a.is_int_indexable_sequence() || matches!(a, SemTy::Dyn | SemTy::Never) {
+                    a
+                } else {
+                    SemTy::list_of(iter_elem_ty(&a, self.classes))
+                }
+            }
             C::TupleFromIter => SemTy::tuple_var_of(iter_elem_ty(&arg0(), self.classes)),
             C::DictFromPairs => {
                 let a = arg0();

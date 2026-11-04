@@ -137,8 +137,23 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
                             "cannot convert float infinity to integer"
                         );
                     }
-                    f as i64
+                    // Truncate toward zero with arbitrary precision: a float
+                    // beyond the fixnum range (`int(5e18)`, `int(1e30)`) must
+                    // promote to a heap BigInt, never saturate (`as i64`) or
+                    // wrap in the fixnum tag (A6).
+                    let t = f.trunc();
+                    if t.abs() < (1u64 << 52) as f64 {
+                        t as i64
+                    } else {
+                        use num_traits::FromPrimitive;
+                        let big = num_bigint::BigInt::from_f64(t)
+                            .expect("finite float converts to BigInt");
+                        return crate::bigint::make_int_value(big);
+                    }
                 }
+                // `int(big)` on an already-arbitrary-precision int is the
+                // identity (it reaches here on a `Dyn`/union argument).
+                TypeTagKind::BigInt => return obj,
                 // `int(str)` may overflow i64 (bignum) — return the tagged
                 // Value directly rather than funnelling through the fixnum
                 // `Value::from_int(value)` boxing below.

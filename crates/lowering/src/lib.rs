@@ -5084,6 +5084,9 @@ impl<'a> FnLower<'a> {
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
         }
+        if op == ContainerOp::UnpackSource {
+            return self.lower_unpack_source(args[0]);
+        }
         // `len(obj)` on a class with `__len__` reached as a `ContainerExpr` (the
         // tuple-unpacking arity guard stages `ContainerOp::Len`) — `rt_obj_len`
         // does not dispatch instances, so route to the direct call, mirroring the
@@ -6681,6 +6684,30 @@ impl<'a> FnLower<'a> {
         let (dst, _) =
             self.emit_container(ContainerOp::Iter, vec![(l, r)], Some(iter_repr.clone()))?;
         Ok((dst.unwrap(), iter_repr))
+    }
+
+    /// The source of a positional unpack (`ContainerOp::UnpackSource`), mirroring
+    /// typeck's rule: a known int-indexable sequence is unpacked in place (no
+    /// copy; a fixed tuple keeps its per-slot reprs), a `Dyn` value gets the
+    /// run-time shape check `rt_unpack_seq`, and any other iterable is
+    /// materialized into a list through the iterator protocol.
+    fn lower_unpack_source(&mut self, arg: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
+        let ty = self.func.exprs[arg].ty.clone();
+        let (l, r) = self.lower_expr(arg)?;
+        if ty.is_int_indexable_sequence() {
+            return Ok((l, r));
+        }
+        if matches!(ty, SemTy::Dyn) {
+            let src = self.coerce(l, r, Repr::Tagged)?;
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::CallRuntime {
+                dst: Some(dst),
+                def: &pyaot_core_defs::runtime_func_def::RT_UNPACK_SEQ,
+                args: vec![Operand::Local(src)],
+            });
+            return Ok((dst, Repr::Tagged));
+        }
+        self.materialize_list_from(l, r)
     }
 
     /// Materialize an argument into a fresh list: an existing list is used as-is

@@ -2335,4 +2335,31 @@ def _review_int_str_bignum():
 _review_int_str_bignum()
 
 
+# ===== SECTION: int() literal grammar + big-int / big-float arguments =====
+def _review_int_literal_grammar():
+    assert int("0x_ff", 16) == 255, "one `_` may follow a radix prefix"
+    assert int("0b_1", 0) == 1
+    assert int("-0x1f", 16) == -31, "sign before a radix prefix"
+    assert int("0_0", 0) == 0
+    for bad in ["-+5", "+-5", "--5", "_1", "1__0", "0x__f", "010"]:
+        try:
+            int(bad, 0)
+            assert False, "must reject " + bad
+        except ValueError:
+            pass
+    try:
+        int("-+5")
+        assert False, "a doubled sign is invalid"
+    except ValueError:
+        pass
+    big: object = 10**30
+    assert int(big) == 10**30, "int(big int) is the identity"
+    assert int(5e18) == 5000000000000000000, "float beyond the fixnum range"
+    assert int(1e30) == 1000000000000000019884624838656, "float beyond i64"
+    assert int(-2.5e19) == -25000000000000000000
+    assert int(-3.99) == -3
+
+
+_review_int_literal_grammar()
+
 print("All builtins code-review regression tests passed!")

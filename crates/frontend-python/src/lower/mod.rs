@@ -82,6 +82,9 @@ pub(crate) struct ParamInfo {
     pub name: InternedString,
     pub ty: SemTy,
     pub default: Option<ParamDefault>,
+    /// Declared before `/` (positional-only): never bound by keyword, so a
+    /// same-named keyword at a call site is an ordinary `**kwargs` entry.
+    pub pos_only: bool,
 }
 
 /// `(top-level def name, parameter name) → synthetic promoted-global slot`, for
@@ -614,9 +617,8 @@ struct UniformTarget {
     /// `F`'s declared return type (the body call's type; the thunk's own return
     /// is `Dyn`, so a non-`Tagged` `F` result is boxed by the return terminator).
     ret: SemTy,
-    /// Pass the closure env tuple as `F`'s leading positional — true for nested
-    /// defs / lambdas (env param 0), false for top-level / decorated targets.
-    pass_env: bool,
+    /// How the thunk's param 0 (closure env / method receiver) reaches `F`.
+    env: ThunkEnv,
     fixed: Vec<ThunkParam>,
     kwonly: Vec<ThunkParam>,
     varargs: bool,
@@ -636,7 +638,7 @@ impl UniformTarget {
         Self {
             name,
             ret: info.ret.clone(),
-            pass_env: false,
+            env: ThunkEnv::Absent,
             fixed: info.fixed.iter().map(ThunkParam::from_param_info).collect(),
             kwonly: info
                 .kwonly
@@ -648,6 +650,24 @@ impl UniformTarget {
             kw_bindable: false,
         }
     }
+}
+
+/// How a uniform thunk forwards its param 0 (the closure env tuple, or a method
+/// thunk's receiver) to the target `F`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThunkEnv {
+    /// `F` takes no env: top-level / decorated targets.
+    Absent,
+    /// Pass param 0 as `F`'s leading positional: nested defs / lambdas (env
+    /// param 0) and instance methods (`self`).
+    Leading,
+    /// A method declared with no named positional but a `*args` (`def m(*a)`):
+    /// CPython binds the receiver as `a[0]`, so it is prepended to the rest tuple.
+    IntoVarargs,
+    /// A method with no positional slot for the receiver at all (`def m()`,
+    /// `def m(**kw)`): a bound call is CPython's `TypeError` (too many
+    /// positional arguments), raised unconditionally by the thunk.
+    Rejected,
 }
 
 /// How a callable treats its first parameter (Phase 5D).

@@ -1321,28 +1321,36 @@ impl<'a> FnLowerer<'a> {
             }
             let pos_for_fixed = n_pos.min(n_fixed);
             for (i, p) in info.fixed.iter().enumerate() {
+                let pname = self.interner.resolve(p.name);
+                // A positional-only parameter (declared before `/`) is never
+                // bound by name: a same-named keyword is an ordinary keyword
+                // argument (it lands in `**kwargs`, CPython semantics), so it
+                // neither conflicts with nor fills this slot.
+                let by_name = !p.pos_only;
                 // A parameter filled positionally must not ALSO be passed by
                 // keyword. CPython raises `TypeError: got multiple values for
                 // argument` at run time; this is a static error for any call
                 // shape, so reject it at compile time rather than letting the
                 // stray keyword fall silently into `**kwargs`.
-                if i < pos_for_fixed
-                    && take_keyword(&mut keywords, self.interner.resolve(p.name)).is_some()
-                {
+                if by_name && i < pos_for_fixed && take_keyword(&mut keywords, pname).is_some() {
                     return Err(parse_error(
-                        format!(
-                            "`{fname}()` got multiple values for argument `{}`",
-                            self.interner.resolve(p.name)
-                        ),
+                        format!("`{fname}()` got multiple values for argument `{pname}`"),
                         span,
                     ));
                 }
+                let kw = if by_name && i >= pos_for_fixed {
+                    take_keyword(&mut keywords, pname)
+                } else {
+                    None
+                };
                 let v = if i < pos_for_fixed {
                     self.arg_src_value(positionals[i], span)?
-                } else if let Some(kv) = take_keyword(&mut keywords, self.interner.resolve(p.name))
-                {
+                } else if let Some(kv) = kw {
                     self.arg_src_value(kv, span)?
-                } else if let Some(v) = self.bind_from_kw_dict(kw_dict, p, span) {
+                } else if let Some(v) = by_name
+                    .then(|| self.bind_from_kw_dict(kw_dict, p, span))
+                    .flatten()
+                {
                     v
                 } else if let Some(def) = &p.default {
                     self.lower_param_default(def, span)
@@ -1841,8 +1849,24 @@ impl<'a> FnLowerer<'a> {
         // Build the param-aligned argument vector matching `F`'s MIR parameter
         // order: [env?] → fixed → keyword-only → *args tuple → **kwargs dict.
         let mut out: Vec<Idx<HirExpr>> = Vec::new();
-        if target.pass_env {
-            out.push(self.local_ref(LocalId::new(0), span));
+        match target.env {
+            ThunkEnv::Leading => out.push(self.local_ref(LocalId::new(0), span)),
+            // No positional slot can take the receiver: CPython raises
+            // `TypeError: m() takes 0 positional arguments but 1 was given`.
+            ThunkEnv::Rejected => {
+                let n_param = target.fixed.len();
+                self.emit_count_guard(
+                    n_local,
+                    CmpOp::GtE,
+                    0,
+                    format!(
+                        "`{fname}()` takes {n_param} positional argument(s) but the \
+                         bound receiver was also given"
+                    ),
+                    span,
+                );
+            }
+            ThunkEnv::Absent | ThunkEnv::IntoVarargs => {}
         }
         for (i, p) in target.fixed.iter().enumerate() {
             let raw = if target.kw_bindable {
@@ -1855,6 +1879,7 @@ impl<'a> FnLowerer<'a> {
                     name: p.name,
                     ty: p.ty.clone(),
                     default: p.default.clone(),
+                    pos_only: false,
                 };
                 let kw_or_default = self
                     .bind_from_kw_dict(kwargs_dict, &pinfo, span)
@@ -1883,6 +1908,7 @@ impl<'a> FnLowerer<'a> {
                 name: p.name,
                 ty: p.ty.clone(),
                 default: p.default.clone(),
+                pos_only: false,
             };
             let raw = self
                 .bind_from_kw_dict(kwargs_dict, &pinfo, span)
@@ -1918,6 +1944,26 @@ impl<'a> FnLowerer<'a> {
                 SemTy::tuple_var_of(SemTy::Dyn),
                 span,
             );
+            // `def m(*a)` bound to a receiver: CPython's `a` is `(obj, *spread)`.
+            let rest = if target.env == ThunkEnv::IntoVarargs {
+                let recv = self.local_ref(LocalId::new(0), span);
+                let head = self.alloc(
+                    HirExprKind::TupleLit { elems: vec![recv] },
+                    SemTy::Dyn,
+                    span,
+                );
+                self.alloc(
+                    HirExprKind::BinOp {
+                        op: BinOp::Add,
+                        l: head,
+                        r: rest,
+                    },
+                    SemTy::tuple_var_of(SemTy::Dyn),
+                    span,
+                )
+            } else {
+                rest
+            };
             out.push(rest);
         }
         // `**kwargs` slot: forward the LEFTOVER keywords — the `__kwargs__` dict

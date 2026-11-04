@@ -29,7 +29,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Assignment `x = …` | ✅ | |
 | Annotated assignment `x: T = …` | ✅ | Annotation drives representation/inference |
 | Augmented assignment `+= -= *= …` | ✅ | All operators, incl. `@=`, in-place container ops |
-| Tuple/list unpacking `a, b = …` | ✅ | |
+| Tuple/list unpacking `a, b = …` | ✅ | Any iterable RHS (dict → keys, set, generators, `zip`/`map`); a known `list`/`tuple`/`str`/`bytes` is indexed in place, a `Dyn` value is shape-checked at run time (`rt_unpack_seq`) |
 | Nested destructuring `(a, (b, c)) = …` | ✅ | Recursive, also in `for`/comprehension targets |
 | Starred assignment target `a, *rest = …` | ✅ | Prefix/middle/suffix star (`*init, last`, `a, *mid, z`); also in `for` (`for h, *t in …`) and `with … as (h, *r)` targets |
 | `if` / `elif` / `else` | ✅ | |
@@ -107,7 +107,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Positional / default params | ✅ | Mutable defaults eval-once (CPython aliasing) |
 | `*args` | ✅ | |
 | `**kwargs` | ✅ | |
-| Keyword-only / positional-only params | ✅ | `kwonlyargs` / `posonlyargs` |
+| Keyword-only / positional-only params | ✅ | `kwonlyargs` / `posonlyargs`; a keyword named like a positional-only param goes to `**kwargs` |
 | Keyword arguments at call site | ✅ | Eval-order preserving |
 | `*seq` / `**dict` argument spread | ✅ | |
 | Closures / free variables / cells | ✅ | `Repr::Closure` env-tuple |
@@ -126,7 +126,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 |---|---|---|
 | Class definition, fields, methods | ✅ | |
 | `__init__` / instance construction | ✅ | |
-| Single inheritance | ✅ | |
+| Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice |
 | `super()` | ✅ | |
 | `@property` | ✅ | |
@@ -207,7 +207,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `all`, `any`, `id`, `hash` | ✅ | |
 | `bin`, `hex`, `oct`, `ord`, `chr` | ✅ | |
 | `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language; user `__repr__`/`__format__` |
-| `int`, `float`, `bool` | ✅ | Incl. `int(str, base)` |
+| `int`, `float`, `bool` | ✅ | Incl. `int(str, base)` with CPython's literal grammar (one sign, radix prefix + optional `_`, base-0 leading-zero rule); `int()` of a big int / out-of-range float yields a bignum |
 | `list`, `dict`, `set`, `tuple`, `bytes` | ✅ | |
 | `type(x)` (1-arg) | ✅ | |
 | `isinstance` / `issubclass` | ✅ | Incl. tuple-of-types form |

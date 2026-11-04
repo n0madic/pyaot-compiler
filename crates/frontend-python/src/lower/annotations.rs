@@ -392,6 +392,7 @@ pub(super) fn parse_params(
 ) -> Result<ParsedParams> {
     let skip =
         matches!(first, FirstParam::SkipCls | FirstParam::ClsMethod { .. }) as usize;
+    let n_posonly = args.posonlyargs.len();
     let mut fixed = Vec::new();
     for (i, awd) in args
         .posonlyargs
@@ -416,6 +417,7 @@ pub(super) fn parse_params(
             name: pname,
             ty,
             default,
+            pos_only: i + skip < n_posonly,
         });
     }
     let mut kwonly = Vec::new();
@@ -433,6 +435,7 @@ pub(super) fn parse_params(
             name: pname,
             ty,
             default,
+            pos_only: false,
         });
     }
     let varargs = args

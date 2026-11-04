@@ -55,7 +55,7 @@ impl<'a> FnLowerer<'a> {
             UniformTarget {
                 name: f.name,
                 ret: f.ret_ty.clone(),
-                pass_env: true,
+                env: ThunkEnv::Leading,
                 fixed,
                 kwonly,
                 varargs: f.varargs,
@@ -308,7 +308,7 @@ impl<'a> FnLowerer<'a> {
                     // typeck re-derives the real return type from the resolved
                     // callee; the thunk's own return is `Dyn` regardless.
                     ret: SemTy::Dyn,
-                    pass_env: false,
+                    env: ThunkEnv::Absent,
                     fixed: parsed.fixed.iter().map(ThunkParam::from_param_info).collect(),
                     kwonly: parsed.kwonly.iter().map(ThunkParam::from_param_info).collect(),
                     varargs: parsed.varargs.is_some(),

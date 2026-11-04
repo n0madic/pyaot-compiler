@@ -77,19 +77,24 @@ pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
         debug_assert_dict_family!(dict, "rt_iter_dict");
     }
 
-    // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
-    // (the iterator allocation below) so GC stress test cannot collect it.
-    let keys_list = rt_dict_keys(dict);
-
-    let mut roots: [*mut Obj; 1] = [keys_list];
+    // Root the live dict for the whole construction: it becomes the iterator's
+    // `size_guard` (and its `len` is read) AFTER two collecting allocations —
+    // the keys snapshot and the iterator itself — and the caller's dict is
+    // frequently an unrooted temporary (`for k in make_dict()`). The keys list
+    // is rooted in slot 1 before the iterator allocation.
+    let mut roots: [*mut Obj; 2] = [dict, std::ptr::null_mut()];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
-        nroots: 1,
+        nroots: 2,
         roots: roots.as_mut_ptr(),
     };
     // SAFETY: frame is a valid stack-allocated ShadowFrame that lives until
     // gc_pop() is called below.
     unsafe { gc_push(&mut frame) };
+
+    let keys_list = rt_dict_keys(dict);
+    // SAFETY: slot 1 of the live, pushed root array.
+    unsafe { std::ptr::write(roots.as_mut_ptr().add(1), keys_list) };
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
@@ -295,19 +300,24 @@ pub fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj, ListObj};
 
-    // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
-    // (the iterator allocation below) so GC stress test cannot collect it.
-    let keys_list = rt_dict_keys(dict);
-
-    let mut roots: [*mut Obj; 1] = [keys_list];
+    // Root the live dict for the whole construction: it becomes the iterator's
+    // `size_guard` (and its `len` is read) AFTER two collecting allocations —
+    // the keys snapshot and the iterator itself — and the caller's dict is
+    // frequently an unrooted temporary (`for k in make_dict()`). The keys list
+    // is rooted in slot 1 before the iterator allocation.
+    let mut roots: [*mut Obj; 2] = [dict, std::ptr::null_mut()];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
-        nroots: 1,
+        nroots: 2,
         roots: roots.as_mut_ptr(),
     };
     // SAFETY: frame is a valid stack-allocated ShadowFrame that lives until
     // gc_pop() is called below.
     unsafe { gc_push(&mut frame) };
+
+    let keys_list = rt_dict_keys(dict);
+    // SAFETY: slot 1 of the live, pushed root array.
+    unsafe { std::ptr::write(roots.as_mut_ptr().add(1), keys_list) };
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
@@ -575,8 +585,25 @@ pub extern "C" fn rt_iter_enumerate_abi(inner_iter: Value, start: i64) -> Value 
 pub fn rt_iter_set(set: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    // Root the set across the iterator allocation: it is stored as `source` /
+    // `size_guard` (and its `len` read) afterwards, and a temporary set
+    // (`for x in {a, b}`) is otherwise unreachable during that collection.
+    let mut roots: [*mut Obj; 1] = [set];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    // SAFETY: frame is a valid stack-allocated ShadowFrame that lives until
+    // gc_pop() is called below.
+    unsafe { gc_push(&mut frame) };
+
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    gc_pop();
 
     unsafe {
         let iter = obj as *mut IteratorObj;

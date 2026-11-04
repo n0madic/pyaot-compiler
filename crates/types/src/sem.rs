@@ -232,6 +232,15 @@ impl SemTy {
             _ => None,
         }
     }
+    /// `list` / `tuple` (fixed or variadic) / `str` / `bytes` — a sequence that
+    /// supports `len()` + integer subscript with positional meaning, so a
+    /// positional unpack may index it directly (no iterator materialization).
+    pub fn is_int_indexable_sequence(&self) -> bool {
+        matches!(self, SemTy::Str | SemTy::Bytes)
+            || self.list_elem().is_some()
+            || self.tuple_elems().is_some()
+            || self.tuple_var_elem().is_some()
+    }
     pub fn deque_elem(&self) -> Option<&SemTy> {
         match self {
             SemTy::Generic { base, args } if *base == BUILTIN_DEQUE_CLASS_ID => args.first(),

@@ -581,20 +581,6 @@ impl<'a> FnLowerer<'a> {
     /// CPython `ValueError` ("too many values to unpack" / "not enough values to
     /// unpack") — a non-starred pattern requires an exact count, a starred one a
     /// minimum.
-    /// True iff `value`'s static type supports `len()` + integer subscript —
-    /// i.e. a sequence the positional unpack strategy can index directly
-    /// (`list`/`tuple`/`str`/`bytes`). Everything else (dict, set, generators,
-    /// `zip`/`map`/`filter`, or a `Dyn` value of unknown shape) must be
-    /// materialized through the iterator protocol first, since integer
-    /// subscript on it is either wrong (a dict keys by `0`/`1`) or a TypeError.
-    fn rhs_is_int_indexable_sequence(&self, value: Idx<HirExpr>) -> bool {
-        let ty = &self.exprs[value].ty;
-        matches!(ty, SemTy::Str | SemTy::Bytes)
-            || ty.list_elem().is_some()
-            || ty.tuple_elems().is_some()
-            || ty.tuple_var_elem().is_some()
-    }
-
     pub(super) fn lower_unpack_subscript(
         &mut self,
         targets: &[Expr],
@@ -609,31 +595,21 @@ impl<'a> FnLowerer<'a> {
         {
             return Err(parse_error("multiple starred targets in unpacking", span));
         }
-        // Materialize a non-sequence iterable into a list via the iterator
-        // protocol so the positional `len`/`Subscript` strategy below is correct
-        // for ANY iterable (dict keys, set, generators, `zip`/`map`/`filter`),
-        // not just the int-indexable sequences it was written for. A
-        // statically-known sequence is used as-is to avoid a redundant copy.
-        let source = if self.rhs_is_int_indexable_sequence(value) {
-            value
-        } else {
-            let it = self.alloc(
-                HirExprKind::ContainerExpr {
-                    op: ContainerOp::Iter,
-                    args: vec![value],
-                },
-                SemTy::Dyn,
-                span,
-            );
-            self.alloc(
-                HirExprKind::ContainerExpr {
-                    op: ContainerOp::ListFromIter,
-                    args: vec![it],
-                },
-                SemTy::Dyn,
-                span,
-            )
-        };
+        // Normalize the source so the positional `len`/`Subscript` strategy
+        // below is correct for ANY iterable (dict keys, set, generators,
+        // `zip`/`map`/`filter`), not just the int-indexable sequences it was
+        // written for. The frontend runs before inference, so the choice is
+        // deferred to `UnpackSource`: lowering keeps a known sequence as-is
+        // (no copy, per-slot tuple types preserved), shape-checks a `Dyn` value
+        // at run time, and materializes any other iterable into a list.
+        let source = self.alloc(
+            HirExprKind::ContainerExpr {
+                op: ContainerOp::UnpackSource,
+                args: vec![value],
+            },
+            SemTy::Dyn,
+            span,
+        );
         let tmp = self.fresh_local(SemTy::Dyn);
         self.push_stmt(HirStmt::Assign {
             target: tmp,

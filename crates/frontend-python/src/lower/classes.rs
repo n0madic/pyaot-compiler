@@ -62,6 +62,73 @@ pub(super) fn collect_nested_in_body<'a>(
     }
 }
 
+/// Reject a class whose base is a same-module class bound LATER in execution
+/// order (a forward reference). CPython binds `class` statements at run time,
+/// so `class Sub(Base): ...` executed before `class Base: ...` raises
+/// `NameError`. Walks the module body in source order — through module-level
+/// control flow and class bodies (both execute immediately), but NOT into
+/// function bodies (they run later, when every module-level class may already
+/// be bound). `module_classes` holds the names of the classes this module
+/// defines; any other base (builtin, imported) is left to `semantics`.
+pub(super) fn check_class_forward_bases(
+    body: &[Stmt],
+    module_classes: &HashSet<&str>,
+    bound: &mut HashSet<String>,
+) -> Result<()> {
+    for s in body {
+        match s {
+            Stmt::ClassDef(c) => {
+                for base in &c.bases {
+                    if let Expr::Name(n) = base {
+                        let name = n.id.as_str();
+                        if module_classes.contains(name) && !bound.contains(name) {
+                            return Err(parse_error(
+                                format!(
+                                    "name `{name}` is not defined (class `{}` uses it as a \
+                                     base before its `class` statement runs)",
+                                    c.name.as_str()
+                                ),
+                                to_span(c.range()),
+                            ));
+                        }
+                    }
+                }
+                // The class body runs before the class name is bound.
+                check_class_forward_bases(&c.body, module_classes, bound)?;
+                bound.insert(c.name.as_str().to_string());
+            }
+            Stmt::If(s) => {
+                check_class_forward_bases(&s.body, module_classes, bound)?;
+                check_class_forward_bases(&s.orelse, module_classes, bound)?;
+            }
+            Stmt::While(s) => {
+                check_class_forward_bases(&s.body, module_classes, bound)?;
+                check_class_forward_bases(&s.orelse, module_classes, bound)?;
+            }
+            Stmt::For(s) => {
+                check_class_forward_bases(&s.body, module_classes, bound)?;
+                check_class_forward_bases(&s.orelse, module_classes, bound)?;
+            }
+            Stmt::Try(t) => {
+                check_class_forward_bases(&t.body, module_classes, bound)?;
+                for h in try_handlers(&t.handlers) {
+                    check_class_forward_bases(&h.body, module_classes, bound)?;
+                }
+                check_class_forward_bases(&t.orelse, module_classes, bound)?;
+                check_class_forward_bases(&t.finalbody, module_classes, bound)?;
+            }
+            Stmt::With(w) => check_class_forward_bases(&w.body, module_classes, bound)?,
+            Stmt::Match(m) => {
+                for case in &m.cases {
+                    check_class_forward_bases(&case.body, module_classes, bound)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Descend the sub-bodies of a control-flow statement (which do not introduce a
 /// new function scope), collecting nested classes within them.
 pub(super) fn collect_nested_in_controlflow<'a>(
@@ -358,7 +425,7 @@ pub(super) fn collect_calls_comp(generators: &[Comprehension], out: &mut HashSet
 /// Build the per-method **uniform thunk** `M.m.<uniform>(self, __args__,
 /// __kwargs__) → Value` (gradual-completeness method dispatch, Phase B) — the
 /// method analogue of [`FnLowerer::uniform_thunk_over_nested`]. `self` is
-/// forwarded as the method's leading positional (`pass_env = true`); the
+/// forwarded as the method's leading positional (`ThunkEnv::Leading`); the
 /// non-`self` params bind from `__args__` at run time (defaults, `*args`, the
 /// checked float/bool unbox) exactly as a value call, then ONE direct call is
 /// made to the native method (its synthetic name resolves to its `FuncId`, so
@@ -375,12 +442,19 @@ pub(super) fn build_method_uniform_thunk(
     method_fid: FuncId,
 ) -> Result<FuncId> {
     // Non-`self` positional params, then keyword-only params. A normal instance
-    // method has `self` as its first positional; a method declared WITHOUT one
-    // (`def m():`, referenced as `C.m`) has no leading slot to skip, so guard the
-    // base index against an empty params list (avoids a slice-bounds panic) and
-    // do not forward a receiver for it.
+    // method has `self` as its first positional; a method declared WITHOUT a
+    // named positional has no leading slot to skip, and its receiver binds the
+    // way CPython binds it: into `*args` (`def m(*a)` sees `a == (obj,)`), or —
+    // with no `*args` either (`def m()`) — the bound call is a TypeError.
     let n_positional = args.posonlyargs.len() + args.args.len();
     let has_self = n_positional >= 1;
+    let env = if has_self {
+        ThunkEnv::Leading
+    } else if args.vararg.is_some() {
+        ThunkEnv::IntoVarargs
+    } else {
+        ThunkEnv::Rejected
+    };
     let n_fixed = n_positional.saturating_sub(1);
     let n_kwonly = args.kwonlyargs.len();
     let target = {
@@ -400,7 +474,7 @@ pub(super) fn build_method_uniform_thunk(
         UniformTarget {
             name: f.name,
             ret: f.ret_ty.clone(),
-            pass_env: has_self,
+            env,
             fixed,
             kwonly,
             varargs: f.varargs,

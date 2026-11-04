@@ -796,6 +796,11 @@ pub static RT_LIST_FROM_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_li
 pub static RT_LIST_FROM_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_list_from_range");
 /// rt_list_from_iter(iter: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_ITER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_iter");
+/// rt_unpack_seq(v: Value) -> Value — the source of a positional unpack on a
+/// `Dyn` value: `v` itself when it is a list/tuple/str/bytes (int-indexable),
+/// else a fresh list materialized through the iterator protocol. Contract
+/// addition backing `ContainerOp::UnpackSource`.
+pub static RT_UNPACK_SEQ: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_unpack_seq");
 /// rt_list_from_set(set: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_set");
 /// rt_list_from_dict(dict: *mut Obj) -> *mut Obj
