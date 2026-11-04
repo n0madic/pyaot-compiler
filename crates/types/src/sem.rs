@@ -175,13 +175,13 @@ impl SemTy {
         }
     }
 
-    /// `Optional[T]` sugar (`Union[T, None]`).
+    /// `Optional[T]` sugar (`Union[T, None]`), built through the lattice `join`
+    /// so the result is a canonical union: a nested union is flattened, a
+    /// member already `None` is not duplicated, `Optional[Dyn]` is `Dyn`, and
+    /// member order is canonical (so `Optional[int] == Union[None, int]`).
     pub fn optional(t: SemTy) -> SemTy {
-        if t == SemTy::NoneTy {
-            SemTy::NoneTy
-        } else {
-            SemTy::Union(vec![t, SemTy::NoneTy])
-        }
+        use crate::lattice::{NoClasses, TypeLattice};
+        t.join(&SemTy::NoneTy, &NoClasses)
     }
 
     // ── container accessors ──

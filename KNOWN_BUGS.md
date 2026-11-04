@@ -238,10 +238,20 @@ Two root causes dominate:
       signal exit reported as 1. ✓
 - [ ] **H** output path can overwrite source (no `.py`) / collide with `.o`;
       `foo.o` deleted (`cli/src/main.rs:324`). ✓
-- [ ] **H** lattice prune removes both mutually-subtyped members → `Never`
+- [x] **H** lattice prune removes both mutually-subtyped members → `Never`
       (`dict`⇄`defaultdict`, `Iterator[Dyn]`) (`types/src/lattice.rs:314`). ✓
-- [ ] **M** `Bool ⊔ Int = Int` loses bool identity (`lattice.rs:116`). ✓
-- [ ] **M** `SemTy::optional` builds non-canonical unions (`types/src/sem.rs:179`).
+      Fixed: `defaultdict <: dict` only (not the reverse); `Iterator`
+      members merge element-wise; a remaining equivalence keeps the
+      canonically-first member (corpus `test_collections.py`
+      `_review_lattice_joins`, lattice unit tests).
+- [x] **M** `Bool ⊔ Int = Int` loses bool identity (`lattice.rs:116`). ✓
+      The join `int` is the correct *type* (`bool ⊂ int`); the identity loss
+      was representational: the interval pass gave a `BoolLit` the range
+      `[0,1]`, proving bool-fed `int` slots `Raw(I64)` (which erases the bool
+      tag). A bool leaf is now `⊤`, so such slots stay `Tagged` (corpus
+      `test_core_types.py` `_review_bool_int_identity`).
+- [x] **M** `SemTy::optional` builds non-canonical unions (`types/src/sem.rs:179`).
+      Now built via `join` (flat, deduped, `Optional[Dyn] = Dyn`; unit test).
 - [ ] **M** diagnostics in imported modules rendered against entry file —
       `Span` has no file id (`cli/src/main.rs:228`, `utils/src/span.rs`). ✓
 - [ ] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
