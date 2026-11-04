@@ -43,8 +43,10 @@ fn coerce_round_trips(f: &mut MirFunction) {
         let mut seen: CoerceMap = HashMap::new();
         for inst in &mut block.insts {
             // Try the rewrite BEFORE recording this instruction's own write.
+            // A CHECKED narrowing folds too: its source provably came out of
+            // `to` itself (`X → Tagged → checked X`), so the guard cannot fire.
             if let MirInst::Coerce(c) = inst {
-                if !c.checked() {
+                {
                     let Operand::Local(src) = *c.src();
                     if let Some((orig, from1, to1)) = seen.get(&src) {
                         if c.from() == to1 && c.to() == from1 {

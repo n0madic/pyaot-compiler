@@ -1396,10 +1396,10 @@ print(math.sqrt(pick(True)))
 
 #[test]
 fn dyn_stdlib_int_arg_takes_checked_unbox() {
-    // A Dyn argument into a raw-i64 stdlib param (math.gcd) takes the CHECKED
-    // Coerce (runtime-validated rt_unbox_int), not a blind untag.
+    // A Dyn argument into a raw-i64 stdlib param (random.randint) takes the
+    // CHECKED Coerce (runtime-validated rt_unbox_int), not a blind untag.
     let src = "\
-import math
+import random
 
 
 def pick(flag):
@@ -1408,7 +1408,7 @@ def pick(flag):
     return \"oops\"
 
 
-print(math.gcd(pick(True), 18))
+print(random.randint(pick(True), 18))
 ";
     let p = lowered(src);
     let has_checked = p.funcs.iter().any(|f| {

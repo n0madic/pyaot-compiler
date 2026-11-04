@@ -402,7 +402,10 @@ pub(super) fn parse_params(
         .enumerate()
     {
         let ty = match (i, first) {
-            (0, FirstParam::Method(t)) => t.clone(),
+            // An unannotated first param of a method is the receiver. An
+            // annotated one keeps its annotation: a no-`self` method called via
+            // the class (`Point.add(3, 4)`) binds ordinary values there.
+            (0, FirstParam::Method(t)) if awd.def.annotation.is_none() => t.clone(),
             _ => match &awd.def.annotation {
                 Some(a) => annotation_to_semty(a.as_ref(), ctx),
                 None => SemTy::Dyn,

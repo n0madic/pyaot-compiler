@@ -60,7 +60,7 @@ use pyaot_mir::{
     classify_coercion, CoerceInst, Coercion, Const, ContainerOp, LocalDecl, MirBlock, MirFunction,
     MirInst, MirProgram, Operand,
 };
-use pyaot_types::{generic_sig, HeapShape, RawKind, Repr};
+use pyaot_types::{generic_sig, HeapShape, Repr};
 use pyaot_utils::{FuncId, LocalId};
 
 use crate::analysis::read_counts;
@@ -543,15 +543,13 @@ fn try_devirt_ci(
 
 /// Coerce a recovered (`Tagged`) positional arg into F's param repr `to`. A `Raw`
 /// float/bool/int param takes the CHECKED unbox (`rt_unbox_*`, TypeError-not-SEGV,
-/// mirroring the thunk's `bind_arg_checked`); a heap/closure param the unchecked
-/// gradual `Tagged -> Heap` retype.
+/// mirroring the thunk's `bind_arg_checked`), and a guard-backed `Heap` param the
+/// CHECKED shape guard (`rt_check_heap_kind` / `rt_check_instance`) — the thunk
+/// this call replaces validated its args, so the direct call must too. Only the
+/// guard-less shapes (closure / bigint / iterator) keep the unchecked retype.
 fn make_arg_coerce(dst: LocalId, val: Operand, to: &Repr) -> Option<CoerceInst> {
-    match to {
-        Repr::Raw(RawKind::F64) | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::I8) => {
-            CoerceInst::new_checked(dst, val, Repr::Tagged, to.clone())
-        }
-        _ => CoerceInst::new(dst, val, Repr::Tagged, to.clone()),
-    }
+    CoerceInst::new_checked(dst, val.clone(), Repr::Tagged, to.clone())
+        .or_else(|| CoerceInst::new(dst, val, Repr::Tagged, to.clone()))
 }
 
 #[cfg(test)]

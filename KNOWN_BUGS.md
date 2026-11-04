@@ -82,35 +82,51 @@ Two root causes dominate:
 
 ## Phase 2 — Root A: unchecked Raw/Heap from inference
 
-- [ ] **C** container element type inferred only from writes on the local
+Fixed at both ends: typeck now runs a container escape / alias analysis
+(`typeck/src/escape.rs`) so inferred element types are only precise for
+containers whose every write it sees, and lowering's `coerce` makes every
+`Tagged → Raw/Heap` narrowing CHECKED by default (inline fast path in codegen,
+peephole folds `X → Tagged → X` round trips; `coerce_trusted` for proven sites
+and descriptor results). Regressions: `corpus/test_inference_soundness.py`.
+
+- [x] **C** container element type inferred only from writes on the local
       itself — aliases, params, closures, globals, fields, sub-containers,
       `setdefault`/`update`/slice-assign are missed → `Raw(F64)` read of an int
       segfaults (`typeck/src/lib.rs:1604`, `:1738`). ✓
-- [ ] **C** `list[float]` holding an int (`[1.0, 2]`, `append(3)`) stored
+- [x] **C** `list[float]` holding an int (`[1.0, 2]`, `append(3)`) stored
       int-tagged, read via unchecked `UnboxFloat` (codegen `lib.rs:2679`;
-      fix in lowering/legalize). ✓
-- [ ] **C** `raw_uniform` guards only top level; nested slots join
+      fix in lowering/legalize). ✓ (inferred: element slot stays `Tagged`;
+      annotated `list[float]`: the read is the checked unbox)
+- [x] **C** `raw_uniform` guards only top level; nested slots join
       int⊔float=float; container `+`/`|` use the plain join
       (`typeck/src/lib.rs:647`, `:2674`, `:2728`; `types/src/lattice.rs:383`). ✓
-- [ ] **C** devirt `make_arg_coerce` drops the checked Tagged→Heap guard
+- [x] **C** devirt `make_arg_coerce` drops the checked Tagged→Heap guard
       (`optimizer/src/devirt.rs:548`). ✓
-- [ ] **M** lowering uses unchecked `coerce` for raw params/indices
+- [x] **M** lowering uses unchecked `coerce` for raw params/indices
       (`lowering/src/lib.rs:2443`, `:2353`, `:4652`); `Optional[int]` slice /
-      islice bound untagged as garbage (`:5064`). ✓
-- [ ] **H** `Bool op Bool` arithmetic typed Bool → `True+True` prints False
+      islice bound untagged as garbage (`:5064`). ✓ (`None` bound = default)
+- [x] **H** `Bool op Bool` arithmetic typed Bool → `True+True` prints False
       (`typeck/src/lib.rs:2674`, `:2666`). ✓
-- [ ] **M** `bool & | ^ bool` typed Int (`typeck:2723`). ✓
-- [ ] **H** `Dyn / x` typed Float ignores `__truediv__` (`typeck:2698`). ✓
-- [ ] **M** `Compare` always Bool even for user dunders returning other types
-      (`typeck:1942`). ✓
-- [ ] **H** Raw(I64)→Tagged `TagInt` unchecked: `math.factorial(20)` wraps,
+- [x] **M** `bool & | ^ bool` typed Int (`typeck:2723`). ✓ (runtime also
+      returned an int for two bools — contract change: now a bool)
+- [x] **H** `Dyn / x` typed Float ignores `__truediv__` (`typeck:2698`). ✓
+- [x] **M** `Compare` always Bool even for user dunders returning other types
+      (`typeck:1942`). ✓ (non-bool dunder → `Dyn`, value handed back)
+- [x] **H** Raw(I64)→Tagged `TagInt` unchecked: `math.factorial(20)` wraps,
       `factorial(25)` OverflowError (`stdlib-defs/src/modules/math.rs:121`,
-      codegen `lib.rs:2684`). ✓
+      codegen `lib.rs:2684`). ✓ (`TagInt` boxes out-of-range via the new
+      `rt_box_i64`; factorial/gcd/lcm/comb/perm take and return tagged ints —
+      contract change)
 - [ ] **H** `abs()` truncates out-of-fixnum results; no BigInt arm in
       `abs`/`float` (`runtime/src/builtins.rs:267`, `:200`). ✓
-- [ ] **M** bignum arg to raw-Int stdlib param → codegen error "illegal
+- [x] **M** bignum arg to raw-Int stdlib param → codegen error "illegal
       coercion Heap(BigInt) -> Raw(I64)" (`math.gcd(3e18-ish ints)`). ✓
-- [ ] **L** `sum(list[float])` on empty list typed Float → `0.0` (`typeck:1987`). ✓
+      (routed through the checked unbox; `rt_unbox_int` raises OverflowError
+      past `i64` instead of truncating)
+- [x] **L** `sum(list[float])` on empty list typed Float → `0.0` (`typeck:1987`). ✓
+- [x] **M** a method's annotated first param was forced to the class type
+      (`def no_self_add(a: int, b: int)` called via the class) — surfaced by
+      the checked-narrowing default (`frontend lower/annotations.rs`).
 
 ## Phase 3 — Root B: static dispatch ignores overrides
 

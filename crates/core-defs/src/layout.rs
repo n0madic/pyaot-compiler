@@ -41,6 +41,10 @@ pub const FLOAT_OBJ_VALUE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
 /// Offset of the vtable pointer inside `InstanceObj` (right after `ObjHeader`).
 pub const INSTANCE_VTABLE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
 
+/// Offset of the `class_id: u8` inside `InstanceObj` (right after the vtable
+/// pointer) — read by codegen's inline fast path of the checked instance guard.
+pub const INSTANCE_CLASS_ID_OFFSET: i32 = INSTANCE_VTABLE_OFFSET + PTR_SIZE as i32;
+
 /// Byte offset of the flexible `fields: [Value; 0]` array inside `InstanceObj`.
 ///
 /// ```text

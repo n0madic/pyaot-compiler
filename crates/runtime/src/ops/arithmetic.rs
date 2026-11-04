@@ -474,6 +474,9 @@ pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
 
 macro_rules! bitwise_op {
     ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr) => {
+        bitwise_op!($name, $abi, $export, $num, $fwd, $refl, None);
+    };
+    ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr, $logic:expr) => {
         #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub fn $name(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             unsafe {
@@ -489,6 +492,14 @@ macro_rules! bitwise_op {
                 }
                 let va = Value(a as u64);
                 let vb = Value(b as u64);
+                // `bool & | ^ bool` is a `bool` (CPython `bool.__and__` etc.).
+                let logic: Option<fn(bool, bool) -> bool> = $logic;
+                if let Some(f) = logic {
+                    if va.is_bool() && vb.is_bool() {
+                        return Value::from_bool(f(va.unwrap_bool(), vb.unwrap_bool())).0
+                            as *mut Obj;
+                    }
+                }
                 match (
                     crate::bigint::classify_num(va),
                     crate::bigint::classify_num(vb),
@@ -516,7 +527,8 @@ bitwise_op!(
     "rt_obj_bitand",
     num_bitand,
     FNV_AND,
-    FNV_RAND
+    FNV_RAND,
+    Some(|x, y| x & y)
 );
 bitwise_op!(
     rt_obj_bitor,
@@ -524,7 +536,8 @@ bitwise_op!(
     "rt_obj_bitor",
     num_bitor,
     FNV_OR,
-    FNV_ROR
+    FNV_ROR,
+    Some(|x, y| x | y)
 );
 bitwise_op!(
     rt_obj_bitxor,
@@ -532,7 +545,8 @@ bitwise_op!(
     "rt_obj_bitxor",
     num_bitxor,
     FNV_XOR,
-    FNV_RXOR
+    FNV_RXOR,
+    Some(|x, y| x ^ y)
 );
 bitwise_op!(
     rt_obj_lshift,

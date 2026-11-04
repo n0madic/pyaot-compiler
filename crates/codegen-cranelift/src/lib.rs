@@ -39,13 +39,13 @@ use cranelift_module::{
 };
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use pyaot_core_defs::tag;
+use pyaot_core_defs::{tag, TypeTagKind};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
     classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp,
     LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
 };
-use pyaot_types::{HeapCheck, RawKind, Repr};
+use pyaot_types::{HeapCheck, HeapShape, RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
 
 const FLOAT_VALUE_OFFSET: i32 = pyaot_core_defs::layout::FLOAT_OBJ_VALUE_OFFSET;
@@ -71,6 +71,7 @@ struct RuntimeFns {
     make_str_interned: FuncId,
     bigint_from_str: FuncId,
     box_float: FuncId,
+    box_i64: FuncId,
     unbox_float_checked: FuncId,
     unbox_int_checked: FuncId,
     unbox_bool_checked: FuncId,
@@ -318,6 +319,7 @@ impl RuntimeFns {
             make_str_interned: d("rt_make_str_interned", &[ptr, ti], &[ti])?,
             bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
             box_float: d("rt_box_float", &[tf], &[ti])?,
+            box_i64: d("rt_box_i64", &[ti], &[ti])?,
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
             unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
             unbox_bool_checked: d("rt_unbox_bool", &[ti], &[t8])?,
@@ -2623,6 +2625,152 @@ impl FnGen<'_, '_> {
         Ok((ptr, len_val))
     }
 
+    /// Inline fast path of the CHECKED `Tagged → Raw(F64)` unbox: a non-null
+    /// heap pointer whose header tag is `Float` loads its payload directly;
+    /// anything else (a tagged int/bool — the numeric tower —, a bignum, a
+    /// wrong-type value) takes the raising `rt_unbox_float` slow path. Keeps
+    /// the checked-by-default narrowing (invariant 2) nearly as cheap as the
+    /// unchecked load on the common path.
+    fn checked_unbox_float(&mut self, s: Value) -> Value {
+        let check_tag = self.builder.create_block();
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::F64);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let is_ptr = self.builder.ins().icmp_imm(IntCC::Equal, low, tag::PTR_TAG as i64);
+        let non_null = self.builder.ins().icmp_imm(IntCC::NotEqual, s, 0);
+        let ptr_ok = self.builder.ins().band(is_ptr, non_null);
+        self.builder.ins().brif(ptr_ok, check_tag, &[], slow, &[]);
+        self.builder.switch_to_block(check_tag);
+        let tag_byte = self.builder.ins().load(types::I8, MemFlags::trusted(), s, 0);
+        let is_float = self.builder.ins().icmp_imm(
+            IntCC::Equal,
+            tag_byte,
+            pyaot_core_defs::TypeTagKind::Float as i64,
+        );
+        self.builder.ins().brif(is_float, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let f = self
+            .builder
+            .ins()
+            .load(types::F64, MemFlags::trusted(), s, FLOAT_VALUE_OFFSET);
+        self.builder.ins().jump(join, &[f.into()]);
+        self.builder.switch_to_block(slow);
+        let f = self.call(self.rt.unbox_float_checked, &[s]).unwrap();
+        self.builder.ins().jump(join, &[f.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Inline fast path of a CHECKED `Tagged → Heap(shape)` guard: a non-null
+    /// heap pointer whose header tag is `fast_tag` (and, for a class instance,
+    /// whose `class_id` is exactly `class_id`) passes straight through; anything
+    /// else — a subclass instance, a `dict` subtype, a wrong value — takes the
+    /// raising runtime guard `slow`, which returns the value on success.
+    fn checked_heap_guard(
+        &mut self,
+        s: Value,
+        fast_tag: Option<TypeTagKind>,
+        class_id: Option<i64>,
+        slow: impl FnOnce(&mut Self, Value) -> Value,
+    ) -> Value {
+        let Some(fast_tag) = fast_tag else {
+            return slow(self, s);
+        };
+        let check_tag = self.builder.create_block();
+        let slow_block = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::I64);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let is_ptr = self.builder.ins().icmp_imm(IntCC::Equal, low, tag::PTR_TAG as i64);
+        let non_null = self.builder.ins().icmp_imm(IntCC::NotEqual, s, 0);
+        let ptr_ok = self.builder.ins().band(is_ptr, non_null);
+        self.builder.ins().brif(ptr_ok, check_tag, &[], slow_block, &[]);
+        self.builder.switch_to_block(check_tag);
+        let tag_byte = self.builder.ins().load(types::I8, MemFlags::trusted(), s, 0);
+        let tag_ok = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag_byte, fast_tag as i64);
+        match class_id {
+            None => {
+                self.builder.ins().brif(tag_ok, join, &[s.into()], slow_block, &[]);
+            }
+            Some(cid) => {
+                let check_cls = self.builder.create_block();
+                self.builder.ins().brif(tag_ok, check_cls, &[], slow_block, &[]);
+                self.builder.switch_to_block(check_cls);
+                let got = self.builder.ins().load(
+                    types::I8,
+                    MemFlags::trusted(),
+                    s,
+                    pyaot_core_defs::layout::INSTANCE_CLASS_ID_OFFSET,
+                );
+                let cls_ok = self.builder.ins().icmp_imm(IntCC::Equal, got, cid);
+                self.builder.ins().brif(cls_ok, join, &[s.into()], slow_block, &[]);
+            }
+        }
+        self.builder.switch_to_block(slow_block);
+        let v = slow(self, s);
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// `Raw(I64) → Tagged`: tag a machine integer as a fixnum when it fits the
+    /// 61-bit immediate range (`(v << 3) >> 3 == v`), else box it as a heap
+    /// `BigInt` via `rt_box_i64`. A raw integer is not always range-proven (a
+    /// stdlib result such as `len` / `ord` / a counter is a full `i64`), so the
+    /// unconditional shift would silently wrap — the overflow check keeps the
+    /// tag exact (PITFALLS B16).
+    fn tag_int_checked(&mut self, s: Value) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::I64);
+        let shifted = self.builder.ins().ishl_imm(s, tag::INT_SHIFT as i64);
+        let back = self.builder.ins().sshr_imm(shifted, tag::INT_SHIFT as i64);
+        let fits = self.builder.ins().icmp(IntCC::Equal, back, s);
+        self.builder.ins().brif(fits, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let tagged = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
+        self.builder.ins().jump(join, &[tagged.into()]);
+        self.builder.switch_to_block(slow);
+        let boxed = self.call(self.rt.box_i64, &[s]).unwrap();
+        self.builder.ins().jump(join, &[boxed.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Inline fast path of the CHECKED `Tagged → Raw(I64|I8)` unbox: an
+    /// immediate carrying `imm_tag` (int / bool) is untagged in registers;
+    /// anything else takes the raising `slow_fn` (`rt_unbox_int` /
+    /// `rt_unbox_bool`, which also handle a bignum / the numeric tower).
+    fn checked_unbox_imm(&mut self, s: Value, imm_tag: u64, slow_fn: FuncId, ty: Type) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, ty);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let ok = self.builder.ins().icmp_imm(IntCC::Equal, low, imm_tag as i64);
+        self.builder.ins().brif(ok, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let v = if ty == types::I8 {
+            let shifted = self.builder.ins().ushr_imm(s, tag::BOOL_SHIFT as i64);
+            let bit = self.builder.ins().band_imm(shifted, 1);
+            self.builder.ins().ireduce(types::I8, bit)
+        } else {
+            self.builder.ins().sshr_imm(s, tag::INT_SHIFT as i64)
+        };
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(slow_fn, &[s]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
     fn lower_coerce(
         &mut self,
         dst: LocalId,
@@ -2639,25 +2787,55 @@ impl FnGen<'_, '_> {
         if checked {
             let s = self.use_operand(src);
             let v = match to {
-                Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
-                Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
-                Repr::Raw(RawKind::I8) => self.call(self.rt.unbox_bool_checked, &[s]).unwrap(),
+                Repr::Raw(RawKind::F64) => self.checked_unbox_float(s),
+                Repr::Raw(RawKind::I64) => self.checked_unbox_imm(
+                    s,
+                    tag::INT_TAG,
+                    self.rt.unbox_int_checked,
+                    types::I64,
+                ),
+                Repr::Raw(RawKind::I8) => self.checked_unbox_imm(
+                    s,
+                    tag::BOOL_TAG,
+                    self.rt.unbox_bool_checked,
+                    types::I8,
+                ),
                 // Heap-arg guard: a guarded `Tagged → Heap(shape)` coercion calls the
                 // shape's raising guard and returns the same tagged value on a
                 // match. The `dyn_check` is `Some` by construction — lowering
                 // only emits a checked heap coerce for a guarded shape (B18).
                 Repr::Heap(shape) => match shape.dyn_check() {
                     Some(HeapCheck::Kind(code)) => {
-                        let kind = self.builder.ins().iconst(types::I64, code as i64);
-                        self.call(self.rt.check_heap_kind, &[s, kind]).unwrap()
+                        let fast_tag = match shape {
+                            HeapShape::Str => Some(TypeTagKind::Str),
+                            HeapShape::Bytes => Some(TypeTagKind::Bytes),
+                            HeapShape::List(_) => Some(TypeTagKind::List),
+                            HeapShape::Dict(..) => Some(TypeTagKind::Dict),
+                            HeapShape::Set(_) => Some(TypeTagKind::Set),
+                            HeapShape::Tuple(_) | HeapShape::TupleVar(_) => {
+                                Some(TypeTagKind::Tuple)
+                            }
+                            _ => None,
+                        };
+                        self.checked_heap_guard(s, fast_tag, None, |cg, s| {
+                            let kind = cg.builder.ins().iconst(types::I64, code as i64);
+                            cg.call(cg.rt.check_heap_kind, &[s, kind]).unwrap()
+                        })
                     }
-                    Some(HeapCheck::Class(cid)) => {
-                        let class_id = self.builder.ins().iconst(types::I64, cid.0 as i64);
-                        self.call(self.rt.check_instance, &[s, class_id]).unwrap()
-                    }
+                    Some(HeapCheck::Class(cid)) => self.checked_heap_guard(
+                        s,
+                        Some(TypeTagKind::Instance),
+                        Some(cid.0 as i64),
+                        |cg, s| {
+                            let class_id = cg.builder.ins().iconst(types::I64, cid.0 as i64);
+                            cg.call(cg.rt.check_instance, &[s, class_id]).unwrap()
+                        },
+                    ),
                     Some(HeapCheck::RuntimeTag(tag)) => {
-                        let tag_imm = self.builder.ins().iconst(types::I64, tag.tag() as i64);
-                        self.call(self.rt.check_runtime_obj, &[s, tag_imm]).unwrap()
+                        self.checked_heap_guard(s, Some(tag), None, |cg, s| {
+                            let tag_imm = cg.builder.ins().iconst(types::I64, tag.tag() as i64);
+                            cg.call(cg.rt.check_runtime_obj, &[s, tag_imm]).unwrap()
+                        })
                     }
                     None => {
                         return Err(cg_error(format!(
@@ -2681,10 +2859,7 @@ impl FnGen<'_, '_> {
                     .ins()
                     .load(types::F64, MemFlags::trusted(), s, FLOAT_VALUE_OFFSET)
             }
-            Coercion::TagInt => {
-                let shifted = self.builder.ins().ishl_imm(s, tag::INT_SHIFT as i64);
-                self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64)
-            }
+            Coercion::TagInt => self.tag_int_checked(s),
             Coercion::UntagInt => self.builder.ins().sshr_imm(s, tag::INT_SHIFT as i64),
             Coercion::TagBool => {
                 let wide = self.builder.ins().uextend(types::I64, s);

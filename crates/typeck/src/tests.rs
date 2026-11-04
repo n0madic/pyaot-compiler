@@ -1008,9 +1008,11 @@ print(len(x))
 fn self_referential_container_local_terminates() {
     // `x = [x]` is the self-recursive constraint `x ⊒ list[x]`: without the
     // per-expr widening the inner sweep would climb list[list[…]] forever.
-    // Infer must terminate, with the slot cut to the (correct, tagged) `Dyn`.
+    // Infer must terminate with a sound (tagged-element) slot: `x` escapes
+    // into the literal, so the container escape analysis already widens its
+    // element slot to `Dyn` (`list[Dyn]`) before the spine can climb.
     let (m, i) = typed("x = []\nx = [x]\nprint(x)\n");
-    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::Dyn);
+    assert_eq!(local_ty(main_fn(&m), &i, "x"), SemTy::list_of(SemTy::Dyn));
 }
 
 #[test]

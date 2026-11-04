@@ -282,7 +282,7 @@ pub fn infer(
     let mut states: Vec<FuncState> = module
         .functions
         .iter()
-        .map(|f| FuncState::collect(f, n_globals, interner))
+        .map(|f| FuncState::collect(f, n_globals, resolve, interner))
         .collect();
 
     // **solve** — chaotic iteration of the module variables (see the module
@@ -566,7 +566,10 @@ fn move_field_tys(
             continue;
         }
         let tys = &contribs[vi];
-        let joined = join_tys(tys, classes);
+        // A field container is reachable through every alias of its instance:
+        // its element slots are not inferable from the field writes alone
+        // ([`escape`]).
+        let joined = escape::erase_elems(&join_tys(tys, classes));
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the variable stays at bottom
         }
@@ -609,10 +612,12 @@ fn move_global_tys(
         if vars.global_pinned[vid] || demoted[vid] || authoritative[vid] || !main_writes[vid] {
             continue;
         }
-        let joined = erase_vars(
+        // A global container is reachable from every function: its element
+        // slots cannot be inferred from `__main__`'s writes alone ([`escape`]).
+        let joined = escape::erase_elems(&erase_vars(
             &main_st.join_writes(&main_st.global_writes[vid], classes),
             classes,
-        );
+        ));
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the slot stays at bottom
         }
@@ -625,6 +630,16 @@ fn move_global_tys(
         ) {
             moved[vid] = true;
         }
+    }
+}
+
+/// True iff a comparison dunder returning `t` yields a `bool` comparison:
+/// `bool`, `NotImplemented`, a union of those, or a not-yet-solved `Never`.
+fn is_bool_result(t: &SemTy) -> bool {
+    match t {
+        SemTy::Bool | SemTy::NotImplementedT | SemTy::Never => true,
+        SemTy::Union(ms) => ms.iter().all(is_bool_result),
+        _ => false,
     }
 }
 
@@ -656,6 +671,54 @@ fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
         if !uniform {
             return SemTy::Dyn;
         }
+    }
+    // The guard applies at every nesting level: a container's element / key /
+    // value slot is itself a representation-deciding join of the contributors'
+    // matching slots (`[1.0] if c else [2]` must not be `list[float]`).
+    if let SemTy::Generic { base, args } = &joined {
+        let slot_contribs = |j: usize| -> Option<Vec<SemTy>> {
+            let mut out = Vec::new();
+            for c in contribs {
+                if *c == SemTy::Never {
+                    continue;
+                }
+                let slot = if joined.list_elem().is_some() {
+                    c.list_elem().cloned()
+                } else if joined.set_elem().is_some() {
+                    c.set_elem().cloned()
+                } else if joined.dict_kv().is_some() {
+                    c.dict_kv().map(|(k, v)| if j == 0 { k.clone() } else { v.clone() })
+                } else if joined.tuple_var_elem().is_some() {
+                    match (c.tuple_var_elem(), c.tuple_elems()) {
+                        (Some(e), _) => Some(e.clone()),
+                        (None, Some(es)) => {
+                            out.extend(es.iter().cloned());
+                            continue;
+                        }
+                        _ => None,
+                    }
+                } else if joined.tuple_elems().is_some() {
+                    c.tuple_elems().and_then(|es| es.get(j).cloned())
+                } else {
+                    return None; // a user generic: its args are not slots here
+                };
+                // A contributor of another shape (a gradual member) carries no
+                // slot information: stay conservative.
+                out.push(slot.unwrap_or(SemTy::Dyn));
+            }
+            Some(out)
+        };
+        let mut new_args = Vec::with_capacity(args.len());
+        for (j, a) in args.iter().enumerate() {
+            match slot_contribs(j) {
+                Some(sub) => new_args.push(raw_uniform(a.clone(), &sub)),
+                None => return joined,
+            }
+        }
+        return SemTy::Generic {
+            base: *base,
+            args: new_args,
+        };
     }
     joined
 }
@@ -1522,6 +1585,20 @@ enum Write {
     PushIter(Idx<HirExpr>),
     /// `x[k] = v` / dict-comprehension `ContainerInsert` — a keyed write.
     Insert(Idx<HirExpr>, Idx<HirExpr>),
+    /// `d.update(other)` — every key/value of a mapping (or, for a set, every
+    /// element of an iterable) merged into the container.
+    Merge(Idx<HirExpr>),
+    /// An element-level write whose value type typeck cannot name
+    /// (`d.setdefault(k)` stores `None`, `d.update(pairs)` from a non-mapping):
+    /// every element slot widens to `Dyn`.
+    Opaque,
+}
+
+impl Write {
+    /// True for the element-level writes (everything but a whole-value `Val`).
+    fn is_element_write(&self) -> bool {
+        !matches!(self, Write::Val(_))
+    }
 }
 
 /// Per-function constraint state. Built ONCE by [`FuncState::collect`]; the
@@ -1536,8 +1613,13 @@ struct FuncState {
     /// locals, `Never` otherwise — what `reset` restores before a re-solve.
     local_bottom: Vec<SemTy>,
     /// Writes into each local, indexed by `LocalId`: whole-value assignments
-    /// plus element-level container writes (Phase 8H, D1).
+    /// plus element-level container writes (Phase 8H, D1). Element writes are
+    /// shared across an alias class (`y = x`), see [`escape`].
     assignments: Vec<Vec<Write>>,
+    /// `escaped[i]`: local `i`'s container may be written through a path
+    /// typeck cannot see, so its inferred element slots widen to `Dyn`
+    /// ([`escape::erase_elems`]).
+    escaped: Vec<bool>,
     /// Value expressions written into the cell held by each local (`CellSet`
     /// plus the `MakeCell` init), indexed by the cell local's `LocalId` — the
     /// per-cell constraint of Phase 6A (the B10 field-join shape).
@@ -1563,7 +1645,12 @@ struct FuncState {
 
 impl FuncState {
     /// **collect** — seed the assignment tables and the authoritative-local set.
-    fn collect(func: &HirFunction, n_globals: usize, interner: &StringInterner) -> Self {
+    fn collect(
+        func: &HirFunction,
+        n_globals: usize,
+        resolve: &ResolveResult,
+        interner: &StringInterner,
+    ) -> Self {
         let n = func.locals.len();
         // A frontend type other than `Dyn` is authoritative: it comes from a
         // parameter annotation, a `name: T` annotation, or a synthetic local the
@@ -1651,34 +1738,59 @@ impl FuncState {
                             assignments[i].push(Write::Insert(*index, *value));
                         }
                     }
-                    // `xs.append(v)` / `s.add(v)` / `xs.insert(i, v)` /
-                    // `xs.extend(it)` as a statement-expression on a direct local.
-                    HirStmt::Expr(e) => {
-                        if let HirExprKind::MethodCall {
-                            recv,
-                            method_name,
-                            args,
-                            kwargs: _,
-                        } = &func.exprs[*e].kind
-                        {
-                            if let Some(i) = direct_local(*recv) {
-                                match (interner.resolve(*method_name), args.as_slice()) {
-                                    ("append" | "add", [v]) => {
-                                        assignments[i].push(Write::Push(*v));
-                                    }
-                                    ("insert", [_, v]) => {
-                                        assignments[i].push(Write::Push(*v));
-                                    }
-                                    ("extend", [it]) => {
-                                        assignments[i].push(Write::PushIter(*it));
-                                    }
-                                    _ => {}
-                                }
-                            }
+                    // `xs[a:b] = it` — every element of `it` lands in `xs`.
+                    HirStmt::SetSlice { base, value, .. } => {
+                        if let Some(i) = direct_local(*base) {
+                            assignments[i].push(Write::PushIter(*value));
                         }
                     }
                     _ => {}
                 }
+            }
+        }
+        // `xs.append(v)` / `s.add(v)` / `xs.insert(i, v)` / `xs.extend(it)` /
+        // `d.setdefault(k, v)` / `d.update(m)` on a direct local, wherever the
+        // call appears (a statement, or nested: `d.setdefault(k, []).append(v)`).
+        for (_, expr) in func.exprs.iter() {
+            if let HirExprKind::MethodCall {
+                recv,
+                method_name,
+                args,
+                kwargs,
+            } = &expr.kind
+            {
+                let Some(i) = direct_local(*recv) else {
+                    continue;
+                };
+                let w = match (interner.resolve(*method_name), args.as_slice()) {
+                    ("append" | "add", [v]) => Write::Push(*v),
+                    ("insert", [_, v]) => Write::Push(*v),
+                    ("extend", [it]) => Write::PushIter(*it),
+                    ("setdefault", [k, v]) => Write::Insert(*k, *v),
+                    ("setdefault", [_]) => Write::Opaque,
+                    ("update", [m]) if kwargs.is_empty() => Write::Merge(*m),
+                    ("update", _) => Write::Opaque,
+                    _ => continue,
+                };
+                assignments[i].push(w);
+            }
+        }
+
+        // Alias classes share one container object: every element write
+        // through one name is a write through all of them.
+        let esc = escape::analyze(func, resolve, interner);
+        let mut class_writes: HashMap<usize, Vec<Write>> = HashMap::new();
+        for (i, ws) in assignments.iter().enumerate() {
+            let c = esc.alias_class[i];
+            class_writes
+                .entry(c)
+                .or_default()
+                .extend(ws.iter().filter(|w| w.is_element_write()).copied());
+        }
+        for (i, ws) in assignments.iter_mut().enumerate() {
+            ws.retain(|w| !w.is_element_write());
+            if let Some(cw) = class_writes.get(&esc.alias_class[i]) {
+                ws.extend(cw.iter().copied());
             }
         }
 
@@ -1687,6 +1799,7 @@ impl FuncState {
             authoritative,
             local_bottom,
             assignments,
+            escaped: esc.escaped,
             cell_writes,
             global_writes,
             attr_writes,
@@ -1793,6 +1906,29 @@ impl FuncState {
                         elems.push(self.ety(*v));
                     }
                 }
+                Write::Merge(m) => {
+                    let mt = self.ety(*m);
+                    if is_dict {
+                        match mt.dict_kv() {
+                            Some((k, v)) => {
+                                keys.push(k.clone());
+                                dvals.push(v.clone());
+                            }
+                            None if mt == SemTy::Never => {}
+                            None => {
+                                keys.push(SemTy::Dyn);
+                                dvals.push(SemTy::Dyn);
+                            }
+                        }
+                    } else if is_list || is_set {
+                        elems.push(iter_elem_ty(&mt, classes));
+                    }
+                }
+                Write::Opaque => {
+                    elems.push(SemTy::Dyn);
+                    keys.push(SemTy::Dyn);
+                    dvals.push(SemTy::Dyn);
+                }
             }
         }
         let join_slot = |tys: &[SemTy]| join_tys(tys, classes);
@@ -1879,10 +2015,16 @@ impl<'a> Sweeper<'a> {
                     continue;
                 }
                 // Recompute the local from its assigned values, applying the
-                // `Raw`-repr soundness guard (see the module docs).
-                let new = self
+                // `Raw`-repr soundness guard (see the module docs) and the
+                // container escape seal ([`escape`]).
+                let joined = self
                     .st
                     .join_local_writes(&self.st.assignments[i], self.classes);
+                let new = if self.st.escaped[i] {
+                    escape::erase_elems(&joined)
+                } else {
+                    escape::seal_nested(&joined)
+                };
                 if self.st.local_ty[i] != new {
                     self.st.local_ty[i] = new;
                     changed = true;
@@ -1939,7 +2081,7 @@ impl<'a> Sweeper<'a> {
             // real writes, and `check_reinterpret` admits a `Never` write into
             // any slot (the read-guard, not the type, enforces unboundness).
             HirExprKind::Unbound => SemTy::Never,
-            HirExprKind::Compare { .. } => SemTy::Bool,
+            HirExprKind::Compare { op, l, r } => self.compare_ty(*op, *l, *r),
             HirExprKind::Local(lid) => self.st.local_ty[lid.index()].clone(),
             HirExprKind::Name(symref) => self.name_ty(*symref),
             HirExprKind::Unary { op, operand } => self.unary_ty(*op, self.ety(*operand)),
@@ -1985,8 +2127,14 @@ impl<'a> Sweeper<'a> {
                 }
                 let numeric = |t: &SemTy| matches!(t, SemTy::Int | SemTy::Float | SemTy::Bool);
                 if numeric(&elem) && numeric(&start_ty) {
-                    if elem == SemTy::Float || start_ty == SemTy::Float {
+                    if start_ty == SemTy::Float {
                         SemTy::Float
+                    } else if elem == SemTy::Float {
+                        // `sum(floats)` with an `int` start is the start `0`
+                        // itself when the iterable is empty (CPython prints
+                        // `0`, not `0.0`), so the result is `int | float` —
+                        // gradual (`Tagged`), never a `Raw(F64)` slot.
+                        SemTy::Dyn
                     } else {
                         SemTy::Int
                     }
@@ -2145,8 +2293,14 @@ impl<'a> Sweeper<'a> {
                     // frontend (the slot itself is a pin_tagged cell pointer).
                     l.ty.clone()
                 } else {
-                    self.st
-                        .join_writes(&self.st.cell_writes[cell.index()], self.classes)
+                    // A cell's content is shared with every closure over it, so
+                    // a container in it is written through paths this function
+                    // cannot see ([`escape`]).
+                    escape::erase_elems(
+                        &self
+                            .st
+                            .join_writes(&self.st.cell_writes[cell.index()], self.classes),
+                    )
                 }
             }
             // ── generators (Phase 6E) ──
@@ -2414,6 +2568,35 @@ impl<'a> Sweeper<'a> {
 
     /// The declared return type of a concrete-class dunder `name` on `ty`, if any
     /// (used to type class operator results precisely — `v + v → Vector`).
+    /// Result type of `l <op> r`. Builtin comparisons are `bool`, and so is a
+    /// user rich-comparison dunder returning `bool` (possibly `NotImplemented`
+    /// on some paths). A dunder returning anything else makes the comparison
+    /// yield that value unchanged (CPython), so the expression is gradual `Dyn`
+    /// and lowering hands the dunder's value back instead of its truthiness.
+    fn compare_ty(&self, op: pyaot_hir::CmpOp, l: Idx<HirExpr>, r: Idx<HirExpr>) -> SemTy {
+        use pyaot_hir::CmpOp;
+        let (lt, rt) = (self.ety(l), self.ety(r));
+        let fwd = match op {
+            CmpOp::Eq => "__eq__",
+            CmpOp::NotEq => "__ne__",
+            CmpOp::Lt => "__lt__",
+            CmpOp::LtE => "__le__",
+            CmpOp::Gt => "__gt__",
+            CmpOp::GtE => "__ge__",
+        };
+        let rev = pyaot_types::dunders::reflected_name(fwd);
+        let rets = [
+            self.class_dunder_ret(&lt, fwd),
+            rev.and_then(|n| self.class_dunder_ret(&rt, n)),
+        ];
+        let non_bool = rets.iter().flatten().any(|t| !is_bool_result(t));
+        if non_bool {
+            SemTy::Dyn
+        } else {
+            SemTy::Bool
+        }
+    }
+
     fn class_dunder_ret(&self, ty: &SemTy, name: &str) -> Option<SemTy> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
@@ -2673,7 +2856,7 @@ impl<'a> Sweeper<'a> {
                 } else if is_int_like(&l) && is_sequence(&r) {
                     r
                 } else {
-                    l.join(&r, self.classes)
+                    self.arith_join(l, r)
                 }
             }
             // `+` over two same-base containers already joins to that container
@@ -2682,7 +2865,16 @@ impl<'a> Sweeper<'a> {
             // `-=` (`ISub`) joins here too: `set[int] -= set[int]` → `set[int]`
             // (covariant join), numeric `-=` stays numeric.
             BinOp::Add | BinOp::Sub | BinOp::ISub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-                l.join(&r, self.classes)
+                // Fixed-tuple concatenation keeps every slot (`(1,) + (2.0,)` is
+                // `tuple[int, float]`), not the per-slot join.
+                if op == BinOp::Add {
+                    if let (Some(a), Some(b)) = (l.tuple_elems(), r.tuple_elems()) {
+                        let mut elems = a.to_vec();
+                        elems.extend(b.iter().cloned());
+                        return SemTy::tuple_of(elems);
+                    }
+                }
+                self.arith_join(l, r)
             }
             // `@` has no built-in numeric meaning — only the `__matmul__` dunder
             // (handled above). On any non-class pair it is a runtime `TypeError`,
@@ -2705,10 +2897,14 @@ impl<'a> Sweeper<'a> {
             // the frontend `Dyn` fallback, and is wrongly rejected at the `float`
             // constructor slot (§6). Two unresolved/gradual operands stay
             // `Never`/`Dyn`; two non-numerics → `Dyn` (a runtime `TypeError`).
+            //
+            // Only the unresolved `Never` anchors, never a gradual `Dyn`: a `Dyn`
+            // operand may be an instance whose `__truediv__` / `__rtruediv__`
+            // returns anything, so `Dyn / x` and `x / Dyn` stay `Dyn`.
             BinOp::Div => {
-                let gradual = |t: &SemTy| matches!(t, SemTy::Never | SemTy::Dyn);
-                if (is_numeric(&l) && (is_numeric(&r) || gradual(&r)))
-                    || (gradual(&l) && is_numeric(&r))
+                let unresolved = |t: &SemTy| *t == SemTy::Never;
+                if (is_numeric(&l) && (is_numeric(&r) || unresolved(&r)))
+                    || (unresolved(&l) && is_numeric(&r))
                 {
                     SemTy::Float
                 } else if l == SemTy::Never || r == SemTy::Never {
@@ -2730,15 +2926,47 @@ impl<'a> Sweeper<'a> {
             | BinOp::BitXor
             | BinOp::Shl
             | BinOp::Shr => {
-                if is_int_like(&l) && is_int_like(&r) {
+                let logical = matches!(
+                    op,
+                    BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::IOr
+                        | BinOp::IAnd
+                        | BinOp::IXor
+                        | BinOp::BitXor
+                );
+                if logical && l == SemTy::Bool && r == SemTy::Bool {
+                    // `bool & | ^ bool` is a `bool` (`True & False` → `False`).
+                    SemTy::Bool
+                } else if is_int_like(&l) && is_int_like(&r) {
                     SemTy::Int
                 } else if l == SemTy::Never || r == SemTy::Never {
                     SemTy::Never
                 } else {
-                    l.join(&r, self.classes)
+                    join_tys(&[l, r], self.classes)
                 }
             }
         }
+    }
+
+    /// The result type of numeric arithmetic / container `+`: the numeric tower
+    /// with `bool` promoted to `int` (`True + True` is `2`, an `int`; any `float`
+    /// operand makes a `float`), else the representation-guarded join (so
+    /// `[1.0] + [2]` is a `list` whose element slot stays `Tagged`).
+    fn arith_join(&self, l: SemTy, r: SemTy) -> SemTy {
+        if is_numeric(&l) && is_numeric(&r) {
+            return if l == SemTy::Float || r == SemTy::Float {
+                SemTy::Float
+            } else {
+                SemTy::Int
+            };
+        }
+        // A lone `bool` against an unresolved operand promotes like `int`.
+        let promote = |t: SemTy| if t == SemTy::Bool { SemTy::Int } else { t };
+        if l == SemTy::Never || r == SemTy::Never {
+            return promote(l.join(&r, self.classes));
+        }
+        join_tys(&[l, r], self.classes)
     }
 
     /// Result type of a call: a compiled function's declared return, a
@@ -3066,6 +3294,7 @@ fn is_empty_container_literal(expr: &HirExpr) -> bool {
     }
 }
 
+mod escape;
 mod intervals;
 
 #[cfg(test)]

@@ -481,8 +481,15 @@ impl MirInst {
             // any of which RAISES on a bad shape (TypeError allocates the
             // exception); `BoxFloat` allocates a `FloatObj`. Every other bridge is
             // bit ops / a load.
+            // `BoxFloat` allocates a `FloatObj`; `TagInt` boxes an
+            // out-of-fixnum-range `i64` as a `BigInt` (`rt_box_i64`); a checked
+            // coercion may raise (allocating the exception).
             MirInst::Coerce(c) => {
-                c.checked() || classify_coercion(c.from(), c.to()) == Some(Coercion::BoxFloat)
+                c.checked()
+                    || matches!(
+                        classify_coercion(c.from(), c.to()),
+                        Some(Coercion::BoxFloat | Coercion::TagInt)
+                    )
             }
             MirInst::BinOp {
                 dst: _,

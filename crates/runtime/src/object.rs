@@ -291,6 +291,11 @@ const _: () = assert!(
     std::mem::offset_of!(InstanceObj, vtable) == layout::INSTANCE_VTABLE_OFFSET as usize,
     "InstanceObj vtable offset does not match layout::INSTANCE_VTABLE_OFFSET"
 );
+// Compile-time assertion: class_id field offset must match the layout constant
+const _: () = assert!(
+    std::mem::offset_of!(InstanceObj, class_id) == layout::INSTANCE_CLASS_ID_OFFSET as usize,
+    "InstanceObj class_id offset does not match layout::INSTANCE_CLASS_ID_OFFSET"
+);
 // Compile-time assertion: size_of::<InstanceObj> equals INSTANCE_FIELDS_OFFSET
 // because the zero-length `fields` array adds no bytes.
 const _: () = assert!(

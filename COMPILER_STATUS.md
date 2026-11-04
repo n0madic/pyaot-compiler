@@ -252,7 +252,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 
 | Module | Status | Notes |
 |---|---|---|
-| `math` | ✅ | Core functions + constants |
+| `math` | ✅ | Core functions + constants; `factorial`/`gcd`/`lcm`/`comb`/`perm` are exact on big ints |
 | `random` | ✅ | |
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
@@ -283,7 +283,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Feature | Status | Notes |
 |---|---|---|
 | Type annotations on params/returns/vars | ✅ | Drive representation & inference |
-| Type inference (constraint-based) | ✅ | One solver, finished before lowering |
+| Type inference (constraint-based) | ✅ | One solver, finished before lowering; container element types are precise only for non-escaping containers (escape/alias analysis), every `Tagged → Raw/Heap` narrowing is runtime-checked by default |
 | Gradual typing (`Dyn` / unannotated) | ✅ | Always-correct Tagged baseline |
 | Generics / monomorphization | ✅ | `Generic`, `TypeVar` |
 | `typing.Protocol` (structural) | ✅ | Instance-level |

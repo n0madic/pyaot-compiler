@@ -123,6 +123,8 @@ const PHASE_CORPUS: &[&str] = &[
     // p9_*_gc_stress, gc_simple). Run under `RUSTFLAGS="--cfg gc_stress_test"` to
     // surface a missed root as a use-after-free.
     "test_gc_stress.py",
+    // Inference soundness regressions (KNOWN_BUGS Phase 2, Root A).
+    "test_inference_soundness.py",
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",
     "test_import.py",

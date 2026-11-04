@@ -486,7 +486,31 @@ impl<'a> FnLower<'a> {
 
     /// Coerce `src` (`from`) into a fresh local of `to`, returning it. No-op
     /// coercions still alias through a fresh local for a uniform interface.
+    ///
+    /// **Narrowing a `Tagged` value is checked by default.** A `Tagged` source
+    /// coerced into a `Raw` register (`F64`/`I64`/`I8`) or a guard-backed
+    /// `Heap(shape)` takes the CHECKED coercion (`rt_unbox_*` /
+    /// `rt_check_*`): the `Tagged` baseline is the always-correct default, and
+    /// a narrower repr is only an optimization (invariant 2), so a value whose
+    /// static type was inferred too optimistically (an aliased container
+    /// element, a gradual seam) raises `TypeError` / converts by the numeric
+    /// tower instead of being reinterpreted as garbage bits. The peephole pass
+    /// folds the guard away when the value provably came out of the same repr
+    /// (`Raw → Tagged → Raw` round trips). Sites that have a proof the value
+    /// already has the target shape use [`Self::coerce_trusted`].
     fn coerce(&mut self, src: LocalId, from: Repr, to: Repr) -> Result<LocalId> {
+        self.coerce_impl(src, from, to, true)
+    }
+
+    /// [`Self::coerce`] without the runtime guard on a `Tagged` narrowing — for
+    /// sites that have a local proof the value already has the target shape
+    /// (the sub/superclass reroute through `Tagged`, a value this function just
+    /// produced at the target repr).
+    fn coerce_trusted(&mut self, src: LocalId, from: Repr, to: Repr) -> Result<LocalId> {
+        self.coerce_impl(src, from, to, false)
+    }
+
+    fn coerce_impl(&mut self, src: LocalId, from: Repr, to: Repr, guard: bool) -> Result<LocalId> {
         if from == to {
             return Ok(src);
         }
@@ -496,28 +520,36 @@ impl<'a> FnLower<'a> {
         // reinterpret). Both legs are in the table; the nominal subtype relation
         // was validated at the typeck boundary (`check_reinterpret`).
         if is_class_repr(&from) && is_class_repr(&to) {
-            let tagged = self.coerce(src, from, Repr::Tagged)?;
-            return self.coerce(tagged, Repr::Tagged, to);
+            let tagged = self.coerce_impl(src, from, Repr::Tagged, false)?;
+            return self.coerce_impl(tagged, Repr::Tagged, to, false);
         }
-        // `CoerceInst::new` IS the legality check (the same table behind
-        // `legalize::coerce`): an illegal pair is unconstructible.
+        // A typed heap value (a `BigInt` literal / result) into a `Raw` register
+        // has no direct bridge: go through the `Tagged` baseline (a free
+        // `Heap → Tagged` re-type) and the checked unbox, which converts a big
+        // int (`rt_unbox_int` raises `OverflowError` past `i64`, `rt_unbox_float`
+        // rounds) instead of being an illegal pair.
+        if matches!(from, Repr::Heap(_)) && matches!(to, Repr::Raw(_)) {
+            let tagged = self.coerce_impl(src, from, Repr::Tagged, false)?;
+            return self.coerce_impl(tagged, Repr::Tagged, to, true);
+        }
         let dst = self.alloc_temp(to.clone());
-        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
-            .ok_or_else(|| cg_illegal(&from, &to))?;
+        let inst = make_coerce(dst, src, &from, &to, guard)?;
         self.emit(MirInst::Coerce(inst));
         Ok(dst)
     }
 
     /// Coerce `src` (`from`) into the *existing* local `dst` (whose declared repr
-    /// is `to`) — used for assignment and result-local stores.
+    /// is `to`) — used for assignment and result-local stores. A `Tagged`
+    /// narrowing is checked, as in [`Self::coerce`].
     fn coerce_into(&mut self, dst: LocalId, src: LocalId, from: Repr, to: Repr) -> Result<()> {
         // A sub/superclass cast routes through the tagged baseline (see `coerce`).
         if from != to && is_class_repr(&from) && is_class_repr(&to) {
-            let tagged = self.coerce(src, from, Repr::Tagged)?;
-            return self.coerce_into(dst, tagged, Repr::Tagged, to);
+            let tagged = self.coerce_trusted(src, from, Repr::Tagged)?;
+            let inst = make_coerce(dst, tagged, &Repr::Tagged, &to, false)?;
+            self.emit(MirInst::Coerce(inst));
+            return Ok(());
         }
-        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
-            .ok_or_else(|| cg_illegal(&from, &to))?;
+        let inst = make_coerce(dst, src, &from, &to, true)?;
         self.emit(MirInst::Coerce(inst));
         Ok(())
     }
@@ -1561,7 +1593,7 @@ impl<'a> FnLower<'a> {
             }
             HirExprKind::BinOp { op, l, r } => self.lower_binop(idx, *op, *l, *r),
             HirExprKind::Unary { op, operand } => self.lower_unary(*op, *operand),
-            HirExprKind::Compare { op, l, r } => self.lower_compare(*op, *l, *r),
+            HirExprKind::Compare { op, l, r } => self.lower_compare(idx, *op, *l, *r),
             HirExprKind::Call { callee, args } => self.lower_call(idx, *callee, args.clone()),
             HirExprKind::CallValue {
                 callee,
@@ -2235,7 +2267,7 @@ impl<'a> FnLower<'a> {
 
         let mut ops: Vec<Operand> = Vec::with_capacity(def.params.len());
         for (i, slot) in args.iter().enumerate() {
-            let want = runtime_param_repr(def.params[i], params.get(i).map(|p| &p.ty));
+            let want = runtime_param_repr_of(def, i, params.get(i).map(|p| &p.ty));
             match slot {
                 Some(arg) => {
                     // An integer literal headed for a raw i64 register slot
@@ -2308,13 +2340,13 @@ impl<'a> FnLower<'a> {
         // islice(it, stop)               → start=0, stop,      step=1
         // islice(it, start, stop[, step])→ start,   stop,      step (default 1)
         let (start, stop, step) = if provided <= 2 {
-            let stop = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
+            let stop = self.lower_raw_index(args.get(1).copied().flatten(), i64::MAX, span)?;
             (self.raw_i64_const(0), stop, self.raw_i64_const(1))
         } else {
-            let start = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
-            let stop = self.lower_raw_index(args.get(2).copied().flatten(), span)?;
+            let start = self.lower_raw_index(args.get(1).copied().flatten(), 0, span)?;
+            let stop = self.lower_raw_index(args.get(2).copied().flatten(), i64::MAX, span)?;
             let step = if provided >= 4 {
-                self.lower_raw_index(args.get(3).copied().flatten(), span)?
+                self.lower_raw_index(args.get(3).copied().flatten(), 1, span)?
             } else {
                 self.raw_i64_const(1)
             };
@@ -2336,6 +2368,7 @@ impl<'a> FnLower<'a> {
     fn lower_raw_index(
         &mut self,
         slot: Option<Idx<HirExpr>>,
+        none_default: i64,
         span: pyaot_utils::Span,
     ) -> Result<LocalId> {
         let arg = slot.ok_or_else(|| {
@@ -2349,8 +2382,52 @@ impl<'a> FnLower<'a> {
             });
             return Ok(dst);
         }
-        let (l, r) = self.lower_expr(arg)?;
-        self.coerce(l, r, Repr::Raw(RawKind::I64))
+        // `None` means "no bound": `islice(it, None)` runs to exhaustion, a
+        // `None` start is 0 and a `None` step is 1 — the same defaults as an
+        // omitted argument.
+        self.index_or_none(arg, none_default)
+    }
+
+    /// Lower an index-like operand (a slice bound, an `islice` argument) into
+    /// a `Raw(I64)` register, mapping a runtime `None` to `default` (CPython:
+    /// `xs[1:None]`, `islice(it, None)`). A statically `int` / `bool` operand
+    /// takes the plain checked unbox; a possibly-`None` one (`Optional[int]`,
+    /// gradual) branches on `rt_is_none` first, so `None` never reaches the
+    /// integer unbox (which would raise / mis-read it).
+    fn index_or_none(&mut self, e: Idx<HirExpr>, default: i64) -> Result<LocalId> {
+        let ty = self.func.exprs[e].ty.clone();
+        let (el, er) = self.lower_expr(e)?;
+        if matches!(ty, SemTy::Int | SemTy::Bool) {
+            return self.coerce_to_i64(el, er);
+        }
+        let tagged = self.coerce(el, er, Repr::Tagged)?;
+        let result = self.alloc_temp(Repr::Raw(RawKind::I64));
+        let is_none = self.alloc_temp(Repr::Raw(RawKind::I8));
+        self.emit(MirInst::CallRuntime {
+            dst: Some(is_none),
+            def: &pyaot_core_defs::runtime_func_def::RT_IS_NONE,
+            args: vec![Operand::Local(tagged)],
+        });
+        let none_bb = self.reserve_block();
+        let int_bb = self.reserve_block();
+        let join_bb = self.reserve_block();
+        self.seal(MirTerminator::Branch {
+            cond: Operand::Local(is_none),
+            then: none_bb,
+            else_: int_bb,
+        });
+        self.switch(none_bb);
+        self.emit(MirInst::Const {
+            dst: result,
+            val: Const::Int(default),
+        });
+        self.seal(MirTerminator::Jump(join_bb));
+        self.switch(int_bb);
+        let v = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I64))?;
+        self.coerce_into(result, v, Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64))?;
+        self.seal(MirTerminator::Jump(join_bb));
+        self.switch(join_bb);
+        Ok(result)
     }
 
     /// Emit a `CallRuntime` for descriptor `def` with already-legalized arg
@@ -2374,7 +2451,11 @@ impl<'a> FnLower<'a> {
                     args: ops,
                 });
                 let result_repr = repr_of(&self.func.exprs[call_idx].ty);
-                let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
+                // The descriptor's declared return type IS the runtime contract
+                // (including the documented `Optional[T]` → `T` narrowing, whose
+                // `None`/null result the frozen runtime accepts back as a
+                // receiver), so the narrowing is trusted rather than re-checked.
+                let coerced = self.coerce_trusted(dst, ret_repr, result_repr.clone())?;
                 Ok((coerced, result_repr))
             }
             None => {
@@ -3181,7 +3262,8 @@ impl<'a> FnLower<'a> {
                 def: &field.codegen,
                 args,
             });
-            let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
+            // Descriptor result: trusted, as in `emit_runtime_call`.
+            let coerced = self.coerce_trusted(dst, ret_repr, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
 
@@ -5084,10 +5166,7 @@ impl<'a> FnLower<'a> {
     /// fixnum range, so the `raw_i64_const` tag round-trip would corrupt them.
     fn slice_bound(&mut self, bound: Option<Idx<HirExpr>>, default: i64) -> Result<LocalId> {
         match bound {
-            Some(e) => {
-                let (el, er) = self.lower_expr(e)?;
-                self.coerce_to_i64(el, er)
-            }
+            Some(e) => self.index_or_none(e, default),
             None => {
                 let t = self.alloc_temp(Repr::Raw(RawKind::I64));
                 self.emit(MirInst::Const {
@@ -5670,7 +5749,8 @@ impl<'a> FnLower<'a> {
         // Container `+` / `*`: the tagged `rt_obj_add`/`rt_obj_mul` handle only
         // str + numeric, so list/tuple/bytes concatenation and repetition dispatch
         // by static type to the typed runtime ops.
-        if let Some(res) = self.try_container_binop(mop, ll, &lr, rl, &rr)? {
+        let res_repr = repr_of(&self.func.exprs[idx].ty);
+        if let Some(res) = self.try_container_binop(mop, ll, &lr, rl, &rr, &res_repr)? {
             return Ok(res);
         }
 
@@ -5738,6 +5818,7 @@ impl<'a> FnLower<'a> {
         lr: &Repr,
         rl: LocalId,
         rr: &Repr,
+        res_repr: &Repr,
     ) -> Result<Option<(LocalId, Repr)>> {
         use pyaot_core_defs::runtime_func_def as rf;
         use pyaot_core_defs::TypeTagKind;
@@ -5779,10 +5860,17 @@ impl<'a> FnLower<'a> {
                     (Repr::Heap(Bytes), Repr::Heap(Bytes)) => ContainerOp::BytesConcat,
                     _ => return Ok(None),
                 };
+                // The result's own heap shape (typeck's: a fixed-tuple concat
+                // has the summed arity, a list concat the guarded element join);
+                // the left operand's shape only as a fallback.
+                let heap = match res_repr {
+                    Repr::Heap(_) => res_repr.clone(),
+                    _ => lr.clone(),
+                };
                 let (dst, ret) = self.emit_container(
                     cop,
                     vec![(ll, lr.clone()), (rl, rr.clone())],
-                    Some(lr.clone()),
+                    Some(heap),
                 )?;
                 Ok(Some((dst.expect("concat produces a container"), ret)))
             }
@@ -5945,6 +6033,7 @@ impl<'a> FnLower<'a> {
         op: HCmpOp,
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
+        want_value: bool,
     ) -> Result<Option<(LocalId, Repr)>> {
         let lt = self.func.exprs[l].ty.clone();
         let rt = self.func.exprs[r].ty.clone();
@@ -5974,7 +6063,7 @@ impl<'a> FnLower<'a> {
         // with a present reflected dunder.
         let fwd_is_tagged = fwd_fid.is_some_and(|f| self.sigs[f.index()].ret == Repr::Tagged);
         let needs_protocol = fwd_is_tagged || (fwd_fid.is_none() && rev_fid.is_some());
-        if !needs_protocol {
+        if !needs_protocol || (want_value && fwd_fid.is_some() && !fwd_is_tagged) {
             return Ok(None);
         }
 
@@ -5987,15 +6076,21 @@ impl<'a> FnLower<'a> {
         let (rl, rr) = self.lower_expr(r)?;
         let right = self.coerce(rl, rr, Repr::Tagged)?;
 
-        // The merged bool result, written on each non-diverging arm.
-        let result = self.alloc_temp(Repr::Raw(RawKind::I8));
+        // The merged result, written on each non-diverging arm: the dunder's
+        // truthiness, or (`want_value`) the dunder's value itself.
+        let result_repr = if want_value {
+            Repr::Tagged
+        } else {
+            Repr::Raw(RawKind::I8)
+        };
+        let result = self.alloc_temp(result_repr.clone());
         let reflected_bb = self.reserve_block();
         let default_bb = self.reserve_block();
         let merge_bb = self.reserve_block();
 
         // ── forward: call `left.fwd(right)`; on NI fall to the reflected arm ──
         if let Some(ffid) = fwd_fid {
-            self.emit_compare_arm(ffid, left, right, result, reflected_bb, merge_bb)?;
+            self.emit_compare_arm(ffid, left, right, result, reflected_bb, merge_bb, want_value)?;
         } else {
             self.seal(MirTerminator::Jump(reflected_bb));
         }
@@ -6003,7 +6098,7 @@ impl<'a> FnLower<'a> {
         // ── reflected: call `right.rev(left)` (operands SWAPPED); NI → default ──
         self.switch(reflected_bb);
         if let Some(rfid) = rev_fid {
-            self.emit_compare_arm(rfid, right, left, result, default_bb, merge_bb)?;
+            self.emit_compare_arm(rfid, right, left, result, default_bb, merge_bb, want_value)?;
         } else {
             self.seal(MirTerminator::Jump(default_bb));
         }
@@ -6012,7 +6107,7 @@ impl<'a> FnLower<'a> {
         self.switch(default_bb);
         if is_eq {
             let id = self.rt_is_i8(left, right);
-            self.coerce_into(result, id, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            self.coerce_into(result, id, Repr::Raw(RawKind::I8), result_repr.clone())?;
             self.seal(MirTerminator::Jump(merge_bb));
         } else {
             self.emit(MirInst::Raise(MirRaise::Builtin {
@@ -6025,7 +6120,7 @@ impl<'a> FnLower<'a> {
         // ── merge: the result bool, negated for a derived `!=` ──
         self.switch(merge_bb);
         if negate {
-            let tagged = self.coerce(result, Repr::Raw(RawKind::I8), Repr::Tagged)?;
+            let tagged = self.coerce(result, result_repr.clone(), Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
             self.emit(MirInst::Unary {
                 dst,
@@ -6034,7 +6129,7 @@ impl<'a> FnLower<'a> {
             });
             return Ok(Some((dst, Repr::Raw(RawKind::I8))));
         }
-        Ok(Some((result, Repr::Raw(RawKind::I8))))
+        Ok(Some((result, result_repr)))
     }
 
     /// One arm of the §4b comparison diamond: call dunder `fid(recv, arg)`; if it
@@ -6050,6 +6145,7 @@ impl<'a> FnLower<'a> {
         result: LocalId,
         ni_bb: BlockId,
         merge_bb: BlockId,
+        want_value: bool,
     ) -> Result<()> {
         let (res, res_repr) =
             self.emit_dunder_call(fid, vec![(recv, Repr::Tagged), (arg, Repr::Tagged)])?;
@@ -6066,8 +6162,17 @@ impl<'a> FnLower<'a> {
                 else_: not_ni_bb,
             });
             self.switch(not_ni_bb);
-            let b = self.truthy_i8(res_t, Repr::Tagged)?;
-            self.coerce_into(result, b, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            if want_value {
+                self.coerce_into(result, res_t, Repr::Tagged, Repr::Tagged)?;
+            } else {
+                let b = self.truthy_i8(res_t, Repr::Tagged)?;
+                self.coerce_into(result, b, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            }
+            self.seal(MirTerminator::Jump(merge_bb));
+        } else if want_value {
+            // A typed non-`NotImplemented` result: hand the value back.
+            let t = self.coerce(res, res_repr, Repr::Tagged)?;
+            self.coerce_into(result, t, Repr::Tagged, Repr::Tagged)?;
             self.seal(MirTerminator::Jump(merge_bb));
         } else {
             // A pure-`Bool` (`Raw(I8)`) dunder: no NI possible, use directly.
@@ -6080,13 +6185,19 @@ impl<'a> FnLower<'a> {
 
     fn lower_compare(
         &mut self,
+        idx: Idx<HirExpr>,
         op: HCmpOp,
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
+        // A user comparison dunder may return a non-`bool` (CPython hands the
+        // value back unchanged: `a < b` → whatever `__lt__` returned). typeck
+        // types such a comparison `Dyn`; then the dunder's value is the result
+        // (Tagged) instead of its truthiness.
+        let want_value = self.func.exprs[idx].ty != SemTy::Bool;
         // §4b: the rich-comparison `NotImplemented` protocol (forward→reflected→
         // identity/TypeError) for user-class operands whose dunder may return NI.
-        if let Some(res) = self.try_compare_protocol(op, l, r)? {
+        if let Some(res) = self.try_compare_protocol(op, l, r, want_value)? {
             return Ok(res);
         }
         // Class comparison dunders the runtime does NOT dispatch: route a
@@ -6108,6 +6219,10 @@ impl<'a> FnLower<'a> {
                 });
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
+            if want_value {
+                let t = self.coerce(res, rrep, Repr::Tagged)?;
+                return Ok((t, Repr::Tagged));
+            }
             let dst = self.truthy_i8(res, rrep)?;
             return Ok((dst, Repr::Raw(RawKind::I8)));
         }
@@ -6123,6 +6238,10 @@ impl<'a> FnLower<'a> {
                 let (ll, lr) = self.lower_expr(l)?;
                 let (rl, rr) = self.lower_expr(r)?;
                 let (res, rrep) = self.emit_dunder_call(fid, vec![(ll, lr), (rl, rr)])?;
+                if want_value {
+                    let t = self.coerce(res, rrep, Repr::Tagged)?;
+                    return Ok((t, Repr::Tagged));
+                }
                 let dst = self.truthy_i8(res, rrep)?;
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
@@ -6911,6 +7030,27 @@ fn cg_illegal(from: &Repr, to: &Repr) -> CompilerError {
     CompilerError::codegen_error(format!("illegal coercion {from:?} -> {to:?}"), None)
 }
 
+/// Build the `Coerce` payload `src: from → dst: to`. With `guard`, a `Tagged`
+/// narrowing into a guard-backed repr (`Raw` unbox / guarded `Heap` shape) is
+/// the CHECKED coercion; everything else (and `guard == false`) is the plain
+/// table coercion. An illegal pair is a loud internal error.
+fn make_coerce(
+    dst: LocalId,
+    src: LocalId,
+    from: &Repr,
+    to: &Repr,
+    guard: bool,
+) -> Result<CoerceInst> {
+    let checked = if guard && from != to {
+        CoerceInst::new_checked(dst, Operand::Local(src), from.clone(), to.clone())
+    } else {
+        None
+    };
+    checked
+        .or_else(|| CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone()))
+        .ok_or_else(|| cg_illegal(from, to))
+}
+
 /// The receiver family a container method dispatches on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MethodRecv {
@@ -7032,6 +7172,29 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
 /// `TypeSpec`: an `I64` register holds a raw integer for `Int` params and a
 /// tagged `Value` for everything else (strings, containers, objects, `Any`).
 /// `F64`/`I8`/`I32` registers are always raw.
+/// [`runtime_param_repr`] for param `i` of `def`, honoring an explicit tagged
+/// parameter declaration (`mir_param_semantics`): such a param takes a `Value`
+/// even for an `int` spec (the bignum-exact `math.gcd`).
+fn runtime_param_repr_of(
+    def: &pyaot_core_defs::RuntimeFuncDef,
+    i: usize,
+    spec: Option<&pyaot_stdlib_defs::TypeSpec>,
+) -> Repr {
+    if declares_tagged_param(def, i) {
+        Repr::Tagged
+    } else {
+        runtime_param_repr(def.params[i], spec)
+    }
+}
+
+/// True iff `def` explicitly declares param `i` a tagged `Value`.
+fn declares_tagged_param(def: &pyaot_core_defs::RuntimeFuncDef, i: usize) -> bool {
+    use pyaot_core_defs::runtime_func_def::MirSemantic;
+    def.mir_param_semantics
+        .and_then(|ps| ps.get(i))
+        .is_some_and(|s| *s == MirSemantic::Tagged)
+}
+
 fn runtime_param_repr(
     pt: pyaot_core_defs::runtime_func_def::ParamType,
     spec: Option<&pyaot_stdlib_defs::TypeSpec>,
@@ -7058,8 +7221,13 @@ fn runtime_return_repr(
     def: &pyaot_core_defs::RuntimeFuncDef,
     spec: &pyaot_stdlib_defs::TypeSpec,
 ) -> Repr {
-    use pyaot_core_defs::runtime_func_def::ReturnType;
+    use pyaot_core_defs::runtime_func_def::{MirSemantic, ReturnType};
     use pyaot_stdlib_defs::TypeSpec;
+    // A descriptor that explicitly declares a tagged result (e.g. the
+    // bignum-exact `math.factorial`) returns a `Value` even for an `int` spec.
+    if def.mir_return_semantic == Some(MirSemantic::Tagged) {
+        return Repr::Tagged;
+    }
     match def.returns {
         Some(ReturnType::F64) => Repr::Raw(RawKind::F64),
         Some(ReturnType::I8) => Repr::Raw(RawKind::I8),

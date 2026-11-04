@@ -322,7 +322,7 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
 /// The Python `type_name` of a runtime `Value`, for guard error messages.
 /// Immediates (`int`/`bool`/`None`) report their immediate kind; a heap pointer
 /// reports its tag's `type_name` (a null pointer reports `NoneType`).
-fn value_type_name(v: Value) -> &'static str {
+pub(crate) fn value_type_name(v: Value) -> &'static str {
     if v.is_int() {
         return "int";
     }
