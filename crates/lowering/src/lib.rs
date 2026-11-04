@@ -3788,6 +3788,27 @@ impl<'a> FnLower<'a> {
         if matches!(recv_ty, SemTy::Dyn | SemTy::Union(_)) {
             return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
         }
+        // A generator (typed `Iterator(T)`): `send(v)` / `close()` lower to the
+        // generator ops. Decided by the receiver's type — never by the method
+        // name alone, so a StringIO/file/user-class `.close()` keeps its own
+        // method. `throw()` has no support in the compiled resume protocol.
+        if let SemTy::Iterator(_) = recv_ty {
+            let name = self.interner.resolve(method_name);
+            let gen_op = match (name, args.len(), kwargs.is_empty()) {
+                ("send", 1, true) => Some((GenOp::Send, Some(args[0]))),
+                ("close", 0, true) => Some((GenOp::Close, None)),
+                ("throw", _, _) => {
+                    return Err(CompilerError::semantic_error(
+                        "generator.throw() is not supported".to_string(),
+                        span,
+                    ))
+                }
+                _ => None,
+            };
+            if let Some((op, value)) = gen_op {
+                return self.lower_gen_query(op, recv, 0, value);
+            }
+        }
         // Class receiver: a `@staticmethod`/`@classmethod` called on an instance,
         // else an instance method (devirtualized unless overridden below — D7).
         if let Some(cid) = class_of(&recv_ty, self.classes) {

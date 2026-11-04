@@ -2298,6 +2298,16 @@ impl<'a> Sweeper<'a> {
                 _ => {}
             }
         }
+        // Generator methods (Phase 6E): a generator is typed `Iterator(T)`.
+        // `send` yields the next value (gradual: the sent value can steer it);
+        // `close` returns None.
+        if let SemTy::Iterator(_) = recv {
+            match self.interner.resolve(method_name) {
+                "send" => return SemTy::Dyn,
+                "close" => return SemTy::NoneTy,
+                _ => {}
+            }
+        }
         // int / bool receiver methods (§9): all four yield `int`
         // (`bit_length`/`bit_count` counts; `conjugate`/`__index__` the value
         // itself — bool widens to int, so the result is Int-typed not Bool).

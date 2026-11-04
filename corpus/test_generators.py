@@ -1375,4 +1375,57 @@ def test_yieldfrom_in_try():
 
 test_yieldfrom_in_try()
 
+# ── review fix: send/close are dispatched by receiver type, not by name ──
+def _rf_gen():
+    x = yield 1
+    assert x == "dyn" or x == 10
+    yield 2
+
+
+def _rf_drive(h, v):
+    # `h` is untyped (Dyn): the runtime dispatches by the generator tag.
+    assert next(h) == 1
+    assert h.send(v) == 2
+    h.close()
+    stopped = False
+    try:
+        next(h)
+    except StopIteration:
+        stopped = True
+    assert stopped
+
+
+class _RfConn:
+    def __init__(self) -> None:
+        self.log: list[str] = []
+
+    def send(self, msg: str) -> int:
+        self.log.append(msg)
+        return len(msg)
+
+    def close(self) -> None:
+        self.log.append("closed")
+
+
+def _rf_use_any(conn):
+    assert conn.send("dyn") == 3
+    conn.close()
+
+
+def test_send_close_dispatch():
+    g = _rf_gen()
+    assert next(g) == 1
+    assert g.send(10) == 2
+    g.close()
+    _rf_drive(_rf_gen(), "dyn")
+    # A user class's own send/close are never hijacked as generator ops.
+    c = _RfConn()
+    assert c.send("hello") == 5
+    c.close()
+    _rf_use_any(c)
+    assert c.log == ["hello", "closed", "dyn", "closed"]
+
+
+test_send_close_dispatch()
+
 print("All generator tests passed!")

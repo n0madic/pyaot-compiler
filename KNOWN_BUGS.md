@@ -219,11 +219,18 @@ Two root causes dominate:
       unhandled receiver kind instead of raising TypeError / dispatching
       `__getitem__` (`runtime/src/ops/comparison.rs` `_ => null`). Deque arm
       added; bytes/bytearray/range/instances still fall through.
-- [ ] **H** `StringIO(...)` is typed `Dyn`, and a `Dyn` receiver's `.close()`
-      is lowered as generator close (`GenQuery Close`) by method name, so
-      `s.close()` on a StringIO is a silent no-op and a later `read()` does
-      not raise "I/O operation on closed file" (frontend method-name
-      dispatch; also check other generator-method names `send`/`throw`).
+- [x] **H** `.close()` / `.send(v)` were lowered as generator ops by method
+      NAME in the frontend, hijacking StringIO/BytesIO/file/user-class
+      methods (`s.close()` was a silent no-op). Now ordinary method calls:
+      lowering maps a statically-known generator to the generator ops, and a
+      `Dyn` receiver dispatches by runtime tag (`rt_obj_method` gained
+      generator / StringIO / BytesIO / file arms). `throw()` was never
+      hijacked; it is now an explicit "not supported" error.
+- [ ] **L** `generator.throw()` unsupported (needs resume-protocol support
+      for injecting an exception at the paused yield).
+- [ ] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
+      silent no-op (`rt_generator_close` ignores non-generators); CPython
+      raises AttributeError.
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 

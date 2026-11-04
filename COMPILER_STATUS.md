@@ -115,7 +115,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Decorators / decorator factories | ✅ | |
 | Recursion | ✅ | |
 | First-class functions / callables as values | ✅ | Uniform value-call ABI |
-| Generators (`yield`, `send`, `close`, `yield from`) | ✅ | |
+| Generators (`yield`, `send`, `close`, `yield from`) | ✅ | `send`/`close` dispatch by receiver type (static generator or `Dyn` by runtime tag); `throw()` unsupported (compile-time error) |
 | Generator expressions | ✅ | |
 
 ---

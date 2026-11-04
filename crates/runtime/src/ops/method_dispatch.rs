@@ -91,6 +91,19 @@ const H_ISLOWER: u64 = fnv1a(b"islower");
 const H_ISASCII: u64 = fnv1a(b"isascii");
 const H_ISDECIMAL: u64 = fnv1a(b"isdecimal");
 const H_ISNUMERIC: u64 = fnv1a(b"isnumeric");
+// generator / in-memory stream / file
+const H_SEND: u64 = fnv1a(b"send");
+const H_THROW: u64 = fnv1a(b"throw");
+const H_CLOSE: u64 = fnv1a(b"close");
+const H_READ: u64 = fnv1a(b"read");
+const H_READLINE: u64 = fnv1a(b"readline");
+const H_READLINES: u64 = fnv1a(b"readlines");
+const H_WRITE: u64 = fnv1a(b"write");
+const H_GETVALUE: u64 = fnv1a(b"getvalue");
+const H_SEEK: u64 = fnv1a(b"seek");
+const H_TELL: u64 = fnv1a(b"tell");
+const H_TRUNCATE: u64 = fnv1a(b"truncate");
+const H_FLUSH: u64 = fnv1a(b"flush");
 
 /// The uniform method-thunk ABI: `(self, __args__, __kwargs__) -> Value`. Fixed
 /// regardless of the method's source arity / parameter reprs, so a
@@ -190,8 +203,112 @@ pub extern "C" fn rt_obj_method(
             // A heap bignum int (`rt_int_*` are bignum-aware and take the Value).
             TypeTagKind::BigInt => int_method(recv, h, at),
             TypeTagKind::Instance => instance_method(recv, name_hash, args_tuple, kwargs),
+            // A gradual generator (`g.send(v)` / `g.close()` where `g` is
+            // `Dyn`) and the stream objects that share those method names
+            // (`StringIO`/`BytesIO`/file `.close()`): each goes to its own
+            // runtime family, so a name never picks the wrong object kind.
+            TypeTagKind::Generator => generator_method(recv_ptr, h, at),
+            TypeTagKind::StringIO => stringio_method(recv_ptr, h, at),
+            TypeTagKind::BytesIO => bytesio_method(recv_ptr, h, at),
+            TypeTagKind::File => file_method(recv_ptr, h, at),
             other => raise_no_attr(type_name(other)),
         }
+    }
+}
+
+/// Generator methods on a `Dyn` receiver — the gradual sibling of the typed
+/// `GenOp::Send` / `GenOp::Close` lowering, through the same runtime entry
+/// points. `throw()` is not supported by the compiled resume protocol.
+unsafe fn generator_method(recv: *mut Obj, h: u64, at: *mut Obj) -> Value {
+    let n = argc(at);
+    match h {
+        H_SEND if n == 1 => Value(crate::generator::rt_generator_send(recv, arg(at, 0).0 as i64) as u64),
+        H_CLOSE if n == 0 => {
+            crate::generator::rt_generator_close(recv);
+            Value::NONE
+        }
+        H_THROW => crate::raise_exc!(
+            crate::exceptions::ExceptionType::NotImplementedError,
+            "generator.throw() is not supported"
+        ),
+        _ => raise_no_attr("generator"),
+    }
+}
+
+/// An optional size/position argument: absent → `default`.
+#[inline]
+unsafe fn opt_index(at: *mut Obj, n: i64, default: i64) -> i64 {
+    if n >= 1 {
+        let v = arg(at, 0);
+        if v.is_none() {
+            default
+        } else {
+            as_index(v)
+        }
+    } else {
+        default
+    }
+}
+
+/// `io.StringIO` methods on a `Dyn` receiver (same `rt_stringio_*` family as
+/// the typed stdlib-method path).
+unsafe fn stringio_method(recv: *mut Obj, h: u64, at: *mut Obj) -> Value {
+    use crate::stringio as sio;
+    let n = argc(at);
+    match h {
+        H_WRITE if n == 1 => Value::from_int(sio::rt_stringio_write(recv, bits(arg(at, 0)))),
+        H_READ if n <= 1 => Value::from_ptr(sio::rt_stringio_read(recv, opt_index(at, n, -1))),
+        H_READLINE if n == 0 => Value::from_ptr(sio::rt_stringio_readline(recv)),
+        H_GETVALUE if n == 0 => Value::from_ptr(sio::rt_stringio_getvalue(recv)),
+        H_SEEK if n == 1 => Value::from_int(sio::rt_stringio_seek(recv, as_index(arg(at, 0)))),
+        H_TELL if n == 0 => Value::from_int(sio::rt_stringio_tell(recv)),
+        H_TRUNCATE if n <= 1 => Value::from_int(sio::rt_stringio_truncate(recv, opt_index(at, n, -1))),
+        H_CLOSE if n == 0 => {
+            sio::rt_stringio_close(recv);
+            Value::NONE
+        }
+        _ => raise_no_attr("_io.StringIO"),
+    }
+}
+
+/// `io.BytesIO` methods on a `Dyn` receiver.
+unsafe fn bytesio_method(recv: *mut Obj, h: u64, at: *mut Obj) -> Value {
+    use crate::stringio as sio;
+    let n = argc(at);
+    match h {
+        H_WRITE if n == 1 => Value::from_int(sio::rt_bytesio_write(recv, bits(arg(at, 0)))),
+        H_READ if n <= 1 => Value::from_ptr(sio::rt_bytesio_read(recv, opt_index(at, n, -1))),
+        H_GETVALUE if n == 0 => Value::from_ptr(sio::rt_bytesio_getvalue(recv)),
+        H_SEEK if n == 1 => Value::from_int(sio::rt_bytesio_seek(recv, as_index(arg(at, 0)))),
+        H_TELL if n == 0 => Value::from_int(sio::rt_bytesio_tell(recv)),
+        H_CLOSE if n == 0 => {
+            sio::rt_bytesio_close(recv);
+            Value::NONE
+        }
+        _ => raise_no_attr("_io.BytesIO"),
+    }
+}
+
+/// File-object methods on a `Dyn` receiver (same `rt_file_*` family as the
+/// typed `lower_file_method` path).
+unsafe fn file_method(recv: *mut Obj, h: u64, at: *mut Obj) -> Value {
+    use crate::file as f;
+    let n = argc(at);
+    match h {
+        H_READ if n == 0 => Value::from_ptr(f::rt_file_read(recv)),
+        H_READ if n == 1 => Value::from_ptr(f::rt_file_read_n(recv, opt_index(at, n, -1))),
+        H_READLINE if n == 0 => Value::from_ptr(f::rt_file_readline(recv)),
+        H_READLINES if n == 0 => Value::from_ptr(f::rt_file_readlines(recv)),
+        H_WRITE if n == 1 => Value::from_int(f::rt_file_write(recv, bits(arg(at, 0)))),
+        H_FLUSH if n == 0 => {
+            f::rt_file_flush(recv);
+            Value::NONE
+        }
+        H_CLOSE if n == 0 => {
+            f::rt_file_close(recv);
+            Value::NONE
+        }
+        _ => raise_no_attr("_io.TextIOWrapper"),
     }
 }
 

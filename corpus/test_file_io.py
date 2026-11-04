@@ -342,4 +342,44 @@ assert _cp_sio.truncate() == 100000 and _cp_sio.getvalue() == "ab"
 assert _cp_sio.read() == "" and _cp_sio.tell() == 100000
 print("StringIO character-position tests passed!")
 
+# ── review fix: `.close()` on StringIO/BytesIO/files is the object's own
+#    method (it used to be lowered as generator close by name) ──
+def _cl_closed_message(stream) -> str:
+    try:
+        stream.getvalue()
+    except ValueError as e:
+        return str(e)
+    return "not closed"
+
+
+def _cl_shut(stream):
+    stream.write("tail")
+    assert stream.getvalue() == "head-tail"
+    stream.close()
+
+
+_cl_s = io.StringIO("ab")
+_cl_s.close()
+assert _cl_closed_message(_cl_s) == "I/O operation on closed file"
+_cl_t = io.StringIO()
+_cl_t.write("head-")
+_cl_shut(_cl_t)
+assert _cl_closed_message(_cl_t) == "I/O operation on closed file"
+_cl_b = io.BytesIO(b"xy")
+_cl_b.close()
+assert _cl_closed_message(_cl_b) == "I/O operation on closed file."
+
+
+def _cl_write_and_close(fh):
+    fh.write("data\n")
+    fh.close()
+
+
+_cl_f = open("/tmp/test_aot_close_dispatch.txt", "w")
+_cl_write_and_close(_cl_f)
+with open("/tmp/test_aot_close_dispatch.txt") as _cl_rf:
+    assert _cl_rf.read() == "data\n"
+os.remove("/tmp/test_aot_close_dispatch.txt")
+print("close() dispatch tests passed!")
+
 print("All file I/O tests passed!")

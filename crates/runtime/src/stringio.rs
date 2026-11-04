@@ -55,6 +55,17 @@ unsafe fn check_closed(closed: bool) {
     }
 }
 
+// BytesIO's closed-stream error carries a trailing period in CPython
+// (`StringIO`'s does not).
+unsafe fn check_closed_bytesio(closed: bool) {
+    if closed {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "I/O operation on closed file."
+        );
+    }
+}
+
 // Helper function to ensure buffer capacity for StringIO/BytesIO
 unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: usize) {
     if needed > *capacity {
@@ -473,7 +484,7 @@ pub extern "C" fn rt_bytesio_new_abi(initial: Value) -> Value {
 /// Write bytes to BytesIO, return number of bytes written
 pub unsafe fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
-    check_closed((*bio_obj).closed);
+    check_closed_bytesio((*bio_obj).closed);
 
     let bytes_obj = b as *const BytesObj;
     let bytes_len = (*bytes_obj).len;
@@ -530,7 +541,7 @@ pub extern "C" fn rt_bytesio_write_abi(bio: Value, b: Value) -> i64 {
 /// Read from BytesIO
 pub unsafe fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
     let bio_obj = bio as *mut BytesIOObj;
-    check_closed((*bio_obj).closed);
+    check_closed_bytesio((*bio_obj).closed);
 
     let remaining = (*bio_obj).len.saturating_sub((*bio_obj).position);
 
@@ -561,7 +572,7 @@ pub extern "C" fn rt_bytesio_read_abi(bio: Value, size: i64) -> Value {
 /// Get the entire value of BytesIO as bytes
 pub unsafe fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
     let bio_obj = bio as *const BytesIOObj;
-    check_closed((*bio_obj).closed);
+    check_closed_bytesio((*bio_obj).closed);
 
     if (*bio_obj).len == 0 {
         return make_bytes_from_slice(&[]);
@@ -579,7 +590,7 @@ pub extern "C" fn rt_bytesio_getvalue_abi(bio: Value) -> Value {
 /// Seek to a position in BytesIO
 pub unsafe fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
-    check_closed((*bio_obj).closed);
+    check_closed_bytesio((*bio_obj).closed);
 
     if pos < 0 {
         raise_exc!(
@@ -601,7 +612,7 @@ pub extern "C" fn rt_bytesio_seek_abi(bio: Value, pos: i64) -> i64 {
 /// Get current position in BytesIO
 pub unsafe fn rt_bytesio_tell(bio: *mut Obj) -> i64 {
     let bio_obj = bio as *const BytesIOObj;
-    check_closed((*bio_obj).closed);
+    check_closed_bytesio((*bio_obj).closed);
     (*bio_obj).position as i64
 }
 #[export_name = "rt_bytesio_tell"]

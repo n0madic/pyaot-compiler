@@ -248,41 +248,11 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // Generator `g.send(v)` / `g.close()` (Phase 6E): a generator-specific
-        // method (no user class in our subset defines these), routed to the
-        // runtime generator ops. `g.throw(...)` is out of scope.
-        if let Expr::Attribute(attr) = c.func.as_ref() {
-            match attr.attr.as_str() {
-                "send" if c.args.len() == 1 && c.keywords.is_empty() => {
-                    let gen = self.lower_expr(attr.value.as_ref())?;
-                    let value = self.lower_expr(&c.args[0])?;
-                    return Ok(self.alloc(
-                        HirExprKind::GenQuery {
-                            op: GenOp::Send,
-                            gen,
-                            imm: 0,
-                            value: Some(value),
-                        },
-                        SemTy::Dyn,
-                        span,
-                    ));
-                }
-                "close" if c.args.is_empty() && c.keywords.is_empty() => {
-                    let gen = self.lower_expr(attr.value.as_ref())?;
-                    return Ok(self.alloc(
-                        HirExprKind::GenQuery {
-                            op: GenOp::Close,
-                            gen,
-                            imm: 0,
-                            value: None,
-                        },
-                        SemTy::NoneTy,
-                        span,
-                    ));
-                }
-                _ => {}
-            }
-        }
+        // NOTE: `g.send(v)` / `g.close()` are ordinary method calls here. They
+        // used to be rewritten to generator ops BY NAME, which hijacked every
+        // `.close()` / `.send()` (StringIO, files, user classes). The receiver's
+        // type decides instead: lowering maps a statically-known generator to
+        // the generator ops, and a `Dyn` receiver dispatches by runtime tag.
         // `recv.method(args)` → a method call carrying the interned name. Lowering
         // dispatches by the receiver's static type: a container receiver to the
         // Phase-4D `ContainerMethod` path, a class receiver to the method's FuncId
