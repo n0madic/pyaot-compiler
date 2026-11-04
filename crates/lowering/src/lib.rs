@@ -2160,26 +2160,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Dyn, ...]` (Tagged elements).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // No call-site keywords on the uniform path → the null `__kwargs__`
@@ -4371,26 +4352,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Tagged]` (the uniform-call shape).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // Keywords → a `dict[str, Tagged]`, or the null `__kwargs__` sentinel on
@@ -4403,28 +4365,11 @@ impl<'a> FnLower<'a> {
                 Box::new(Repr::Tagged),
                 Box::new(Repr::Tagged),
             ));
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-            for (kname, kexpr) in kwargs {
-                self.str_pool
-                    .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(*kname),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                let (vl, vr) = self.lower_expr(*kexpr)?;
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+            let d = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                let (kname, kexpr) = kwargs[i];
+                let (vl, vr) = this.lower_expr(kexpr)?;
+                Ok((kname, vl, vr))
+            })?;
             self.coerce(d, dict_repr, Repr::Tagged)?
         };
 
@@ -4622,53 +4567,17 @@ impl<'a> FnLower<'a> {
         if varargs {
             let tup_repr = params[first + fixed].clone();
             let excess = &pos_vals[n_pos..];
-            let size = self.raw_i64_const(excess.len() as i64);
-            let (tup, _) = self.emit_container(
-                ContainerOp::TupleNew,
-                vec![(size, Repr::Raw(RawKind::I64))],
-                Some(tup_repr.clone()),
-            )?;
-            let tup = tup.expect("TupleNew produces a tuple");
-            for (i, (el, er)) in excess.iter().cloned().enumerate() {
-                let pos = self.raw_i64_const(i as i64);
-                self.emit_container(
-                    ContainerOp::TupleSet,
-                    vec![
-                        (tup, tup_repr.clone()),
-                        (pos, Repr::Raw(RawKind::I64)),
-                        (el, er),
-                    ],
-                    None,
-                )?;
-            }
+            let tup = self.pack_tuple(tup_repr, excess.len(), |_, i| Ok(excess[i].clone()))?;
             argvals.push(Operand::Local(tup));
         }
         if has_kwargs {
             let dict_repr = params.last().expect("kwargs param exists").clone();
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
             // Leftover keywords (written order) land in the `**kwargs` dict.
-            for &k in &m.leftover {
-                let name = kw_names[k];
-                self.str_pool
-                    .insert(name, self.interner.resolve(name).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(name),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let d = self.pack_kwargs_dict(dict_repr, m.leftover.len(), |_, i| {
+                let k = m.leftover[i];
                 let (vl, vr) = kw_vals[k].clone();
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+                Ok((kw_names[k], vl, vr))
+            })?;
             argvals.push(Operand::Local(d));
         }
         Ok(argvals)
@@ -5336,26 +5245,7 @@ impl<'a> FnLower<'a> {
         elems: &[Idx<HirExpr>],
     ) -> Result<(LocalId, Repr)> {
         let tup_repr = repr_of(&self.func.exprs[idx].ty);
-        let size = self.raw_i64_const(elems.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, e) in elems.iter().enumerate() {
-            let (el, er) = self.lower_expr(*e)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (el, er),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), elems.len(), |this, i| this.lower_expr(elems[i]))?;
         Ok((tup, tup_repr))
     }
 
@@ -5882,29 +5772,11 @@ impl<'a> FnLower<'a> {
                             Box::new(Repr::Tagged),
                             Box::new(Repr::Tagged),
                         ));
-                        let (kd, _) =
-                            self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-                        for (kname, kexpr) in kwargs {
-                            self.str_pool
-                                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                            self.emit(MirInst::Const {
-                                dst: key,
-                                val: Const::Str(*kname),
-                            });
-                            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                            let (vl, vr) = self.lower_expr(*kexpr)?;
-                            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                            self.emit_container(
-                                ContainerOp::DictSet,
-                                vec![
-                                    (kd, dict_repr.clone()),
-                                    (key_t, Repr::Tagged),
-                                    (val_t, Repr::Tagged),
-                                ],
-                                None,
-                            )?;
-                        }
+                        let kd = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                            let (kname, kexpr) = kwargs[i];
+                            let (vl, vr) = this.lower_expr(kexpr)?;
+                            Ok((kname, vl, vr))
+                        })?;
                         self.emit_container(
                             ContainerOp::DictUpdate,
                             vec![recv_arg.clone(), (kd, dict_repr)],
@@ -7302,6 +7174,74 @@ impl<'a> FnLower<'a> {
 
     /// Build an empty container (`ListNew`/`DictNew`/`SetNew`/`TupleNew`) of the
     /// given heap representation.
+    /// Build an `n`-element tuple: `TupleNew(n)`, then one `TupleSet` per
+    /// slot, each element produced by `elem(self, i)` right before its store
+    /// (so element evaluation interleaves exactly as written). The single
+    /// shape for argument tuples and tuple literals — the one `devirt`
+    /// recognizes as a dead args-tuple builder.
+    fn pack_tuple(
+        &mut self,
+        tup_repr: Repr,
+        n: usize,
+        mut elem: impl FnMut(&mut Self, usize) -> Result<(LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let size = self.raw_i64_const(n as i64);
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
+        let tup = tup.expect("TupleNew produces a tuple");
+        for i in 0..n {
+            let (el, er) = elem(self, i)?;
+            let pos = self.raw_i64_const(i as i64);
+            self.emit_container(
+                ContainerOp::TupleSet,
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (el, er),
+                ],
+                None,
+            )?;
+        }
+        Ok(tup)
+    }
+
+    /// Build a keyword-argument dict of `n` entries (`str` keys, tagged
+    /// values), each `(name, value)` produced by `entry(self, i)` in order —
+    /// the `**kwargs` / uniform-call keyword shape.
+    fn pack_kwargs_dict(
+        &mut self,
+        dict_repr: Repr,
+        n: usize,
+        mut entry: impl FnMut(&mut Self, usize) -> Result<(InternedString, LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+        for i in 0..n {
+            let (name, vl, vr) = entry(self, i)?;
+            self.str_pool
+                .insert(name, self.interner.resolve(name).as_bytes().to_vec());
+            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+            self.emit(MirInst::Const {
+                dst: key,
+                val: Const::Str(name),
+            });
+            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit_container(
+                ContainerOp::DictSet,
+                vec![
+                    (d, dict_repr.clone()),
+                    (key_t, Repr::Tagged),
+                    (val_t, Repr::Tagged),
+                ],
+                None,
+            )?;
+        }
+        Ok(d)
+    }
+
     fn empty_container(&mut self, op: ContainerOp, heap: Repr) -> Result<(LocalId, Repr)> {
         let cap = self.raw_i64_const(0);
         let (dst, ret) =

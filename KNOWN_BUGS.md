@@ -472,8 +472,18 @@ Regressions: `corpus/test_eval_order.py`.
 - [x] Stale docs: optimizer crate header, core-defs ranges, runtime
       `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement. (The
       `verify_call_container` doc was already above its function.)
-- [ ] Duplication: arg-tuple / kwargs-dict packing in lowering
+- [x] Duplication: arg-tuple / kwargs-dict packing in lowering
       (`:1893`, `:3933`, `:4183`); `materialize_const` vs `lower_const`.
-- [ ] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until
+      Fixed: `pack_tuple` / `pack_kwargs_dict` helpers (same emitted MIR
+      shape); codegen consts share `tagged_immediate` / `heap_const_ctor`.
+- [x] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until
       fixed. (MI/C3 at runtime and inherited static/class/property are fixed
-      — Phase 3.)
+      — Phase 3.) Done after probing against CPython; the remaining gaps are
+      the two open items below.
+- [ ] In-place dunders other than `__iadd__`/`__imul__` (`__isub__`,
+      `__itruediv__`, `__ior__`, … `__imatmul__`) are ignored: `x -= y`
+      falls back to `__sub__` (TypeError if only `__isub__` is defined).
+- [ ] `super()` is resolved along the defining class's static MRO, so a
+      cooperative diamond (`class D(B, C)`, each `super().m()`) skips `C`
+      (prints `D>B>A` instead of `D>B>C>A`); two-arg `super(C, self)`,
+      `super()` in a `@classmethod`, and `super().prop` are rejected.
