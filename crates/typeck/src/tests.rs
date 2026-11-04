@@ -435,8 +435,9 @@ fn container_method_result_types() {
 fn dict_view_method_result_types() {
     let (m, i) = typed("d = {\"a\": 1}\nk = d.keys()\nv = d.values()\nprint(k)\nprint(v)\n");
     let f = main_fn(&m);
-    assert!(local_ty(f, &i, "k").list_elem().is_some());
-    assert!(local_ty(f, &i, "v").list_elem().is_some());
+    // Live views, not list snapshots: `dict_keys[str]` / `dict_values[int]`.
+    assert_eq!(local_ty(f, &i, "k"), SemTy::dict_keys_of(SemTy::Str));
+    assert_eq!(local_ty(f, &i, "v"), SemTy::dict_values_of(SemTy::Int));
 }
 
 #[test]

@@ -347,6 +347,9 @@ fn mark_object(root: Value) {
                         enqueue_ptr!(p);
                     }
                 }
+                TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                    fields!(obj, crate::object::DictViewObj, dict)
+                }
                 TypeTagKind::File => fields!(obj, FileObj, name),
                 TypeTagKind::Match => fields!(obj, MatchObj, groups, original),
                 TypeTagKind::CompletedProcess => {

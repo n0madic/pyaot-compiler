@@ -45,6 +45,8 @@ const H_KEYS: u64 = fnv1a(b"keys");
 const H_VALUES: u64 = fnv1a(b"values");
 const H_ITEMS: u64 = fnv1a(b"items");
 const H_UPDATE: u64 = fnv1a(b"update");
+// dict views
+const H_ISDISJOINT: u64 = fnv1a(b"isdisjoint");
 // set
 const H_ADD: u64 = fnv1a(b"add");
 const H_DISCARD: u64 = fnv1a(b"discard");
@@ -195,6 +197,9 @@ pub extern "C" fn rt_obj_method(
             }
             TypeTagKind::Set => set_method(recv_ptr, h, at, tag),
             TypeTagKind::Deque => deque_method(recv_ptr, h, at, tag),
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                dict_view_method(recv_ptr, h, at, tag)
+            }
             TypeTagKind::Tuple => tuple_method(recv_ptr, h, at, tag),
             // A `str` receiver: the gradual sibling of the typed `lower_str_method`
             // path (e.g. `data.encode()` where `data` is a `Dyn`/`Union`-typed
@@ -543,9 +548,13 @@ unsafe fn dict_method(recv: *mut Obj, h: u64, at: *mut Obj, kwargs: Value, tag: 
                 Value(r as u64)
             }
         }
-        H_KEYS if n == 0 => Value(crate::dict::rt_dict_keys(recv) as u64),
-        H_VALUES if n == 0 => Value(crate::dict::rt_dict_values(recv) as u64),
-        H_ITEMS if n == 0 => Value(crate::dict::rt_dict_items(recv) as u64),
+        // Live views (the same objects the typed `ContainerOp::DictKeys/...`
+        // path builds), not list snapshots.
+        H_KEYS if n == 0 => Value(crate::dict_view::dict_view_new(recv, TypeTagKind::DictKeys) as u64),
+        H_VALUES if n == 0 => {
+            Value(crate::dict_view::dict_view_new(recv, TypeTagKind::DictValues) as u64)
+        }
+        H_ITEMS if n == 0 => Value(crate::dict_view::dict_view_new(recv, TypeTagKind::DictItems) as u64),
         // `dict.update(E, **F)` (plain dict only): merge an optional positional
         // mapping, then the keyword dict (a string-keyed mapping — CPython treats
         // `update(**F)` as merging `F`). Counter.update has add-semantics, so its
@@ -598,6 +607,18 @@ unsafe fn set_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> 
         }
         H_COPY if n == 0 => Value(crate::set::rt_set_copy(recv) as u64),
         H_POP if n == 0 => Value(crate::set::rt_set_pop(recv) as u64),
+        _ => raise_no_attr(type_name(tag)),
+    }
+}
+
+/// Dict-view methods: `isdisjoint` on the set-like keys / items views (the
+/// typed view receiver routes here too — a view has no static method table).
+unsafe fn dict_view_method(recv: *mut Obj, h: u64, at: *mut Obj, tag: TypeTagKind) -> Value {
+    let n = argc(at);
+    match h {
+        H_ISDISJOINT if n == 1 && tag != TypeTagKind::DictValues => Value::from_bool(
+            crate::dict_view::view_isdisjoint(recv, bits(arg(at, 0))) != 0,
+        ),
         _ => raise_no_attr(type_name(tag)),
     }
 }

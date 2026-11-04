@@ -2,9 +2,9 @@
 //!
 //! These occupy the range
 //! `[BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS,
-//!   FIRST_USER_CLASS_ID)` — the seven slots between the stdlib exception range
-//! and the user-class range (the five built-in containers plus `deque` and
-//! `defaultdict`).
+//!   FIRST_USER_CLASS_ID)` — the ten slots between the stdlib exception range
+//! and the user-class range (the five built-in containers, `deque`,
+//! `defaultdict`, and the three dict views).
 
 use pyaot_utils::ClassId;
 
@@ -43,3 +43,21 @@ pub const BUILTIN_DEQUE_CLASS_ID: ClassId = ClassId(BASE + 5);
 /// dict is the subscript-READ (auto-create the factory default on a miss);
 /// every other op is dict-identical, so `dict_kv()` matches this base too.
 pub const BUILTIN_DEFAULTDICT_CLASS_ID: ClassId = ClassId(BASE + 6);
+
+/// `ClassId` for the live `dict_keys[K]` view (`dict.keys()`) —
+/// `SemTy::Generic { base: BUILTIN_DICT_KEYS_CLASS_ID, args: [K] }`. Like
+/// deque, its runtime backing is a non-container heap object (a
+/// `DictViewObj`, `TypeTagKind::DictKeys`, holding a pointer to the LIVE
+/// dict), so `repr_of` maps it to `Heap(RuntimeObj(DictKeys))`; the element
+/// type `K` is compile-time only (it types iteration / `in` / set results).
+pub const BUILTIN_DICT_KEYS_CLASS_ID: ClassId = ClassId(BASE + 7);
+
+/// `ClassId` for the live `dict_values[V]` view (`dict.values()`) —
+/// `SemTy::Generic { base: BUILTIN_DICT_VALUES_CLASS_ID, args: [V] }`
+/// (runtime `TypeTagKind::DictValues`).
+pub const BUILTIN_DICT_VALUES_CLASS_ID: ClassId = ClassId(BASE + 8);
+
+/// `ClassId` for the live `dict_items[K, V]` view (`dict.items()`) —
+/// `SemTy::Generic { base: BUILTIN_DICT_ITEMS_CLASS_ID, args: [K, V] }`
+/// (runtime `TypeTagKind::DictItems`); it iterates `tuple[K, V]` pairs.
+pub const BUILTIN_DICT_ITEMS_CLASS_ID: ClassId = ClassId(BASE + 9);

@@ -150,6 +150,13 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         let tag_a = (*a).type_tag();
         let tag_b = (*b).type_tag();
 
+        // A dict view on either side: set-like equality for keys/items views
+        // (against a set / frozenset / another set-like view), identity for a
+        // values view.
+        if let Some(eq) = crate::dict_view::try_view_eq(a, b) {
+            return eq;
+        }
+
         // Different types → not equal (float/int cross-type not handled here;
         // the Union equality path goes through hash_table_utils::eq_hashable_obj)
         if tag_a != tag_b {
@@ -454,6 +461,10 @@ pub fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
                 };
             }
         }
+        // Set-like dict views order by subset / superset.
+        if let Some(r) = crate::dict_view::try_view_cmp(a, b, op_tag) {
+            return r;
+        }
         // NaN comparisons always return False in Python
         if involves_nan(a, b) {
             return 0;
@@ -750,6 +761,9 @@ pub fn rt_obj_len(obj: *mut Obj) -> i64 {
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
             TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_len(obj),
             TypeTagKind::Deque => crate::deque::rt_deque_len(obj),
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                crate::dict_view::view_len(obj)
+            }
             _ => 0,
         }
     }
@@ -822,6 +836,9 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
                 rt_bytes_contains_value(container, elem)
             }
             TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_contains(container, elem),
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                crate::dict_view::view_contains(container, elem)
+            }
             _ => {
                 let tag_str = type_name((*container).type_tag());
                 crate::raise_exc!(
@@ -1155,6 +1172,10 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
                 } else {
                     0
                 }
+            }
+            // A dict view is truthy iff the viewed dict is non-empty.
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                (crate::dict_view::view_len(obj) > 0) as i8
             }
             TypeTagKind::Bytes => {
                 let bytes_obj = obj as *mut BytesObj;

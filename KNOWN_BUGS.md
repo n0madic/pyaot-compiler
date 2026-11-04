@@ -299,16 +299,16 @@ Regressions: `corpus/test_eval_order.py`.
       (`stdlib-defs collections.rs:21`). ✓
       Fixed: OrderedDict([arg]) maps to new rt_dict_from_any (mapping copy or
       iterable of pairs). Corpus: test_collections.py.
-- [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
+- [x] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
-      Still open (needs a front-half change): they are typed and built as
-      `list` snapshots. Correct for the common uses on an unmutated dict
-      (iteration, `len`, `in`, `list()`/`sorted()`); wrong after a later
-      mutation of the dict (`ks = d.keys(); d[k] = v; len(ks)`), and the
-      set-like operations (`d.keys() == {...}`, `d.keys() & s`) raise
-      TypeError (list vs set). A real fix is a `dict_keys`/`dict_items`
-      view object (new runtime tag over the live `DictObj`, set-like ops)
-      plus typeck typing `keys()` as a view instead of `list[K]`.
+      Fixed: live view objects (runtime contract change: new tags
+      `DictKeys`/`DictValues`/`DictItems`, layout `DictViewObj` = header +
+      dict pointer, `rt_dict_{keys,values,items}_view`, iterator kinds
+      `DictValues`/`DictItems` walking the live dict); typeck types them as
+      `dict_keys[K]`/`dict_values[V]`/`dict_items[K, V]` builtin generics
+      (repr `Heap(RuntimeObj(tag))`); len/iter/in/==/ordering/set ops/repr/
+      truthiness/hash/isdisjoint dispatch on the tag. Corpus:
+      test_dict_views.py.
 - [x] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
       Fixed: CPython parse_template semantics (escapes, octal, `\N`,
       `\g<name>`/`\g<N>`, bad-escape and invalid-group errors); group(n) out of
@@ -325,10 +325,10 @@ Regressions: `corpus/test_eval_order.py`.
       the checked Tagged->Heap(Str) coercion (TypeError on a non-str), bool
       already uses rt_unbox_bool. Corpus: test_stdlib_os.py.
 - [x] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
-      Fixed: the panic (saturating cut). Calling such a self-less *args method
-      still fails later in lowering (`illegal coercion Heap(Class) ->
-      Heap(TupleVar)`: self is not packed into *args) — left to the Phase 3
-      method-call rework.
+      Fixed: the panic (saturating cut); a direct call of such a self-less
+      *args method now packs the instance as `args[0]` (CPython binding).
+      Remaining gap: an overridden (virtual-dispatch) self-less *args method.
+      Corpus: test_dict_views.py.
 - [x] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
       Fixed: type() of builtin/stdlib exception instances names the exception
       class; repr(e) is Name(args) (a user exception renders its message, not

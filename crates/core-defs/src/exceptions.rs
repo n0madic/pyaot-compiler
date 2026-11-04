@@ -158,12 +158,13 @@ pub const RESERVED_STDLIB_EXCEPTION_SLOTS: u8 = 8;
 
 /// Number of contiguous class IDs reserved after the stdlib exception slots
 /// for built-in generic container types (`list`, `dict`, `set`, `tuple`,
-/// `tuple[T, ...]`, `deque`, `defaultdict`). These IDs occupy
+/// `tuple[T, ...]`, `deque`, `defaultdict`, and the three dict views
+/// `dict_keys` / `dict_values` / `dict_items`). These IDs occupy
 /// `[BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS,
 ///   BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS + RESERVED_BUILTIN_TYPE_SLOTS)`.
 /// The constants themselves live in `crates/types/src/builtin_classes.rs`
 /// where `ClassId` is available.
-pub const RESERVED_BUILTIN_TYPE_SLOTS: u8 = 7;
+pub const RESERVED_BUILTIN_TYPE_SLOTS: u8 = 10;
 
 /// First `class_id` available for user-defined Python classes. Ranges:
 /// - `[0, BUILTIN_EXCEPTION_COUNT)` — built-in exceptions

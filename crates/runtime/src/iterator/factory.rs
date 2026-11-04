@@ -490,6 +490,10 @@ pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
         // derived-list strategy set/dict use), so `for`/`list`/`sum`/`",".join`
         // over a deque all work through this one generic seam.
         TypeTagKind::Deque => rt_iter_deque(obj),
+        // Live dict views iterate the viewed dict's current contents.
+        TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => unsafe {
+            crate::dict_view::view_iter(obj)
+        },
         TypeTagKind::Str => rt_iter_str(obj),
         TypeTagKind::Bytes => rt_iter_bytes(obj),
         TypeTagKind::ByteArray => crate::bytearray::rt_iter_bytearray(obj),

@@ -2873,6 +2873,34 @@ impl<'a> Sweeper<'a> {
             BinOp::IMul => return self.binop_ty(BinOp::Mul, l, r),
             _ => {}
         }
+        // Set operators with a set-like dict view (keys / items) on either side
+        // (`d.keys() & s`, `s - d.items()`, `d.keys() | e.keys()`) always yield
+        // a fresh `set` (CPython `dictviews_*`). Its elements come from both
+        // operands, so the element type is the guarded join of both sides'
+        // iteration types (a sound superset for every operator).
+        if matches!(
+            op,
+            BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Sub
+                | BinOp::IAnd
+                | BinOp::IOr
+                | BinOp::IXor
+                | BinOp::ISub
+        ) {
+            let setlike = |t: &SemTy| {
+                t.dict_view()
+                    .is_some_and(|(k, _)| k != pyaot_types::DictViewKind::Values)
+            };
+            if setlike(&l) || setlike(&r) {
+                if l == SemTy::Never || r == SemTy::Never {
+                    return SemTy::Never;
+                }
+                let elems = [iter_elem_ty(&l, self.classes), iter_elem_ty(&r, self.classes)];
+                return SemTy::set_of(join_tys(&elems, self.classes));
+            }
+        }
         // bytearray concatenation: `ba + bytes-like` → bytearray. `+=` desugars
         // to `ba = ba + x`, so preserving the static `ByteArray` type here keeps
         // the variable on the typed path for subsequent append/index/slice.
@@ -3140,9 +3168,11 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             M::Get => SemTy::optional(v.clone()),
             // `pop` raises `KeyError` on a miss (no `None`), `setdefault` inserts.
             M::Pop | M::Setdefault => v.clone(),
-            M::Keys => SemTy::list_of(k.clone()),
-            M::Values => SemTy::list_of(v.clone()),
-            M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
+            // Live views over the dict (not list snapshots): iterating one
+            // yields `K` / `V` / `tuple[K, V]` (see `SemTy::dict_view`).
+            M::Keys => SemTy::dict_keys_of(k.clone()),
+            M::Values => SemTy::dict_values_of(v.clone()),
+            M::Items => SemTy::dict_items_of(k.clone(), v.clone()),
             // `OrderedDict.move_to_end(...)` mutates in place → `None`.
             M::Update | M::Clear | M::MoveToEnd => none,
             M::Copy => recv.clone(),
@@ -3170,6 +3200,13 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             }
             M::IsSubset | M::IsSuperset | M::IsDisjoint => SemTy::Bool,
             M::IntersectionUpdate | M::DifferenceUpdate | M::SymmetricDifferenceUpdate => none,
+            _ => SemTy::Dyn,
+        };
+    }
+    // Dict-view receiver: `isdisjoint` on the set-like keys / items views.
+    if let Some((kind, _)) = recv.dict_view() {
+        return match method {
+            M::IsDisjoint if kind != pyaot_types::DictViewKind::Values => SemTy::Bool,
             _ => SemTy::Dyn,
         };
     }
@@ -3225,6 +3262,10 @@ fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
         return k.clone();
+    }
+    if let Some((_, elem)) = t.dict_view() {
+        // A live dict view yields keys / values / `(key, value)` pairs.
+        return elem;
     }
     match t {
         SemTy::Str => SemTy::Str,

@@ -1116,6 +1116,9 @@ pub enum ContainerOp {
     TupleCount,
     // dict
     DictGetDefault,
+    /// `dict.keys()` / `.values()` / `.items()` → a LIVE view object
+    /// (`rt_dict_{keys,values,items}_view`, a `DictViewObj` over the dict),
+    /// not a list snapshot.
     DictKeys,
     DictValues,
     DictItems,

@@ -95,6 +95,21 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
 
             IteratorKind::Dict => iter_next_dict(iter, reversed, raise_on_exhausted),
 
+            // Live `dict.values()` / `dict.items()` view iterators (walk the
+            // dict's entries directly; no snapshot).
+            IteratorKind::DictValues | IteratorKind::DictItems => {
+                match crate::dict_view::iter_next_entry(iter, kind == IteratorKind::DictItems) {
+                    Some(v) => v,
+                    None => {
+                        (*iter).exhausted = true;
+                        if raise_on_exhausted {
+                            raise_exc!(exceptions::ExceptionType::StopIteration, "");
+                        }
+                        EXHAUSTED_SENTINEL
+                    }
+                }
+            }
+
             IteratorKind::String => {
                 let str_obj = (*iter).source as *mut StrObj;
                 let len = (*str_obj).len as i64;

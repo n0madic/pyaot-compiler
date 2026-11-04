@@ -11,6 +11,7 @@ use pyaot_utils::ClassId;
 
 use crate::builtin_classes::{
     BUILTIN_DEFAULTDICT_CLASS_ID, BUILTIN_DEQUE_CLASS_ID, BUILTIN_DICT_CLASS_ID,
+    BUILTIN_DICT_ITEMS_CLASS_ID, BUILTIN_DICT_KEYS_CLASS_ID, BUILTIN_DICT_VALUES_CLASS_ID,
     BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
     BUILTIN_TUPLE_VAR_CLASS_ID,
 };
@@ -228,6 +229,14 @@ fn repr_of_generic(base: ClassId, args: &[SemTy]) -> Repr {
     } else if base == BUILTIN_DEQUE_CLASS_ID {
         // deque is runtime-backed; element type is compile-time only.
         Repr::Heap(HeapShape::RuntimeObj(TypeTagKind::Deque))
+    } else if base == BUILTIN_DICT_KEYS_CLASS_ID {
+        // Dict views are runtime-backed `DictViewObj`s over the live dict; the
+        // element type is compile-time only (like deque).
+        Repr::Heap(HeapShape::RuntimeObj(TypeTagKind::DictKeys))
+    } else if base == BUILTIN_DICT_VALUES_CLASS_ID {
+        Repr::Heap(HeapShape::RuntimeObj(TypeTagKind::DictValues))
+    } else if base == BUILTIN_DICT_ITEMS_CLASS_ID {
+        Repr::Heap(HeapShape::RuntimeObj(TypeTagKind::DictItems))
     } else {
         // User-defined generic class → nominal instance pointer.
         Repr::Heap(HeapShape::Class(base))
