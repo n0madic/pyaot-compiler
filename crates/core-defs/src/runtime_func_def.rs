@@ -1253,6 +1253,10 @@ pub static RT_TYPE_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_nam
 pub static RT_TYPE_NAME_EXTRACT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_name_extract");
 /// rt_exc_class_name(instance: *mut Obj) -> *mut Obj
 pub static RT_EXC_CLASS_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_exc_class_name");
+/// rt_exc_set_instance_message(instance: Value, msg: Value) — `BaseException.__init__`
+/// on a user exception instance (`super().__init__(msg)`); `msg` null = no argument.
+pub static RT_EXC_SET_INSTANCE_MESSAGE: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_exc_set_instance_message", &[PI64, PI64]);
 /// rt_format(value: Value, spec: Value) -> Value  — format spec dispatch (PEP 3101)
 pub static RT_FORMAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_format");
 

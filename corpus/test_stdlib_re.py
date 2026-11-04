@@ -38,4 +38,41 @@ print(_rv_sub2)
 _rv_sub3: str = re.sub(r"(\w)(\w)", r"\2\1", "ab")
 print(_rv_sub3)
 
+
+# ===== SECTION: Python replacement templates, group() out of range =====
+
+def _re_templates() -> None:
+    assert re.sub(r"(\w+)@(\w+)", r"\2 at \1", "joe@site and ann@web") == "site at joe and web at ann"
+    assert re.sub(r"(?P<first>\w+) (?P<last>\w+)", r"\g<last>, \g<first>", "John Smith") == "Smith, John"
+    assert re.sub(r"(a)", r"\g<1>\g<0>!", "banana") == "baa!naa!naa!"
+    assert re.sub(r"x", r"\n", "axb") == "a\nb"
+    assert re.sub(r"x", r"\t|\\|$1|\.", "axb") == "a\t|\\|$1|\\.b"
+    assert re.sub(r"(\d)", r"<\1>", "a1b22") == "a<1>b<2><2>"
+    assert re.sub(r"x", "", "xaxbx") == "ab"
+    m = re.search(r"(\d+)-(\d+)", "tel 12-34")
+    assert m is not None
+    assert (m.group(0), m.group(1), m.group(2)) == ("12-34", "12", "34")
+    errors: list[str] = []
+    try:
+        m.group(3)
+    except IndexError as e:
+        errors.append(str(e))
+    try:
+        re.sub(r"(a)", r"\2", "a")
+    except Exception as e:
+        errors.append(str(e))
+    try:
+        re.sub(r"a", r"\q", "a")
+    except Exception as e:
+        errors.append(str(e))
+    assert errors == [
+        "no such group",
+        "invalid group reference 2 at position 1",
+        "bad escape \\q at position 0",
+    ]
+
+
+_re_templates()
+
+
 print("All re module tests passed!")

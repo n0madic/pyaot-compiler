@@ -996,8 +996,10 @@ fn check_repr_boundaries(
                         let callee = &module.functions[fid.index()];
                         let p = &callee.params[..];
                         let p = if skip_self { &p[1.min(p.len())..] } else { p };
-                        let cut =
-                            p.len() - usize::from(callee.varargs) - usize::from(callee.kwargs);
+                        // Saturating: `def m(*args)` (no `self`) has its only
+                        // param consumed by the self-skip.
+                        let tail = usize::from(callee.varargs) + usize::from(callee.kwargs);
+                        let cut = p.len().saturating_sub(tail);
                         let p = &p[..cut.min(p.len())];
                         // Keyword args pair with their NAMED parameter (Phase
                         // 10); names without a fixed param feed the `**kwargs`
@@ -1087,8 +1089,9 @@ fn union_has_numeric(t: &SemTy) -> bool {
 /// no check. The rule per param spec:
 /// * `Float` / `Int` (raw ABI slots) admit the numeric types, gradual `Dyn`,
 ///   and numeric-containing Unions — lowering emits a CHECKED unbox for the
-///   gradual cases (Phase 8H, D3); `Bool` / `Str` require the exact semantic
-///   type (`Bool` is admitted where `Int` is expected, matching Python's
+///   gradual cases (Phase 8H, D3); `Bool` / `Str` admit their exact semantic
+///   type or a gradual (`Dyn` / Union) value, which lowering checks at run
+///   time (`Bool` is admitted where `Int` is expected, matching Python's
 ///   bool ⊂ int).
 /// * Object specs (`StructTime`, `Match`, …) require the matching
 ///   `RuntimeObject` (or gradual `Dyn`, carried Tagged).
@@ -1128,8 +1131,10 @@ fn check_call_runtime_args(
             TypeSpec::Int => {
                 matches!(got, SemTy::Int | SemTy::Bool | SemTy::Dyn) || union_has_numeric(got)
             }
-            TypeSpec::Bool => matches!(got, SemTy::Bool),
-            TypeSpec::Str => matches!(got, SemTy::Str),
+            // A gradual `Bool`/`Str` argument is checked at run time by
+            // lowering (`rt_unbox_bool` / the `Tagged → Heap(Str)` guard).
+            TypeSpec::Bool => matches!(got, SemTy::Bool | SemTy::Dyn | SemTy::Union(_)),
+            TypeSpec::Str => matches!(got, SemTy::Str | SemTy::Dyn | SemTy::Union(_)),
             spec => {
                 let want = pyaot_hir::semty_from_typespec(spec);
                 match want {

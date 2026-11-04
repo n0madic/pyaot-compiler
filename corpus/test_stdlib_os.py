@@ -243,4 +243,20 @@ assert os.extsep == ".", "os.extsep is the extension separator"
 assert len(os.devnull) > 0, "os.devnull is a non-empty path"
 print("os path constants tests passed")
 
+
+# ===== SECTION: gradual (untyped) str arguments to stdlib str params =====
+
+def _os_untyped(p):
+    return os.path.exists(p), os.path.basename(p)
+
+
+assert _os_untyped("/definitely/not/here/pyaot.txt") == (False, "pyaot.txt")
+_os_type_error = False
+try:
+    _os_untyped(42)
+except TypeError:
+    _os_type_error = True
+assert _os_type_error
+
+
 print("\nAll os module tests passed!")

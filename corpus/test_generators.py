@@ -1,6 +1,8 @@
 # Comprehensive generator tests
 # Tests: creation, next(), for loops, send(), close()
 
+from typing import Iterator
+
 # =============================================================================
 # Basic generator definitions
 # =============================================================================
@@ -1427,5 +1429,50 @@ def test_send_close_dispatch():
 
 
 test_send_close_dispatch()
+
+
+# ===== SECTION: gradual subscript kinds; close() on non-generators / unstarted =====
+
+class _GiSeq:
+    def __getitem__(self, i: int) -> int:
+        return i * 10
+
+
+def _gi_ident(x):
+    return x
+
+
+def _gi_gen() -> Iterator[int]:
+    yield 1
+
+
+def _gradual_getitem_and_close() -> None:
+    assert _gi_ident(b"abc")[1] == 98
+    assert _gi_ident(bytearray(b"xyz"))[-1] == 122
+    assert _gi_ident(_GiSeq())[3] == 30
+    msgs: list[str] = []
+    try:
+        _gi_ident(3.5)[0]
+    except TypeError as e:
+        msgs.append(str(e))
+    try:
+        _gi_ident({1, 2})[0]
+    except TypeError as e:
+        msgs.append(str(e))
+    assert msgs == ["'float' object is not subscriptable", "'set' object is not subscriptable"]
+    g = _gi_gen()
+    g.close()  # never started: just marked finished
+    assert list(g) == []
+    it: Iterator[int] = iter([1, 2])
+    raised = False
+    try:
+        it.close()
+    except AttributeError:
+        raised = True
+    assert raised
+
+
+_gradual_getitem_and_close()
+
 
 print("All generator tests passed!")

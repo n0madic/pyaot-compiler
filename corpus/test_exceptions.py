@@ -2874,4 +2874,57 @@ def _hs_with_inside_handler() -> str:
 assert _hs_with_inside_handler() == "outer"
 
 
+# ===== SECTION: type(e).__name__, repr(e), super().__init__(msg) =====
+
+class _ReprAppError(Exception):
+    def __init__(self, msg: str, code: int) -> None:
+        super().__init__(msg)
+        self.code = code
+
+
+class _ReprPlainError(Exception):
+    pass
+
+
+def _exc_names_and_reprs() -> list[str]:
+    out: list[str] = []
+    try:
+        raise ValueError("bad")
+    except ValueError as e:
+        out.append(type(e).__name__)
+        out.append(repr(e))
+    try:
+        raise KeyError("k")
+    except Exception as e:
+        out.append(type(e).__name__ + " " + repr(e) + " " + str(e))
+    try:
+        raise _ReprPlainError("m")
+    except Exception as e:
+        out.append(type(e).__name__ + " " + repr(e))
+    try:
+        raise _ReprAppError("boom", 3)
+    except _ReprAppError as e:
+        out.append(str(e) + " " + str(e.code))
+    try:
+        raise ValueError()
+    except ValueError as e:
+        out.append(repr(e))
+    try:
+        int("x")
+    except ValueError as e:
+        out.append(repr(e))
+    return out
+
+
+assert _exc_names_and_reprs() == [
+    "ValueError",
+    "ValueError('bad')",
+    "KeyError KeyError('k') 'k'",
+    "_ReprPlainError _ReprPlainError('m')",
+    "boom 3",
+    "ValueError()",
+    "ValueError(\"invalid literal for int() with base 10: 'x'\")",
+]
+
+
 print("All exception tests passed!")

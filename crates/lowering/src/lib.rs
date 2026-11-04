@@ -855,7 +855,26 @@ impl<'a> FnLower<'a> {
         use pyaot_hir::HirRaise as H;
         match r {
             H::Builtin { tag, msg } => {
-                let msg = self.lower_exc_msg(*msg)?;
+                // `str(KeyError(k))` is `repr(k)` (CPython's KeyError.__str__),
+                // the same message the runtime's own dict-miss KeyError uses.
+                let msg = if *tag == pyaot_core_defs::BuiltinExceptionKind::KeyError.tag() {
+                    match msg {
+                        Some(e) => {
+                            let (l, r) = self.lower_expr(*e)?;
+                            let t = self.coerce(l, r, Repr::Tagged)?;
+                            let dst = self.alloc_temp(Repr::Tagged);
+                            self.emit(MirInst::CallBuiltin {
+                                dst: Some(dst),
+                                kind: pyaot_mir::BuiltinFunctionKind::Repr,
+                                args: vec![Operand::Local(t)],
+                            });
+                            Some(Operand::Local(dst))
+                        }
+                        None => None,
+                    }
+                } else {
+                    self.lower_exc_msg(*msg)?
+                };
                 self.emit(MirInst::Raise(MirRaise::Builtin { tag: *tag, msg }));
             }
             H::Custom { class_id, args } => {
@@ -2257,7 +2276,7 @@ impl<'a> FnLower<'a> {
                             continue;
                         }
                     }
-                    let (al, ar) = self.lower_expr(*arg)?;
+                    let (mut al, mut ar) = self.lower_expr(*arg)?;
                     // A gradual argument headed for a raw register slot takes
                     // the CHECKED unbox (Phase 8H, D3): `rt_unbox_float` /
                     // `rt_unbox_int` validate the tag at runtime (TypeError on
@@ -2265,6 +2284,17 @@ impl<'a> FnLower<'a> {
                     // proven types keep the unchecked fast path. Shared with the
                     // return / `float`-local seams via `coerce_value`.
                     let arg_ty = self.func.exprs[*arg].ty.clone();
+                    // A gradual value for a `str` param (a Tagged slot the
+                    // runtime reads as a `StrObj`) passes the checked
+                    // `Tagged → Heap(Str)` guard first (TypeError on a non-str).
+                    if matches!(params.get(i).map(|p| &p.ty), Some(pyaot_stdlib_defs::TypeSpec::Str))
+                        && matches!(arg_ty, SemTy::Dyn | SemTy::Union(_))
+                        && ar == Repr::Tagged
+                    {
+                        let heap_str = Repr::Heap(HeapShape::Str);
+                        al = self.coerce_value(al, ar, &arg_ty, heap_str.clone())?;
+                        ar = heap_str;
+                    }
                     let coerced = self.coerce_value(al, ar, &arg_ty, want.clone())?;
                     ops.push(Operand::Local(coerced));
                 }
@@ -4375,6 +4405,47 @@ impl<'a> FnLower<'a> {
         Ok(Some((dst, ret)))
     }
 
+    /// `super().__init__([msg])` reaching the BUILTIN exception base (no user
+    /// parent defines `__init__`): `BaseException.__init__` records the
+    /// message on the instance (`rt_exc_set_instance_message`) so `str(e)` and
+    /// tracebacks show it. One positional argument at most (CPython's
+    /// multi-argument `args` tuple form is out of scope).
+    fn lower_base_exception_init(
+        &mut self,
+        args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        if args.len() > 1 || !kwargs.is_empty() {
+            return Err(CompilerError::semantic_error(
+                "super().__init__() of a builtin exception takes at most one \
+                 positional argument here",
+                span,
+            ));
+        }
+        let self_local = LocalId::new(0);
+        let self_from = self.local_repr(self_local);
+        let self_tagged = self.coerce(self_local, self_from, Repr::Tagged)?;
+        let msg = match args.first() {
+            Some(a) => {
+                let (l, r) = self.lower_expr(*a)?;
+                self.coerce(l, r, Repr::Tagged)?
+            }
+            None => self.null_temp(),
+        };
+        self.emit(MirInst::CallRuntime {
+            dst: None,
+            def: &pyaot_core_defs::runtime_func_def::RT_EXC_SET_INSTANCE_MESSAGE,
+            args: vec![Operand::Local(self_tagged), Operand::Local(msg)],
+        });
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst,
+            val: Const::None,
+        });
+        Ok((dst, Repr::Tagged))
+    }
+
     /// Lower `super().m(args)`: resolve the parent method via the enclosing class's
     /// MRO and direct-`Call` it with the *current* `self` (param 0), cast to the
     /// parent's `self` repr.
@@ -4386,18 +4457,22 @@ impl<'a> FnLower<'a> {
         kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
-        let fid = self
-            .classes
-            .resolve_super_method(cid, method_name)
-            .ok_or_else(|| {
-                CompilerError::semantic_error(
-                    format!(
-                        "super() has no method `.{}()`",
-                        self.interner.resolve(method_name)
-                    ),
-                    span,
-                )
-            })?;
+        let resolved = self.classes.resolve_super_method(cid, method_name);
+        if resolved.is_none()
+            && self.interner.resolve(method_name) == "__init__"
+            && self.classes.is_exception_class(cid)
+        {
+            return self.lower_base_exception_init(args, kwargs, span);
+        }
+        let fid = resolved.ok_or_else(|| {
+            CompilerError::semantic_error(
+                format!(
+                    "super() has no method `.{}()`",
+                    self.interner.resolve(method_name)
+                ),
+                span,
+            )
+        })?;
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         // `self` is parameter 0 of the current method.

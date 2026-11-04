@@ -271,6 +271,14 @@ pub fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
             }
             TypeTagKind::Str => obj, // already a string
             TypeTagKind::None => rt_none_to_str(),
+            // `str(e)` of an exception without a user `__str__`/`__repr__`
+            // is its message, not its repr.
+            TypeTagKind::Instance
+                if crate::ops::try_str_dunder(obj).is_none()
+                    && crate::exceptions::exception_class_name(obj).is_some() =>
+            {
+                crate::exceptions::rt_exc_instance_str(obj)
+            }
             _ => {
                 // For containers and other types, build repr string
                 let s = obj_to_repr_string(obj);

@@ -472,6 +472,10 @@ pub extern "C" fn rt_exc_instance_str(
     if instance.is_null() {
         return unsafe { crate::string::rt_make_str(std::ptr::null(), 0) };
     }
+    // A user exception whose message `BaseException.__init__` recorded.
+    if let Some(m) = super::core::instance_message(instance) {
+        return unsafe { crate::string::rt_make_str(m.as_ptr(), m.len()) };
+    }
 
     unsafe {
         // Get field 0 (.args tuple) from the instance
@@ -621,7 +625,17 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
     len: usize,
     instance: *mut crate::object::Obj,
 ) -> ! {
-    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
+    // No raise-site message: use the one `BaseException.__init__` recorded
+    // (`super().__init__(msg)`), if any.
+    let recorded = if len == 0 && !instance.is_null() {
+        super::core::instance_message(instance)
+    } else {
+        None
+    };
+    let (msg_ptr, msg_len, msg_capacity) = match &recorded {
+        Some(m) => copy_message_to_owned(m.as_ptr(), m.len()),
+        None => copy_message_to_owned(message, len),
+    };
     let context = with_exception_state(|state| state.new_context(instance));
     let traceback = Some(crate::traceback::capture_traceback());
 
@@ -782,4 +796,112 @@ pub extern "C" fn rt_exc_get_class_id() -> u8 {
 #[no_mangle]
 pub extern "C" fn rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize) {
     register_class_name(class_id, name, len);
+}
+
+/// `BaseException.__init__(self[, msg])` for a user exception instance —
+/// `super().__init__(msg)` in an exception class whose parents define no
+/// `__init__`: records `str(msg)` (empty without an argument) as the
+/// instance's message, which `str(e)` and an uncaught traceback then show.
+///
+/// # Safety
+/// `instance` must be a valid instance pointer; `msg` null (no argument), a
+/// tagged immediate, or a valid object pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_set_instance_message(
+    instance: pyaot_core_defs::Value,
+    msg: pyaot_core_defs::Value,
+) {
+    let inst = instance.0 as *mut crate::object::Obj;
+    if inst.is_null() {
+        return;
+    }
+    let text = if msg.0 == 0 {
+        String::new()
+    } else {
+        let s = crate::conversions::rt_obj_to_str(msg.0 as *mut crate::object::Obj);
+        crate::utils::extract_str_unchecked(s)
+    };
+    super::core::set_instance_message(inst, text);
+}
+
+// ==================== Exception instance str / repr / type name ====================
+
+/// The class name of an exception instance's class (`ValueError`, a user
+/// `MyErr`, a stdlib `HTTPError`), or `None` when `obj` is not an exception
+/// instance. Second value: is it a builtin exception class.
+///
+/// # Safety
+/// `obj` must be null, a tagged immediate or a valid object pointer.
+pub(crate) unsafe fn exception_class_name(obj: *mut crate::object::Obj) -> Option<(String, bool)> {
+    let v = pyaot_core_defs::Value(obj as u64);
+    if !v.is_ptr() || obj.is_null() || (*obj).type_tag() != crate::object::TypeTagKind::Instance {
+        return None;
+    }
+    let class_id = (*(obj as *const crate::object::InstanceObj)).class_id;
+    if let Some(kind) = BuiltinExceptionKind::from_tag(class_id) {
+        return Some((kind.name().to_string(), true));
+    }
+    if crate::vtable::rt_class_inherits_from(class_id, BuiltinExceptionKind::BaseException.tag())
+        == 0
+    {
+        return None;
+    }
+    let name = match super::core::get_registered_exception_name(class_id) {
+        Some(n) => n,
+        None => crate::ops::instance_class_name(class_id),
+    };
+    Some((name, false))
+}
+
+/// `str(e)` of an exception instance as a Rust string (`None` if `obj` is not
+/// an exception instance).
+///
+/// # Safety
+/// See [`exception_class_name`].
+pub(crate) unsafe fn exception_str(obj: *mut crate::object::Obj) -> Option<String> {
+    exception_class_name(obj)?;
+    let s = rt_exc_instance_str(obj);
+    Some(crate::utils::extract_str_unchecked(s))
+}
+
+/// `repr(e)` of an exception instance: `ValueError('bad')`, `ValueError()`,
+/// `MyErr('m')` (`None` if `obj` is not an exception instance). A builtin
+/// exception renders its `.args`; a user exception renders its message (the
+/// constructor's full argument list is not retained).
+///
+/// # Safety
+/// See [`exception_class_name`].
+pub(crate) unsafe fn exception_repr(obj: *mut crate::object::Obj) -> Option<String> {
+    let (name, builtin) = exception_class_name(obj)?;
+    let mut parts: Vec<String> = Vec::new();
+    let args = if builtin {
+        crate::instance::rt_instance_get_field(obj, 0) as *mut crate::object::Obj
+    } else {
+        std::ptr::null_mut()
+    };
+    let av = pyaot_core_defs::Value(args as u64);
+    if av.is_ptr() && !args.is_null() && (*args).type_tag() == crate::object::TypeTagKind::Tuple {
+        let t = args as *mut crate::object::TupleObj;
+        // A KeyError's message is already `repr(key)` (its `__str__`).
+        let key_error = name == BuiltinExceptionKind::KeyError.name();
+        for i in 0..(*t).len {
+            let elem = (*(*t).data.as_ptr().add(i)).0 as *mut crate::object::Obj;
+            if key_error && (*t).len == 1 {
+                parts.push(crate::utils::extract_str_unchecked(
+                    crate::conversions::rt_obj_to_str(elem),
+                ));
+                continue;
+            }
+            let r = crate::builtins::rt_builtin_repr(elem);
+            parts.push(crate::utils::extract_str_unchecked(r));
+        }
+    } else {
+        let msg = crate::utils::extract_str_unchecked(rt_exc_instance_str(obj));
+        if !msg.is_empty() {
+            let mut q = String::new();
+            crate::conversions::repr_str_into(&mut q, &msg);
+            parts.push(q);
+        }
+    }
+    Some(format!("{}({})", name, parts.join(", ")))
 }

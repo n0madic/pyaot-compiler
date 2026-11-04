@@ -191,8 +191,13 @@ Two root causes dominate:
       Fixed: runtime handling stack; the frontend wraps every handling block
       (except body, exceptional finally, with-exit) in a cleanup landing pad
       that pops it. Corpus: test_exceptions.py handling-stack section.
-- [ ] **M** `super().__init__(msg)` in Exception subclass doesn't compile
+- [x] **M** `super().__init__(msg)` in Exception subclass doesn't compile
       (`lowering:4364`). ✓
+      Fixed: super().__init__([msg]) reaching the builtin exception base
+      lowers to new rt_exc_set_instance_message (a GC-swept side table of
+      instance messages read by str(e), repr(e) and the raise). Multi-argument
+      BaseException.__init__ stays a clean compile error. Corpus:
+      test_exceptions.py.
 - [x] **H** BigInt hash/eq by pointer in dict/set/list.index; `hash(bigint)`
       raises (`runtime/src/hash_table_utils.rs:46`, `:243`; `builtins.rs:350`). ✓
       Fixed: one CPython-exact hash (crate::hash::py_hash) feeds both hash()
@@ -251,21 +256,39 @@ Two root causes dominate:
       iterable of pairs). Corpus: test_collections.py.
 - [ ] **L** `dict.keys()/values()/items()` are snapshots, not views
       (`typeck:2858`). ✓
-- [ ] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
+- [x] **M** `re.sub` template escapes; `match.group(n)` out of range → None.
+      Fixed: CPython parse_template semantics (escapes, octal, `\N`,
+      `\g<name>`/`\g<N>`, bad-escape and invalid-group errors); group(n) out of
+      range raises IndexError. Corpus: test_stdlib_re.py.
 - [x] **M** format-shared: float with no type code, `g` exponent before
       rounding, `-0.0` sign, `NaN` case, grouping/`0` flag
       (`format-shared/src/lib.rs:398`, `:417`, `:137`, `:386`). ✓
       Fixed: format_float rewritten on CPython's PyOS_double_to_string rules;
       int/float grouping inside 0-padding, 4-digit _ groups for hex. Corpus:
       test_strings.py.
-- [ ] **M** typeck rejects `Dyn` for `TypeSpec::Str/Bool` stdlib params
+- [x] **M** typeck rejects `Dyn` for `TypeSpec::Str/Bool` stdlib params
       (`os.path.exists(p)` untyped) (`typeck:1131`). ✓
-- [ ] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
-- [ ] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
-- [ ] **M** `rt_any_getitem` (gradual `<dyn>[i]`) returns None for any
+      Fixed: Dyn/Union admitted; lowering guards a gradual str argument with
+      the checked Tagged->Heap(Str) coercion (TypeError on a non-str), bool
+      already uses rt_unbox_bool. Corpus: test_stdlib_os.py.
+- [x] **M** typeck underflow panic: `def m(*args)` method (`typeck:1000`). ✓
+      Fixed: the panic (saturating cut). Calling such a self-less *args method
+      still fails later in lowering (`illegal coercion Heap(Class) ->
+      Heap(TupleVar)`: self is not packed into *args) — left to the Phase 3
+      method-call rework.
+- [x] **L** `type(e).__name__` prints `object`; `repr(e)` via Dyn.
+      Fixed: type() of builtin/stdlib exception instances names the exception
+      class; repr(e) is Name(args) (a user exception renders its message, not
+      the full constructor args); str() of a gradual exception is its message;
+      raise KeyError(k) stores repr(k) like CPython's KeyError.__str__.
+      Corpus: test_exceptions.py.
+- [x] **M** `rt_any_getitem` (gradual `<dyn>[i]`) returns None for any
       unhandled receiver kind instead of raising TypeError / dispatching
       `__getitem__` (`runtime/src/ops/comparison.rs` `_ => null`). Deque arm
       added; bytes/bytearray/range/instances still fall through.
+      Fixed: bytes/bytearray arms, instance __getitem__ dispatch, TypeError
+      (not subscriptable) otherwise. There is no runtime range object (range
+      lowers to an iterator). Corpus: test_generators.py.
 - [x] **H** `.close()` / `.send(v)` were lowered as generator ops by method
       NAME in the frontend, hijacking StringIO/BytesIO/file/user-class
       methods (`s.close()` was a silent no-op). Now ordinary method calls:
@@ -281,9 +304,12 @@ Two root causes dominate:
       `with_set_operand`). Corpus: test_collections.py.
 - [ ] **L** `generator.throw()` unsupported (needs resume-protocol support
       for injecting an exception at the paused yield).
-- [ ] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
+- [x] **L** `.close()` on a non-generator `Iterator` (e.g. `iter(list)`) is a
       silent no-op (`rt_generator_close` ignores non-generators); CPython
       raises AttributeError.
+      Fixed: AttributeError for a non-generator; closing a never-started
+      generator just marks it finished (it used to run it and raise
+      RuntimeError). Corpus: test_generators.py.
 
 ## Phase 6 — CLI, linker, lattice, tracebacks
 

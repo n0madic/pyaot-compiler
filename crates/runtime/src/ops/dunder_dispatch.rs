@@ -56,6 +56,7 @@ pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
 pub(super) const FNV_EQ: u64 = fnv1a(b"__eq__");
 pub(super) const FNV_HASH: u64 = fnv1a(b"__hash__");
+pub(super) const FNV_GETITEM: u64 = fnv1a(b"__getitem__");
 pub(super) const FNV_ITER: u64 = fnv1a(b"__iter__");
 pub(super) const FNV_BOOL: u64 = fnv1a(b"__bool__");
 pub(super) const FNV_LEN: u64 = fnv1a(b"__len__");

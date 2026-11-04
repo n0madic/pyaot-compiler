@@ -130,7 +130,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice |
-| `super()` | ✅ | |
+| `super()` | ✅ | `super().__init__([msg])` in an exception class whose parents define no `__init__` records the message (`BaseException.__init__`) |
 | `@property` | ✅ | |
 | `@staticmethod` / `@classmethod` | ✅ | `cls` is a compile-time alias of the enclosing class (`cls()` / `cls.attr` / `cls.method`); statically enclosing class, not a runtime subclass. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
@@ -259,7 +259,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | `random` | ✅ | MT19937 identical to CPython: `seed` (any-size int, float, str, None), `random`/`randint`/`randrange`/`choice`/`choices`/`shuffle`/`sample`/`uniform`/`gauss` produce CPython's sequences |
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
-| `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |
+| `re` | ✅ | `search`/`match`/`sub` + `Match` (`group`/`groups`/`start`/`end`/`span`); `sub` replacement templates follow CPython (`\1`, `\g<name>`, escapes, errors). Engine is `regex-lite` (no backreferences/lookaround in patterns; empty-match adjacency may differ) (gated `stdlib-regex`) |
 | `json` | ✅ | `dumps`/`loads`/`dump`/`load`, CPython-exact output with default options: insertion order, big ints, `NaN`/`Infinity`, int/float/bool/None keys, `ensure_ascii`, `JSONDecodeError` messages (raised as `ValueError`). In-tree codec (no external crate). No `indent`/`sort_keys`/`separators`/`default` kwargs |
 | `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath`; constants `sep`/`linesep`/`pathsep`/`curdir`/`pardir`/`extsep`/`devnull` |
 | `subprocess` | ✅ | |

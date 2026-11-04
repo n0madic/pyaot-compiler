@@ -352,14 +352,29 @@ pub extern "C" fn rt_generator_get_sent_value_abi(gen: Value) -> i64 {
 /// `gen` must be a valid pointer to a GeneratorObj.
 pub unsafe fn rt_generator_close(gen: *mut Obj) {
     // Check if it's actually a generator
-    if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
-        return; // Silently ignore
+    if gen.is_null() {
+        return;
+    }
+    if (*gen).header.type_tag != TypeTagKind::Generator {
+        // Only generators have `close()` (a statically `Iterator`-typed
+        // receiver may be any iterator, e.g. `iter(list)`).
+        raise_exc!(
+            ExceptionType::AttributeError,
+            "'{}' object has no attribute 'close'",
+            (*gen).header.type_tag.type_name()
+        );
     }
 
     let gen_obj = gen as *mut GeneratorObj;
 
     // If already exhausted, do nothing
     if (*gen_obj).exhausted {
+        return;
+    }
+
+    // Never started: CPython just marks it finished (no code runs).
+    if (*gen_obj).state == 0 {
+        (*gen_obj).exhausted = true;
         return;
     }
 

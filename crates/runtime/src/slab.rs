@@ -392,6 +392,8 @@ unsafe fn finalize_object_by_tag(obj_ptr: *mut Obj, tag: TypeTagKind) {
             // Idiomatic deterministic cleanup uses `with`/context managers, which
             // are supported. The instance's field slots are plain GC-managed
             // `Value`s with no owned Rust allocation to drop here.
+            // Drop any message `BaseException.__init__` recorded for it.
+            crate::exceptions::core::forget_instance_message(obj_ptr);
         }
         _ => {}
     }

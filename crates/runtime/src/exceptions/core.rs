@@ -578,3 +578,38 @@ pub fn register_class_name(class_id: u8, name: *const u8, len: usize) {
 pub(super) fn get_registered_exception_name(class_id: u8) -> Option<String> {
     unsafe { (*EXCEPTION_NAME_REGISTRY.0.get())[class_id as usize].clone() }
 }
+
+// ==================== Instance messages (BaseException.__init__) ====================
+
+thread_local! {
+    /// Message set by `BaseException.__init__(msg)` on a user exception
+    /// instance (`super().__init__(msg)` in a class with no user parent
+    /// `__init__`), keyed by instance address. User exception instances have
+    /// no `.args` slot of their own; the entry is dropped when the instance is
+    /// swept (`forget_instance_message`), so a reused address never sees a
+    /// stale message.
+    static INSTANCE_MESSAGES: std::cell::RefCell<std::collections::HashMap<usize, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Record `msg` as the exception message of `instance`.
+pub fn set_instance_message(instance: *mut crate::object::Obj, msg: String) {
+    INSTANCE_MESSAGES.with(|m| {
+        m.borrow_mut().insert(instance as usize, msg);
+    });
+}
+
+/// The message recorded for `instance` by `BaseException.__init__`, if any.
+pub fn instance_message(instance: *mut crate::object::Obj) -> Option<String> {
+    INSTANCE_MESSAGES.with(|m| m.borrow().get(&(instance as usize)).cloned())
+}
+
+/// Drop `instance`'s recorded message (the GC is sweeping it).
+pub fn forget_instance_message(instance: *mut crate::object::Obj) {
+    INSTANCE_MESSAGES.with(|m| {
+        let mut m = m.borrow_mut();
+        if !m.is_empty() {
+            m.remove(&(instance as usize));
+        }
+    });
+}

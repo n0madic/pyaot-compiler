@@ -190,6 +190,143 @@ pub extern "C" fn rt_re_match_abi(pattern: Value, string: Value) -> Value {
     Value::from_ptr(rt_re_match(pattern.unwrap_ptr(), string.unwrap_ptr()))
 }
 
+/// One piece of a parsed `re.sub` replacement template.
+enum TemplatePart {
+    Literal(String),
+    Group(usize),
+}
+
+/// `re.error` for a bad replacement template (raised as `ValueError`, the
+/// base class of CPython's `re.PatternError`).
+unsafe fn template_error(msg: String) -> ! {
+    crate::raise_exc!(crate::exceptions::ExceptionType::ValueError, "{}", msg)
+}
+
+/// Parse a Python replacement template (CPython `sre_parse.parse_template`):
+/// `\n \t \r \f \v \a \b \\` escapes, octal escapes (`\0`, `\012`),
+/// numeric group references (`\1`..`\99`), `\g<name>` / `\g<N>`; an unknown
+/// ASCII-letter escape is an error; any other escaped character keeps its
+/// backslash (`\.` stays `\.`).
+unsafe fn parse_template(repl: &str, re: &Regex) -> Vec<TemplatePart> {
+    let chars: Vec<char> = repl.chars().collect();
+    let ngroups = re.captures_len();
+    let mut parts: Vec<TemplatePart> = Vec::new();
+    let mut lit = String::new();
+    let flush = |lit: &mut String, parts: &mut Vec<TemplatePart>| {
+        if !lit.is_empty() {
+            parts.push(TemplatePart::Literal(std::mem::take(lit)));
+        }
+    };
+    let group_ref = |g: usize, pos: usize| -> usize {
+        if g >= ngroups {
+            template_error(format!("invalid group reference {} at position {}", g, pos))
+        }
+        g
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '\\' {
+            lit.push(c);
+            i += 1;
+            continue;
+        }
+        let pos = i;
+        i += 1;
+        let Some(&e) = chars.get(i) else {
+            template_error(format!("bad escape (end of pattern) at position {}", pos))
+        };
+        i += 1;
+        match e {
+            'g' => {
+                if chars.get(i) != Some(&'<') {
+                    template_error(format!("missing < at position {}", i))
+                }
+                let start = i + 1;
+                let Some(len) = chars[start..].iter().position(|&ch| ch == '>') else {
+                    template_error(format!(
+                        "missing >, unterminated name at position {}",
+                        start
+                    ))
+                };
+                let name: String = chars[start..start + len].iter().collect();
+                i = start + len + 1;
+                let g = if !name.is_empty() && name.chars().all(|ch| ch.is_ascii_digit()) {
+                    group_ref(name.parse().unwrap_or(usize::MAX), start)
+                } else {
+                    match re.capture_names().position(|n| n == Some(name.as_str())) {
+                        Some(g) => g,
+                        None if name.is_empty() => {
+                            template_error(format!("missing group name at position {}", start))
+                        }
+                        None => template_error(format!("unknown group name '{}'", name)),
+                    }
+                };
+                flush(&mut lit, &mut parts);
+                parts.push(TemplatePart::Group(g));
+            }
+            '0' => {
+                // Octal escape: up to two more octal digits.
+                let mut v = 0u32;
+                let mut n = 0;
+                while n < 2 && i < chars.len() && ('0'..='7').contains(&chars[i]) {
+                    v = v * 8 + chars[i].to_digit(8).unwrap();
+                    i += 1;
+                    n += 1;
+                }
+                lit.push(char::from_u32(v).unwrap_or('\0'));
+            }
+            '1'..='9' => {
+                // Two-digit group reference, or a three-digit octal escape.
+                let d1 = e.to_digit(10).unwrap() as usize;
+                if i < chars.len() && chars[i].is_ascii_digit() {
+                    let d2 = chars[i].to_digit(10).unwrap() as usize;
+                    if e <= '7'
+                        && ('0'..='7').contains(&chars[i])
+                        && i + 1 < chars.len()
+                        && ('0'..='7').contains(&chars[i + 1])
+                    {
+                        let v =
+                            (d1 * 64 + d2 * 8 + chars[i + 1].to_digit(8).unwrap() as usize) as u32;
+                        if v > 0o377 {
+                            template_error(format!(
+                                "octal escape value \\{}{}{} outside of range 0-0o377 at position {}",
+                                e, chars[i], chars[i + 1], pos
+                            ))
+                        }
+                        lit.push(char::from_u32(v).unwrap());
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    flush(&mut lit, &mut parts);
+                    parts.push(TemplatePart::Group(group_ref(d1 * 10 + d2, pos + 1)));
+                } else {
+                    flush(&mut lit, &mut parts);
+                    parts.push(TemplatePart::Group(group_ref(d1, pos + 1)));
+                }
+            }
+            'n' => lit.push('\n'),
+            't' => lit.push('\t'),
+            'r' => lit.push('\r'),
+            'f' => lit.push('\x0c'),
+            'v' => lit.push('\x0b'),
+            'a' => lit.push('\x07'),
+            'b' => lit.push('\x08'),
+            '\\' => lit.push('\\'),
+            ch if ch.is_ascii_alphabetic() => {
+                template_error(format!("bad escape \\{} at position {}", ch, pos))
+            }
+            ch => {
+                lit.push('\\');
+                lit.push(ch);
+            }
+        }
+    }
+    flush(&mut lit, &mut parts);
+    parts
+}
+
 /// Substitute all occurrences of pattern with replacement
 /// Returns new string with substitutions
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -222,26 +359,27 @@ pub fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj) -> *mut Ob
             }
         };
 
-        // Translate Python replacement backreferences (\1..\9) to regex-crate
-        // syntax (${1}..${9}). Python's \0 is the null byte, NOT a backreference
-        // — do not translate it. A literal `$` is NOT special in Python's
-        // replacement, but the regex crate reads `$name`/`$N` as a
-        // backreference, so escape literal `$` to `$$` FIRST (before
-        // introducing our own `${N}` backrefs) — otherwise `re.sub(p, "$5", s)`
-        // wrongly substituted capture group 5 instead of the literal "$5".
-        let translated_repl = repl_str
-            .replace('$', "$$")
-            .replace("\\1", "${1}")
-            .replace("\\2", "${2}")
-            .replace("\\3", "${3}")
-            .replace("\\4", "${4}")
-            .replace("\\5", "${5}")
-            .replace("\\6", "${6}")
-            .replace("\\7", "${7}")
-            .replace("\\8", "${8}")
-            .replace("\\9", "${9}");
-        // Replace all occurrences
-        let result = re.replace_all(&string_str, translated_repl.as_str());
+        // Python template semantics (sre `parse_template`): escapes, `\N`
+        // and `\g<name>` / `\g<N>` group references; `$` is literal.
+        let template = parse_template(&repl_str, &re);
+        let mut result = String::with_capacity(string_str.len());
+        let mut last = 0;
+        for caps in re.captures_iter(&string_str) {
+            let m = caps.get(0).expect("group 0 always participates");
+            result.push_str(&string_str[last..m.start()]);
+            for part in &template {
+                match part {
+                    TemplatePart::Literal(t) => result.push_str(t),
+                    TemplatePart::Group(g) => {
+                        if let Some(gm) = caps.get(*g) {
+                            result.push_str(gm.as_str());
+                        }
+                    }
+                }
+            }
+            last = m.end();
+        }
+        result.push_str(&string_str[last..]);
 
         make_str_from_rust(&result)
     }
@@ -256,7 +394,8 @@ pub extern "C" fn rt_re_sub_abi(pattern: Value, repl: Value, string: Value) -> V
 }
 
 /// Get a match group by index
-/// Returns string for that group, or None if group didn't participate
+/// Returns string for that group, or None if group didn't participate;
+/// `IndexError: no such group` for an index outside the pattern's groups.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
     unsafe {
@@ -279,7 +418,10 @@ pub fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
         let groups_len = (*tuple).len;
 
         if n < 0 || n >= groups_len as i64 {
-            return crate::object::none_obj();
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::IndexError,
+                "no such group"
+            );
         }
 
         let val = *(*tuple).data.as_ptr().add(n as usize);

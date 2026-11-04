@@ -532,7 +532,36 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
             }
             // A gradual `<dyn deque>[i]` (e.g. the result of `copy.copy(dq)`).
             TypeTagKind::Deque => crate::deque::rt_deque_get(obj, index),
-            _ => std::ptr::null_mut(),
+            // `bytes[i]` is an int (`rt_bytes_get` raises IndexError).
+            TypeTagKind::Bytes => {
+                pyaot_core_defs::Value::from_int(crate::bytes::rt_bytes_get(obj, index)).0
+                    as *mut Obj
+            }
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_get(obj, index),
+            // A class instance subscripts through its `__getitem__`.
+            TypeTagKind::Instance => {
+                let key = pyaot_core_defs::Value::from_int(index).0 as *mut Obj;
+                match super::dunder_dispatch::try_class_dunder(
+                    obj,
+                    key,
+                    super::dunder_dispatch::FNV_GETITEM,
+                    0,
+                ) {
+                    Some(v) => v,
+                    None => raise_exc!(
+                        crate::exceptions::ExceptionType::TypeError,
+                        "'{}' object is not subscriptable",
+                        crate::ops::instance_class_name(
+                            (*(obj as *const crate::object::InstanceObj)).class_id
+                        )
+                    ),
+                }
+            }
+            other => raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "'{}' object is not subscriptable",
+                type_name(other)
+            ),
         }
     }
 }

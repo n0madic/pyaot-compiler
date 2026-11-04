@@ -428,7 +428,11 @@ pub fn rt_print_obj(obj: *mut Obj) {
                 // `Union[T, NotImplementedT]` dunder return, §4).
                 match crate::ops::try_str_dunder(obj) {
                     Some(str_obj) if !str_obj.is_null() => rt_print_str_obj(str_obj),
-                    _ => rt_emit!("{}", crate::instance::instance_default_repr(obj)),
+                    // An exception prints its message (`str(e)`).
+                    _ => match crate::exceptions::exception_str(obj) {
+                        Some(msg) => rt_emit!("{}", msg),
+                        None => rt_emit!("{}", crate::instance::instance_default_repr(obj)),
+                    },
                 }
             }
             TypeTagKind::Iterator => rt_emit!("<iterator>"),
