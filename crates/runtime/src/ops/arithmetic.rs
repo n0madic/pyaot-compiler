@@ -634,6 +634,9 @@ bitwise_op!(
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_ior(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IOR) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() {
             match (*a).type_tag() {
@@ -654,6 +657,53 @@ pub fn rt_obj_ior(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[export_name = "rt_obj_ior"]
 pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_ior(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// An instance's own in-place dunder (`__isub__`, `__ior__`, …) for an
+/// augmented assignment, if it defines one and it does not return
+/// `NotImplemented` — CPython tries it before the binary operator.
+unsafe fn try_inplace_dunder(a: *mut Obj, b: *mut Obj, hash: u64) -> Option<*mut Obj> {
+    let va = Value(a as u64);
+    if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Instance {
+        return try_class_dunder(a, b, hash, 0);
+    }
+    None
+}
+
+/// The remaining augmented assignments (contract addition): `kind` selects
+/// `/=` (0), `//=` (1), `%=` (2), `**=` (3), `@=` (4), `<<=` (5), `>>=` (6).
+/// An instance's `__i<op>__` runs first; otherwise the binary operator (with
+/// its reflected fallback) applies, exactly as for `a = a <op> b`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_inplace(a: *mut Obj, b: *mut Obj, kind: i64) -> *mut Obj {
+    use super::dunder_dispatch as d;
+    let hash = match kind {
+        0 => d::FNV_ITRUEDIV,
+        1 => d::FNV_IFLOORDIV,
+        2 => d::FNV_IMOD,
+        3 => d::FNV_IPOW,
+        4 => d::FNV_IMATMUL,
+        5 => d::FNV_ILSHIFT,
+        _ => d::FNV_IRSHIFT,
+    };
+    unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, hash) {
+            return r;
+        }
+    }
+    match kind {
+        0 => rt_obj_div(a, b),
+        1 => rt_obj_floordiv(a, b),
+        2 => rt_obj_mod(a, b),
+        3 => rt_obj_pow(a, b),
+        4 => rt_obj_matmul(a, b),
+        5 => rt_obj_lshift(a, b),
+        _ => rt_obj_rshift(a, b),
+    }
+}
+#[export_name = "rt_obj_inplace"]
+pub extern "C" fn rt_obj_inplace_abi(a: Value, b: Value, kind: i64) -> Value {
+    Value::from_ptr(rt_obj_inplace(a.unwrap_ptr(), b.unwrap_ptr(), kind))
 }
 
 /// In-place add `a += b` (contract addition). A `list` receiver extends in
@@ -756,6 +806,9 @@ pub extern "C" fn rt_obj_imul_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_iand(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IAND) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_intersection_update(a, b);
@@ -776,6 +829,9 @@ pub extern "C" fn rt_obj_iand_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_isub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_ISUB) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_difference_update(a, b);
@@ -795,6 +851,9 @@ pub extern "C" fn rt_obj_isub_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_ixor(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IXOR) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_symmetric_difference_update(a, b);

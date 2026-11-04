@@ -790,7 +790,7 @@ pub(super) fn lower_class(
     let mut properties: Vec<HirProperty> = Vec::new();
     let mut class_attrs: Vec<HirClassAttr> = Vec::new();
     let mut field_annotations: Vec<(InternedString, SemTy)> = Vec::new();
-    let mut own_cms: Vec<(u32, StmtFunctionDef)> = Vec::new();
+    let mut own_cms: Vec<(u32, StmtFunctionDef, String)> = Vec::new();
 
     // Lower a method body into the shared table, returning its FuncId.
     let lower_method = |interner: &mut StringInterner,
@@ -888,16 +888,19 @@ pub(super) fn lower_class(
                         // classmethod body resolves `cls` / `cls(...)` against it).
                         // `enclosing` stays `None` — a classmethod has no `self`,
                         // so `super()` must keep cleanly rejecting.
-                        let (fid, _) = lower_method(
+                        shared.cm_anchor = Some(cdef.name.to_string());
+                        let lowered = lower_method(
                             interner,
                             shared,
                             m,
                             "",
                             FirstParam::ClsMethod { class_id, name },
                             None,
-                        )?;
+                        );
+                        shared.cm_anchor = None;
+                        let (fid, _) = lowered?;
                         class_methods.push((method_name, fid));
-                        own_cms.push((shared.current_ns, m.clone()));
+                        own_cms.push((shared.current_ns, m.clone(), cdef.name.to_string()));
                     }
                     MethodDecor::Property => {
                         let (fid, ty) = lower_method(
@@ -1038,26 +1041,90 @@ pub(super) fn lower_class(
             continue;
         };
         let inherited = shared.class_cms.get(&bid).cloned().unwrap_or_default();
-        for (ns, m) in inherited {
+        for (ns, m, anchor) in inherited {
             let mname = interner.intern(m.name.as_str());
             if own_names.contains(&mname)
-                || effective_cms.iter().any(|(_, e)| e.name.as_str() == m.name.as_str())
+                || effective_cms
+                    .iter()
+                    .any(|(_, e, _)| e.name.as_str() == m.name.as_str())
             {
                 continue;
             }
             if ns == shared.current_ns {
-                let (fid, _) = lower_method(
+                shared.cm_anchor = Some(anchor.clone());
+                let lowered = lower_method(
                     interner,
                     shared,
                     &m,
                     "",
                     FirstParam::ClsMethod { class_id, name },
                     None,
-                )?;
+                );
+                shared.cm_anchor = None;
+                let (fid, _) = lowered?;
                 class_methods.push((mname, fid));
             }
-            effective_cms.push((ns, m));
+            effective_cms.push((ns, m, anchor));
         }
+    }
+    if let Some((bid, _)) = base_names
+        .first()
+        .and_then(|b| ctx.class_map.get(interner.resolve(*b)).copied())
+    {
+        shared.class_first_base.insert(class_id, bid);
+    }
+    // `super().n()` inside a `@classmethod` (anchor class D, reached through
+    // THIS class as `cls`): the next definition of `n` after D along the base
+    // chain, re-lowered with `cls` bound to this class, registered under the
+    // hidden name `__super_<D>_<n>__` that the call site targets.
+    let mut chain: Vec<ClassId> = vec![class_id];
+    while let Some(b) = shared.class_first_base.get(chain.last().expect("non-empty")).copied() {
+        if chain.contains(&b) || chain.len() > 64 {
+            break;
+        }
+        chain.push(b);
+    }
+    let own_def = |shared: &Shared, cid: ClassId, n: &str| -> Option<(u32, StmtFunctionDef, String)> {
+        let list = if cid == class_id {
+            &effective_cms
+        } else {
+            shared.class_cms.get(&cid)?
+        };
+        list.iter()
+            // Defined in `cid`'s own body (not an inherited copy).
+            .find(|(_, d, a)| {
+                d.name.as_str() == n && Some(a.as_str()) == anchor_name_of(cid, ctx).as_deref()
+            })
+            .cloned()
+    };
+    let mut hidden: Vec<(String, (u32, StmtFunctionDef, String))> = Vec::new();
+    let names: Vec<String> = effective_cms.iter().map(|(_, d, _)| d.name.to_string()).collect();
+    for n in &names {
+        for (i, d) in chain.iter().enumerate() {
+            let Some(_) = own_def(shared, *d, n) else { continue };
+            let Some(target) = chain[i + 1..].iter().find_map(|t| own_def(shared, *t, n)) else {
+                continue;
+            };
+            let dname = anchor_name_of(*d, ctx).unwrap_or_default();
+            hidden.push((format!("__super_{dname}_{n}__"), target));
+        }
+    }
+    for (hname, (ns, m, anchor)) in hidden {
+        if ns != shared.current_ns {
+            continue;
+        }
+        shared.cm_anchor = Some(anchor);
+        let lowered = lower_method(
+            interner,
+            shared,
+            &m,
+            "",
+            FirstParam::ClsMethod { class_id, name },
+            None,
+        );
+        shared.cm_anchor = None;
+        let (fid, _) = lowered?;
+        class_methods.push((interner.intern(&hname), fid));
     }
     shared.class_cms.insert(class_id, effective_cms);
 
@@ -1484,3 +1551,11 @@ pub(super) fn class_attr_init_ty(init: &ClassAttrInit) -> SemTy {
     }
 }
 
+
+/// The source name of class `cid` (reverse `class_map` lookup).
+fn anchor_name_of(cid: ClassId, ctx: &AnnCtx) -> Option<String> {
+    ctx.class_map
+        .iter()
+        .find(|(n, (c, _))| *c == cid && !n.contains('.'))
+        .map(|(n, _)| n.clone())
+}

@@ -633,6 +633,39 @@ fn move_global_tys(
     }
 }
 
+/// The binary operator an augmented assignment falls back to when the left
+/// operand has no in-place dunder (`IOr`/`IAnd`/`ISub`/`IXor` keep their own
+/// set / dict typing and are not listed).
+fn inplace_base(op: BinOp) -> Option<BinOp> {
+    Some(match op {
+        BinOp::IAdd => BinOp::Add,
+        BinOp::IMul => BinOp::Mul,
+        BinOp::IDiv => BinOp::Div,
+        BinOp::IFloorDiv => BinOp::FloorDiv,
+        BinOp::IMod => BinOp::Mod,
+        BinOp::IPow => BinOp::Pow,
+        BinOp::IMatMul => BinOp::MatMul,
+        BinOp::IShl => BinOp::Shl,
+        BinOp::IShr => BinOp::Shr,
+        _ => return None,
+    })
+}
+
+/// The class after `anchor` in its MRO that provides attribute `name` as a
+/// property or class attribute — the target of `super().name`.
+pub fn super_attr_class(
+    classes: &ClassTable,
+    anchor: ClassId,
+    name: InternedString,
+) -> Option<ClassId> {
+    let mro = &classes.get(anchor)?.mro;
+    mro.iter().skip(1).copied().find(|c| {
+        classes
+            .get(*c)
+            .is_some_and(|i| i.property(name).is_some() || i.class_attr(name).is_some())
+    })
+}
+
 /// True iff a comparison dunder returning `t` yields a `bool` comparison:
 /// `bool`, `NotImplemented`, a union of those, or a not-yet-solved `Never`.
 fn is_bool_result(t: &SemTy) -> bool {
@@ -2173,10 +2206,23 @@ impl<'a> Sweeper<'a> {
                 // `ClassName.m()` static/classmethod resolves on the class; an
                 // ordinary receiver dispatches by its static type.
                 if let HirExprKind::Super(cid) = self.func.exprs[*recv].kind {
-                    self.classes
-                        .resolve_super_method(cid, *method_name)
-                        .map(|fid| self.callee_ret_ty(fid))
-                        .unwrap_or(SemTy::Dyn)
+                    // The definition reached depends on the receiver's runtime
+                    // MRO (a diamond): join every one a subclass can reach.
+                    let name = *method_name;
+                    match self.classes.resolve_super_method(cid, name) {
+                        Some(_) => self.family_join(cid, |k| {
+                            let at = k.mro.iter().position(|c| *c == cid)?;
+                            k.mro[at + 1..].iter().find_map(|c| {
+                                self.classes.get(*c).and_then(|i| {
+                                    i.own_methods
+                                        .iter()
+                                        .find(|(n, _)| *n == name)
+                                        .map(|(_, f)| self.callee_ret_ty(*f))
+                                })
+                            })
+                        }),
+                        None => SemTy::Dyn,
+                    }
                 } else if let Some(cid) = self.name_class_ref(*recv) {
                     self.classes
                         .get(cid)
@@ -2191,6 +2237,20 @@ impl<'a> Sweeper<'a> {
                 }
             }
             HirExprKind::Attribute { value, name } => {
+                // `super().attr` → the next class (in the anchor's MRO)'s
+                // property / class attribute.
+                if let HirExprKind::Super(cid) = self.func.exprs[*value].kind {
+                    return match super_attr_class(self.classes, cid, *name) {
+                        Some(next) => self.attribute_ty(
+                            SemTy::Class {
+                                class_id: next,
+                                name: self.classes.get(next).map(|i| i.name).unwrap_or(*name),
+                            },
+                            *name,
+                        ),
+                        None => SemTy::Dyn,
+                    };
+                }
                 // `ClassName.attr` → a class attribute (or static-method ref).
                 if let Some(cid) = self.name_class_ref(*value) {
                     self.classes
@@ -2859,6 +2919,13 @@ impl<'a> Sweeper<'a> {
             BinOp::IXor => "__ixor__",
             BinOp::IAdd => "__iadd__",
             BinOp::IMul => "__imul__",
+            BinOp::IDiv => "__itruediv__",
+            BinOp::IFloorDiv => "__ifloordiv__",
+            BinOp::IMod => "__imod__",
+            BinOp::IPow => "__ipow__",
+            BinOp::IMatMul => "__imatmul__",
+            BinOp::IShl => "__ilshift__",
+            BinOp::IShr => "__irshift__",
             BinOp::BitXor => "__xor__",
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
@@ -2868,10 +2935,8 @@ impl<'a> Sweeper<'a> {
         }
         // `+=` / `*=` without `__iadd__` / `__imul__` fall back to the binary
         // operator (CPython), and type exactly like it otherwise.
-        match op {
-            BinOp::IAdd => return self.binop_ty(BinOp::Add, l, r),
-            BinOp::IMul => return self.binop_ty(BinOp::Mul, l, r),
-            _ => {}
+        if let Some(base) = inplace_base(op) {
+            return self.binop_ty(base, l, r);
         }
         // Set operators with a set-like dict view (keys / items) on either side
         // (`d.keys() & s`, `s - d.items()`, `d.keys() | e.keys()`) always yield
@@ -2937,8 +3002,16 @@ impl<'a> Sweeper<'a> {
             // correctly without a special case.
             // `-=` (`ISub`) joins here too: `set[int] -= set[int]` → `set[int]`
             // (covariant join), numeric `-=` stays numeric.
-            // (`IAdd` / `IMul` returned above via their binary operator.)
-            BinOp::IAdd | BinOp::IMul => self.arith_join(l, r),
+            // (In-place ops returned above via their binary operator.)
+            BinOp::IAdd
+            | BinOp::IMul
+            | BinOp::IDiv
+            | BinOp::IFloorDiv
+            | BinOp::IMod
+            | BinOp::IPow
+            | BinOp::IMatMul
+            | BinOp::IShl
+            | BinOp::IShr => self.arith_join(l, r),
             BinOp::Add | BinOp::Sub | BinOp::ISub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
                 // Fixed-tuple concatenation keeps every slot (`(1,) + (2.0,)` is
                 // `tuple[int, float]`), not the per-slot join.

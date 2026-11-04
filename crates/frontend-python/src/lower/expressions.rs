@@ -146,6 +146,13 @@ impl<'a> FnLowerer<'a> {
                 Ok(self.alloc(HirExprKind::DictLit { pairs }, SemTy::Dyn, span))
             }
             Expr::Subscript(s) => self.lower_subscript_expr(s, span),
+            Expr::Attribute(a) if super::calls::is_super_call(a.value.as_ref()) => {
+                // `super().prop` — the property (or class attribute) of the
+                // class after the anchor in the MRO, read on `self`.
+                let value = self.super_receiver(a.value.as_ref(), span)?;
+                let name = self.intern(a.attr.as_str());
+                Ok(self.alloc(HirExprKind::Attribute { value, name }, SemTy::Dyn, span))
+            }
             Expr::Attribute(a) => {
                 // `e.__class__.__name__` (Phase 7B): constant-fold to the bare
                 // class name from the variable's static type. (Documented

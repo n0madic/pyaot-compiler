@@ -1,6 +1,39 @@
 use super::*;
 
 impl<'a> FnLowerer<'a> {
+    /// The `Super(anchor)` receiver of `super()` / `super(C, self)`: the
+    /// enclosing class, or the explicitly named class `C` (whose MRO successor
+    /// the lookup starts after). The instance is always the method's `self`.
+    pub(super) fn super_receiver(&mut self, e: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        let enclosing = self
+            .enclosing_class
+            .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
+        let Expr::Call(c) = e else {
+            return Err(parse_error("internal: malformed super()", span));
+        };
+        let cid = match c.args.first() {
+            None => enclosing,
+            Some(Expr::Name(cls)) => {
+                let Some(Expr::Name(obj)) = c.args.get(1) else {
+                    return Err(parse_error("super() expects (type, self)", span));
+                };
+                if obj.id.as_str() != "self" {
+                    return Err(parse_error(
+                        "two-argument super() is supported only as super(Class, self)",
+                        span,
+                    ));
+                }
+                self.ctx
+                    .class_map
+                    .get(cls.id.as_str())
+                    .map(|(cid, _)| *cid)
+                    .ok_or_else(|| parse_error("super() first argument must be a class", span))?
+            }
+            Some(_) => return Err(parse_error("super() expects (type, self)", span)),
+        };
+        Ok(self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span))
+    }
+
     /// A call used as a value (builtins now; user functions in 2d). `print` is a
     /// statement, not a value-call, so reject it here.
     pub(super) fn lower_call_expr(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
@@ -381,11 +414,31 @@ impl<'a> FnLowerer<'a> {
                 }
             }
             let staging = !c.keywords.is_empty();
+            // `super().n(args)` inside a `@classmethod`: the hidden per-class
+            // copy of the next definition (see `lower_class`), on `cls`.
+            if is_super_call(attr.value.as_ref()) && self.enclosing_class.is_none() {
+                if let (Some((_, cls_name)), Some(anchor)) = (self.cls_ref, self.cm_anchor.clone()) {
+                    let recv = self.alloc(
+                        HirExprKind::Name(SymbolRef::Unresolved(cls_name)),
+                        SemTy::Dyn,
+                        span,
+                    );
+                    let hidden = self.intern(&format!("__super_{anchor}_{}__", attr.attr.as_str()));
+                    let args = self.lower_expr_list(&c.args)?;
+                    return Ok(self.alloc(
+                        HirExprKind::MethodCall {
+                            recv,
+                            method_name: hidden,
+                            args,
+                            kwargs: vec![],
+                        },
+                        SemTy::Dyn,
+                        span,
+                    ));
+                }
+            }
             let recv = if is_super_call(attr.value.as_ref()) {
-                let cid = self
-                    .enclosing_class
-                    .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
-                self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span)
+                self.super_receiver(attr.value.as_ref(), span)?
             } else if staging && !matches!(attr.value.as_ref(), Expr::Name(_)) {
                 // Keyword calls stage a compound receiver too — its side
                 // effects come before every argument's (written order). A bare
@@ -2602,7 +2655,10 @@ pub(super) fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result
 /// explicit `super(Cls, self)` form is out of scope.
 pub(super) fn is_super_call(e: &Expr) -> bool {
     matches!(e, Expr::Call(c)
-        if c.args.is_empty() && c.keywords.is_empty()
+        if c.keywords.is_empty()
+            && (c.args.is_empty()
+                || (c.args.len() == 2
+                    && c.args.iter().all(|a| matches!(a, Expr::Name(_)))))
             && matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "super"))
 }
 

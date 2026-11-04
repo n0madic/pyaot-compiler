@@ -24,6 +24,7 @@ impl<'a> FnLowerer<'a> {
             base_name: base_name.to_string(),
             enclosing_class,
             cls_ref: None,
+            cm_anchor: None,
             params: Vec::new(),
             ret_ty,
             exprs: Arena::new(),

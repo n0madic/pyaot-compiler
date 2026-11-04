@@ -104,6 +104,7 @@ struct RuntimeFns {
     is_truthy: FuncId,
     obj_bitand: FuncId,
     obj_bitor: FuncId,
+    obj_inplace: FuncId,
     obj_iadd: FuncId,
     obj_imul: FuncId,
     obj_ior: FuncId,
@@ -362,6 +363,7 @@ impl RuntimeFns {
             obj_bitor: d("rt_obj_bitor", &[ti, ti], &[ti])?,
             obj_ior: d("rt_obj_ior", &[ti, ti], &[ti])?,
             obj_iadd: d("rt_obj_iadd", &[ti, ti], &[ti])?,
+            obj_inplace: d("rt_obj_inplace", &[ti, ti, ti], &[ti])?,
             obj_imul: d("rt_obj_imul", &[ti, ti], &[ti])?,
             obj_iand: d("rt_obj_iand", &[ti, ti], &[ti])?,
             obj_isub: d("rt_obj_isub", &[ti, ti], &[ti])?,
@@ -3155,6 +3157,30 @@ impl FnGen<'_, '_> {
             // (returns the same object), else the new-object add / mul.
             (_, BinOp::IAdd) => self.call(self.rt.obj_iadd, &[a, b]).unwrap(),
             (_, BinOp::IMul) => self.call(self.rt.obj_imul, &[a, b]).unwrap(),
+            // The remaining augmented assignments: `__i<op>__` first, else the
+            // binary operator (`rt_obj_inplace`, op selected by `kind`).
+            (
+                _,
+                BinOp::IDiv
+                | BinOp::IFloorDiv
+                | BinOp::IMod
+                | BinOp::IPow
+                | BinOp::IMatMul
+                | BinOp::IShl
+                | BinOp::IShr,
+            ) => {
+                let kind = match op {
+                    BinOp::IDiv => 0,
+                    BinOp::IFloorDiv => 1,
+                    BinOp::IMod => 2,
+                    BinOp::IPow => 3,
+                    BinOp::IMatMul => 4,
+                    BinOp::IShl => 5,
+                    _ => 6,
+                };
+                let k = self.builder.ins().iconst(types::I64, kind);
+                self.call(self.rt.obj_inplace, &[a, b, k]).unwrap()
+            }
             // `&=` / `-=` / `^=` — in-place mutate for `set` (returns the same
             // object), numeric/TypeError delegated to `rt_obj_bitand`/`rt_obj_sub`/
             // `rt_obj_bitxor` inside the runtime.

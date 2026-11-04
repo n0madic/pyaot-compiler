@@ -586,10 +586,10 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
         // `+=` / `*=` on ints are the plain operators (lowering routes them
         // to `Add` / `Mul` for an `int` operand).
         BinOp::Add | BinOp::IAdd => lv.add(rv),
-        BinOp::Sub => lv.sub(rv),
+        BinOp::Sub | BinOp::ISub => lv.sub(rv),
         BinOp::Mul | BinOp::IMul => lv.mul(rv),
-        BinOp::Mod => lv.modulo(rv),
-        BinOp::FloorDiv => lv.floordiv(rv),
+        BinOp::Mod | BinOp::IMod => lv.modulo(rv),
+        BinOp::FloorDiv | BinOp::IFloorDiv => lv.floordiv(rv),
         // True `/` is float; `**` and bitwise/shift are bignum-possible; `@` is a
         // class dunder and the in-place container ops `|=`/`&=`/`-=`/`^=`
         // (`IOr`/`IAnd`/`ISub`/`IXor`) are set/dict mutations (never a raw-int
@@ -598,8 +598,12 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
         | BinOp::MatMul
         | BinOp::IOr
         | BinOp::IAnd
-        | BinOp::ISub
         | BinOp::IXor
+        | BinOp::IDiv
+        | BinOp::IPow
+        | BinOp::IMatMul
+        | BinOp::IShl
+        | BinOp::IShr
         | BinOp::Pow
         | BinOp::BitAnd
         | BinOp::BitOr

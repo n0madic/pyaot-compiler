@@ -99,7 +99,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Membership `in` / `not in` | ✅ | Containers + user `__contains__` |
 | Boolean `and` / `or` / `not` | ✅ | Short-circuit, truthiness via `__bool__`/`__len__` |
 | Ternary `a if c else b` | ✅ | |
-| Reflected & in-place dunders | 🟡 | Reflected `__radd__`, … ✅. In-place: `__iadd__` / `__imul__` (and list `+=`/`*=`, set `\|= &= -= ^=`, dict `\|=`) mutate in place; the other `__isub__` / `__itruediv__` / `__ifloordiv__` / `__imod__` / `__ipow__` / `__ior__` / `__iand__` / `__ixor__` / `__ilshift__` / `__irshift__` / `__imatmul__` are ignored — the augmented op falls back to the binary dunder (TypeError if the class defines only the in-place one) |
+| Reflected & in-place dunders | ✅ | Reflected `__radd__`, … ✅. Every augmented assignment tries the instance's `__i<op>__` first (`__iadd__` … `__imatmul__`, `__ior__`/`__iand__`/`__ixor__`/`__ilshift__`/`__irshift__`), then the binary dunder; list `+=`/`*=`, set `\|= &= -= ^=` and dict `\|=` mutate in place |
 
 ---
 
@@ -131,7 +131,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice; every MRO ancestor is registered at run time (`isinstance` / `except` see all bases); members overridden in a subclass dispatch on the receiver's runtime class |
-| `super()` | 🟡 | Zero-arg `super().m(...)` / `super().__init__(...)` in instance methods (`super().__init__([msg])` in an exception class whose parents define no `__init__` records the message). Gaps: resolved statically along the *defining* class's MRO, so cooperative multiple inheritance (diamond `super()` chains) skips siblings of the instance's MRO; two-arg `super(C, self)`, `super()` in a `@classmethod`, and `super().prop` property access are rejected at compile time |
+| `super()` | ✅ | Zero-arg `super().m(...)`, two-arg `super(C, self)`, `super().prop` / class attribute, and `super()` inside a `@classmethod` (same-module single-inheritance chain). A cooperative diamond follows the receiver's runtime MRO. `super().__init__([msg])` in an exception class whose parents define no `__init__` records the message |
 | `@property` | ✅ | |
 | `@staticmethod` / `@classmethod` | ✅ | Inherited along the MRO. `cls` is a compile-time alias of the class the method is reached through (each subclass gets its own copy of an inherited classmethod — same-module bases), so `Sub.make()` builds a `Sub`. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
@@ -218,7 +218,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `getattr` / `setattr` / `hasattr` | ✅ | Literal attribute name only |
 | `iter` / `next` | ✅ | |
 | `open` | ✅ | File I/O (text), iteration over lines |
-| `super`, `staticmethod`, `classmethod`, `property` | 🟡 | `super()` has gaps (see Classes) |
+| `super`, `staticmethod`, `classmethod`, `property` | ✅ | |
 | `frozenset` / `bytearray` | ✅ | Pragmatic core (see Built-in types) — `RuntimeObject`-modeled, byte-exact in the corpus gate |
 | `complex`, `memoryview` | ❌ | Backing types not implemented |
 | `input` | ✅ | Reads a line from stdin (optional prompt to stdout); `EOFError` at end of input |

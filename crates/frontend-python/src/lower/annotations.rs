@@ -354,6 +354,7 @@ pub(super) fn lower_callable(
     // from param 0, which a classmethod does not have.
     if let FirstParam::ClsMethod { class_id, name } = first {
         fl.cls_ref = Some((class_id, name));
+        fl.cm_anchor = fl.shared.cm_anchor.clone();
     }
     fl.set_scope_facts(facts);
     if nested.is_some() {

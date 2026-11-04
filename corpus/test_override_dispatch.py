@@ -182,7 +182,111 @@ def test_subclass_only_field() -> None:
     assert s.y == 3
 
 
+class M1:
+    def name(self) -> str:
+        return "M1"
+
+
+class M2(M1):
+    def name(self) -> str:
+        return "M2>" + super().name()
+
+
+class M3(M1):
+    def name(self) -> str:
+        return "M3>" + super().name()
+
+
+class M4(M2, M3):
+    def name(self) -> str:
+        return "M4>" + super().name()
+
+
+class SA:
+    kind = "a"
+
+    @property
+    def p(self) -> int:
+        return 1
+
+    def m(self) -> str:
+        return "A"
+
+    @classmethod
+    def make(cls) -> str:
+        return "A.make(" + cls.kind + ")"
+
+
+class SB(SA):
+    kind = "b"
+
+    @property
+    def p(self) -> int:
+        return super().p + 10
+
+    def m(self) -> str:
+        return "B>" + super(SB, self).m()
+
+    def k(self) -> str:
+        return super().kind
+
+    @classmethod
+    def make(cls) -> str:
+        return "B>" + super().make()
+
+
+class SC(SB):
+    kind = "c"
+
+    def m(self) -> str:
+        return "C>" + super(SB, self).m()
+
+
+class IV:
+    def __init__(self, x: int) -> None:
+        self.x = x
+
+    def __isub__(self, o: int) -> "IV":
+        self.x -= o
+        return self
+
+    def __itruediv__(self, o: int) -> "IV":
+        self.x = self.x // o
+        return self
+
+    def __ior__(self, o: int) -> "IV":
+        self.x = self.x | o
+        return self
+
+    def __ilshift__(self, o: int) -> "IV":
+        self.x = self.x << o
+        return self
+
+
+def test_super_forms() -> None:
+    assert M4().name() == "M4>M2>M3>M1"
+    assert M2().name() == "M2>M1"
+    assert SB().p == 11
+    assert SB().m() == "B>A"
+    assert SB().k() == "a"
+    assert SC().m() == "C>A"
+    assert SB.make() == "B>A.make(b)"
+    assert SC.make() == "B>A.make(c)"
+
+
+def test_inplace_dunders() -> None:
+    v = IV(10)
+    alias = v
+    v -= 3
+    v /= 2
+    v |= 8
+    v <<= 1
+    assert alias.x == 22 and alias is v
+
+
 test_override_dispatch()
+test_super_forms()
+test_inplace_dunders()
 test_classmethod_cls()
 test_instance_shadows_class_attr()
 test_inherited_members()

@@ -40,6 +40,10 @@ pub(crate) enum MemberKind {
     StaticViaInst,
     /// A class attribute read through an instance: `recv.attr`.
     ClassAttr,
+    /// `super().m(args)` inside a method of the static class: the definition
+    /// after that class in the RECEIVER's MRO (cooperative multiple
+    /// inheritance — a diamond's `super()` chain visits every branch).
+    SuperMethod,
 }
 
 /// What one runtime class resolves the member to.
@@ -88,6 +92,7 @@ fn resolve(classes: &ClassTable, k: ClassId, name: InternedString, kind: MemberK
             .static_method(name)
             .or_else(|| info.class_method(name))
             .map(|m| Target::Func(m.func_id)),
+        MemberKind::SuperMethod => classes.resolve_super_method(k, name).map(Target::Func),
         MemberKind::ClassAttr => {
             info.class_attr(name).map(|a| Target::Attr {
                 owner: a.owner,
@@ -95,6 +100,28 @@ fn resolve(classes: &ClassTable, k: ClassId, name: InternedString, kind: MemberK
             })
         }
     }
+}
+
+/// The definition `super().name` reaches from a method of `anchor` when the
+/// receiver's runtime class is `k`: the first class AFTER `anchor` in `k`'s
+/// MRO whose own body defines `name`.
+fn super_target(
+    classes: &ClassTable,
+    k: ClassId,
+    anchor: ClassId,
+    name: InternedString,
+) -> Option<Target> {
+    let mro = &classes.get(k)?.mro;
+    let at = mro.iter().position(|c| *c == anchor)?;
+    for c in &mro[at + 1..] {
+        if let Some((_, fid)) = classes
+            .get(*c)
+            .and_then(|i| i.own_methods.iter().find(|(n, _)| *n == name))
+        {
+            return Some(Target::Func(*fid));
+        }
+    }
+    None
 }
 
 /// True iff calling `b` with `a`'s calling convention is exact: same
@@ -144,6 +171,7 @@ pub(crate) fn plan(
         members.extend(info.static_methods.iter().map(|m| (m.name, MemberKind::StaticViaInst)));
         members.extend(info.class_methods.iter().map(|m| (m.name, MemberKind::StaticViaInst)));
         members.extend(info.class_attrs.iter().map(|a| (a.name, MemberKind::ClassAttr)));
+        members.extend(info.methods.iter().map(|m| (m.name, MemberKind::SuperMethod)));
         for (name, kind) in members {
             if out.index.contains_key(&(cid, name, kind)) {
                 continue;
@@ -155,7 +183,11 @@ pub(crate) fn plan(
             for &k in family.iter().filter(|k| **k != cid) {
                 // A subclass that replaced the member with another kind keeps
                 // the static resolution (outside this dispatcher's domain).
-                let t = resolve(classes, k, name, kind).unwrap_or(base);
+                let t = if kind == MemberKind::SuperMethod {
+                    super_target(classes, k, cid, name).unwrap_or(base)
+                } else {
+                    resolve(classes, k, name, kind).unwrap_or(base)
+                };
                 if t == base {
                     continue;
                 }
@@ -186,7 +218,13 @@ pub(crate) fn plan(
             // The dispatcher's calling convention: the static resolution's
             // parameter list (receiver first), every slot `Tagged`.
             let (params, names, defaults, varargs, kwargs) = match (kind, base_fid) {
-                (MemberKind::Method | MemberKind::PropGet | MemberKind::PropSet, Some(b)) => {
+                (
+                MemberKind::Method
+                | MemberKind::PropGet
+                | MemberKind::PropSet
+                | MemberKind::SuperMethod,
+                Some(b),
+            ) => {
                     let s = &sigs[b.index()];
                     (
                         vec![Repr::Tagged; s.params.len()],

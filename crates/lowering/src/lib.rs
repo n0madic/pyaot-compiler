@@ -3417,6 +3417,28 @@ impl<'a> FnLower<'a> {
         let span = self.func.exprs[value].span;
         let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
 
+        // `super().attr`: the next class's property getter (on `self`) or class
+        // attribute — never the overriding definition on the current class.
+        if let HirExprKind::Super(cid) = self.func.exprs[value].kind {
+            let next = pyaot_typeck::super_attr_class(self.classes, cid, name).ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!("super() has no attribute `.{}`", self.interner.resolve(name)),
+                    span,
+                )
+            })?;
+            let info = self.classes.get(next).expect("class in MRO");
+            if let Some(getter) = info.property(name).map(|p| p.getter) {
+                let self_local = LocalId::new(0);
+                let sr = self.local_repr(self_local);
+                let (r, rr) = self.emit_dunder_call(getter, vec![(self_local, sr)])?;
+                let c = self.coerce(r, rr, result_repr.clone())?;
+                return Ok((c, result_repr));
+            }
+            let a = info.class_attr(name).expect("super_attr_class found it");
+            let (owner, idx) = (a.owner, a.attr_idx);
+            return self.read_class_attr(owner, idx, result_repr);
+        }
+
         // `type(x).__name__` → the bare class name. `type(x)` already produces
         // the `<class 'mod.Name'>` repr string at runtime (builtins via the type
         // tag, user instances via the registered qualname); `rt_type_name_extract`
@@ -4807,6 +4829,22 @@ impl<'a> FnLower<'a> {
                 span,
             )
         })?;
+        // A diamond: which definition `super()` reaches depends on the
+        // receiver's runtime class (its MRO) — route through the dispatcher.
+        if let Some(disp) = self.dispatch.get(cid, method_name, dispatch::MemberKind::SuperMethod) {
+            let self_local = LocalId::new(0);
+            let self_from = self.local_repr(self_local);
+            let st = self.coerce(self_local, self_from, Repr::Tagged)?;
+            let mut argvals = vec![Operand::Local(st)];
+            argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: disp,
+                args: argvals,
+            });
+            return Ok((dst, Repr::Tagged));
+        }
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         // `self` is parameter 0 of the current method.
@@ -6080,15 +6118,25 @@ impl<'a> FnLower<'a> {
         // user instance, or an unknown value); on an immutable one (numbers,
         // `str`, `bytes`, `tuple`) they ARE the binary operator, which keeps the
         // raw / typed container fast paths.
-        let mop = match mop {
-            MBinOp::IAdd | MBinOp::IMul if !may_mutate_in_place(&self.func.exprs[l].ty) => {
-                if mop == MBinOp::IAdd {
-                    MBinOp::Add
-                } else {
-                    MBinOp::Mul
-                }
+        let mop = if may_mutate_in_place(&self.func.exprs[l].ty) {
+            mop
+        } else {
+            match mop {
+                MBinOp::IAdd => MBinOp::Add,
+                MBinOp::IMul => MBinOp::Mul,
+                MBinOp::IDiv => MBinOp::Div,
+                MBinOp::IFloorDiv => MBinOp::FloorDiv,
+                MBinOp::IMod => MBinOp::Mod,
+                MBinOp::IPow => MBinOp::Pow,
+                MBinOp::IMatMul => MBinOp::MatMul,
+                MBinOp::IShl => MBinOp::Shl,
+                MBinOp::IShr => MBinOp::Shr,
+                // `-=` on a number is plain subtraction (keeps raw fast paths);
+                // `&=`/`|=`/`^=` keep their in-place op (sets / dicts may be
+                // typed precisely, and their int path is the same call).
+                MBinOp::ISub if matches!(self.func.exprs[l].ty, SemTy::Int | SemTy::Float | SemTy::Bool) => MBinOp::Sub,
+                m => m,
             }
-            m => m,
         };
         let (ll, lr) = self.lower_expr(l)?;
         let (rl, rr) = self.lower_expr(r)?;
@@ -7449,6 +7497,13 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::IOr => MBinOp::IOr,
         HBinOp::IAdd => MBinOp::IAdd,
         HBinOp::IMul => MBinOp::IMul,
+        HBinOp::IDiv => MBinOp::IDiv,
+        HBinOp::IFloorDiv => MBinOp::IFloorDiv,
+        HBinOp::IMod => MBinOp::IMod,
+        HBinOp::IPow => MBinOp::IPow,
+        HBinOp::IMatMul => MBinOp::IMatMul,
+        HBinOp::IShl => MBinOp::IShl,
+        HBinOp::IShr => MBinOp::IShr,
         HBinOp::BitXor => MBinOp::BitXor,
         HBinOp::IAnd => MBinOp::IAnd,
         HBinOp::ISub => MBinOp::ISub,

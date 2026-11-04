@@ -203,7 +203,13 @@ pub(crate) struct Shared {
     /// not redefined) with the namespace they were written in. A subclass in
     /// the same namespace re-lowers each inherited one with `cls` bound to
     /// ITSELF, so `Sub.make()` / `inst.cm()` see `cls is Sub` (Root B).
-    class_cms: HashMap<ClassId, Vec<(u32, StmtFunctionDef)>>,
+    class_cms: HashMap<ClassId, Vec<(u32, StmtFunctionDef, String)>>,
+    /// First base of each class (same-module single-inheritance chain), the
+    /// order `super()` inside a `@classmethod` walks.
+    class_first_base: HashMap<ClassId, ClassId>,
+    /// The class whose body the `@classmethod` currently being lowered was
+    /// written in (`super()` inside it continues after that class).
+    cm_anchor: Option<String>,
     /// Owning namespace id per `FuncId` (parallel to `funcs`), set at reserve
     /// time from `current_ns` (Phase 8). Every function — including synthetics
     /// (thunks / lambdas / generator resumes) — belongs to the module being
@@ -278,6 +284,8 @@ impl Shared {
             deletable_fields: HashSet::new(),
             dyn_method_names: HashSet::new(),
             class_cms: HashMap::new(),
+            class_first_base: HashMap::new(),
+            cm_anchor: None,
             method_uniform_thunks: HashMap::new(),
             iternext_thunks: HashMap::new(),
             copy_thunks: HashMap::new(),
@@ -511,6 +519,8 @@ pub(crate) struct FnLowerer<'a> {
     /// `super()` / `object.__new__(cls)`: `cls` is the statically enclosing
     /// class, never a runtime subclass.)
     cls_ref: Option<(ClassId, InternedString)>,
+    /// Inside a `@classmethod`: the class whose body defined this method.
+    cm_anchor: Option<String>,
     params: Vec<HirParam>,
     ret_ty: SemTy,
     exprs: Arena<HirExpr>,

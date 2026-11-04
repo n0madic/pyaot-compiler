@@ -963,6 +963,16 @@ pub enum BinOp {
     /// so an alias observes it; immutable operands take the `Add`/`Mul` path.
     IAdd,
     IMul,
+    /// The remaining augmented assignments (`/=`, `//=`, `%=`, `**=`, `@=`,
+    /// `<<=`, `>>=`): an instance's `__i<op>__` runs first, else the binary
+    /// operator — always Tagged (`rt_obj_inplace`).
+    IDiv,
+    IFloorDiv,
+    IMod,
+    IPow,
+    IMatMul,
+    IShl,
+    IShr,
     IXor,
     Shl,
     Shr,

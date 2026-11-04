@@ -885,6 +885,13 @@ impl<'a> FnLowerer<'a> {
             // user `__iadd__`), the binary operator otherwise.
             BinOp::Add => BinOp::IAdd,
             BinOp::Mul => BinOp::IMul,
+            BinOp::Div => BinOp::IDiv,
+            BinOp::FloorDiv => BinOp::IFloorDiv,
+            BinOp::Mod => BinOp::IMod,
+            BinOp::Pow => BinOp::IPow,
+            BinOp::MatMul => BinOp::IMatMul,
+            BinOp::Shl => BinOp::IShl,
+            BinOp::Shr => BinOp::IShr,
             other => other,
         };
         match a.target.as_ref() {

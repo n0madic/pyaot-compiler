@@ -30,6 +30,17 @@ pub(crate) const fn fnv1a(s: &[u8]) -> u64 {
 
 pub(super) const FNV_ADD: u64 = fnv1a(b"__add__");
 pub(super) const FNV_IADD: u64 = fnv1a(b"__iadd__");
+pub(super) const FNV_ISUB: u64 = fnv1a(b"__isub__");
+pub(super) const FNV_IAND: u64 = fnv1a(b"__iand__");
+pub(super) const FNV_IOR: u64 = fnv1a(b"__ior__");
+pub(super) const FNV_IXOR: u64 = fnv1a(b"__ixor__");
+pub(super) const FNV_ITRUEDIV: u64 = fnv1a(b"__itruediv__");
+pub(super) const FNV_IFLOORDIV: u64 = fnv1a(b"__ifloordiv__");
+pub(super) const FNV_IMOD: u64 = fnv1a(b"__imod__");
+pub(super) const FNV_IPOW: u64 = fnv1a(b"__ipow__");
+pub(super) const FNV_IMATMUL: u64 = fnv1a(b"__imatmul__");
+pub(super) const FNV_ILSHIFT: u64 = fnv1a(b"__ilshift__");
+pub(super) const FNV_IRSHIFT: u64 = fnv1a(b"__irshift__");
 pub(super) const FNV_IMUL: u64 = fnv1a(b"__imul__");
 pub(super) const FNV_RADD: u64 = fnv1a(b"__radd__");
 pub(super) const FNV_SUB: u64 = fnv1a(b"__sub__");

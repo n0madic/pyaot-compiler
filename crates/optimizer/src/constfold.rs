@@ -93,6 +93,13 @@ fn fold_inst(
                         BinOp::MatMul
                         | BinOp::IAdd
                         | BinOp::IMul
+                        | BinOp::IDiv
+                        | BinOp::IFloorDiv
+                        | BinOp::IMod
+                        | BinOp::IPow
+                        | BinOp::IMatMul
+                        | BinOp::IShl
+                        | BinOp::IShr
                         | BinOp::IOr
                         | BinOp::IAnd
                         | BinOp::ISub

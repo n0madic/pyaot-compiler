@@ -483,10 +483,18 @@ Regressions: `corpus/test_eval_order.py`.
       fixed. (MI/C3 at runtime and inherited static/class/property are fixed
       — Phase 3.) Done after probing against CPython; the remaining gaps are
       the two open items below.
-- [ ] In-place dunders other than `__iadd__`/`__imul__` (`__isub__`,
+- [x] In-place dunders other than `__iadd__`/`__imul__` (`__isub__`,
       `__itruediv__`, `__ior__`, … `__imatmul__`) are ignored: `x -= y`
       falls back to `__sub__` (TypeError if only `__isub__` is defined).
-- [ ] `super()` is resolved along the defining class's static MRO, so a
+      Fixed: new `IDiv`/`IFloorDiv`/`IMod`/`IPow`/`IMatMul`/`IShl`/`IShr`
+      ops (runtime contract addition `rt_obj_inplace`); every in-place op
+      tries the instance's `__i<op>__` first. Corpus: test_override_dispatch.
+- [x] `super()` is resolved along the defining class's static MRO, so a
       cooperative diamond (`class D(B, C)`, each `super().m()`) skips `C`
       (prints `D>B>A` instead of `D>B>C>A`); two-arg `super(C, self)`,
       `super()` in a `@classmethod`, and `super().prop` are rejected.
+      Fixed: a diamond routes through a `SuperMethod` runtime-class
+      dispatcher; `super(C, self)` anchors at `C`; `super().attr` reads the
+      next class's property / class attribute; a classmethod's `super()`
+      calls a hidden per-class copy (`__super_<D>_<n>__`, same-module
+      single-inheritance chain). Corpus: test_override_dispatch.

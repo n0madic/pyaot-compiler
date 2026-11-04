@@ -658,6 +658,13 @@ impl MirInst {
                     | BinOp::IXor
                     | BinOp::IAdd
                     | BinOp::IMul
+                    | BinOp::IDiv
+                    | BinOp::IFloorDiv
+                    | BinOp::IMod
+                    | BinOp::IPow
+                    | BinOp::IMatMul
+                    | BinOp::IShl
+                    | BinOp::IShr
                     | BinOp::Div
                     | BinOp::FloorDiv
                     | BinOp::Mod
@@ -1111,6 +1118,16 @@ pub enum BinOp {
     /// object, delegating everything else to the new-object add / mul.
     IAdd,
     IMul,
+    /// The remaining augmented assignments (`/=`, `//=`, `%=`, `**=`, `@=`,
+    /// `<<=`, `>>=`): an instance's `__i<op>__` runs first, else the binary
+    /// operator — always Tagged (`rt_obj_inplace`).
+    IDiv,
+    IFloorDiv,
+    IMod,
+    IPow,
+    IMatMul,
+    IShl,
+    IShr,
     Shl,
     Shr,
 }
