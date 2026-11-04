@@ -513,12 +513,9 @@ impl MirInst {
                         Some(Coercion::BoxFloat | Coercion::TagInt)
                     )
             }
-            MirInst::BinOp {
-                dst: _,
-                op: _,
-                l,
-                r,
-            } => non_raw(l) || non_raw(r),
+            // A raw float `/` raises `ZeroDivisionError` (allocating the
+            // exception) on a zero divisor; the other raw ops cannot raise.
+            MirInst::BinOp { dst: _, op, l, r } => non_raw(l) || non_raw(r) || *op == BinOp::Div,
             MirInst::Compare {
                 dst: _,
                 op: _,
@@ -1238,12 +1235,12 @@ impl StrPool {
 /// The kind of bridging a [`MirInst::Coerce`] performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coercion {
-    /// Zero machine instructions: the bits are already valid at `to`.
+    /// Zero machine instructions: the bits are already valid at `to`. This
+    /// includes widening a typed heap pointer (or a closure) to the universal
+    /// tagged value — free in this runtime's ABI (heap pointers *are* tagged
+    /// `Value`s), so that direction needs no kind of its own.
     Noop,
-    /// A typed heap pointer reinterpreted as the universal tagged value — free
-    /// in this runtime's ABI (heap pointers *are* tagged `Value`s).
-    HeapToTagged,
-    /// The sound reverse: a tagged value re-typed as a heap pointer. Bit-identical
+    /// The narrowing direction: a tagged value re-typed as a heap pointer. Bit-identical
     /// (a heap pointer *is* a tagged value), so it is a zero-instruction Noop in
     /// codegen — unlike `UnboxFloat`/`UntagBool`, it does **not** reinterpret bits
     /// by an assumed primitive type, so a value of the wrong dynamic type is not

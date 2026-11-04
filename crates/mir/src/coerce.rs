@@ -125,7 +125,7 @@ mod tests {
             (Repr::Raw(RawKind::F64), Repr::Tagged),    // BoxFloat
             (Repr::Tagged, Repr::Raw(RawKind::F64)),    // UnboxFloat
             (Repr::Tagged, Repr::Raw(RawKind::I64)),    // UntagInt
-            (Repr::Heap(HeapShape::Str), Repr::Tagged), // HeapToTagged
+            (Repr::Heap(HeapShape::Str), Repr::Tagged), // Noop (widening)
             (Repr::Tagged, Repr::Heap(HeapShape::Str)), // TaggedToHeap
         ] {
             let c = CoerceInst::new(l(1), op(0), from.clone(), to.clone())

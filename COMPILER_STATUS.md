@@ -99,7 +99,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Membership `in` / `not in` | ✅ | Containers + user `__contains__` |
 | Boolean `and` / `or` / `not` | ✅ | Short-circuit, truthiness via `__bool__`/`__len__` |
 | Ternary `a if c else b` | ✅ | |
-| Reflected & in-place dunders | ✅ | `__radd__`, `__iadd__`, … |
+| Reflected & in-place dunders | 🟡 | Reflected `__radd__`, … ✅. In-place: `__iadd__` / `__imul__` (and list `+=`/`*=`, set `\|= &= -= ^=`, dict `\|=`) mutate in place; the other `__isub__` / `__itruediv__` / `__ifloordiv__` / `__imod__` / `__ipow__` / `__ior__` / `__iand__` / `__ixor__` / `__ilshift__` / `__irshift__` / `__imatmul__` are ignored — the augmented op falls back to the binary dunder (TypeError if the class defines only the in-place one) |
 
 ---
 
@@ -131,7 +131,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
 | Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice; every MRO ancestor is registered at run time (`isinstance` / `except` see all bases); members overridden in a subclass dispatch on the receiver's runtime class |
-| `super()` | ✅ | `super().__init__([msg])` in an exception class whose parents define no `__init__` records the message (`BaseException.__init__`) |
+| `super()` | 🟡 | Zero-arg `super().m(...)` / `super().__init__(...)` in instance methods (`super().__init__([msg])` in an exception class whose parents define no `__init__` records the message). Gaps: resolved statically along the *defining* class's MRO, so cooperative multiple inheritance (diamond `super()` chains) skips siblings of the instance's MRO; two-arg `super(C, self)`, `super()` in a `@classmethod`, and `super().prop` property access are rejected at compile time |
 | `@property` | ✅ | |
 | `@staticmethod` / `@classmethod` | ✅ | Inherited along the MRO. `cls` is a compile-time alias of the class the method is reached through (each subclass gets its own copy of an inherited classmethod — same-module bases), so `Sub.make()` builds a `Sub`. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
@@ -218,7 +218,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `getattr` / `setattr` / `hasattr` | ✅ | Literal attribute name only |
 | `iter` / `next` | ✅ | |
 | `open` | ✅ | File I/O (text), iteration over lines |
-| `super`, `staticmethod`, `classmethod`, `property` | ✅ | |
+| `super`, `staticmethod`, `classmethod`, `property` | 🟡 | `super()` has gaps (see Classes) |
 | `frozenset` / `bytearray` | ✅ | Pragmatic core (see Built-in types) — `RuntimeObject`-modeled, byte-exact in the corpus gate |
 | `complex`, `memoryview` | ❌ | Backing types not implemented |
 | `input` | ✅ | Reads a line from stdin (optional prompt to stdout); `EOFError` at end of input |
@@ -304,6 +304,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Cranelift native codegen | ✅ | `opt_level=speed` default |
 | MIR optimizer (inline/constfold/peephole/DCE/cold-layout) | ✅ | |
 | Raw-int interval specialization | ✅ | Interprocedural fixpoint |
+| Unboxed float / raw-int arithmetic | ✅ | `Raw(F64)` `+ - * /`, comparisons (IEEE, NaN-correct) and negation inline (zero divisor → `ZeroDivisionError`); raw-int `+ - *` are inline overflow-checked machine ops (`test_raw_fastpaths.py`) |
 | Parallel codegen | ✅ | Byte-identical output |
 | GC (shadow-frame roots, table unwinding) | ✅ | GC-rootness derived from `Repr` |
 | Real tracebacks | ✅ | |

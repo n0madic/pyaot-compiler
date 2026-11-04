@@ -130,6 +130,9 @@ const PHASE_CORPUS: &[&str] = &[
     "test_gc_stress.py",
     // Inference soundness regressions (KNOWN_BUGS Phase 2, Root A).
     "test_inference_soundness.py",
+    // Raw (unboxed) arithmetic fast paths: float `/` / compare / neg, inline
+    // overflow-checked raw int `+ - *` (KNOWN_BUGS Phase 7).
+    "test_raw_fastpaths.py",
     // Override dispatch regressions (KNOWN_BUGS Phase 3, Root B).
     "test_override_dispatch.py",
     // Evaluation order / scoping regressions (KNOWN_BUGS Phase 4).

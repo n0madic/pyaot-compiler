@@ -166,19 +166,20 @@ fn is_machinery_op(op: ContainerOp) -> bool {
     )
 }
 
-/// Per-function single static-definition map: `def[l]` is the instruction that
-/// writes local `l` (cloned), and `count[l]` how many instructions write it. A
-/// local is single-def iff `count[l] == 1`; its one static def then reaches every
-/// use (the soundness anchor — no dominance analysis needed).
-fn single_def(f: &MirFunction) -> (Vec<Option<MirInst>>, Vec<u32>) {
+/// Per-function single static-definition map: `def[l]` is (a borrow of) the
+/// instruction that writes local `l`, and `count[l]` how many instructions
+/// write it. A local is single-def iff `count[l] == 1`; its one static def then
+/// reaches every use (the soundness anchor — no dominance analysis needed).
+/// Borrowed, not cloned: one linear pass with no per-instruction allocation.
+fn single_def(f: &MirFunction) -> (Vec<Option<&MirInst>>, Vec<u32>) {
     let n = f.locals.len();
     let mut count = vec![0u32; n];
-    let mut def: Vec<Option<MirInst>> = vec![None; n];
+    let mut def: Vec<Option<&MirInst>> = vec![None; n];
     for block in &f.blocks {
         for inst in &block.insts {
             if let Some(d) = inst.dst() {
                 count[d.index()] += 1;
-                def[d.index()] = Some(inst.clone());
+                def[d.index()] = Some(inst);
             }
         }
     }
@@ -190,7 +191,7 @@ fn single_def(f: &MirFunction) -> (Vec<Option<MirInst>>, Vec<u32>) {
 /// earlier in block `bi` itself.
 fn chain_dominates(
     c: LocalId,
-    def: &[Option<MirInst>],
+    def: &[Option<&MirInst>],
     count: &[u32],
     def_pos: &[Option<(usize, usize)>],
     entry: usize,
@@ -208,7 +209,7 @@ fn chain_dominates(
         if !(b == entry || (b == bi && k < at)) {
             return false;
         }
-        match def[cur.index()].as_ref() {
+        match def[cur.index()] {
             Some(MirInst::MakeClosure { .. }) => return true,
             Some(MirInst::Coerce(co)) if is_bit_identity(co) => {
                 let Operand::Local(src) = co.src();
@@ -224,7 +225,7 @@ fn chain_dominates(
 /// heap are all bit-identical) to the `MakeClosure { func }` that produced it.
 /// Bails on any multi-def or non-`Coerce`/non-`MakeClosure` step (monomorphic
 /// only).
-fn resolve_to_makeclosure(c: LocalId, def: &[Option<MirInst>], count: &[u32]) -> Option<FuncId> {
+fn resolve_to_makeclosure(c: LocalId, def: &[Option<&MirInst>], count: &[u32]) -> Option<FuncId> {
     let mut cur = c;
     // Bounded walk: the coercion chain is short; the cap only guards against a
     // pathological cycle (which single-def MIR cannot actually form).
@@ -232,7 +233,7 @@ fn resolve_to_makeclosure(c: LocalId, def: &[Option<MirInst>], count: &[u32]) ->
         if count[cur.index()] != 1 {
             return None;
         }
-        match def[cur.index()].as_ref()? {
+        match def[cur.index()]? {
             MirInst::MakeClosure { func, .. } => return Some(*func),
             MirInst::Coerce(co) if is_bit_identity(co) => {
                 let Operand::Local(src) = co.src();
@@ -247,11 +248,11 @@ fn resolve_to_makeclosure(c: LocalId, def: &[Option<MirInst>], count: &[u32]) ->
 /// If `a0`'s single static def is a bit-identity `Coerce(Heap(TupleVar) ->
 /// Tagged)`, return its source tuple local. The shape `emit_container` emits for
 /// a `TupleSet`'s coerced container arg (PITFALLS A5).
-fn coerce_to_tup(a0: LocalId, def: &[Option<MirInst>], count: &[u32]) -> Option<LocalId> {
+fn coerce_to_tup(a0: LocalId, def: &[Option<&MirInst>], count: &[u32]) -> Option<LocalId> {
     if count[a0.index()] != 1 {
         return None;
     }
-    let Some(MirInst::Coerce(co)) = def[a0.index()].as_ref() else {
+    let Some(MirInst::Coerce(co)) = def[a0.index()] else {
         return None;
     };
     if co.checked()
@@ -268,10 +269,10 @@ fn coerce_to_tup(a0: LocalId, def: &[Option<MirInst>], count: &[u32]) -> Option<
 /// `Const::Int → Coerce(Tagged → Raw(I64))` chain that `raw_i64_const` emits in
 /// lowering. Returns `None` if the def isn't that constant shape (so the caller
 /// bails the rewrite rather than trusting an unverified slot order).
-fn raw_i64_const_value(local: LocalId, def: &[Option<MirInst>]) -> Option<i64> {
+fn raw_i64_const_value(local: LocalId, def: &[Option<&MirInst>]) -> Option<i64> {
     let mut cur = local;
     for _ in 0..4 {
-        match def[cur.index()].as_ref()? {
+        match def[cur.index()]? {
             MirInst::Const {
                 val: Const::Int(n), ..
             } => return Some(*n),
@@ -292,7 +293,7 @@ fn is_bit_identity(co: &CoerceInst) -> bool {
     !co.checked()
         && matches!(
             classify_coercion(co.from(), co.to()),
-            Some(Coercion::Noop | Coercion::HeapToTagged | Coercion::TaggedToHeap)
+            Some(Coercion::Noop | Coercion::TaggedToHeap)
         )
 }
 
@@ -390,7 +391,7 @@ fn try_devirt_ci(
     block: &MirBlock,
     ci: &MirInst,
     reads: &[u32],
-    def: &[Option<MirInst>],
+    def: &[Option<&MirInst>],
     count: &[u32],
     thunk_targets: &[Option<DevirtTarget>],
     base: u32,
@@ -419,7 +420,7 @@ fn try_devirt_ci(
     if count[kwargs_op.index()] != 1 {
         return None;
     }
-    match def[kwargs_op.index()].as_ref()? {
+    match def[kwargs_op.index()]? {
         MirInst::Const {
             val: Const::NullPtr,
             ..
@@ -436,7 +437,7 @@ fn try_devirt_ci(
     if count[args_op.index()] != 1 {
         return None;
     }
-    let Some(MirInst::Coerce(co)) = def[args_op.index()].as_ref() else {
+    let Some(MirInst::Coerce(co)) = def[args_op.index()] else {
         return None;
     };
     if co.checked()
@@ -452,7 +453,7 @@ fn try_devirt_ci(
         return None;
     }
     if !matches!(
-        def[tup.index()].as_ref(),
+        def[tup.index()],
         Some(MirInst::CallContainer {
             op: ContainerOp::TupleNew,
             ..

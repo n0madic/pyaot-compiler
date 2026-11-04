@@ -833,6 +833,43 @@ impl<'a> FnLower<'a> {
         Ok(None)
     }
 
+    /// Supply both operands of a float binary op / comparison as `Raw(F64)`,
+    /// or `None`. At least one side must already be `Raw(F64)`; the other is
+    /// either `Raw(F64)` too or an int literal with `|v| <= 2^53`, which
+    /// converts to `f64` exactly — so the float operation (and a mixed
+    /// int/float comparison, which CPython performs exactly) gives the same
+    /// result as on the original int.
+    fn raw_f64_operands(
+        &mut self,
+        l: Idx<HirExpr>,
+        ll: LocalId,
+        lr: &Repr,
+        r: Idx<HirExpr>,
+        rl: LocalId,
+        rr: &Repr,
+    ) -> Option<(LocalId, LocalId)> {
+        let f64r = Repr::Raw(RawKind::F64);
+        if *lr != f64r && *rr != f64r {
+            return None;
+        }
+        let la = self.raw_f64_operand(l, ll, lr)?;
+        let ra = self.raw_f64_operand(r, rl, rr)?;
+        Some((la, ra))
+    }
+
+    fn raw_f64_operand(&mut self, expr: Idx<HirExpr>, loc: LocalId, repr: &Repr) -> Option<LocalId> {
+        const EXACT: i64 = 1 << 53;
+        if *repr == Repr::Raw(RawKind::F64) {
+            return Some(loc);
+        }
+        match self.func.exprs[expr].kind {
+            HirExprKind::IntLit(v) if *repr == Repr::Tagged && (-EXACT..=EXACT).contains(&v) => {
+                Some(self.emit_const(Repr::Raw(RawKind::F64), Const::Float(v as f64)))
+            }
+            _ => None,
+        }
+    }
+
     // ── statements ────────────────────────────────────────────────────────────
 
     fn lower_stmt(&mut self, stmt: &HirStmt) -> Result<()> {
@@ -2123,26 +2160,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Dyn, ...]` (Tagged elements).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // No call-site keywords on the uniform path → the null `__kwargs__`
@@ -2448,6 +2466,16 @@ impl<'a> FnLower<'a> {
         provided: u32,
     ) -> Result<(LocalId, Repr)> {
         use pyaot_hir::RuntimeCallTarget;
+        if let RuntimeCallTarget::Func(f) = target {
+            if f.is_intercepted() {
+                // A recognition-only descriptor (`reduce`/`Counter`/`deque`)
+                // must have been rerouted by the frontend; it has no ABI.
+                return Err(CompilerError::codegen_error(
+                    format!("internal: intercepted stdlib function `{}` reached lowering", f.name),
+                    None,
+                ));
+            }
+        }
         let def = target.codegen();
         // `itertools.islice` needs the iterable `iter()`-wrapped (the runtime
         // advances it with the iterator protocol) and start/stop/step resolved
@@ -4330,26 +4358,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Tagged]` (the uniform-call shape).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // Keywords → a `dict[str, Tagged]`, or the null `__kwargs__` sentinel on
@@ -4362,28 +4371,11 @@ impl<'a> FnLower<'a> {
                 Box::new(Repr::Tagged),
                 Box::new(Repr::Tagged),
             ));
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-            for (kname, kexpr) in kwargs {
-                self.str_pool
-                    .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(*kname),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                let (vl, vr) = self.lower_expr(*kexpr)?;
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+            let d = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                let (kname, kexpr) = kwargs[i];
+                let (vl, vr) = this.lower_expr(kexpr)?;
+                Ok((kname, vl, vr))
+            })?;
             self.coerce(d, dict_repr, Repr::Tagged)?
         };
 
@@ -4599,53 +4591,17 @@ impl<'a> FnLower<'a> {
         if varargs {
             let tup_repr = params[first + fixed].clone();
             let excess = &pos_vals[n_pos..];
-            let size = self.raw_i64_const(excess.len() as i64);
-            let (tup, _) = self.emit_container(
-                ContainerOp::TupleNew,
-                vec![(size, Repr::Raw(RawKind::I64))],
-                Some(tup_repr.clone()),
-            )?;
-            let tup = tup.expect("TupleNew produces a tuple");
-            for (i, (el, er)) in excess.iter().cloned().enumerate() {
-                let pos = self.raw_i64_const(i as i64);
-                self.emit_container(
-                    ContainerOp::TupleSet,
-                    vec![
-                        (tup, tup_repr.clone()),
-                        (pos, Repr::Raw(RawKind::I64)),
-                        (el, er),
-                    ],
-                    None,
-                )?;
-            }
+            let tup = self.pack_tuple(tup_repr, excess.len(), |_, i| Ok(excess[i].clone()))?;
             argvals.push(Operand::Local(tup));
         }
         if has_kwargs {
             let dict_repr = params.last().expect("kwargs param exists").clone();
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
             // Leftover keywords (written order) land in the `**kwargs` dict.
-            for &k in &m.leftover {
-                let name = kw_names[k];
-                self.str_pool
-                    .insert(name, self.interner.resolve(name).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(name),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let d = self.pack_kwargs_dict(dict_repr, m.leftover.len(), |_, i| {
+                let k = m.leftover[i];
                 let (vl, vr) = kw_vals[k].clone();
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+                Ok((kw_names[k], vl, vr))
+            })?;
             argvals.push(Operand::Local(d));
         }
         Ok(argvals)
@@ -5313,26 +5269,7 @@ impl<'a> FnLower<'a> {
         elems: &[Idx<HirExpr>],
     ) -> Result<(LocalId, Repr)> {
         let tup_repr = repr_of(&self.func.exprs[idx].ty);
-        let size = self.raw_i64_const(elems.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, e) in elems.iter().enumerate() {
-            let (el, er) = self.lower_expr(*e)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (el, er),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), elems.len(), |this, i| this.lower_expr(elems[i]))?;
         Ok((tup, tup_repr))
     }
 
@@ -5859,29 +5796,11 @@ impl<'a> FnLower<'a> {
                             Box::new(Repr::Tagged),
                             Box::new(Repr::Tagged),
                         ));
-                        let (kd, _) =
-                            self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-                        for (kname, kexpr) in kwargs {
-                            self.str_pool
-                                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                            self.emit(MirInst::Const {
-                                dst: key,
-                                val: Const::Str(*kname),
-                            });
-                            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                            let (vl, vr) = self.lower_expr(*kexpr)?;
-                            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                            self.emit_container(
-                                ContainerOp::DictSet,
-                                vec![
-                                    (kd, dict_repr.clone()),
-                                    (key_t, Repr::Tagged),
-                                    (val_t, Repr::Tagged),
-                                ],
-                                None,
-                            )?;
-                        }
+                        let kd = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                            let (kname, kexpr) = kwargs[i];
+                            let (vl, vr) = this.lower_expr(kexpr)?;
+                            Ok((kname, vl, vr))
+                        })?;
                         self.emit_container(
                             ContainerOp::DictUpdate,
                             vec![recv_arg.clone(), (kd, dict_repr)],
@@ -6182,17 +6101,23 @@ impl<'a> FnLower<'a> {
             return Ok(res);
         }
 
-        let raw_addsubmul = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul);
+        // Raw float fast path: `+ - * /` on two `Raw(F64)` operands (or one
+        // `Raw(F64)` and an exactly-representable int literal) stays unboxed.
+        // `/` inlines `fdiv` with a zero-divisor check that raises
+        // `ZeroDivisionError` through the runtime (codegen).
+        let raw_float_op = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul | MBinOp::Div);
         let f64 = Repr::Raw(RawKind::F64);
-        if raw_addsubmul && lr == f64 && rr == f64 {
-            let dst = self.alloc_temp(f64.clone());
-            self.emit(MirInst::BinOp {
-                dst,
-                op: mop,
-                l: Operand::Local(ll),
-                r: Operand::Local(rl),
-            });
-            return Ok((dst, f64));
+        if raw_float_op {
+            if let Some((la, ra)) = self.raw_f64_operands(l, ll, &lr, r, rl, &rr) {
+                let dst = self.alloc_temp(f64.clone());
+                self.emit(MirInst::BinOp {
+                    dst,
+                    op: mop,
+                    l: Operand::Local(la),
+                    r: Operand::Local(ra),
+                });
+                return Ok((dst, f64));
+            }
         }
 
         // Raw int fast path (Phase 3c). `Add`/`Sub` fire whenever an operand is a
@@ -6408,6 +6333,20 @@ impl<'a> FnLower<'a> {
     fn lower_unary(&mut self, op: HUnaryOp, operand: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
         let mop = map_unaryop(op);
         let (ol, orr) = self.lower_expr(operand)?;
+        // Raw float `-x` is an inline IEEE negation (no boxing); `+x` on a
+        // float is the value itself.
+        if orr == Repr::Raw(RawKind::F64) && matches!(mop, MUnaryOp::Neg | MUnaryOp::Pos) {
+            if mop == MUnaryOp::Pos {
+                return Ok((ol, orr));
+            }
+            let dst = self.alloc_temp(orr.clone());
+            self.emit(MirInst::Unary {
+                dst,
+                op: mop,
+                operand: Operand::Local(ol),
+            });
+            return Ok((dst, orr));
+        }
         let ot = self.coerce(ol, orr, Repr::Tagged)?;
         let dst_repr = if mop == MUnaryOp::Not {
             Repr::Raw(RawKind::I8)
@@ -6702,10 +6641,19 @@ impl<'a> FnLower<'a> {
         let i64r = Repr::Raw(RawKind::I64);
         // Raw int compare (Phase 3c): when both operands are range-proven
         // `Raw(I64)` cursors (the `range()` loop guard `cursor < stop`), compare
-        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Anything
-        // else runs on the tagged baseline (a lone raw operand re-tags soundly).
+        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Raw
+        // float operands (or a float against an exact int literal) compare with
+        // an IEEE `fcmp` (NaN-correct). Anything else runs on the tagged
+        // baseline (a lone raw operand re-tags soundly).
+        let raw_f64 = if want_value {
+            None
+        } else {
+            self.raw_f64_operands(l, ll, &lr, r, rl, &rr)
+        };
         let (la, ra) = if lr == i64r && rr == i64r {
             (ll, rl)
+        } else if let Some(pair) = raw_f64 {
+            pair
         } else {
             (
                 self.coerce(ll, lr, Repr::Tagged)?,
@@ -7256,6 +7204,74 @@ impl<'a> FnLower<'a> {
 
     /// Build an empty container (`ListNew`/`DictNew`/`SetNew`/`TupleNew`) of the
     /// given heap representation.
+    /// Build an `n`-element tuple: `TupleNew(n)`, then one `TupleSet` per
+    /// slot, each element produced by `elem(self, i)` right before its store
+    /// (so element evaluation interleaves exactly as written). The single
+    /// shape for argument tuples and tuple literals — the one `devirt`
+    /// recognizes as a dead args-tuple builder.
+    fn pack_tuple(
+        &mut self,
+        tup_repr: Repr,
+        n: usize,
+        mut elem: impl FnMut(&mut Self, usize) -> Result<(LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let size = self.raw_i64_const(n as i64);
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
+        let tup = tup.expect("TupleNew produces a tuple");
+        for i in 0..n {
+            let (el, er) = elem(self, i)?;
+            let pos = self.raw_i64_const(i as i64);
+            self.emit_container(
+                ContainerOp::TupleSet,
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (el, er),
+                ],
+                None,
+            )?;
+        }
+        Ok(tup)
+    }
+
+    /// Build a keyword-argument dict of `n` entries (`str` keys, tagged
+    /// values), each `(name, value)` produced by `entry(self, i)` in order —
+    /// the `**kwargs` / uniform-call keyword shape.
+    fn pack_kwargs_dict(
+        &mut self,
+        dict_repr: Repr,
+        n: usize,
+        mut entry: impl FnMut(&mut Self, usize) -> Result<(InternedString, LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+        for i in 0..n {
+            let (name, vl, vr) = entry(self, i)?;
+            self.str_pool
+                .insert(name, self.interner.resolve(name).as_bytes().to_vec());
+            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+            self.emit(MirInst::Const {
+                dst: key,
+                val: Const::Str(name),
+            });
+            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit_container(
+                ContainerOp::DictSet,
+                vec![
+                    (d, dict_repr.clone()),
+                    (key_t, Repr::Tagged),
+                    (val_t, Repr::Tagged),
+                ],
+                None,
+            )?;
+        }
+        Ok(d)
+    }
+
     fn empty_container(&mut self, op: ContainerOp, heap: Repr) -> Result<(LocalId, Repr)> {
         let cap = self.raw_i64_const(0);
         let (dst, ret) =

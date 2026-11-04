@@ -118,9 +118,14 @@ pub extern "C" fn rt_mul_float(a: f64, b: f64) -> f64 {
     a * b
 }
 
-/// Divide two floats
+/// Divide two floats (Python `/`): a zero divisor (`0.0` or `-0.0`) raises
+/// `ZeroDivisionError` like CPython instead of producing inf/nan. Compiled code
+/// inlines the non-zero case and calls this only on the zero-divisor path.
 #[no_mangle]
 pub extern "C" fn rt_div_float(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
+    }
     a / b
 }
 

@@ -421,34 +421,72 @@ Regressions: `corpus/test_eval_order.py`.
 
 ## Phase 7 — performance & cleanup
 
-- [ ] Raw(I64) add/sub/mul compile to `rt_*_int` calls instead of inline ops
-      (`codegen lib.rs:2720`).
-- [ ] Raw(F64) compare/div/neg box both operands (`lowering:5656`, `:6139`).
-- [ ] Quadratic: liveness worklist + per-alloc local scan
+- [x] Raw(I64) add/sub/mul compile to `rt_*_int` calls instead of inline ops
+      (`codegen lib.rs:2720`). Fixed: inline `sadd/ssub/smul_overflow`; only
+      the cold overflow edge calls the raising `rt_*_int`. Corpus:
+      test_raw_fastpaths.py.
+- [x] Raw(F64) compare/div/neg box both operands (`lowering:5656`, `:6139`).
+      Fixed: `Raw(F64)` `Compare` (IEEE `fcmp`, NaN-correct), `Div` (inline
+      `fdiv`, zero divisor → cold `rt_div_float`, which now raises
+      `ZeroDivisionError` — contract change) and `Unary::Neg` (`fneg`); a
+      float against an int literal with `|v| <= 2^53` stays raw too. Corpus:
+      test_raw_fastpaths.py.
+- [x] Quadratic: liveness worklist + per-alloc local scan
       (`mir/src/liveness.rs:96`); peephole `resolve_target` (`peephole.rs:83`);
       devirt `single_def` clones (`devirt.rs:173`); inline size recompute +
       env var per refusal (`inline.rs:131`); no FuncRef/DataId cache
       (`codegen lib.rs:1981`); linear generator dispatch (`:943`).
+      Fixed: liveness on bitsets with an O(1)-membership worklist and an
+      allocation-epoch rooting pass (linear in instructions); memoized
+      one-pass jump-target resolution and a reverse source index for the
+      coerce round-trip kill set; `single_def` borrows instead of cloning;
+      inline keeps an incremental size table and reads `PYAOT_INLINE_DEBUG`
+      once; per-function `FuncRef`/`GlobalValue` caches; the generator
+      dispatcher is a `Switch` (jump table). Unit tests in liveness /
+      peephole; corpus gate unchanged.
 - [x] Set tombstone accounting (`runtime/src/set/ops.rs:31`).
       Fixed: SetObj tracks a tombstone count (layout extension) so resizing
       uses fill = len + tombstones without the O(capacity) scan per add; a
       mostly-tombstone table is compacted in place. Corpus:
       test_collections.py.
-- [ ] `iconst` not masked for I8/I32; unchecked int tag shift of literals
-      (`codegen lib.rs:2572`, `:1254`).
-- [ ] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),
+- [x] `iconst` not masked for I8/I32; unchecked int tag shift of literals
+      (`codegen lib.rs:2572`, `:1254`). Fixed: narrow raw immediates are
+      masked to their width; a tagged `Const::Int` outside the fixnum range is
+      boxed via `rt_box_i64` instead of shift-tagged (the frontend already
+      emits `BigIntLit` for such literals, so this is a safety net). Both
+      const materializers share `tagged_immediate`/`heap_const_ctor`. Unit
+      tests in codegen.
+- [x] Dead/wrong descriptors: 273 unused `RT_*` (11 name missing symbols),
       `RT_BYTES_STARTS/ENDS_WITH` declared i8 vs i64, collections/functools
       sentinel descriptors (`core-defs/src/runtime_func_def.rs`,
-      `stdlib-defs collections.rs`, `functools.rs`).
+      `stdlib-defs collections.rs`, `functools.rs`). Fixed: the 272 RT_*
+      descriptors with no reference anywhere in the workspace are removed
+      (incl. all 11 naming missing symbols); `rt_bytes_startswith`/`endswith`
+      now return `i8` (contract change, matching the descriptor and
+      `rt_str_startswith`); the recognition-only `reduce`/`Counter`/`deque`
+      defs carry the never-emitted `INTERCEPTED_BY_FRONTEND` marker instead
+      of invented signatures, and lowering rejects a call that reaches one.
 - [x] Mislabelled live descriptors caught by the new `CallRuntime` dst check:
       stdlib object getters returning a tagged `Value` declared
       `unary_to_i64` (Raw); `RT_STR_FIND/RFIND/INDEX/RINDEX` declared
       `gc_roots_result` for a raw i64 position.
-- [ ] `Coercion::HeapToTagged` never produced (`mir/src/lib.rs:1197`).
-- [ ] Stale docs: optimizer crate header, core-defs ranges, runtime
-      `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement.
-- [ ] Duplication: arg-tuple / kwargs-dict packing in lowering
+- [x] `Coercion::HeapToTagged` never produced (`mir/src/lib.rs:1197`).
+      Removed: `Heap → Tagged` widening is (and was) classified `Noop`.
+- [x] Stale docs: optimizer crate header, core-defs ranges, runtime
+      `FIRST_USER_CLASS_ID`, `verify_call_container` doc placement. (The
+      `verify_call_container` doc was already above its function.)
+- [x] Duplication: arg-tuple / kwargs-dict packing in lowering
       (`:1893`, `:3933`, `:4183`); `materialize_const` vs `lower_const`.
-- [ ] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until
+      Fixed: `pack_tuple` / `pack_kwargs_dict` helpers (same emitted MIR
+      shape); codegen consts share `tagged_immediate` / `heap_const_ctor`.
+- [x] COMPILER_STATUS: downgrade in-place dunders, `super()` to 🟡 until
       fixed. (MI/C3 at runtime and inherited static/class/property are fixed
-      — Phase 3.)
+      — Phase 3.) Done after probing against CPython; the remaining gaps are
+      the two open items below.
+- [ ] In-place dunders other than `__iadd__`/`__imul__` (`__isub__`,
+      `__itruediv__`, `__ior__`, … `__imatmul__`) are ignored: `x -= y`
+      falls back to `__sub__` (TypeError if only `__isub__` is defined).
+- [ ] `super()` is resolved along the defining class's static MRO, so a
+      cooperative diamond (`class D(B, C)`, each `super().m()`) skips `C`
+      (prints `D>B>A` instead of `D>B>C>A`); two-arg `super(C, self)`,
+      `super()` in a `@classmethod`, and `super().prop` are rejected.

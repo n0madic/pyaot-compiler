@@ -6,9 +6,13 @@
 //!
 //! # Contents
 //!
-//! - [`BuiltinExceptionKind`] - Enum of all built-in exception types (0-13)
-//! - [`TypeTagKind`] - Enum of all runtime type tags (0-15)
-//! - [`Value`] and [`tag`] - Phase 2 universal tagged value representation
+//! - [`BuiltinExceptionKind`] - Enum of all built-in exception types (class ids
+//!   `0..BUILTIN_EXCEPTION_COUNT`; the full class-id map — stdlib exception
+//!   slots, builtin generic types, then user classes from
+//!   [`FIRST_USER_CLASS_ID`] — is documented on that constant)
+//! - [`TypeTagKind`] - Enum of all runtime type tags (`0..TYPE_TAG_COUNT`)
+//! - [`Value`] and [`tag`] - the universal tagged value representation
+//! - [`RuntimeFuncDef`] - declarative descriptors of the `rt_*` ABI
 //!
 //! # Single Source of Truth Pattern
 //!

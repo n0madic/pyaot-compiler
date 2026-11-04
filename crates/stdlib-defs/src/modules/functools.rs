@@ -4,10 +4,9 @@
 //! a callable argument. The definition here exists for `from functools import reduce`
 //! recognition; the actual lowering intercepts it before StdlibCall dispatch.
 
-use crate::types::{LoweringHints, ParamDef, StdlibFunctionDef, StdlibModuleDef, TypeSpec};
-#[allow(unused_imports)]
-use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
-use pyaot_core_defs::RuntimeFuncDef;
+use crate::types::{
+    LoweringHints, ParamDef, StdlibFunctionDef, StdlibModuleDef, TypeSpec, INTERCEPTED_BY_FRONTEND,
+};
 
 static REDUCE: StdlibFunctionDef = StdlibFunctionDef {
     name: "reduce",
@@ -21,7 +20,8 @@ static REDUCE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 3,
     hints: LoweringHints::DEFAULT,
-    codegen: RuntimeFuncDef::new("rt_reduce", &[P_I64, P_I64, P_I64], Some(R_I64), false),
+    // Intercepted (HOF desugar): the 6-arg raw-ABI `rt_reduce` is never called.
+    codegen: INTERCEPTED_BY_FRONTEND,
 };
 
 pub static FUNCTOOLS_MODULE: StdlibModuleDef = StdlibModuleDef {

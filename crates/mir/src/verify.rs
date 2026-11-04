@@ -277,6 +277,7 @@ impl std::error::Error for VerifyError {}
 
 const TAGGED: Repr = Repr::Tagged;
 const RAW_I8: Repr = Repr::Raw(RawKind::I8);
+const F64_REPR: Repr = Repr::Raw(RawKind::F64);
 const RAW_I64: Repr = Repr::Raw(RawKind::I64);
 const RAW_F64: Repr = Repr::Raw(RawKind::F64);
 
@@ -569,15 +570,19 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // Repr-consistent: operands and dst share one representation `R`, and
             // `R` must support `op`. `Tagged` handles every op via tag dispatch
             // (`rt_obj_*`, bignum-safe). The unboxed fast paths are RawKind-aware:
-            // `Raw(F64)` carries `Add`/`Sub`/`Mul` (exception-free IEEE);
-            // `Raw(I64)` additionally carries `Mod`/`FloorDiv` (Phase 3c), all
-            // proven by typeck's interval pass (no overflow, divisor > 0).
+            // `Raw(F64)` carries `Add`/`Sub`/`Mul` (exception-free IEEE) and
+            // `Div` (inline `fdiv`, zero divisor raises `ZeroDivisionError`
+            // through the runtime); `Raw(I64)` carries `Add`/`Sub`/`Mul` plus
+            // `Mod`/`FloorDiv` (Phase 3c), all proven by typeck's interval pass
+            // (no overflow, divisor > 0).
             check_operand(f, l)?;
             let lhs = f.operand_repr(l).clone();
             want(f, r, &lhs, "BinOp.r")?;
             want_local(f, *dst, &lhs, "BinOp.dst")?;
             let raw_ok = match lhs {
-                Repr::Raw(RawKind::F64) => matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul),
+                Repr::Raw(RawKind::F64) => {
+                    matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                }
                 Repr::Raw(RawKind::I64) => matches!(
                     op,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::FloorDiv
@@ -596,25 +601,33 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             }
         }
         MirInst::Unary { dst, op, operand } => {
-            want(f, operand, &TAGGED, "Unary.operand")?;
-            let dst_want = if *op == UnaryOp::Not {
-                &RAW_I8
+            // `Tagged` operands dispatch through the runtime. The one raw form
+            // is `Neg` on `Raw(F64)` (an IEEE sign flip into a `Raw(F64)` dst).
+            check_operand(f, operand)?;
+            let raw_neg = *op == UnaryOp::Neg && f.operand_repr(operand) == &F64_REPR;
+            if raw_neg {
+                want_local(f, *dst, &F64_REPR, "Unary.dst")?;
             } else {
-                &TAGGED
-            };
-            want_local(f, *dst, dst_want, "Unary.dst")?;
+                want(f, operand, &TAGGED, "Unary.operand")?;
+                let dst_want = if *op == UnaryOp::Not {
+                    &RAW_I8
+                } else {
+                    &TAGGED
+                };
+                want_local(f, *dst, dst_want, "Unary.dst")?;
+            }
         }
         MirInst::Compare { dst, l, r, .. } => {
             // Operands share one repr `R`; the result is the `Raw(I8)` boolean.
             // `R = Tagged` dispatches via `rt_obj_*`; `R = Raw(I64)` is a machine
-            // `icmp` on range-proven cursors. Float comparison is not specialized.
+            // `icmp` on range-proven cursors; `R = Raw(F64)` is an IEEE `fcmp`.
             check_operand(f, l)?;
             let lhs = f.operand_repr(l).clone();
             match lhs {
-                Repr::Tagged | Repr::Raw(RawKind::I64) => {}
+                Repr::Tagged | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::F64) => {}
                 other => {
                     return Err(VerifyError::ReprMismatch {
-                        ctx: "Compare operand repr (Tagged or Raw(I64))",
+                        ctx: "Compare operand repr (Tagged, Raw(I64) or Raw(F64))",
                         expected: TAGGED,
                         actual: other,
                     })
@@ -1175,7 +1188,9 @@ mod tests {
         pyaot_utils::StringInterner::new().intern("test.py")
     }
     use super::*;
-    use crate::{BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand};
+    use crate::{
+        BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand, UnaryOp,
+    };
     use pyaot_types::HeapShape;
     use pyaot_utils::{BlockId, InternedString, StringInterner};
 
@@ -1276,6 +1291,37 @@ mod tests {
     }
 
     #[test]
+    fn accepts_raw_f64_compare_and_neg() {
+        let f64r = Repr::Raw(RawKind::F64);
+        let cmp = single_block(
+            vec![f64r.clone(), f64r.clone(), Repr::Raw(RawKind::I8)],
+            vec![MirInst::Compare {
+                dst: LocalId::new(2),
+                op: CmpOp::NotEq,
+                l: Operand::Local(LocalId::new(0)),
+                r: Operand::Local(LocalId::new(1)),
+            }],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&cmp, &[]), Ok(()));
+        let neg = |op: UnaryOp, dst: Repr| {
+            single_block(
+                vec![f64r.clone(), dst],
+                vec![MirInst::Unary {
+                    dst: LocalId::new(1),
+                    op,
+                    operand: Operand::Local(LocalId::new(0)),
+                }],
+                MirTerminator::Return(None),
+            )
+        };
+        assert_eq!(verify(&neg(UnaryOp::Neg, f64r.clone()), &[]), Ok(()));
+        // Only `Neg` has a raw form; a raw `Neg` must land in a `Raw(F64)` dst.
+        assert!(verify(&neg(UnaryOp::Neg, Repr::Tagged), &[]).is_err());
+        assert!(verify(&neg(UnaryOp::Invert, Repr::Tagged), &[]).is_err());
+    }
+
+    #[test]
     fn rejects_mismatched_binop_operands() {
         // l=Raw(F64), r/dst=Tagged: operands must share one repr.
         let f = single_block(
@@ -1337,10 +1383,15 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_raw_binops() {
-        // Raw(F64) carries only Add/Sub/Mul; Raw division/mod and all bitwise/shift
-        // and `Pow` stay tagged — never on a Raw fast path.
-        assert!(matches!(
+        // Raw(F64) carries only Add/Sub/Mul/Div; float mod/floordiv, raw int
+        // true division, and all bitwise/shift and `Pow` stay tagged — never on
+        // a Raw fast path.
+        assert_eq!(
             verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Div), &[]),
+            Ok(())
+        );
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::FloorDiv), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
         assert!(matches!(
