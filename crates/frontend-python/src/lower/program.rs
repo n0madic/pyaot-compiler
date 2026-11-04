@@ -48,7 +48,10 @@ impl<'a> ProgramLowerer<'a> {
         let method_uniform_thunks = self.shared.method_uniform_thunks.clone();
         let iternext_thunks = self.shared.iternext_thunks.clone();
         let copy_thunks = self.shared.copy_thunks.clone();
-        let functions = self.shared.finish();
+        let mut functions = self.shared.finish();
+        for f in &mut functions {
+            super::definite::guard_unassigned_reads(f, self.interner);
+        }
         let module = HirModule {
             functions,
             classes: self.classes,

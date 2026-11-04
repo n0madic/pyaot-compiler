@@ -1454,7 +1454,40 @@ impl<'a> FnLower<'a> {
         // evaluated (their own output went to the prior target) and restore it
         // after the trailing newline.
         let redirected = file == PrintTarget::Stderr;
+        // While redirected, nothing may raise between the switch and the
+        // restore (a raising `__str__` would leave every later `print` on
+        // stderr), so values whose conversion can run user code are converted
+        // to `str` BEFORE the switch; the redirected stretch only writes.
+        let mut pre: Vec<Option<LocalId>> = vec![None; vals.len()];
         if redirected {
+            for (k, (arg_idx, loc, repr)) in vals.iter().enumerate() {
+                let ty = self.func.exprs[*arg_idx].ty.clone();
+                let user_code = class_of(&ty, self.classes).is_some()
+                    || matches!(ty, SemTy::Dyn | SemTy::Union(_));
+                if !user_code || self.is_exception_value(&ty) {
+                    continue;
+                }
+                let s = match self
+                    .concrete_dunder(&ty, "__str__")
+                    .or_else(|| self.concrete_dunder(&ty, "__repr__"))
+                {
+                    Some(fid) => {
+                        let (res, rrep) = self.emit_dunder_call(fid, vec![(*loc, repr.clone())])?;
+                        self.coerce(res, rrep, Repr::Tagged)?
+                    }
+                    None => {
+                        let t = self.coerce(*loc, repr.clone(), Repr::Tagged)?;
+                        let dst = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::CallBuiltin {
+                            dst: Some(dst),
+                            kind: pyaot_mir::BuiltinFunctionKind::Str,
+                            args: vec![Operand::Local(t)],
+                        });
+                        dst
+                    }
+                };
+                pre[k] = Some(s);
+            }
             self.emit_print_set_target(PrintTarget::Stderr);
         }
         for (i, (arg_idx, loc, repr)) in vals.into_iter().enumerate() {
@@ -1467,7 +1500,13 @@ impl<'a> FnLower<'a> {
                     Some(id) => self.emit_print_str(id),
                 }
             }
-            self.lower_print_arg(arg_idx, loc, repr)?;
+            match pre[i] {
+                Some(s) => self.emit(MirInst::Print {
+                    kind: PrintKind::StrObj,
+                    arg: Some(Operand::Local(s)),
+                }),
+                None => self.lower_print_arg(arg_idx, loc, repr)?,
+            }
         }
         match end {
             None => self.emit(MirInst::Print {
@@ -5997,6 +6036,20 @@ impl<'a> FnLower<'a> {
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
         let mop = map_binop(op);
+        // `+=` / `*=` mutate in place only for a mutable left operand (a list, a
+        // user instance, or an unknown value); on an immutable one (numbers,
+        // `str`, `bytes`, `tuple`) they ARE the binary operator, which keeps the
+        // raw / typed container fast paths.
+        let mop = match mop {
+            MBinOp::IAdd | MBinOp::IMul if !may_mutate_in_place(&self.func.exprs[l].ty) => {
+                if mop == MBinOp::IAdd {
+                    MBinOp::Add
+                } else {
+                    MBinOp::Mul
+                }
+            }
+            m => m,
+        };
         let (ll, lr) = self.lower_expr(l)?;
         let (rl, rr) = self.lower_expr(r)?;
 
@@ -7251,6 +7304,8 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::BitAnd => MBinOp::BitAnd,
         HBinOp::BitOr => MBinOp::BitOr,
         HBinOp::IOr => MBinOp::IOr,
+        HBinOp::IAdd => MBinOp::IAdd,
+        HBinOp::IMul => MBinOp::IMul,
         HBinOp::BitXor => MBinOp::BitXor,
         HBinOp::IAnd => MBinOp::IAnd,
         HBinOp::ISub => MBinOp::ISub,
@@ -7277,6 +7332,20 @@ fn map_cmpop(op: HCmpOp) -> MCmpOp {
         HCmpOp::LtE => MCmpOp::LtE,
         HCmpOp::Gt => MCmpOp::Gt,
         HCmpOp::GtE => MCmpOp::GtE,
+    }
+}
+
+/// True iff `+=` / `*=` on a value of type `t` may mutate it in place: a
+/// `list`, a user instance (`__iadd__`), a mutable stdlib object, or a value of
+/// unknown type. Numbers, `str`, `bytes` and tuples are immutable.
+fn may_mutate_in_place(t: &SemTy) -> bool {
+    use pyaot_core_defs::TypeTagKind as T;
+    match t {
+        SemTy::Int | SemTy::Float | SemTy::Bool | SemTy::Str | SemTy::Bytes | SemTy::NoneTy => {
+            false
+        }
+        SemTy::RuntimeObject(tag) => matches!(tag, T::ByteArray | T::Deque),
+        _ => t.tuple_elems().is_none() && t.tuple_var_elem().is_none(),
     }
 }
 

@@ -2852,12 +2852,21 @@ impl<'a> Sweeper<'a> {
             BinOp::IAnd => "__iand__",
             BinOp::ISub => "__isub__",
             BinOp::IXor => "__ixor__",
+            BinOp::IAdd => "__iadd__",
+            BinOp::IMul => "__imul__",
             BinOp::BitXor => "__xor__",
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
         };
         if let Some(t) = self.class_dunder_ret(&l, dunder) {
             return t;
+        }
+        // `+=` / `*=` without `__iadd__` / `__imul__` fall back to the binary
+        // operator (CPython), and type exactly like it otherwise.
+        match op {
+            BinOp::IAdd => return self.binop_ty(BinOp::Add, l, r),
+            BinOp::IMul => return self.binop_ty(BinOp::Mul, l, r),
+            _ => {}
         }
         // bytearray concatenation: `ba + bytes-like` → bytearray. `+=` desugars
         // to `ba = ba + x`, so preserving the static `ByteArray` type here keeps
@@ -2895,6 +2904,8 @@ impl<'a> Sweeper<'a> {
             // correctly without a special case.
             // `-=` (`ISub`) joins here too: `set[int] -= set[int]` → `set[int]`
             // (covariant join), numeric `-=` stays numeric.
+            // (`IAdd` / `IMul` returned above via their binary operator.)
+            BinOp::IAdd | BinOp::IMul => self.arith_join(l, r),
             BinOp::Add | BinOp::Sub | BinOp::ISub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
                 // Fixed-tuple concatenation keeps every slot (`(1,) + (2.0,)` is
                 // `tuple[int, float]`), not the per-slot join.

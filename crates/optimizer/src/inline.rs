@@ -317,6 +317,21 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
         .expect("identity coercion is always legal");
         caller.blocks[bi].insts.push(MirInst::Coerce(mv));
     }
+    // (4b) A real call starts with every callee local zeroed (codegen's
+    // implicit initial value); an inlined body re-entered — the call site in a
+    // loop — would instead see the previous activation's values. Re-zero each
+    // callee local that some path may read before writing.
+    for l in maybe_read_before_write(body) {
+        let dst = LocalId::new(l_off + l as u32);
+        let val = match &body.locals[l].repr {
+            Repr::Raw(RawKind::F64) => Const::Float(0.0),
+            Repr::Raw(_) => Const::Int(0),
+            Repr::Tagged => Const::NullPtr,
+            // A typed heap / closure slot is only ever read after a store.
+            _ => continue,
+        };
+        caller.blocks[bi].insts.push(MirInst::Const { dst, val });
+    }
 
     // (2) Append remapped callee blocks; (5) rewrite each Return.
     for cb in &body.blocks {
@@ -1032,4 +1047,76 @@ mod tests {
             "{m:?}"
         );
     }
+}
+
+/// Non-parameter locals of `body` that some path may read before any write
+/// (a forward must-defined dataflow over the callee's CFG).
+fn maybe_read_before_write(body: &CalleeBody) -> Vec<usize> {
+    let n = body.locals.len();
+    let nb = body.blocks.len();
+    let mut entry: Vec<Option<Vec<bool>>> = vec![None; nb];
+    let mut init = vec![false; n];
+    for p in init.iter_mut().take(body.params.len()) {
+        *p = true;
+    }
+    entry[body.entry.index()] = Some(init);
+    let mut flagged = vec![false; n];
+    let mut work = vec![body.entry.index()];
+    while let Some(b) = work.pop() {
+        let Some(mut st) = entry[b].clone() else {
+            continue;
+        };
+        let blk = &body.blocks[b];
+        for inst in &blk.insts {
+            inst.for_each_operand(|op| {
+                let Operand::Local(l) = op;
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+            });
+            if let Some(d) = inst.dst() {
+                st[d.index()] = true;
+            }
+        }
+        let mut succ: Vec<usize> = Vec::new();
+        match &blk.term {
+            MirTerminator::Jump(t) => succ.push(t.index()),
+            MirTerminator::Branch { cond, then, else_ } => {
+                let Operand::Local(l) = cond;
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+                succ.push(then.index());
+                succ.push(else_.index());
+            }
+            MirTerminator::Return(Some(Operand::Local(l))) => {
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+            }
+            _ => {}
+        }
+        for s in succ {
+            let changed = match &mut entry[s] {
+                None => {
+                    entry[s] = Some(st.clone());
+                    true
+                }
+                Some(cur) => {
+                    let mut ch = false;
+                    for (c, v) in cur.iter_mut().zip(&st) {
+                        if *c && !*v {
+                            *c = false;
+                            ch = true;
+                        }
+                    }
+                    ch
+                }
+            };
+            if changed {
+                work.push(s);
+            }
+        }
+    }
+    (body.params.len()..n).filter(|l| flagged[*l]).collect()
 }

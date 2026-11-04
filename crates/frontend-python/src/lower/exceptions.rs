@@ -149,6 +149,12 @@ impl<'a> FnLowerer<'a> {
 
             // ── handler body ──
             self.switch(body_b);
+            // The binding `e` had before this handler (restored, unbound, on
+            // the handler's fall-through exit — CPython's implicit `del e`).
+            let prev_binding = h.name.as_ref().map(|n| {
+                let iname = self.intern(n.as_str());
+                (iname, self.scope.get(&iname).copied())
+            });
             if let Some(name) = &h.name {
                 // Bind `as e` BEFORE StartHandling (rt_exc_get_current reads
                 // the still-current exception). A fresh local per binding,
@@ -167,7 +173,12 @@ impl<'a> FnLowerer<'a> {
             self.scope_stack.pop();
             if self.cur_open() {
                 self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+                if let Some((iname, prev)) = prev_binding {
+                    self.unbind_exc_name(iname, prev, hspan);
+                }
                 self.seal(HirTerminator::Jump(join));
+            } else if let Some((iname, prev)) = prev_binding {
+                self.restore_exc_scope(iname, prev);
             }
             self.switch(next_test);
         }
@@ -310,6 +321,51 @@ impl<'a> FnLowerer<'a> {
         let id = self.push_local(HirLocal::new(iname, ty));
         self.scope.insert(iname, Binding::Direct(id));
         self.push_stmt(HirStmt::Assign { target: id, value });
+    }
+
+    /// The handler's exit: CPython deletes the `as` name, so the variable is
+    /// unbound afterwards on this path (a later read raises
+    /// `UnboundLocalError`) while a path that never entered the handler keeps
+    /// its previous value. The handler's own fresh slot goes out of scope.
+    fn unbind_exc_name(&mut self, iname: InternedString, prev: Option<Binding>, span: Span) {
+        if self.celled.contains(&iname) || self.global_decls.contains(&iname) {
+            return;
+        }
+        let slot = match prev {
+            Some(Binding::Direct(lid)) => lid,
+            Some(Binding::Cell(_)) => return,
+            None => {
+                self.scope.remove(&iname);
+                match self.ensure_binding(iname, SemTy::Dyn) {
+                    Binding::Direct(lid) => lid,
+                    Binding::Cell(_) => return,
+                }
+            }
+        };
+        let l = &mut self.locals[slot.index()];
+        l.deletable = true;
+        l.pin_tagged = true;
+        let unbound = self.alloc(HirExprKind::Unbound, SemTy::Never, span);
+        self.push_stmt(HirStmt::Assign {
+            target: slot,
+            value: unbound,
+        });
+        self.scope.insert(iname, Binding::Direct(slot));
+    }
+
+    /// A handler that never falls through still ends the `as` name's scope.
+    fn restore_exc_scope(&mut self, iname: InternedString, prev: Option<Binding>) {
+        if self.celled.contains(&iname) || self.global_decls.contains(&iname) {
+            return;
+        }
+        match prev {
+            Some(b) => {
+                self.scope.insert(iname, b);
+            }
+            None => {
+                self.scope.remove(&iname);
+            }
+        }
     }
 
     /// Lower a `raise` statement. Always terminates the block.
@@ -625,7 +681,8 @@ impl<'a> FnLowerer<'a> {
         self.cur_handler = outer;
 
         // ── exceptional edge (under the OUTER handler):
-        //    r = mgr.__exit__(e, e, None); truthy swallows ──
+        //    r = mgr.__exit__(type(e), e, None); truthy swallows ──
+        //    (no traceback objects exist, so `tb` is None) ──
         self.switch(exit_exc);
         let e_local = self.fresh_local_tagged();
         let cur = self.alloc(HirExprKind::ExcQuery(ExcQuery::Current), SemTy::Dyn, span);
@@ -635,7 +692,21 @@ impl<'a> FnLowerer<'a> {
         });
         self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
         let recv2 = self.local_ref(mgr, span);
-        let e1 = self.local_ref(e_local, span);
+        let e0 = self.local_ref(e_local, span);
+        let type_name = self.intern("type");
+        let type_fn = self.alloc(
+            HirExprKind::Name(SymbolRef::Unresolved(type_name)),
+            SemTy::Dyn,
+            span,
+        );
+        let e1 = self.alloc(
+            HirExprKind::Call {
+                callee: type_fn,
+                args: vec![e0],
+            },
+            SemTy::Dyn,
+            span,
+        );
         let e2 = self.local_ref(e_local, span);
         let none = self.alloc(HirExprKind::NoneLit, SemTy::NoneTy, span);
         let exit_name = self.intern("__exit__");

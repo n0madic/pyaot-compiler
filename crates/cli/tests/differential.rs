@@ -127,6 +127,8 @@ const PHASE_CORPUS: &[&str] = &[
     "test_inference_soundness.py",
     // Override dispatch regressions (KNOWN_BUGS Phase 3, Root B).
     "test_override_dispatch.py",
+    // Evaluation order / scoping regressions (KNOWN_BUGS Phase 4).
+    "test_eval_order.py",
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",
     "test_import.py",

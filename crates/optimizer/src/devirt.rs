@@ -185,6 +185,41 @@ fn single_def(f: &MirFunction) -> (Vec<Option<MirInst>>, Vec<u32>) {
     (def, count)
 }
 
+/// True iff every def on `c`'s single-def `Coerce` chain down to its
+/// `MakeClosure` dominates the use at `(bi, at)`: it is in the entry block, or
+/// earlier in block `bi` itself.
+fn chain_dominates(
+    c: LocalId,
+    def: &[Option<MirInst>],
+    count: &[u32],
+    def_pos: &[Option<(usize, usize)>],
+    entry: usize,
+    bi: usize,
+    at: usize,
+) -> bool {
+    let mut cur = c;
+    for _ in 0..64 {
+        if count[cur.index()] != 1 {
+            return false;
+        }
+        let Some((b, k)) = def_pos[cur.index()] else {
+            return false;
+        };
+        if !(b == entry || (b == bi && k < at)) {
+            return false;
+        }
+        match def[cur.index()].as_ref() {
+            Some(MirInst::MakeClosure { .. }) => return true,
+            Some(MirInst::Coerce(co)) if is_bit_identity(co) => {
+                let Operand::Local(src) = co.src();
+                cur = *src;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Follow `c` through single-def bit-identity `Coerce` links (closure ↔ Tagged ↔
 /// heap are all bit-identical) to the `MakeClosure { func }` that produced it.
 /// Bails on any multi-def or non-`Coerce`/non-`MakeClosure` step (monomorphic
@@ -264,6 +299,15 @@ fn is_bit_identity(co: &CoerceInst) -> bool {
 fn run_func(f: &mut MirFunction, thunk_targets: &[Option<DevirtTarget>]) {
     let reads = read_counts(f);
     let (def, count) = single_def(f);
+    // (block, instruction) position of each local's (single) def.
+    let mut def_pos: Vec<Option<(usize, usize)>> = vec![None; f.locals.len()];
+    for (b, block) in f.blocks.iter().enumerate() {
+        for (k, inst) in block.insts.iter().enumerate() {
+            if let Some(d) = inst.dst() {
+                def_pos[d.index()] = Some((b, k));
+            }
+        }
+    }
 
     // New locals (arg/env coercion temps, result re-box temps) append after the
     // existing locals; their ids are `base + offset`.
@@ -278,7 +322,19 @@ fn run_func(f: &mut MirFunction, thunk_targets: &[Option<DevirtTarget>]) {
         let mut dead: HashSet<usize> = HashSet::new();
         let mut repls: Vec<(usize, Vec<MirInst>)> = Vec::new();
         for (ci_idx, inst) in block.insts.iter().enumerate() {
-            if !matches!(inst, MirInst::CallIndirect { .. }) {
+            let MirInst::CallIndirect {
+                callee: Operand::Local(callee),
+                ..
+            } = inst
+            else {
+                continue;
+            };
+            // A single static def reaches the use only if it DOMINATES it (a
+            // conditionally bound closure — `if c: g = lambda: …` — must stay an
+            // indirect call). Accept the conservative dominance cases: every
+            // link of the callee's def chain sits in the entry block, or earlier
+            // in this very block.
+            if !chain_dominates(*callee, &def, &count, &def_pos, f.entry.index(), bi, ci_idx) {
                 continue;
             }
             if let Some((plan_dead, replacement)) = try_devirt_ci(

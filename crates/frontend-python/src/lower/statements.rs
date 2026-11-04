@@ -38,6 +38,8 @@ impl<'a> FnLowerer<'a> {
     /// Lower one statement. Returns `true` if it terminated the current block
     /// (`break` / `continue` / `return`).
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<bool> {
+        // Pending operands never cross a statement boundary.
+        self.pending.clear();
         // Real tracebacks: establish this statement's source line in the
         // current block before any of its code is emitted.
         self.mark_line(to_span(stmt.range()));
@@ -286,7 +288,11 @@ impl<'a> FnLowerer<'a> {
                 // stages a value and reads it back positionally.
                 let has_star = targets.iter().any(|t| matches!(t, Expr::Starred(_)));
                 if !has_star {
-                    if let Some(values) = seq_target_elts(a.value.as_ref()) {
+                    // A starred RHS element (`(*xs, 2)`) has no static arity:
+                    // build the value and unpack it positionally instead.
+                    let values = seq_target_elts(a.value.as_ref())
+                        .filter(|vs| !vs.iter().any(|v| matches!(v, Expr::Starred(_))));
+                    if let Some(values) = values {
                         if targets.len() != values.len() {
                             return Err(parse_error(
                                 format!(
@@ -322,6 +328,28 @@ impl<'a> FnLowerer<'a> {
     /// Bind `value` to one assignment target: a simple name (`x = …`) or a
     /// subscript write (`a[i] = …` → [`HirStmt::SetItem`]).
     pub(super) fn assign_to_target(&mut self, target: &Expr, value: Idx<HirExpr>) -> Result<()> {
+        // CPython evaluates the right-hand side BEFORE the target's base and
+        // index (`d[k()] = v()` calls `v` first). The value is a lazy HIR
+        // expression the store would evaluate after them, so pin it first when
+        // the target has operands to evaluate.
+        let value = if matches!(target, Expr::Subscript(_) | Expr::Attribute(_))
+            && !matches!(
+                self.exprs[value].kind,
+                HirExprKind::Local(_)
+                    | HirExprKind::IntLit(_)
+                    | HirExprKind::FloatLit(_)
+                    | HirExprKind::StrLit(_)
+                    | HirExprKind::BoolLit(_)
+                    | HirExprKind::NoneLit
+                    | HirExprKind::Name(_)
+            ) {
+            let span = self.exprs[value].span;
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value });
+            self.local_ref(tmp, span)
+        } else {
+            value
+        };
         match target {
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());
@@ -838,6 +866,10 @@ impl<'a> FnLowerer<'a> {
             BinOp::BitAnd => BinOp::IAnd,
             BinOp::Sub => BinOp::ISub,
             BinOp::BitXor => BinOp::IXor,
+            // `+=` / `*=`: in place for a mutable operand (`list.__iadd__`,
+            // user `__iadd__`), the binary operator otherwise.
+            BinOp::Add => BinOp::IAdd,
+            BinOp::Mul => BinOp::IMul,
             other => other,
         };
         match a.target.as_ref() {

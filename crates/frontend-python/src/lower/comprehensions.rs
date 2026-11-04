@@ -96,8 +96,22 @@ impl<'a> FnLowerer<'a> {
                 for raw in raw_names {
                     let name = self.intern(raw);
                     let prev = self.scope.get(&name).copied();
-                    let fresh = self.fresh_local(SemTy::Dyn);
-                    self.scope.insert(name, Binding::Direct(fresh));
+                    if self.celled.contains(&name) {
+                        // A closure in the comprehension captures the loop
+                        // variable: the comprehension scope gets its own cell
+                        // (CPython: every lambda sees the variable's final value).
+                        let cell = self.alloc_cell_local(name, SemTy::Dyn, true);
+                        let mc =
+                            self.alloc(HirExprKind::MakeCell { init: None }, SemTy::Dyn, span);
+                        self.push_stmt(HirStmt::Assign {
+                            target: cell,
+                            value: mc,
+                        });
+                        self.scope.insert(name, Binding::Cell(cell));
+                    } else {
+                        let fresh = self.fresh_local(SemTy::Dyn);
+                        self.scope.insert(name, Binding::Direct(fresh));
+                    }
                     saved.push((name, prev));
                 }
                 (saved, iterable)

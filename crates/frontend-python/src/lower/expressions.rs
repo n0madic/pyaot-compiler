@@ -12,7 +12,18 @@ enum DisplayKind {
 impl<'a> FnLowerer<'a> {
     // ── expressions ──────────────────────────────────────────────────────────
 
+    /// Lower `expr` to a lazy HIR value and record it as a pending operand of
+    /// the enclosing expression (evaluation-order staging, see
+    /// [`FnLowerer::flush_pending`]); its own operands are consumed by it.
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<Idx<HirExpr>> {
+        let mark = self.pending.len();
+        let idx = self.lower_expr_inner(expr)?;
+        self.pending.truncate(mark.min(self.pending.len()));
+        self.pending.push(idx);
+        Ok(idx)
+    }
+
+    fn lower_expr_inner(&mut self, expr: &Expr) -> Result<Idx<HirExpr>> {
         let span = to_span(expr.range());
         match expr {
             Expr::Constant(c) => self.lower_constant(&c.value, span),
@@ -47,6 +58,17 @@ impl<'a> FnLowerer<'a> {
                 // function used as a VALUE becomes its memoized thunk closure
                 // (Phase 6A); everything else defers to `semantics`.
                 if let Some(b) = self.scope.get(&name).copied() {
+                    Ok(self.read_binding(b, span))
+                } else if !self.is_main
+                    && self.bound_names.contains(&name)
+                    && !self.global_decls.contains(&name)
+                    && !self.celled.contains(&name)
+                {
+                    // A name this function binds ANYWHERE is local in the whole
+                    // body (CPython's compile-time scoping) — a read before its
+                    // first assignment is a local read that the definite-
+                    // assignment pass guards (`UnboundLocalError`).
+                    let b = self.ensure_binding(name, SemTy::Dyn);
                     Ok(self.read_binding(b, span))
                 } else if let Some(var_id) = self.global_read_slot(name) {
                     Ok(self.alloc(HirExprKind::GlobalGet { var_id }, SemTy::Dyn, span))

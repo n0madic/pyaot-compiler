@@ -101,6 +101,8 @@ struct RuntimeFns {
     is_truthy: FuncId,
     obj_bitand: FuncId,
     obj_bitor: FuncId,
+    obj_iadd: FuncId,
+    obj_imul: FuncId,
     obj_ior: FuncId,
     obj_iand: FuncId,
     obj_isub: FuncId,
@@ -355,6 +357,8 @@ impl RuntimeFns {
             obj_bitand: d("rt_obj_bitand", &[ti, ti], &[ti])?,
             obj_bitor: d("rt_obj_bitor", &[ti, ti], &[ti])?,
             obj_ior: d("rt_obj_ior", &[ti, ti], &[ti])?,
+            obj_iadd: d("rt_obj_iadd", &[ti, ti], &[ti])?,
+            obj_imul: d("rt_obj_imul", &[ti, ti], &[ti])?,
             obj_iand: d("rt_obj_iand", &[ti, ti], &[ti])?,
             obj_isub: d("rt_obj_isub", &[ti, ti], &[ti])?,
             obj_ixor: d("rt_obj_ixor", &[ti, ti], &[ti])?,
@@ -3109,6 +3113,10 @@ impl FnGen<'_, '_> {
             // `|=` — in-place merge for `dict`/`set` (returns the same object),
             // numeric/TypeError delegated to `rt_obj_bitor` inside the runtime.
             (_, BinOp::IOr) => self.call(self.rt.obj_ior, &[a, b]).unwrap(),
+            // `+=` / `*=` — in-place for `list` / `__iadd__` / `__imul__`
+            // (returns the same object), else the new-object add / mul.
+            (_, BinOp::IAdd) => self.call(self.rt.obj_iadd, &[a, b]).unwrap(),
+            (_, BinOp::IMul) => self.call(self.rt.obj_imul, &[a, b]).unwrap(),
             // `&=` / `-=` / `^=` — in-place mutate for `set` (returns the same
             // object), numeric/TypeError delegated to `rt_obj_bitand`/`rt_obj_sub`/
             // `rt_obj_bitxor` inside the runtime.

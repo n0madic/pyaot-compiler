@@ -659,6 +659,8 @@ impl MirInst {
                     | BinOp::IAnd
                     | BinOp::ISub
                     | BinOp::IXor
+                    | BinOp::IAdd
+                    | BinOp::IMul
                     | BinOp::Div
                     | BinOp::FloorDiv
                     | BinOp::Mod
@@ -1107,6 +1109,11 @@ pub enum BinOp {
     IAnd,
     ISub,
     IXor,
+    /// In-place `+=` / `*=` — always Tagged; `rt_obj_iadd` / `rt_obj_imul`
+    /// mutate a `list` (or call `__iadd__`/`__imul__`) and return the same
+    /// object, delegating everything else to the new-object add / mul.
+    IAdd,
+    IMul,
     Shl,
     Shr,
 }

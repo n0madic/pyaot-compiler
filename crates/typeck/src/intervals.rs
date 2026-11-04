@@ -583,9 +583,11 @@ fn int_local(func: &HirFunction, resolve: &ResolveResult, idx: Idx<HirExpr>) -> 
 /// Combine an integer binary operator's operand intervals.
 fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
     match op {
-        BinOp::Add => lv.add(rv),
+        // `+=` / `*=` on ints are the plain operators (lowering routes them
+        // to `Add` / `Mul` for an `int` operand).
+        BinOp::Add | BinOp::IAdd => lv.add(rv),
         BinOp::Sub => lv.sub(rv),
-        BinOp::Mul => lv.mul(rv),
+        BinOp::Mul | BinOp::IMul => lv.mul(rv),
         BinOp::Mod => lv.modulo(rv),
         BinOp::FloorDiv => lv.floordiv(rv),
         // True `/` is float; `**` and bitwise/shift are bignum-possible; `@` is a

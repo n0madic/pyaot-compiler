@@ -958,6 +958,11 @@ pub enum BinOp {
     /// new-object numeric path (`BitAnd`/`Sub`/`BitXor`). Always Tagged.
     IAnd,
     ISub,
+    /// In-place `+=` / `*=` (the `IOr` pattern): a `list` (or an instance with
+    /// `__iadd__`/`__imul__`) is mutated in place and the same object returned,
+    /// so an alias observes it; immutable operands take the `Add`/`Mul` path.
+    IAdd,
+    IMul,
     IXor,
     Shl,
     Shr,

@@ -170,35 +170,47 @@ override) is called through a synthesized function that switches on
 
 ## Phase 4 — evaluation order, scopes, statements
 
-- [ ] **H** later operand emitting statements runs before an earlier lazy
+Regressions: `corpus/test_eval_order.py`.
+
+- [x] **H** later operand emitting statements runs before an earlier lazy
       operand: `f() + (g() or 2)`, `x + (x := 5)`, `g(x, (x := 5))`
       (`frontend lower/expressions.rs:580` and call/subscript/compare). ✓
-- [ ] **H** aug-assign reads `x` after RHS side effects; attr base evaluated
-      twice (`frontend lower/statements.rs:847`, `:865`). ✓
-- [ ] **M** assignment: target base/index evaluated before RHS
+      (the builder stages pending lazy operands into temporaries before the
+      first statement / terminator a later operand emits)
+- [x] **H** aug-assign reads `x` after RHS side effects; attr base evaluated
+      twice (`frontend lower/statements.rs:847`, `:865`). ✓ (the read is
+      staged like any earlier operand; a bare-`Name` base is still lowered
+      twice, which is only observable if the RHS rebinds that name)
+- [x] **M** assignment: target base/index evaluated before RHS
       (`lowering:3469`, `:3413`, `:3447`, `:990`, `:1059`;
       `frontend statements.rs:308`). ✓
-- [ ] **H** `+=`/`*=` not in-place (list aliasing, tuple `+=`, `__iadd__`)
+- [x] **H** `+=`/`*=` not in-place (list aliasing, tuple `+=`, `__iadd__`)
       (`frontend statements.rs:836`; `types/src/dunders.rs` lacks `__i*__`). ✓
-- [ ] **H** no definite-assignment: unbound locals read as None, no
+      (new `IAdd`/`IMul` ops; runtime contract addition `rt_obj_iadd` /
+      `rt_obj_imul`)
+- [x] **H** no definite-assignment: unbound locals read as None, no
       UnboundLocalError (`frontend statements.rs:491`). ✓
-- [ ] **H** `except E as e` permanently rebinds `e` in the flat scope
+      (`frontend lower/definite.rs`; a name bound anywhere in a function is
+      local in the whole body)
+- [x] **H** `except E as e` permanently rebinds `e` in the flat scope
       (`frontend lower/exceptions.rs:310`). ✓
-- [ ] **M** inliner: callee locals not reinitialized per inlined call
+- [x] **M** inliner: callee locals not reinitialized per inlined call
       (`optimizer/src/inline.rs:265`). ✓
-- [ ] **H** devirt `single_def` doesn't check dominance → conditionally bound
+- [x] **H** devirt `single_def` doesn't check dominance → conditionally bound
       closure devirtualized (`optimizer/src/devirt.rs:173`). ✓
-- [ ] **C** genexpr reading an enclosing local resolves it as a global
-      (`frontend lower/generators.rs:10`, `freevars.rs:425`). ✓
-- [ ] **L** lambda in comprehension capturing the loop var: "no cell binding"
+- [x] **C** genexpr reading an enclosing local resolves it as a global
+      (`frontend lower/generators.rs:10`, `freevars.rs:425`). ✓ (captured
+      by value when the generator is created)
+- [x] **L** lambda in comprehension capturing the loop var: "no cell binding"
       (`frontend lower/comprehensions.rs:100`). ✓
-- [ ] **H** sequence pattern only checks `len()` (str matches `[a,b]`, dict →
-      KeyError) (`frontend lower/patterns.rs:153`). ✓
-- [ ] **M** `__exit__` gets `(e, e, None)` instead of `(type(e), e, tb)`
-      (`frontend lower/exceptions.rs:646`). ✓
-- [ ] **M** starred element in unpack RHS goes down literal fast path
+- [x] **H** sequence pattern only checks `len()` (str matches `[a,b]`, dict →
+      KeyError) (`frontend lower/patterns.rs:153`). ✓ (list/tuple subjects)
+- [x] **M** `__exit__` gets `(e, e, None)` instead of `(type(e), e, tb)`
+      (`frontend lower/exceptions.rs:646`). ✓ (`tb` stays None: there are
+      no traceback objects)
+- [x] **M** starred element in unpack RHS goes down literal fast path
       (`frontend statements.rs:288`). ✓
-- [ ] **M** `print(file=sys.stderr)` sticky global switch; a raising `__str__`
+- [x] **M** `print(file=sys.stderr)` sticky global switch; a raising `__str__`
       leaves stdout redirected (`lowering:1283`). ✓
 - [ ] **L** module-level `return`, `global x` after use accepted; `C(x=1)`
       misleading error; generator diagnostics use `Span::dummy()`.

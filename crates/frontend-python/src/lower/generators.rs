@@ -19,6 +19,23 @@ impl<'a> FnLowerer<'a> {
         }
         // The outermost iterable, evaluated eagerly in THIS scope.
         let outer = self.lower_expr(&g.generators[0].iter)?;
+        // Free names the body reads from THIS function ride extra wrapper params
+        // into the generator's slots, as their value when the generator is
+        // created. (CPython binds them late; this differs only if the enclosing
+        // function rebinds the name between creating and consuming the
+        // generator.)
+        let facts = freevars::analyze_genexpr(g);
+        let mut captures: Vec<(InternedString, Binding)> = Vec::new();
+        for f in &facts.free {
+            let iname = self.intern(f);
+            if let Some(b) = self.scope.get(&iname).copied() {
+                captures.push((iname, b));
+            }
+        }
+        let capture_args: Vec<Idx<HirExpr>> = captures
+            .iter()
+            .map(|(_, b)| self.read_binding(*b, span))
+            .collect();
 
         let synth = self.synth_name("<genexpr>");
         let name = self.interner.intern(&synth);
@@ -43,6 +60,9 @@ impl<'a> FnLowerer<'a> {
             rl.add_param(gen_name, SemTy::Dyn);
             let iter0_name = rl.intern("__iter0__");
             let iter0 = rl.add_logical_local(iter0_name, SemTy::Dyn);
+            for (name, _) in &captures {
+                rl.add_logical_local(*name, SemTy::Dyn);
+            }
             rl.gen = Some(GenCtx {
                 gen_local: LocalId::new(0),
                 next_state: 1,
@@ -74,6 +94,9 @@ impl<'a> FnLowerer<'a> {
             );
             let p = wl.intern("__iter0__");
             wl.add_param(p, SemTy::Dyn);
+            for (name, _) in &captures {
+                wl.add_param(*name, SemTy::Dyn);
+            }
             let g_local = wl.fresh_local(SemTy::Dyn);
             let mg = wl.alloc(
                 HirExprKind::MakeGenerator { gen_id, num_locals },
@@ -91,6 +114,15 @@ impl<'a> FnLowerer<'a> {
                 slot: 0,
                 value: p0,
             });
+            for j in 0..captures.len() {
+                let gen = wl.local_ref(g_local, span);
+                let pj = wl.local_ref(LocalId::new(1 + j as u32), span);
+                wl.push_stmt(HirStmt::GenSetLocal {
+                    gen,
+                    slot: 1 + j as u32,
+                    value: pj,
+                });
+            }
             let g_ret = wl.local_ref(g_local, span);
             wl.seal(HirTerminator::Return(Some(g_ret)));
             let wrapper_fn = wl.finish(HirTerminator::Return(None));
@@ -103,14 +135,9 @@ impl<'a> FnLowerer<'a> {
             SemTy::Dyn,
             span,
         );
-        Ok(self.alloc(
-            HirExprKind::Call {
-                callee,
-                args: vec![outer],
-            },
-            SemTy::Dyn,
-            span,
-        ))
+        let mut args = vec![outer];
+        args.extend(capture_args);
+        Ok(self.alloc(HirExprKind::Call { callee, args }, SemTy::Dyn, span))
     }
 
     /// Recurse over a genexpr's clauses building nested iterator loops; the

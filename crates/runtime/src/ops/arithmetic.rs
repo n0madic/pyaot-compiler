@@ -1,7 +1,7 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
 use super::dunder_dispatch::{
-    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_AND, FNV_FLOORDIV,
+    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_AND, FNV_IADD, FNV_IMUL, FNV_FLOORDIV,
     FNV_INVERT, FNV_LSHIFT, FNV_MATMUL, FNV_MOD, FNV_MUL, FNV_NEG, FNV_OR, FNV_POS, FNV_POW,
     FNV_RADD, FNV_RAND, FNV_RFLOORDIV, FNV_RLSHIFT, FNV_RMATMUL, FNV_RMOD, FNV_RMUL, FNV_ROR,
     FNV_RPOW, FNV_RRSHIFT, FNV_RSHIFT, FNV_RSUB, FNV_RTRUEDIV, FNV_RXOR, FNV_SUB, FNV_TRUEDIV,
@@ -594,6 +594,97 @@ pub fn rt_obj_ior(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[export_name = "rt_obj_ior"]
 pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_ior(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// In-place add `a += b` (contract addition). A `list` receiver extends in
+/// place (`list.__iadd__`, any list / tuple operand) and returns the SAME
+/// object, so an alias observes it; an instance defining `__iadd__` runs it;
+/// everything else delegates to the new-object `rt_obj_add` (numbers, `str`,
+/// `tuple` — immutable `+=` rebinds).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_iadd(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        if va.is_ptr() && !a.is_null() {
+            match (*a).type_tag() {
+                TypeTagKind::List if vb.is_ptr() && !b.is_null() => match (*b).type_tag() {
+                    TypeTagKind::List => {
+                        crate::list::rt_list_extend(a, b);
+                        return a;
+                    }
+                    TypeTagKind::Tuple => {
+                        use crate::gc::{gc_pop, gc_push, ShadowFrame};
+                        let tmp = crate::list::rt_list_from_tuple(b);
+                        let mut roots: [*mut Obj; 2] = [a, tmp];
+                        let mut frame = ShadowFrame {
+                            prev: std::ptr::null_mut(),
+                            nroots: 2,
+                            roots: roots.as_mut_ptr(),
+                        };
+                        gc_push(&mut frame);
+                        crate::list::rt_list_extend(a, tmp);
+                        gc_pop();
+                        return a;
+                    }
+                    _ => {}
+                },
+                TypeTagKind::Instance => {
+                    if let Some(r) = try_class_dunder(a, b, FNV_IADD, 0) {
+                        return r;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rt_obj_add(a, b)
+    }
+}
+#[export_name = "rt_obj_iadd"]
+pub extern "C" fn rt_obj_iadd_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_iadd(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// In-place multiply `a *= n` (contract addition). A `list` receiver is
+/// repeated in place (`list.__imul__`) and returned; an instance defining
+/// `__imul__` runs it; everything else delegates to `rt_obj_mul`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_imul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        if va.is_ptr() && !a.is_null() {
+            match (*a).type_tag() {
+                TypeTagKind::List if vb.is_int() || vb.is_bool() => {
+                    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+                    let n = if vb.is_int() { vb.unwrap_int() } else { vb.unwrap_bool() as i64 };
+                    let rep = crate::list::rt_list_repeat(a, n);
+                    let mut roots: [*mut Obj; 2] = [a, rep];
+                    let mut frame = ShadowFrame {
+                        prev: std::ptr::null_mut(),
+                        nroots: 2,
+                        roots: roots.as_mut_ptr(),
+                    };
+                    gc_push(&mut frame);
+                    crate::list::rt_list_clear(a);
+                    crate::list::rt_list_extend(a, rep);
+                    gc_pop();
+                    return a;
+                }
+                TypeTagKind::Instance => {
+                    if let Some(r) = try_class_dunder(a, b, FNV_IMUL, 0) {
+                        return r;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rt_obj_mul(a, b)
+    }
+}
+#[export_name = "rt_obj_imul"]
+pub extern "C" fn rt_obj_imul_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_imul(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
 /// In-place bitwise-and `a &= b`. For a `set` receiver this mutates `a` in place

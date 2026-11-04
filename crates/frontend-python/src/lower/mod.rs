@@ -42,6 +42,7 @@ mod calls;
 mod classes;
 mod closures;
 mod comprehensions;
+mod definite;
 mod exceptions;
 mod expressions;
 mod generators;
@@ -551,6 +552,13 @@ pub(crate) struct FnLowerer<'a> {
     /// `None` from "not filled yet", and backs the one-context-per-block
     /// debug assertion).
     stamped: HashSet<Idx<HirBlock>>,
+    /// Lowered-but-lazy operand values of the expression being built, in
+    /// evaluation order (see [`Self::flush_pending`]): an HIR value expression
+    /// is evaluated where its parent node is, so when a LATER operand emits
+    /// statements (`f() + (g() or 2)`, `x + (x := 5)`, a comprehension), the
+    /// earlier operands are staged into temporaries first to keep Python's
+    /// left-to-right evaluation order (KNOWN_BUGS Phase 4).
+    pending: Vec<Idx<HirExpr>>,
     /// Last `HirStmt::Line` marker emitted into the CURRENT block (real
     /// tracebacks). Reset on every `switch` — codegen's srcloc state follows
     /// emission order, so each block must re-establish its line.

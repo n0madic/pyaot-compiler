@@ -29,6 +29,8 @@ pub(crate) const fn fnv1a(s: &[u8]) -> u64 {
 }
 
 pub(super) const FNV_ADD: u64 = fnv1a(b"__add__");
+pub(super) const FNV_IADD: u64 = fnv1a(b"__iadd__");
+pub(super) const FNV_IMUL: u64 = fnv1a(b"__imul__");
 pub(super) const FNV_RADD: u64 = fnv1a(b"__radd__");
 pub(super) const FNV_SUB: u64 = fnv1a(b"__sub__");
 pub(super) const FNV_RSUB: u64 = fnv1a(b"__rsub__");
