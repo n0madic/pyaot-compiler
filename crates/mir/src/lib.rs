@@ -449,6 +449,24 @@ pub enum MirInst {
     /// as having side effects so DCE keeps it; excluded from the inliner's
     /// size accounting.
     LineMarker(u32),
+    /// A [`MirInst::LineMarker`] inside code the inliner spliced in from
+    /// other functions: `line` is the 1-based line in the innermost inlined
+    /// function, `frames` the inline chain OUTERMOST first — `frames[0]` is
+    /// the function inlined directly into this one, called from line
+    /// `frames[0].call_line` of this function; `frames[k].call_line` is the
+    /// line in `frames[k-1].func` that called `frames[k].func`. Codegen turns
+    /// it into a traceback location that prints every inlined frame, so
+    /// inlining does not erase frames. Same DCE / size treatment as
+    /// `LineMarker`; only the inliner produces it.
+    InlinedLine { line: u32, frames: Vec<InlineFrame> },
+}
+
+/// One frame of an [`MirInst::InlinedLine`] chain: `func` was inlined at a
+/// call on line `call_line` of its (possibly itself inlined) caller.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InlineFrame {
+    pub func: FuncId,
+    pub call_line: u32,
 }
 
 impl MirInst {
@@ -573,7 +591,7 @@ impl MirInst {
             // Every raise allocates the exception value / traceback entry.
             MirInst::Raise(_) => true,
             // Compile-time metadata — no machine code at all.
-            MirInst::LineMarker(_) => false,
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => false,
         }
     }
 
@@ -718,7 +736,7 @@ impl MirInst {
             MirInst::Raise(_) => true,
             // No dst and no reads — answering `false` would let DCE sweep
             // it; the marker is load-bearing metadata for codegen.
-            MirInst::LineMarker(_) => true,
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => true,
         }
     }
 
@@ -767,7 +785,8 @@ impl MirInst {
             | MirInst::ExcOp(_)
             | MirInst::ArmCause(_)
             | MirInst::Raise(_)
-            | MirInst::LineMarker(_) => None,
+            | MirInst::LineMarker(_)
+            | MirInst::InlinedLine { .. } => None,
         }
     }
 
@@ -909,7 +928,7 @@ impl MirInst {
                 MirRaise::Instance { value } => map_op(value, &mut f),
                 MirRaise::Reraise => {}
             },
-            MirInst::LineMarker(_) => {}
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         }
     }
 
@@ -1004,7 +1023,7 @@ impl MirInst {
                 MirRaise::Instance { value } => f(value),
                 MirRaise::Reraise => {}
             },
-            MirInst::LineMarker(_) => {}
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         }
     }
 }

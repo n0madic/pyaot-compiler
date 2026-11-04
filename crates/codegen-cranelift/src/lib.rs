@@ -23,12 +23,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::{
     condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
     ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
     StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
-use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
@@ -43,7 +43,8 @@ use pyaot_core_defs::tag;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
     classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp,
-    LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
+    InlineFrame, LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind,
+    UnaryOp,
 };
 use pyaot_types::{HeapCheck, RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
@@ -823,21 +824,23 @@ pub fn compile(
         if !sites.is_empty() {
             exc_sites.push((func_ids[i], sites));
         }
-        // Display name: module bodies (`__main__`, imported-module `<init>`s)
-        // print as CPython's `<module>`; everything else by the Python name.
+        // Display name: CPython's `co_name` for the frame; compiler-synthesized
+        // dispatch thunks get no record, so their frames drop out of the
+        // traceback (capture keeps only frames that resolve).
         let mf = &program.funcs[i];
-        let py_name = interner.resolve(mf.name);
-        let display = if py_name == "__main__" || py_name.ends_with(".<init>") {
-            "<module>".to_string()
-        } else {
-            py_name.to_string()
-        };
-        tb_funcs.push((
-            func_ids[i],
-            display,
-            interner.resolve(mf.file).to_string(),
-            tb,
-        ));
+        if let Some(display) = traceback_name(interner.resolve(mf.name)) {
+            let mut tb = tb;
+            tb.inline_chains = inline_locs(mf)
+                .into_iter()
+                .map(|(line, frames)| inline_chain(program, interner, &display, mf, line, &frames))
+                .collect();
+            tb_funcs.push((
+                func_ids[i],
+                display,
+                interner.resolve(mf.file).to_string(),
+                tb,
+            ));
+        }
 
         let compiled = ctx
             .compiled_code()
@@ -1366,9 +1369,9 @@ fn emit_tb_table(
     funcs: &[(FuncId, String, String, FnTb)],
 ) -> Result<Option<(DataId, u64)>> {
     use pyaot_core_defs::layout::{
-        TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET, TB_RECORD_FILE_LEN_OFFSET,
-        TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET,
-        TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
+        TB_INLINE_FRAME_SIZE, TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET,
+        TB_RECORD_FILE_LEN_OFFSET, TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET,
+        TB_RECORD_NAME_LEN_OFFSET, TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
     };
     if funcs.is_empty() {
         return Ok(None);
@@ -1402,6 +1405,39 @@ fn emit_tb_table(
             w32(&mut bytes, base + off_at as usize, off);
             w32(&mut bytes, base + len_at as usize, s.len() as u32);
         }
+        // Inline chains (contract extension, `TB_LOC_INLINE_FLAG`): one blob
+        // per inline-location id, referenced from the line area below.
+        let mut chain_offs: Vec<u32> = Vec::with_capacity(tb.inline_chains.len());
+        for chain in &tb.inline_chains {
+            let mut strs: Vec<[u32; 4]> = Vec::with_capacity(chain.len());
+            for (fname, ffile, _) in chain {
+                let mut pair = [0u32; 4];
+                for (k, s) in [fname, ffile].into_iter().enumerate() {
+                    let off = if let Some(&o) = aux_str.get(s.as_str()) {
+                        o
+                    } else {
+                        let o = bytes.len() as u32;
+                        bytes.extend_from_slice(s.as_bytes());
+                        aux_str.insert(s.as_str(), o);
+                        o
+                    };
+                    pair[2 * k] = off;
+                    pair[2 * k + 1] = s.len() as u32;
+                }
+                strs.push(pair);
+            }
+            while !bytes.len().is_multiple_of(4) {
+                bytes.push(0);
+            }
+            chain_offs.push(bytes.len() as u32);
+            bytes.extend_from_slice(&(chain.len() as u32).to_le_bytes());
+            for (pair, (_, _, line)) in strs.iter().zip(chain) {
+                for v in pair.iter().chain(std::iter::once(line)) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        debug_assert_eq!(TB_INLINE_FRAME_SIZE, 20);
         // Line area: count + (start, end, line) triples. 4-align it.
         while !bytes.len().is_multiple_of(4) {
             bytes.push(0);
@@ -1409,6 +1445,16 @@ fn emit_tb_table(
         let loc_off = bytes.len() as u32;
         bytes.extend_from_slice(&(tb.locs.len() as u32).to_le_bytes());
         for (start, end, line) in &tb.locs {
+            // An inline-location srcloc becomes a flagged chain offset.
+            let line = if line & INLINE_SRCLOC != 0 {
+                let off = chain_offs[(line & !INLINE_SRCLOC) as usize];
+                if off & INLINE_SRCLOC != 0 {
+                    return Err(cg_error("traceback table exceeds 2 GiB"));
+                }
+                INLINE_SRCLOC | off
+            } else {
+                *line
+            };
             bytes.extend_from_slice(&start.to_le_bytes());
             bytes.extend_from_slice(&end.to_le_bytes());
             bytes.extend_from_slice(&line.to_le_bytes());
@@ -1534,6 +1580,15 @@ fn translate_function(
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
+    // Pin the srcloc base to line 0. Cranelift stores each srcloc relative to
+    // the function's base (by default the FIRST srcloc set) with wrapping
+    // arithmetic, and the relative value `u32::MAX` means "no location": a
+    // later line exactly one below the first stamped line (e.g. an inlined
+    // callee defined just above its call site) would wrap onto that sentinel
+    // and resolve as `line 0`. With base 0 the relative value is the line.
+    ctx.func
+        .params
+        .ensure_base_srcloc(cranelift_codegen::ir::SourceLoc::new(0));
     let mut fctx = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
@@ -1607,6 +1662,11 @@ fn translate_function(
             frame_slot,
             cur_handler: None,
             trampolines,
+            inline_loc_ids: inline_locs(mf)
+                .into_iter()
+                .enumerate()
+                .map(|(i, key)| (key, i as u32))
+                .collect(),
         };
 
         for (bi, mblock) in mf.blocks.iter().enumerate() {
@@ -1718,6 +1778,7 @@ fn harvest_fn_metadata(ctx: &Context) -> Result<(Vec<ExcSite>, FnTb)> {
     }
 
     let tb = FnTb {
+        inline_chains: Vec::new(),
         code_size: compiled.buffer.total_size(),
         locs: compiled
             .buffer
@@ -1730,11 +1791,111 @@ fn harvest_fn_metadata(ctx: &Context) -> Result<(Vec<ExcSite>, FnTb)> {
     Ok((sites, tb))
 }
 
+/// The traceback frame name CPython would print (`co_name`) for a MIR
+/// function's internal name, or `None` for a compiler-synthesized dispatch
+/// thunk that has no CPython frame at all.
+///
+/// Internal names qualify for uniqueness: `C.m` (method), `mod.f` (imported
+/// module), `outer.<locals>.inner#0` (nested def / lambda / genexpr, with a
+/// sibling counter), `f.<orig>` (a decorated def's undecorated body),
+/// `g.<resume>` (a generator's state machine — CPython names the frame after
+/// the generator function). Module bodies (`__main__`, `pkg.<init>`) are
+/// `<module>`. Value-call / iterator / copy thunks (`….<uniform>`,
+/// `….<iternext>`, `….<__copy__>`, `….<__deepcopy__>`) are hidden.
+fn traceback_name(internal: &str) -> Option<String> {
+    if internal == "__main__" || internal.ends_with(".<init>") {
+        return Some("<module>".to_string());
+    }
+    const THUNKS: &[&str] = &[
+        ".<uniform>",
+        ".<iternext>",
+        ".<__copy__>",
+        ".<__deepcopy__>",
+    ];
+    if THUNKS.iter().any(|t| internal.ends_with(t)) {
+        return None;
+    }
+    let mut name = internal;
+    for suffix in [".<resume>", ".<orig>"] {
+        name = name.strip_suffix(suffix).unwrap_or(name);
+    }
+    // Innermost scope: after the last `.<locals>.` (a synthetic name's
+    // `<lambda>`/`<genexpr>` contains no `.`), then after the last `.`
+    // (class / module qualifier).
+    if let Some((_, inner)) = name.rsplit_once(".<locals>.") {
+        name = inner;
+    }
+    if let Some((base, counter)) = name.rsplit_once('#') {
+        if !counter.is_empty() && counter.bytes().all(|b| b.is_ascii_digit()) {
+            name = base;
+        }
+    }
+    if let Some((_, last)) = name.rsplit_once('.') {
+        name = last;
+    }
+    Some(name.to_string())
+}
+
 /// A function's traceback metadata: machine-code size and the sorted
 /// `[start, end) → source line` ranges harvested from Cranelift srclocs.
+/// A loc value with [`INLINE_SRCLOC`] set indexes `inline_chains`.
 struct FnTb {
     code_size: u32,
     locs: Vec<(u32, u32, u32)>,
+    /// Per inline-location id: the frames to print, OUTERMOST first, as
+    /// `(name, file, line)` (the record's own function included first).
+    inline_chains: Vec<Vec<(String, String, u32)>>,
+}
+
+/// Srcloc bit marking an inline-location id (vs. a plain line number); the
+/// same bit marks an inline-chain entry in the traceback table's loc area
+/// (`pyaot_core_defs::layout::TB_LOC_INLINE_FLAG`).
+const INLINE_SRCLOC: u32 = pyaot_core_defs::layout::TB_LOC_INLINE_FLAG;
+
+/// The distinct `(line, inline chain)` pairs of `mf`'s `InlinedLine` markers,
+/// in first-occurrence order — the function's inline-location table (index =
+/// srcloc payload). Deterministic, so translation and harvest agree.
+fn inline_locs(mf: &MirFunction) -> Vec<(u32, Vec<InlineFrame>)> {
+    let mut out: Vec<(u32, Vec<InlineFrame>)> = Vec::new();
+    let mut seen: HashMap<(u32, Vec<InlineFrame>), ()> = HashMap::new();
+    for block in &mf.blocks {
+        for inst in &block.insts {
+            if let MirInst::InlinedLine { line, frames } = inst {
+                let key = (*line, frames.clone());
+                if seen.insert(key.clone(), ()).is_none() {
+                    out.push(key);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Expand one inline location of `mf` (named `display`) into the CPython
+/// frames it stands for, outermost first: `mf` at the first call line, each
+/// inlined function at the line that called the next, the innermost at
+/// `line`. Inlined thunks (no CPython frame) are skipped.
+fn inline_chain(
+    program: &MirProgram,
+    interner: &StringInterner,
+    display: &str,
+    mf: &MirFunction,
+    line: u32,
+    frames: &[InlineFrame],
+) -> Vec<(String, String, u32)> {
+    let mut out = Vec::with_capacity(frames.len() + 1);
+    let mut cur = (display.to_string(), interner.resolve(mf.file).to_string());
+    for fr in frames {
+        out.push((cur.0, cur.1, fr.call_line));
+        let callee = &program.funcs[fr.func.index()];
+        cur = (
+            traceback_name(interner.resolve(callee.name)).unwrap_or_default(),
+            interner.resolve(callee.file).to_string(),
+        );
+    }
+    out.push((cur.0, cur.1, line));
+    out.retain(|(name, ..)| !name.is_empty());
+    out
 }
 
 /// One protected machine call site of a compiled function: the return-address
@@ -1888,6 +2049,9 @@ struct FnGen<'a, 'b> {
     cur_handler: Option<usize>,
     /// Program-wide Tail-trampoline registry for protected calls.
     trampolines: &'a mut Trampolines,
+    /// `(line, inline chain)` → index into [`inline_locs`]'s table: the
+    /// srcloc of an `InlinedLine` is `INLINE_SRCLOC | index`.
+    inline_loc_ids: HashMap<(u32, Vec<InlineFrame>), u32>,
 }
 
 impl FnGen<'_, '_> {
@@ -2092,8 +2256,21 @@ impl FnGen<'_, '_> {
             // line; `get_srclocs_sorted()` hands the PC ranges back after
             // compilation for the traceback table.
             MirInst::LineMarker(line) => {
+                debug_assert!(
+                    *line < INLINE_SRCLOC,
+                    "line number overflows the srcloc space"
+                );
                 self.builder
                     .set_srcloc(cranelift_codegen::ir::SourceLoc::new(*line));
+                Ok(())
+            }
+            // Inlined code: the srcloc names an entry of the function's
+            // inline-location table, expanded to the whole frame chain in
+            // the traceback table.
+            MirInst::InlinedLine { line, frames } => {
+                let id = self.inline_loc_ids[&(*line, frames.clone())];
+                self.builder
+                    .set_srcloc(cranelift_codegen::ir::SourceLoc::new(INLINE_SRCLOC | id));
                 Ok(())
             }
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
@@ -3120,5 +3297,40 @@ fn cmp_op_tag(op: ContainerCmpOp) -> i64 {
         ContainerCmpOp::Gt => 2,
         ContainerCmpOp::GtE => 3,
         ContainerCmpOp::Eq | ContainerCmpOp::NotEq => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::traceback_name;
+
+    #[test]
+    fn traceback_names_match_cpython_co_name() {
+        let cases = [
+            ("__main__", Some("<module>")),
+            ("pkg.mod.<init>", Some("<module>")),
+            ("plain", Some("plain")),
+            ("C.m", Some("m")),
+            ("helper.f", Some("f")),
+            ("outer.<locals>.inner#0", Some("inner")),
+            ("outer.<locals>.<lambda>#3", Some("<lambda>")),
+            ("f.<locals>.<genexpr>#1.<resume>", Some("<genexpr>")),
+            ("gen.<resume>", Some("gen")),
+            ("C.gen.<resume>", Some("gen")),
+            ("deco.<orig>", Some("deco")),
+            ("a.<locals>.b#0.<locals>.c#2", Some("c")),
+            ("plain.<uniform>", None),
+            ("outer.<locals>.inner#0.<uniform>", None),
+            ("C.<iternext>", None),
+            ("C.<__copy__>", None),
+            ("C.<__deepcopy__>", None),
+        ];
+        for (internal, want) in cases {
+            assert_eq!(
+                traceback_name(internal).as_deref(),
+                want,
+                "traceback name of {internal:?}"
+            );
+        }
     }
 }

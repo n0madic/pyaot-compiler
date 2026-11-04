@@ -4,9 +4,9 @@
 //! requires exit 0 on both sides), so the expected frames are asserted
 //! directly here.
 //!
-//! Compiled at `--opt-level none` so inlining cannot collapse the frames —
-//! frame fidelity under optimization is deliberately weaker (inlined callees
-//! merge into their caller, keeping the innermost line).
+//! Compiled at `--opt-level none`. Inlined frames are kept at the default
+//! level too (inline chains in the traceback table) — `traceback_names.rs`
+//! checks both levels.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

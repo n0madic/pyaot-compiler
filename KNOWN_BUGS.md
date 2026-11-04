@@ -262,11 +262,18 @@ Two root causes dominate:
       a disjoint base offset, so a bare `Span` identifies its file; the CLI
       renders an error against that file (`cli/tests/import_diagnostics.rs`).
       The CLI loader also reports imported modules by their real path.
-- [ ] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
-      use `ensure_base_srcloc`). ✓
-- [ ] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)
+- [x] **M** srcloc base wrap → `line 0` (`codegen-cranelift/src/lib.rs:2094`,
+      use `ensure_base_srcloc`). ✓ Fixed: base pinned to 0
+      (`cli/tests/traceback_names.rs`).
+- [x] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)
       differ from CPython (`codegen lib.rs:828`); inlined frames erased
-      (`optimizer/src/inline.rs:254`). ✓
+      (`optimizer/src/inline.rs:254`). ✓ Fixed: codegen derives CPython's
+      `co_name` and gives dispatch thunks no record; the inliner turns
+      spliced markers into `InlinedLine` chains, emitted as traceback-table
+      inline chains (runtime contract extension `TB_LOC_INLINE_FLAG`). Also:
+      lambda / genexpr bodies get their own line, and a block entered
+      mid-statement (e.g. a `for` header's `next()`) re-establishes the
+      statement's line. `cli/tests/traceback_names.rs` checks both opt levels.
 - [x] **M** linker: package archives after runtime archive (GNU ld single
       pass); missing runtime lib silently skipped; Windows/other OS branches
       broken (`linker/src/lib.rs:59`). Fixed: object → package archives →

@@ -549,6 +549,9 @@ pub(crate) struct FnLowerer<'a> {
     /// tracebacks). Reset on every `switch` — codegen's srcloc state follows
     /// emission order, so each block must re-establish its line.
     cur_line: Option<u32>,
+    /// Line of the statement being lowered (the last `mark_line`),
+    /// re-established lazily in every block that statement's code spans.
+    stmt_line: Option<u32>,
     scope_stack: Vec<ScopeCtx>,
     /// Uniquifier for sibling synthetic functions (lambdas / nested defs).
     synth_counter: u32,

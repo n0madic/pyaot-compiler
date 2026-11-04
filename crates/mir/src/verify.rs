@@ -479,7 +479,7 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
 fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result<(), VerifyError> {
     match inst {
         // Pure compile-time metadata — nothing to check.
-        MirInst::LineMarker(_) => {}
+        MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         MirInst::Const { dst, val } => {
             check_local(f, *dst)?;
             let repr = f.local_repr(*dst);

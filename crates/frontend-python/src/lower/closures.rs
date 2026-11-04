@@ -192,6 +192,9 @@ impl<'a> FnLowerer<'a> {
         fl.install_params(&parsed);
         fl.install_captures(&captures, &facts, span);
         fl.init_cells();
+        // A lambda body has no statement of its own: attribute it to the
+        // lambda's line (CPython's `<lambda>` frame line).
+        fl.mark_line(to_span(l.body.range()));
         let body = fl.lower_expr(l.body.as_ref())?;
         fl.seal(HirTerminator::Return(Some(body)));
         let mut f = fl.finish(HirTerminator::Return(None));
