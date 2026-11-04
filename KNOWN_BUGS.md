@@ -249,9 +249,12 @@ Two root causes dominate:
 - [ ] **M** traceback names (`C.m`, `inner#0`, `<resume>`, thunk frames)
       differ from CPython (`codegen lib.rs:828`); inlined frames erased
       (`optimizer/src/inline.rs:254`). ✓
-- [ ] **M** linker: package archives after runtime archive (GNU ld single
+- [x] **M** linker: package archives after runtime archive (GNU ld single
       pass); missing runtime lib silently skipped; Windows/other OS branches
-      broken (`linker/src/lib.rs:59`).
+      broken (`linker/src/lib.rs:59`). Fixed: object → package archives →
+      runtime → system libs; a missing runtime/package archive is a clear
+      `LinkError`; other Unix-likes link via `cc`, Windows is a clear
+      "unsupported" error (unit tests in `linker/src/lib.rs`).
 
 ## Phase 7 — performance & cleanup
 
