@@ -1,4 +1,4 @@
-//! Definite-assignment analysis (KNOWN_BUGS Phase 4): a named local read on a
+//! Definite-assignment analysis: a named local read on a
 //! path where it may not have been assigned must raise `UnboundLocalError`
 //! (CPython), not observe a default value.
 //!

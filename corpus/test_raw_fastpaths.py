@@ -1,4 +1,4 @@
-# Raw (unboxed) arithmetic fast paths (KNOWN_BUGS Phase 7): float `/`,
+# Raw (unboxed) arithmetic fast paths: float `/`,
 # comparisons and negation stay unboxed, raw int `+ - *` are inline
 # overflow-checked machine ops. Every result must match CPython exactly —
 # NaN comparisons, signed zeros, ZeroDivisionError, bignum promotion.

@@ -1,4 +1,4 @@
-# Evaluation order, scoping and statement semantics (KNOWN_BUGS Phase 4).
+# Evaluation order, scoping and statement semantics.
 import sys
 
 log: list[str] = []

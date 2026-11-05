@@ -128,14 +128,14 @@ const PHASE_CORPUS: &[&str] = &[
     // p9_*_gc_stress, gc_simple). Run under `RUSTFLAGS="--cfg gc_stress_test"` to
     // surface a missed root as a use-after-free.
     "test_gc_stress.py",
-    // Inference soundness regressions (KNOWN_BUGS Phase 2, Root A).
+    // Inference soundness regressions.
     "test_inference_soundness.py",
     // Raw (unboxed) arithmetic fast paths: float `/` / compare / neg, inline
-    // overflow-checked raw int `+ - *` (KNOWN_BUGS Phase 7).
+    // overflow-checked raw int `+ - *`.
     "test_raw_fastpaths.py",
-    // Override dispatch regressions (KNOWN_BUGS Phase 3, Root B).
+    // Override dispatch regressions.
     "test_override_dispatch.py",
-    // Evaluation order / scoping regressions (KNOWN_BUGS Phase 4).
+    // Evaluation order / scoping regressions.
     "test_eval_order.py",
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",

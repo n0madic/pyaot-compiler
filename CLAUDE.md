@@ -57,9 +57,6 @@ modes they prevent are catalogued in `PITFALLS.md`).
   Python feature — a new builtin, stdlib surface, syntax form, type, or a
   feature moving ❌→🟡→✅ — update the relevant row(s) in the same commit. A
   feature only earns ✅ once it is in `PHASE_CORPUS` and byte-exact vs CPython.
-- **`KNOWN_BUGS.md` is the open review backlog.** Before starting work, check
-  it; when a change fixes an item, tick it (with a corpus regression case) in
-  the same commit.
 - After any change: `cargo check --workspace --exclude pyaot-runtime`, and
   `cargo build -p pyaot-runtime` if the runtime was touched.
 

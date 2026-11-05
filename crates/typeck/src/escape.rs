@@ -1,5 +1,5 @@
 //! Container escape / alias analysis — the soundness side of element-type
-//! inference (KNOWN_BUGS Phase 2, Root A).
+//! inference.
 //!
 //! An inferred container local's element type (`xs = [1.0]` → `list[float]`) is
 //! the join of the writes typeck can *see*: the literal, plus `xs.append(v)` /

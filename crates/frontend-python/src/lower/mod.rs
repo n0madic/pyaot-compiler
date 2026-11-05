@@ -570,7 +570,7 @@ pub(crate) struct FnLowerer<'a> {
     /// is evaluated where its parent node is, so when a LATER operand emits
     /// statements (`f() + (g() or 2)`, `x + (x := 5)`, a comprehension), the
     /// earlier operands are staged into temporaries first to keep Python's
-    /// left-to-right evaluation order (KNOWN_BUGS Phase 4).
+    /// left-to-right evaluation order.
     pending: Vec<Idx<HirExpr>>,
     /// Names this function has referenced so far (source order) — a later
     /// `global x` of one of them is CPython's SyntaxError.

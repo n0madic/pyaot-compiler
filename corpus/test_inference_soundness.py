@@ -1,4 +1,4 @@
-# Inference soundness (KNOWN_BUGS Phase 2, "Root A"): an inferred container
+# Inference soundness: an inferred container
 # element type must never become an unchecked Raw/Heap slot that a write
 # through another path (alias, call, field, global, closure, sub-container)
 # can falsify, and arithmetic / comparison result types must follow Python.

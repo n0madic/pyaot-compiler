@@ -70,7 +70,7 @@ pub extern "C" fn rt_value_or_abi(v: Value, d: Value) -> Value {
 /// The runtime class id of a user-class instance, or `-1` for any other value
 /// (contract addition: the selector of the compiler's per-member dispatchers,
 /// which route a member overridden in a subclass by the receiver's actual
-/// class — KNOWN_BUGS Phase 3, "Root B").
+/// class — review fix, "Root B").
 #[export_name = "rt_instance_class_id"]
 pub extern "C" fn rt_instance_class_id_abi(v: Value) -> i64 {
     if !v.is_ptr() || v.0 == 0 {

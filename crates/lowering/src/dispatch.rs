@@ -1,4 +1,4 @@
-//! Per-member runtime-class dispatchers (KNOWN_BUGS Phase 3, "Root B").
+//! Per-member runtime-class dispatchers.
 //!
 //! A member reached through a receiver statically typed as class `C` may be
 //! overridden in a subclass of `C`. A method with an ABI-compatible override

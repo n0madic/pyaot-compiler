@@ -1,4 +1,4 @@
-# Override dispatch (KNOWN_BUGS Phase 3, "Root B"): a member reached through a
+# Override dispatch: a member reached through a
 # receiver statically typed as a base class must resolve to the definition of
 # the receiver's ACTUAL class — methods with a different signature, dunders,
 # properties, static/class methods, class attributes — and class members are
