@@ -80,27 +80,13 @@ impl MersenneTwister {
         state
     }
 
-    /// Seed from a Python integer (matches CPython's random_seed for int args)
-    fn seed_from_int(n: i64) -> Self {
-        let n_abs = (n.unsigned_abs()) as u128;
-        if n_abs == 0 {
-            // seed(0) → init_by_array(&[0])
-            return Self::init_by_array(&[0]);
+    /// Seed from a Python integer (CPython's `random_seed`: `init_by_array`
+    /// over the 32-bit little-endian words of `abs(n)`; any size).
+    fn seed_from_bigint(n: &num_bigint::BigInt) -> Self {
+        let mut key = n.magnitude().to_u32_digits();
+        if key.is_empty() {
+            key.push(0); // seed(0) → init_by_array(&[0])
         }
-
-        // Convert to little-endian u32 words (matching CPython's _PyLong_AsByteArray)
-        let mut key = Vec::new();
-        let mut val = n_abs;
-        while val > 0 {
-            key.push((val & 0xFFFF_FFFF) as u32);
-            val >>= 32;
-        }
-
-        // Strip trailing zeros (CPython behavior)
-        while key.len() > 1 && *key.last().unwrap() == 0 {
-            key.pop();
-        }
-
         Self::init_by_array(&key)
     }
 
@@ -220,25 +206,50 @@ thread_local! {
 
 // ==================== Public runtime functions ====================
 
-/// random.seed(n, arg_count) - seed the RNG.
+/// random.seed(a=None) — seed the RNG (CPython `Random.seed`, version 2):
+/// `None` (or no argument: the null sentinel) → system entropy; an int (any
+/// size, sign ignored) → `init_by_array(abs(a))`; a float → its `hash()`; a
+/// str → `int.from_bytes(a.encode() + sha512(a).digest())`.
 ///
-/// `arg_count` is the number of arguments the Python caller supplied:
-/// - `arg_count == 0`: seed() or seed(None) — use system entropy
-/// - `arg_count == 1`: seed(n) — seed deterministically with `n`
-///
-/// Using an explicit arg_count avoids the former i64::MIN sentinel, which
-/// made it impossible to seed with i64::MIN as an actual value.
+/// # Safety
+/// `a` must be null, a tagged immediate or a valid object pointer.
 #[no_mangle]
-pub unsafe extern "C" fn rt_random_seed(n: i64, arg_count: i64) {
-    RNG.with(|rng| {
-        let mut rng = rng.borrow_mut();
-        if arg_count == 0 {
-            // seed() or seed(None) — use system entropy
-            *rng = MersenneTwister::from_entropy();
-        } else {
-            *rng = MersenneTwister::seed_from_int(n);
+pub unsafe extern "C" fn rt_random_seed(a: Value) {
+    let p = a.0 as *mut Obj;
+    let mt = if p.is_null() || a.is_none() || (a.is_ptr() && crate::utils::is_none_or_null(p)) {
+        MersenneTwister::from_entropy()
+    } else if a.is_int() {
+        MersenneTwister::seed_from_bigint(&num_bigint::BigInt::from(a.unwrap_int()))
+    } else if a.is_bool() {
+        MersenneTwister::seed_from_bigint(&num_bigint::BigInt::from(a.unwrap_bool() as i64))
+    } else {
+        match (*p).type_tag() {
+            TypeTagKind::BigInt => {
+                MersenneTwister::seed_from_bigint(&(*(p as *mut crate::object::BigIntObj)).value)
+            }
+            TypeTagKind::Float => {
+                let h = crate::hash::py_hash_f64(
+                    (*(p as *mut crate::object::FloatObj)).value,
+                    p as usize,
+                );
+                MersenneTwister::seed_from_bigint(&num_bigint::BigInt::from(h))
+            }
+            #[cfg(feature = "stdlib-crypto")]
+            TypeTagKind::Str => {
+                use sha2::{Digest, Sha512};
+                let text = crate::utils::extract_str_unchecked(p);
+                let mut bytes = text.as_bytes().to_vec();
+                bytes.extend_from_slice(&Sha512::digest(text.as_bytes()));
+                let n = num_bigint::BigInt::from_bytes_be(num_bigint::Sign::Plus, &bytes);
+                MersenneTwister::seed_from_bigint(&n)
+            }
+            _ => raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "The only supported seed types are:\nNone, int, float, str, bytes, and bytearray."
+            ),
         }
-    });
+    };
+    RNG.with(|rng| *rng.borrow_mut() = mt);
 }
 
 /// random.random() -> float in [0.0, 1.0)
@@ -276,19 +287,21 @@ pub unsafe extern "C" fn rt_random_uniform(a: f64, b: f64) -> f64 {
     RNG.with(|rng| a + (b - a) * rng.borrow_mut().random())
 }
 
-/// random.randrange(start, stop, step) - like range() but returns random element
-/// stop=i64::MIN means single-arg form (0..start)
-/// step=0 means not provided (default 1)
+/// random.randrange(start, stop=None, step=1) — a random element of
+/// `range(start, stop, step)`. `arg_count` (the user-written argument count)
+/// selects the form, so no argument value is a sentinel: `randrange(10)`,
+/// `randrange(0, 10)`, `randrange(0, 10, 0)` → ValueError.
 #[no_mangle]
-pub unsafe extern "C" fn rt_random_randrange(start: i64, stop: i64, step: i64) -> i64 {
-    let (actual_start, actual_stop, actual_step) = if stop == i64::MIN && step == 0 {
-        // Single arg: randrange(stop) -> range(0, stop)
-        (0i64, start, 1i64)
-    } else if step == 0 {
-        // Two args: randrange(start, stop) -> range(start, stop)
-        (start, stop, 1i64)
-    } else {
-        (start, stop, step)
+pub unsafe extern "C" fn rt_random_randrange(
+    start: i64,
+    stop: i64,
+    step: i64,
+    arg_count: i64,
+) -> i64 {
+    let (actual_start, actual_stop, actual_step) = match arg_count {
+        1 => (0i64, start, 1i64),
+        2 => (start, stop, 1i64),
+        _ => (start, stop, step),
     };
 
     if actual_step == 0 {
@@ -335,28 +348,22 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
     let pop_list = population as *mut ListObj;
     let pop_len = (*pop_list).len;
 
+    // CPython: `k <= 0` yields an empty list (the sampling loop runs zero
+    // times) — never a negative length cast to a huge `usize`.
+    if k <= 0 {
+        return crate::list::rt_make_list(0);
+    }
     if pop_len == 0 {
         raise_exc!(
             pyaot_core_defs::BuiltinExceptionKind::ValueError,
             "Cannot choose from an empty population"
         );
     }
-
     let k = k as usize;
 
-    // Build cumulative weights
-    let mut cum_weights: Vec<f64> = Vec::with_capacity(pop_len);
-    if !weights.is_null() {
-        crate::debug_assert_type_tag!(weights, TypeTagKind::List, "rt_random_choices weights");
-        let weights_list = weights as *mut ListObj;
-        let mut total = 0.0f64;
-        for i in 0..pop_len {
-            let w_obj = (*(*weights_list).data.add(i)).0 as *mut crate::object::Obj;
-            let w = crate::boxing::rt_unbox_float(w_obj);
-            total += w;
-            cum_weights.push(total);
-        }
-    } else {
+    // `weights=None` arrives as a null pointer or the tagged None Value.
+    let weights_given = !weights.is_null() && !Value(weights as u64).is_none();
+    if !weights_given {
         // No weights: use floor(random() * n) like CPython
         let result = crate::list::rt_make_list(k as i64);
         let result_list = result as *mut ListObj;
@@ -364,7 +371,7 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
             let mut rng = rng.borrow_mut();
             let n = pop_len as f64;
             for i in 0..k {
-                let idx = (rng.random() * n).floor() as usize;
+                let idx = ((rng.random() * n).floor() as usize).min(pop_len - 1);
                 *(*result_list).data.add(i) = *(*pop_list).data.add(idx);
             }
         });
@@ -372,9 +379,51 @@ pub unsafe fn rt_random_choices(population: *mut Obj, weights: *mut Obj, k: i64)
         return result;
     }
 
-    let total = *cum_weights
-        .last()
-        .expect("cumulative weights must be non-empty");
+    // Build cumulative weights. The weights list must match the population
+    // length (reading past its end would be an out-of-bounds read), and each
+    // weight may be any real number — int/bool/bignum as well as float.
+    if !Value(weights as u64).is_ptr() || (*weights).header.type_tag != TypeTagKind::List {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::TypeError,
+            "choices() weights must be a list"
+        );
+    }
+    let weights_list = weights as *mut ListObj;
+    if (*weights_list).len != pop_len {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "The number of weights does not match the population"
+        );
+    }
+    let mut cum_weights: Vec<f64> = Vec::with_capacity(pop_len);
+    let mut total = 0.0f64;
+    for i in 0..pop_len {
+        let w = match crate::bigint::classify_num(*(*weights_list).data.add(i)) {
+            Some(crate::bigint::Num::Int(n)) => n as f64,
+            Some(crate::bigint::Num::Float(f)) => f,
+            Some(crate::bigint::Num::Big(b)) => {
+                num_traits::ToPrimitive::to_f64(&b).unwrap_or(f64::INFINITY)
+            }
+            None => raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "choices() weights must be numbers"
+            ),
+        };
+        total += w;
+        cum_weights.push(total);
+    }
+    if total <= 0.0 {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Total of weights must be greater than zero"
+        );
+    }
+    if !total.is_finite() {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Total of weights must be finite"
+        );
+    }
 
     // Build result list
     let result = crate::list::rt_make_list(k as i64);
@@ -460,38 +509,82 @@ pub extern "C" fn rt_random_shuffle_abi(seq: Value) {
     unsafe { rt_random_shuffle(seq.unwrap_ptr()) }
 }
 
-/// random.sample(population, k) - return k unique random elements from population
-/// population must be a *mut Obj (ListObj)
+/// random.sample(population, k) — `k` unique elements, CPython's exact
+/// algorithm (`Random.sample`): a pool partial shuffle when the population is
+/// small relative to `k`, else rejection sampling against a selected-index set
+/// — so the same seed yields the same sample as CPython. `population` is a
+/// list or tuple.
 pub unsafe fn rt_random_sample(population: *mut Obj, k: i64) -> *mut Obj {
-    crate::debug_assert_type_tag!(population, TypeTagKind::List, "rt_random_sample");
-    let list = population as *mut ListObj;
-    let len = (*list).len;
-    let k = k as usize;
-
-    if k > len {
+    let pv = Value(population as u64);
+    let (data, n): (*const Value, usize) = if pv.is_ptr() && !population.is_null() {
+        match (*population).type_tag() {
+            TypeTagKind::List => {
+                let l = population as *mut ListObj;
+                ((*l).data as *const Value, (*l).len)
+            }
+            TypeTagKind::Tuple => {
+                let t = population as *mut crate::object::TupleObj;
+                ((*t).data.as_ptr(), (*t).len)
+            }
+            _ => raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "Population must be a sequence.  For dicts or sets, use sorted(d)."
+            ),
+        }
+    } else {
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::TypeError,
+            "Population must be a sequence.  For dicts or sets, use sorted(d)."
+        )
+    };
+    if k < 0 || k as usize > n {
         raise_exc!(
             pyaot_core_defs::BuiltinExceptionKind::ValueError,
-            "Sample larger than population"
+            "Sample larger than population or is negative"
         );
     }
-
-    // CPython's sample uses a selection-based approach for small k
-    // We use partial Fisher-Yates on index copy (same result distribution)
-    let mut indices: Vec<usize> = (0..len).collect();
-    RNG.with(|rng| {
+    let k = k as usize;
+    let mut setsize = 21usize;
+    if k > 5 {
+        let exp = ((k * 3) as f64).ln() / 4f64.ln();
+        setsize += 4usize.pow(exp.ceil() as u32);
+    }
+    let picked: Vec<usize> = RNG.with(|rng| {
         let mut rng = rng.borrow_mut();
-        for i in 0..k {
-            let j = i + rng.randbelow(len - i);
-            indices.swap(i, j);
+        let mut out = Vec::with_capacity(k);
+        if n <= setsize {
+            let mut pool: Vec<usize> = (0..n).collect();
+            for i in 0..k {
+                let j = rng.randbelow(n - i);
+                out.push(pool[j]);
+                pool[j] = pool[n - i - 1];
+            }
+        } else {
+            let mut selected = std::collections::HashSet::with_capacity(k);
+            for _ in 0..k {
+                let mut j = rng.randbelow(n);
+                while selected.contains(&j) {
+                    j = rng.randbelow(n);
+                }
+                selected.insert(j);
+                out.push(j);
+            }
         }
+        out
     });
-
-    // Build result list
+    // `rt_make_list` may collect: `population` is rooted by the caller, and
+    // its element pointers are re-read after the allocation.
     let result = crate::list::rt_make_list(k as i64);
+    let (data, _) = match (*population).type_tag() {
+        TypeTagKind::List => {
+            let l = population as *mut ListObj;
+            ((*l).data as *const Value, (*l).len)
+        }
+        _ => (data, n),
+    };
     let result_list = result as *mut ListObj;
-    for (i, &src_idx) in indices.iter().take(k).enumerate() {
-        let elem = *(*list).data.add(src_idx);
-        *(*result_list).data.add(i) = elem;
+    for (i, &src_idx) in picked.iter().enumerate() {
+        *(*result_list).data.add(i) = *data.add(src_idx);
     }
     (*result_list).len = k;
     result

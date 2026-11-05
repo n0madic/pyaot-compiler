@@ -30,6 +30,15 @@ pub extern "C" fn rt_box_float_abi(value: f64) -> Value {
     Value::from_ptr(rt_box_float(value))
 }
 
+/// Box a machine `i64` as a Python `int` Value: a tagged fixnum when it fits
+/// the 61-bit immediate range, else a heap `BigInt` (contract addition — the
+/// slow path of codegen's overflow-checked `Raw(I64) → Tagged` tag, so a raw
+/// integer result above the fixnum range is never silently wrapped).
+#[export_name = "rt_box_i64"]
+pub extern "C" fn rt_box_i64_abi(value: i64) -> Value {
+    Value(crate::bigint::make_int_value(num_bigint::BigInt::from(value)) as u64)
+}
+
 /// Unbox a float value from a heap-allocated FloatObj
 /// Used for list elements when the element type is float
 ///
@@ -127,13 +136,17 @@ pub extern "C" fn rt_unbox_int_abi(v: Value) -> i64 {
         }
         let tag = (*obj).header.type_tag;
         if tag == TypeTagKind::BigInt {
+            // An `int` beyond the machine range cannot become a raw `i64`
+            // (CPython: "Python int too large to convert to C ssize_t"); the
+            // old low-digit truncation silently produced a wrong number.
+            use num_traits::ToPrimitive;
             let big = &(*(obj as *mut BigIntObj)).value;
-            let (sign, digits) = big.to_u64_digits();
-            let low = digits.first().copied().unwrap_or(0) as i64;
-            return if sign == num_bigint::Sign::Minus {
-                low.wrapping_neg()
-            } else {
-                low
+            return match big.to_i64() {
+                Some(i) => i,
+                None => raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "Python int too large to convert to C ssize_t"
+                ),
             };
         }
         raise_exc!(

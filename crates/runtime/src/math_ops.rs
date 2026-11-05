@@ -224,11 +224,36 @@ pub extern "C" fn rt_math_floor(x: f64) -> i64 {
     v as i64
 }
 
-/// Factorial: math.factorial(n) -> i64
-/// Returns n! for non-negative integers, raises ValueError for negative values.
-#[no_mangle]
-pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
-    if n < 0 {
+/// Convert a math-function argument to an exact integer (CPython's
+/// `__index__` rule for the builtin numeric types): an `int` / `bool` /
+/// big `int`, else `TypeError`.
+///
+/// # Safety
+/// `v`'s pointer (if any) must reference a live object.
+unsafe fn index_arg(v: Value) -> num_bigint::BigInt {
+    match classify_num(v) {
+        Some(Num::Int(i)) => num_bigint::BigInt::from(i),
+        Some(Num::Big(b)) => b,
+        Some(Num::Float(_)) => raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "'float' object cannot be interpreted as an integer"
+        ),
+        None => raise_exc!(
+            crate::exceptions::ExceptionType::TypeError,
+            "'{}' object cannot be interpreted as an integer",
+            crate::instance::value_type_name(v)
+        ),
+    }
+}
+
+/// `math.factorial(n)` — exact, arbitrary precision (contract change: the
+/// argument and result are tagged `int` Values, so `factorial(25)` is a big
+/// int instead of an `OverflowError` / a wrapped fixnum).
+#[export_name = "rt_math_factorial"]
+pub extern "C" fn rt_math_factorial(n: Value) -> Value {
+    use num_traits::{One, Signed, ToPrimitive};
+    let n = unsafe { index_arg(n) };
+    if n.is_negative() {
         unsafe {
             raise_exc!(
                 crate::exceptions::ExceptionType::ValueError,
@@ -236,42 +261,128 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
             );
         }
     }
-    if n <= 1 {
-        return 1;
-    }
-    let mut result: i64 = 1;
+    let n = n.to_u64().unwrap_or_else(|| unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::OverflowError,
+            "factorial() argument should not exceed {}",
+            i64::MAX
+        )
+    });
+    let mut acc = num_bigint::BigInt::one();
     for i in 2..=n {
-        result = match result.checked_mul(i) {
-            Some(v) => v,
-            None => unsafe {
-                raise_exc!(
-                    crate::exceptions::ExceptionType::OverflowError,
-                    "int too large to convert to C long"
-                )
-            },
-        };
+        acc *= i;
     }
-    result
+    Value(make_int_value(acc) as u64)
 }
+
+/// `math.gcd(a, b)` — exact, arbitrary precision (tagged `int` Values).
+#[export_name = "rt_math_gcd"]
+pub extern "C" fn rt_math_gcd(a: Value, b: Value) -> Value {
+    use num_integer::Integer;
+    let (a, b) = unsafe { (index_arg(a), index_arg(b)) };
+    Value(make_int_value(a.gcd(&b)) as u64)
+}
+
+/// `math.lcm(a, b)` — exact, arbitrary precision (tagged `int` Values).
+#[export_name = "rt_math_lcm"]
+pub extern "C" fn rt_math_lcm(a: Value, b: Value) -> Value {
+    use num_integer::Integer;
+    let (a, b) = unsafe { (index_arg(a), index_arg(b)) };
+    Value(make_int_value(a.lcm(&b)) as u64)
+}
+
+/// Shared argument check of `comb` / `perm`: two non-negative ints.
+fn comb_args(n: Value, k: Value, fname: &str) -> (num_bigint::BigInt, num_bigint::BigInt) {
+    use num_traits::Signed;
+    let (n, k) = unsafe { (index_arg(n), index_arg(k)) };
+    if n.is_negative() {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "n must be a non-negative integer"
+            );
+        }
+    }
+    if k.is_negative() {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "k must be a non-negative integer"
+            );
+        }
+    }
+    let _ = fname;
+    (n, k)
+}
+
+/// `math.comb(n, k)` — the binomial coefficient, exact (tagged `int` Values).
+#[export_name = "rt_math_comb"]
+pub extern "C" fn rt_math_comb(n: Value, k: Value) -> Value {
+    use num_traits::{One, Zero};
+    let (n, k) = comb_args(n, k, "comb");
+    if k > n {
+        return Value(make_int_value(num_bigint::BigInt::zero()) as u64);
+    }
+    let k = std::cmp::min(k.clone(), &n - &k);
+    let mut acc = num_bigint::BigInt::one();
+    let mut i = num_bigint::BigInt::zero();
+    while i < k {
+        acc = acc * (&n - &i) / (&i + 1u32);
+        i += 1u32;
+    }
+    Value(make_int_value(acc) as u64)
+}
+
+/// `math.perm(n, k)` — `n! / (n-k)!`, exact (tagged `int` Values).
+#[export_name = "rt_math_perm"]
+pub extern "C" fn rt_math_perm(n: Value, k: Value) -> Value {
+    use num_traits::{One, Zero};
+    let (n, k) = comb_args(n, k, "perm");
+    if k > n {
+        return Value(make_int_value(num_bigint::BigInt::zero()) as u64);
+    }
+    let mut acc = num_bigint::BigInt::one();
+    let mut i = num_bigint::BigInt::zero();
+    while i < k {
+        acc *= &n - &i;
+        i += 1u32;
+    }
+    Value(make_int_value(acc) as u64)
+}
+
 
 /// Logarithm: math.log(x[, base]) -> f64
 /// When base is NaN (sentinel), computes natural logarithm.
 /// Otherwise computes log(x) / log(base) like CPython.
 #[no_mangle]
-pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
+pub extern "C" fn rt_math_log(x: f64, base: f64, arg_count: i64) -> f64 {
+    // `arg_count` (user-written argument count) tells `log(x)` from
+    // `log(x, base)` — no in-band sentinel, so `log(x, nan)` is `nan`.
+    let domain_error = || unsafe {
+        raise_exc!(
+            crate::exceptions::ExceptionType::ValueError,
+            "expected a positive input"
+        )
+    };
     if x <= 0.0 {
+        domain_error();
+    }
+    if arg_count < 2 {
+        return x.ln();
+    }
+    if base <= 0.0 {
+        domain_error();
+    }
+    let den = base.ln();
+    if den == 0.0 {
         unsafe {
             raise_exc!(
-                crate::exceptions::ExceptionType::ValueError,
-                "math domain error"
+                crate::exceptions::ExceptionType::ZeroDivisionError,
+                "division by zero"
             )
         }
     }
-    if base.is_nan() {
-        x.ln()
-    } else {
-        x.ln() / base.ln()
-    }
+    x.ln() / den
 }
 
 /// Logarithm base 2: math.log2(x) -> f64
@@ -449,120 +560,9 @@ pub extern "C" fn rt_math_pow(x: f64, y: f64) -> f64 {
     x.powf(y)
 }
 
-/// Greatest common divisor: math.gcd(a, b) -> i64
-#[no_mangle]
-pub extern "C" fn rt_math_gcd(a: i64, b: i64) -> i64 {
-    let mut a = (a as i128).unsigned_abs() as u64;
-    let mut b = (b as i128).unsigned_abs() as u64;
 
-    while b != 0 {
-        let temp = b;
-        b = a % b;
-        a = temp;
-    }
-    // gcd(i64::MIN, 0) == 2^63 which exceeds i64::MAX
-    if a > i64::MAX as u64 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::OverflowError,
-                "math.gcd result too large to convert to int"
-            )
-        }
-    }
-    a as i64
-}
 
-/// Least common multiple: math.lcm(a, b) -> i64
-#[no_mangle]
-pub extern "C" fn rt_math_lcm(a: i64, b: i64) -> i64 {
-    if a == 0 || b == 0 {
-        return 0;
-    }
-    let g = rt_math_gcd(a, b);
-    let aa = (a as i128).abs();
-    let bb = (b as i128).abs();
-    let result = (aa / g as i128) * bb;
-    if result > i64::MAX as i128 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::OverflowError,
-                "int too large to convert to C long"
-            )
-        }
-    }
-    result as i64
-}
 
-/// Binomial coefficient: math.comb(n, k) -> i64
-/// Returns n! / (k! * (n-k)!)
-#[no_mangle]
-pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
-    if k < 0 || n < 0 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::ValueError,
-                "comb() requires non-negative arguments"
-            );
-        }
-    }
-
-    if k > n {
-        return 0;
-    }
-
-    // Optimize by using min(k, n-k)
-    let k = if k > n - k { n - k } else { k };
-
-    if k == 0 {
-        return 1;
-    }
-
-    let mut result: i128 = 1;
-    for i in 0..k {
-        result = result * (n - i) as i128 / (i + 1) as i128;
-        if result > i64::MAX as i128 {
-            unsafe {
-                raise_exc!(
-                    crate::exceptions::ExceptionType::OverflowError,
-                    "int too large to convert to C long"
-                );
-            }
-        }
-    }
-    result as i64
-}
-
-/// Permutation count: math.perm(n, k) -> i64
-/// Returns n! / (n-k)!
-#[no_mangle]
-pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
-    if k < 0 || n < 0 {
-        unsafe {
-            raise_exc!(
-                crate::exceptions::ExceptionType::ValueError,
-                "perm() requires non-negative arguments"
-            );
-        }
-    }
-
-    if k > n {
-        return 0;
-    }
-
-    let mut result: i128 = 1;
-    for i in 0..k {
-        result *= (n - i) as i128;
-        if result > i64::MAX as i128 {
-            unsafe {
-                raise_exc!(
-                    crate::exceptions::ExceptionType::OverflowError,
-                    "int too large to convert to C long"
-                );
-            }
-        }
-    }
-    result as i64
-}
 
 #[cfg(test)]
 mod tests {
@@ -616,33 +616,34 @@ mod tests {
 
     #[test]
     fn test_math_gcd() {
-        assert_eq!(rt_math_gcd(12, 8), 4);
-        assert_eq!(rt_math_gcd(7, 13), 1);
-        assert_eq!(rt_math_gcd(0, 5), 5);
-        assert_eq!(rt_math_gcd(-12, 8), 4);
+        let g = |a: i64, b: i64| rt_math_gcd(Value::from_int(a), Value::from_int(b)).unwrap_int();
+        assert_eq!(g(12, 8), 4);
+        assert_eq!(g(7, 13), 1);
+        assert_eq!(g(0, 5), 5);
+        assert_eq!(g(-12, 8), 4);
     }
 
     #[test]
     fn test_math_factorial() {
-        assert_eq!(rt_math_factorial(0), 1);
-        assert_eq!(rt_math_factorial(1), 1);
-        assert_eq!(rt_math_factorial(5), 120);
-        assert_eq!(rt_math_factorial(10), 3628800);
+        assert_eq!(rt_math_factorial(Value::from_int(0)).unwrap_int(), 1);
+        assert_eq!(rt_math_factorial(Value::from_int(1)).unwrap_int(), 1);
+        assert_eq!(rt_math_factorial(Value::from_int(5)).unwrap_int(), 120);
+        assert_eq!(rt_math_factorial(Value::from_int(10)).unwrap_int(), 3628800);
     }
 
     #[test]
     fn test_math_comb() {
-        assert_eq!(rt_math_comb(5, 2), 10);
-        assert_eq!(rt_math_comb(10, 0), 1);
-        assert_eq!(rt_math_comb(10, 10), 1);
-        assert_eq!(rt_math_comb(5, 6), 0);
+        assert_eq!(rt_math_comb(Value::from_int(5), Value::from_int(2)).unwrap_int(), 10);
+        assert_eq!(rt_math_comb(Value::from_int(10), Value::from_int(0)).unwrap_int(), 1);
+        assert_eq!(rt_math_comb(Value::from_int(10), Value::from_int(10)).unwrap_int(), 1);
+        assert_eq!(rt_math_comb(Value::from_int(5), Value::from_int(6)).unwrap_int(), 0);
     }
 
     #[test]
     fn test_math_perm() {
-        assert_eq!(rt_math_perm(5, 2), 20);
-        assert_eq!(rt_math_perm(5, 0), 1);
-        assert_eq!(rt_math_perm(5, 6), 0);
+        assert_eq!(rt_math_perm(Value::from_int(5), Value::from_int(2)).unwrap_int(), 20);
+        assert_eq!(rt_math_perm(Value::from_int(5), Value::from_int(0)).unwrap_int(), 1);
+        assert_eq!(rt_math_perm(Value::from_int(5), Value::from_int(6)).unwrap_int(), 0);
     }
 
     #[test]

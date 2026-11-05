@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+mod dispatch;
 pub mod legalize;
 
 use std::collections::HashMap;
@@ -65,7 +66,7 @@ pub fn lower(
     }
     // Signature table (ABI = f(param Repr)), needed before lowering bodies so
     // calls — including forward / recursive ones — coerce args correctly.
-    let sigs: Vec<FnSig> = module
+    let mut sigs: Vec<FnSig> = module
         .functions
         .iter()
         .enumerate()
@@ -95,7 +96,10 @@ pub fn lower(
             kwargs: f.kwargs,
         })
         .collect();
-    let mut funcs = Vec::with_capacity(module.functions.len());
+    // Runtime-class dispatchers for members overridden below a receiver's
+    // static class (Root B): their FuncIds follow the HIR functions.
+    let dispatchers = dispatch::plan(module, classes, interner, &mut sigs);
+    let mut funcs = Vec::with_capacity(sigs.len());
     for (i, func) in module.functions.iter().enumerate() {
         let ret_repr = sigs[i].ret.clone();
         let mut fl = FnLower::new(
@@ -109,8 +113,27 @@ pub fn lower(
             &module.deletable_fields,
             &module.global_annotations,
             ret_repr,
+            &dispatchers,
         );
         funcs.push(fl.lower()?);
+    }
+    let stubs: Vec<HirFunction> = dispatchers.specs.iter().map(dispatch::stub_function).collect();
+    for (spec, stub) in dispatchers.specs.iter().zip(&stubs) {
+        debug_assert_eq!(spec.fid.index(), funcs.len());
+        let mut fl = FnLower::new(
+            stub,
+            resolve,
+            interner,
+            &mut str_pool,
+            &sigs,
+            classes,
+            &module.deletable_globals,
+            &module.deletable_fields,
+            &module.global_annotations,
+            Repr::Tagged,
+            &dispatchers,
+        );
+        funcs.push(fl.lower_dispatcher(spec)?);
     }
     // The codegen-facing class registration data (`__pyaot_classinit`). Qualname
     // bytes go into the string pool so codegen can build the `StrObj`.
@@ -207,6 +230,9 @@ fn build_mir_classes(
         let class_attr_inits = info
             .class_attrs
             .iter()
+            // Only the class's OWN attributes live in its storage; inherited
+            // ones are read from the defining base (`ClassAttrInfo::owner`).
+            .filter(|a| a.owner == info.class_id)
             .map(|a| (a.attr_idx, class_attr_const(&a.init, interner, str_pool)))
             .collect();
         // Lazy user-class iterator protocol: if this class defines (own or
@@ -236,6 +262,7 @@ fn build_mir_classes(
             name: info.name,
             qualname: info.qualname,
             parent: info.parent,
+            ancestors: info.mro.iter().skip(1).copied().collect(),
             exception_base: info.exception_base.map(|k| k.tag()),
             field_count: info.field_count(),
             vtable,
@@ -293,6 +320,8 @@ struct FnLower<'a> {
     global_annotations: &'a HashMap<u32, SemTy>,
     /// This function's actual MIR return repr (`Tagged` for dunder methods; B11).
     ret_repr: Repr,
+    /// Runtime-class dispatchers for overridden members ([`dispatch`]).
+    dispatch: &'a dispatch::Dispatchers,
     locals: Vec<LocalDecl>,
     /// Finalized + reserved MIR blocks (placeholders until sealed).
     blocks: Vec<MirBlock>,
@@ -334,6 +363,7 @@ impl<'a> FnLower<'a> {
         deletable_fields: &'a std::collections::HashSet<InternedString>,
         global_annotations: &'a HashMap<u32, SemTy>,
         ret_repr: Repr,
+        dispatch: &'a dispatch::Dispatchers,
     ) -> Self {
         // MIR locals 0..nhir mirror the HIR locals (LocalId is preserved);
         // temporaries are appended after.
@@ -355,6 +385,7 @@ impl<'a> FnLower<'a> {
             deletable_fields,
             global_annotations,
             ret_repr,
+            dispatch,
             locals,
             blocks: Vec::new(),
             block_map: HashMap::new(),
@@ -408,6 +439,116 @@ impl<'a> FnLower<'a> {
             blocks: std::mem::take(&mut self.blocks),
             entry,
         })
+    }
+
+    /// Emit the body of a runtime-class dispatcher ([`dispatch`]): select the
+    /// definition the receiver's actual class resolves to, call it with each
+    /// argument coerced (checked) to its parameter repr — parameters only the
+    /// selected override declares take its own defaults — and return the result
+    /// on the `Tagged` baseline.
+    fn lower_dispatcher(&mut self, spec: &dispatch::DispatchSpec) -> Result<MirFunction> {
+        let entry = self.reserve_block();
+        self.cur_id = entry;
+        self.cur_insts = Vec::new();
+        let recv = LocalId::new(0);
+        let cls = self.alloc_temp(Repr::Raw(RawKind::I64));
+        self.emit(MirInst::CallRuntime {
+            dst: Some(cls),
+            def: &pyaot_core_defs::runtime_func_def::RT_INSTANCE_CLASS_ID,
+            args: vec![Operand::Local(recv)],
+        });
+        for (ks, target) in &spec.arms {
+            let arm = self.reserve_block();
+            for k in ks {
+                let kc = self.emit_const(Repr::Raw(RawKind::I64), Const::Int(k.0 as i64));
+                let eq = self.alloc_temp(Repr::Raw(RawKind::I8));
+                self.emit(MirInst::Compare {
+                    dst: eq,
+                    op: MCmpOp::Eq,
+                    l: Operand::Local(cls),
+                    r: Operand::Local(kc),
+                });
+                let next = self.reserve_block();
+                self.seal(MirTerminator::Branch {
+                    cond: Operand::Local(eq),
+                    then: arm,
+                    else_: next,
+                });
+                self.switch(next);
+            }
+            // Fallthrough continues in the current block; emit the arm aside.
+            let fallthrough = self.cur_id;
+            let pending = std::mem::take(&mut self.cur_insts);
+            self.switch(arm);
+            self.emit_dispatch_arm(spec.kind, *target, spec.n_params)?;
+            self.cur_id = fallthrough;
+            self.cur_insts = pending;
+        }
+        self.emit_dispatch_arm(spec.kind, spec.base, spec.n_params)?;
+        let params = vec![Repr::Tagged; spec.n_params];
+        Ok(MirFunction {
+            name: spec.name,
+            file: spec.file,
+            params,
+            ret: Repr::Tagged,
+            locals: std::mem::take(&mut self.locals),
+            blocks: std::mem::take(&mut self.blocks),
+            entry,
+        })
+    }
+
+    /// One dispatcher arm: call / read `target` and `Return` its value.
+    fn emit_dispatch_arm(
+        &mut self,
+        kind: dispatch::MemberKind,
+        target: dispatch::Target,
+        n_params: usize,
+    ) -> Result<()> {
+        use dispatch::{MemberKind, Target};
+        let result = match target {
+            Target::Attr { owner, idx } => {
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::GetClassAttr {
+                    dst,
+                    class_id: owner,
+                    attr_idx: idx,
+                });
+                dst
+            }
+            Target::Func(fid) => {
+                let sig = &self.sigs[fid.index()];
+                let tparams = sig.params.clone();
+                let tdefaults = sig.defaults.clone();
+                let tret = sig.ret.clone();
+                // Dispatcher param `i` feeds target param `i` (methods /
+                // properties pass the receiver) or `i - 1` (a static/class method
+                // reached through an instance: the receiver only selects).
+                let skip = usize::from(kind == MemberKind::StaticViaInst);
+                let mut args = Vec::with_capacity(tparams.len());
+                for (j, want) in tparams.iter().enumerate() {
+                    let src = j + skip;
+                    let v = if src < n_params {
+                        self.coerce(LocalId::new(src as u32), Repr::Tagged, want.clone())?
+                    } else {
+                        let (dl, dr) = match tdefaults.get(j).cloned().flatten() {
+                            Some(d) => self.materialize_default(&d)?,
+                            None => self.none_value()?,
+                        };
+                        self.coerce(dl, dr, want.clone())?
+                    };
+                    args.push(Operand::Local(v));
+                }
+                let dst = self.alloc_temp(tret.clone());
+                self.emit(MirInst::Call {
+                    dst: Some(dst),
+                    func: fid,
+                    args,
+                });
+                self.coerce(dst, tret, Repr::Tagged)?
+            }
+        };
+        self.seal(MirTerminator::Return(Some(Operand::Local(result))));
+        Ok(())
     }
 
     // ── block builder ──────────────────────────────────────────────────────
@@ -486,7 +627,31 @@ impl<'a> FnLower<'a> {
 
     /// Coerce `src` (`from`) into a fresh local of `to`, returning it. No-op
     /// coercions still alias through a fresh local for a uniform interface.
+    ///
+    /// **Narrowing a `Tagged` value is checked by default.** A `Tagged` source
+    /// coerced into a `Raw` register (`F64`/`I64`/`I8`) or a guard-backed
+    /// `Heap(shape)` takes the CHECKED coercion (`rt_unbox_*` /
+    /// `rt_check_*`): the `Tagged` baseline is the always-correct default, and
+    /// a narrower repr is only an optimization (invariant 2), so a value whose
+    /// static type was inferred too optimistically (an aliased container
+    /// element, a gradual seam) raises `TypeError` / converts by the numeric
+    /// tower instead of being reinterpreted as garbage bits. The peephole pass
+    /// folds the guard away when the value provably came out of the same repr
+    /// (`Raw → Tagged → Raw` round trips). Sites that have a proof the value
+    /// already has the target shape use [`Self::coerce_trusted`].
     fn coerce(&mut self, src: LocalId, from: Repr, to: Repr) -> Result<LocalId> {
+        self.coerce_impl(src, from, to, true)
+    }
+
+    /// [`Self::coerce`] without the runtime guard on a `Tagged` narrowing — for
+    /// sites that have a local proof the value already has the target shape
+    /// (the sub/superclass reroute through `Tagged`, a value this function just
+    /// produced at the target repr).
+    fn coerce_trusted(&mut self, src: LocalId, from: Repr, to: Repr) -> Result<LocalId> {
+        self.coerce_impl(src, from, to, false)
+    }
+
+    fn coerce_impl(&mut self, src: LocalId, from: Repr, to: Repr, guard: bool) -> Result<LocalId> {
         if from == to {
             return Ok(src);
         }
@@ -496,28 +661,36 @@ impl<'a> FnLower<'a> {
         // reinterpret). Both legs are in the table; the nominal subtype relation
         // was validated at the typeck boundary (`check_reinterpret`).
         if is_class_repr(&from) && is_class_repr(&to) {
-            let tagged = self.coerce(src, from, Repr::Tagged)?;
-            return self.coerce(tagged, Repr::Tagged, to);
+            let tagged = self.coerce_impl(src, from, Repr::Tagged, false)?;
+            return self.coerce_impl(tagged, Repr::Tagged, to, false);
         }
-        // `CoerceInst::new` IS the legality check (the same table behind
-        // `legalize::coerce`): an illegal pair is unconstructible.
+        // A typed heap value (a `BigInt` literal / result) into a `Raw` register
+        // has no direct bridge: go through the `Tagged` baseline (a free
+        // `Heap → Tagged` re-type) and the checked unbox, which converts a big
+        // int (`rt_unbox_int` raises `OverflowError` past `i64`, `rt_unbox_float`
+        // rounds) instead of being an illegal pair.
+        if matches!(from, Repr::Heap(_)) && matches!(to, Repr::Raw(_)) {
+            let tagged = self.coerce_impl(src, from, Repr::Tagged, false)?;
+            return self.coerce_impl(tagged, Repr::Tagged, to, true);
+        }
         let dst = self.alloc_temp(to.clone());
-        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
-            .ok_or_else(|| cg_illegal(&from, &to))?;
+        let inst = make_coerce(dst, src, &from, &to, guard)?;
         self.emit(MirInst::Coerce(inst));
         Ok(dst)
     }
 
     /// Coerce `src` (`from`) into the *existing* local `dst` (whose declared repr
-    /// is `to`) — used for assignment and result-local stores.
+    /// is `to`) — used for assignment and result-local stores. A `Tagged`
+    /// narrowing is checked, as in [`Self::coerce`].
     fn coerce_into(&mut self, dst: LocalId, src: LocalId, from: Repr, to: Repr) -> Result<()> {
         // A sub/superclass cast routes through the tagged baseline (see `coerce`).
         if from != to && is_class_repr(&from) && is_class_repr(&to) {
-            let tagged = self.coerce(src, from, Repr::Tagged)?;
-            return self.coerce_into(dst, tagged, Repr::Tagged, to);
+            let tagged = self.coerce_trusted(src, from, Repr::Tagged)?;
+            let inst = make_coerce(dst, tagged, &Repr::Tagged, &to, false)?;
+            self.emit(MirInst::Coerce(inst));
+            return Ok(());
         }
-        let inst = CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone())
-            .ok_or_else(|| cg_illegal(&from, &to))?;
+        let inst = make_coerce(dst, src, &from, &to, true)?;
         self.emit(MirInst::Coerce(inst));
         Ok(())
     }
@@ -658,6 +831,43 @@ impl<'a> FnLower<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// Supply both operands of a float binary op / comparison as `Raw(F64)`,
+    /// or `None`. At least one side must already be `Raw(F64)`; the other is
+    /// either `Raw(F64)` too or an int literal with `|v| <= 2^53`, which
+    /// converts to `f64` exactly — so the float operation (and a mixed
+    /// int/float comparison, which CPython performs exactly) gives the same
+    /// result as on the original int.
+    fn raw_f64_operands(
+        &mut self,
+        l: Idx<HirExpr>,
+        ll: LocalId,
+        lr: &Repr,
+        r: Idx<HirExpr>,
+        rl: LocalId,
+        rr: &Repr,
+    ) -> Option<(LocalId, LocalId)> {
+        let f64r = Repr::Raw(RawKind::F64);
+        if *lr != f64r && *rr != f64r {
+            return None;
+        }
+        let la = self.raw_f64_operand(l, ll, lr)?;
+        let ra = self.raw_f64_operand(r, rl, rr)?;
+        Some((la, ra))
+    }
+
+    fn raw_f64_operand(&mut self, expr: Idx<HirExpr>, loc: LocalId, repr: &Repr) -> Option<LocalId> {
+        const EXACT: i64 = 1 << 53;
+        if *repr == Repr::Raw(RawKind::F64) {
+            return Some(loc);
+        }
+        match self.func.exprs[expr].kind {
+            HirExprKind::IntLit(v) if *repr == Repr::Tagged && (-EXACT..=EXACT).contains(&v) => {
+                Some(self.emit_const(Repr::Raw(RawKind::F64), Const::Float(v as f64)))
+            }
+            _ => None,
+        }
     }
 
     // ── statements ────────────────────────────────────────────────────────────
@@ -855,7 +1065,26 @@ impl<'a> FnLower<'a> {
         use pyaot_hir::HirRaise as H;
         match r {
             H::Builtin { tag, msg } => {
-                let msg = self.lower_exc_msg(*msg)?;
+                // `str(KeyError(k))` is `repr(k)` (CPython's KeyError.__str__),
+                // the same message the runtime's own dict-miss KeyError uses.
+                let msg = if *tag == pyaot_core_defs::BuiltinExceptionKind::KeyError.tag() {
+                    match msg {
+                        Some(e) => {
+                            let (l, r) = self.lower_expr(*e)?;
+                            let t = self.coerce(l, r, Repr::Tagged)?;
+                            let dst = self.alloc_temp(Repr::Tagged);
+                            self.emit(MirInst::CallBuiltin {
+                                dst: Some(dst),
+                                kind: pyaot_mir::BuiltinFunctionKind::Repr,
+                                args: vec![Operand::Local(t)],
+                            });
+                            Some(Operand::Local(dst))
+                        }
+                        None => None,
+                    }
+                } else {
+                    self.lower_exc_msg(*msg)?
+                };
                 self.emit(MirInst::Raise(MirRaise::Builtin { tag: *tag, msg }));
             }
             H::Custom { class_id, args } => {
@@ -1281,7 +1510,40 @@ impl<'a> FnLower<'a> {
         // evaluated (their own output went to the prior target) and restore it
         // after the trailing newline.
         let redirected = file == PrintTarget::Stderr;
+        // While redirected, nothing may raise between the switch and the
+        // restore (a raising `__str__` would leave every later `print` on
+        // stderr), so values whose conversion can run user code are converted
+        // to `str` BEFORE the switch; the redirected stretch only writes.
+        let mut pre: Vec<Option<LocalId>> = vec![None; vals.len()];
         if redirected {
+            for (k, (arg_idx, loc, repr)) in vals.iter().enumerate() {
+                let ty = self.func.exprs[*arg_idx].ty.clone();
+                let user_code = class_of(&ty, self.classes).is_some()
+                    || matches!(ty, SemTy::Dyn | SemTy::Union(_));
+                if !user_code || self.is_exception_value(&ty) {
+                    continue;
+                }
+                let s = match self
+                    .concrete_dunder(&ty, "__str__")
+                    .or_else(|| self.concrete_dunder(&ty, "__repr__"))
+                {
+                    Some(fid) => {
+                        let (res, rrep) = self.emit_dunder_call(fid, vec![(*loc, repr.clone())])?;
+                        self.coerce(res, rrep, Repr::Tagged)?
+                    }
+                    None => {
+                        let t = self.coerce(*loc, repr.clone(), Repr::Tagged)?;
+                        let dst = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::CallBuiltin {
+                            dst: Some(dst),
+                            kind: pyaot_mir::BuiltinFunctionKind::Str,
+                            args: vec![Operand::Local(t)],
+                        });
+                        dst
+                    }
+                };
+                pre[k] = Some(s);
+            }
             self.emit_print_set_target(PrintTarget::Stderr);
         }
         for (i, (arg_idx, loc, repr)) in vals.into_iter().enumerate() {
@@ -1294,7 +1556,13 @@ impl<'a> FnLower<'a> {
                     Some(id) => self.emit_print_str(id),
                 }
             }
-            self.lower_print_arg(arg_idx, loc, repr)?;
+            match pre[i] {
+                Some(s) => self.emit(MirInst::Print {
+                    kind: PrintKind::StrObj,
+                    arg: Some(Operand::Local(s)),
+                }),
+                None => self.lower_print_arg(arg_idx, loc, repr)?,
+            }
         }
         match end {
             None => self.emit(MirInst::Print {
@@ -1561,7 +1829,7 @@ impl<'a> FnLower<'a> {
             }
             HirExprKind::BinOp { op, l, r } => self.lower_binop(idx, *op, *l, *r),
             HirExprKind::Unary { op, operand } => self.lower_unary(*op, *operand),
-            HirExprKind::Compare { op, l, r } => self.lower_compare(*op, *l, *r),
+            HirExprKind::Compare { op, l, r } => self.lower_compare(idx, *op, *l, *r),
             HirExprKind::Call { callee, args } => self.lower_call(idx, *callee, args.clone()),
             HirExprKind::CallValue {
                 callee,
@@ -1892,26 +2160,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Dyn, ...]` (Tagged elements).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // No call-site keywords on the uniform path → the null `__kwargs__`
@@ -2044,7 +2293,11 @@ impl<'a> FnLower<'a> {
             // `isinstance(x, list)` regardless of the canonical Dyn-element target.
             // (A fixed `tuple[A, B]` and a variable `tuple[T, ...]` are both `tuple`.)
             _ if target.list_elem().is_some() => got.list_elem().is_some(),
-            _ if target.dict_kv().is_some() => got.dict_kv().is_some(),
+            // `Counter` is a dict subclass (defaultdict is covered by `dict_kv`).
+            _ if target.dict_kv().is_some() => {
+                got.dict_kv().is_some()
+                    || *got == SemTy::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter)
+            }
             _ if target.set_elem().is_some() => got.set_elem().is_some(),
             _ if target.tuple_elems().is_some() || target.tuple_var_elem().is_some() => {
                 got.tuple_elems().is_some() || got.tuple_var_elem().is_some()
@@ -2213,6 +2466,16 @@ impl<'a> FnLower<'a> {
         provided: u32,
     ) -> Result<(LocalId, Repr)> {
         use pyaot_hir::RuntimeCallTarget;
+        if let RuntimeCallTarget::Func(f) = target {
+            if f.is_intercepted() {
+                // A recognition-only descriptor (`reduce`/`Counter`/`deque`)
+                // must have been rerouted by the frontend; it has no ABI.
+                return Err(CompilerError::codegen_error(
+                    format!("internal: intercepted stdlib function `{}` reached lowering", f.name),
+                    None,
+                ));
+            }
+        }
         let def = target.codegen();
         // `itertools.islice` needs the iterable `iter()`-wrapped (the runtime
         // advances it with the iterator protocol) and start/stop/step resolved
@@ -2235,7 +2498,7 @@ impl<'a> FnLower<'a> {
 
         let mut ops: Vec<Operand> = Vec::with_capacity(def.params.len());
         for (i, slot) in args.iter().enumerate() {
-            let want = runtime_param_repr(def.params[i], params.get(i).map(|p| &p.ty));
+            let want = runtime_param_repr_of(def, i, params.get(i).map(|p| &p.ty));
             match slot {
                 Some(arg) => {
                     // An integer literal headed for a raw i64 register slot
@@ -2253,7 +2516,7 @@ impl<'a> FnLower<'a> {
                             continue;
                         }
                     }
-                    let (al, ar) = self.lower_expr(*arg)?;
+                    let (mut al, mut ar) = self.lower_expr(*arg)?;
                     // A gradual argument headed for a raw register slot takes
                     // the CHECKED unbox (Phase 8H, D3): `rt_unbox_float` /
                     // `rt_unbox_int` validate the tag at runtime (TypeError on
@@ -2261,6 +2524,17 @@ impl<'a> FnLower<'a> {
                     // proven types keep the unchecked fast path. Shared with the
                     // return / `float`-local seams via `coerce_value`.
                     let arg_ty = self.func.exprs[*arg].ty.clone();
+                    // A gradual value for a `str` param (a Tagged slot the
+                    // runtime reads as a `StrObj`) passes the checked
+                    // `Tagged → Heap(Str)` guard first (TypeError on a non-str).
+                    if matches!(params.get(i).map(|p| &p.ty), Some(pyaot_stdlib_defs::TypeSpec::Str))
+                        && matches!(arg_ty, SemTy::Dyn | SemTy::Union(_))
+                        && ar == Repr::Tagged
+                    {
+                        let heap_str = Repr::Heap(HeapShape::Str);
+                        al = self.coerce_value(al, ar, &arg_ty, heap_str.clone())?;
+                        ar = heap_str;
+                    }
                     let coerced = self.coerce_value(al, ar, &arg_ty, want.clone())?;
                     ops.push(Operand::Local(coerced));
                 }
@@ -2308,13 +2582,13 @@ impl<'a> FnLower<'a> {
         // islice(it, stop)               → start=0, stop,      step=1
         // islice(it, start, stop[, step])→ start,   stop,      step (default 1)
         let (start, stop, step) = if provided <= 2 {
-            let stop = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
+            let stop = self.lower_raw_index(args.get(1).copied().flatten(), i64::MAX, span)?;
             (self.raw_i64_const(0), stop, self.raw_i64_const(1))
         } else {
-            let start = self.lower_raw_index(args.get(1).copied().flatten(), span)?;
-            let stop = self.lower_raw_index(args.get(2).copied().flatten(), span)?;
+            let start = self.lower_raw_index(args.get(1).copied().flatten(), 0, span)?;
+            let stop = self.lower_raw_index(args.get(2).copied().flatten(), i64::MAX, span)?;
             let step = if provided >= 4 {
-                self.lower_raw_index(args.get(3).copied().flatten(), span)?
+                self.lower_raw_index(args.get(3).copied().flatten(), 1, span)?
             } else {
                 self.raw_i64_const(1)
             };
@@ -2336,6 +2610,7 @@ impl<'a> FnLower<'a> {
     fn lower_raw_index(
         &mut self,
         slot: Option<Idx<HirExpr>>,
+        none_default: i64,
         span: pyaot_utils::Span,
     ) -> Result<LocalId> {
         let arg = slot.ok_or_else(|| {
@@ -2349,8 +2624,52 @@ impl<'a> FnLower<'a> {
             });
             return Ok(dst);
         }
-        let (l, r) = self.lower_expr(arg)?;
-        self.coerce(l, r, Repr::Raw(RawKind::I64))
+        // `None` means "no bound": `islice(it, None)` runs to exhaustion, a
+        // `None` start is 0 and a `None` step is 1 — the same defaults as an
+        // omitted argument.
+        self.index_or_none(arg, none_default)
+    }
+
+    /// Lower an index-like operand (a slice bound, an `islice` argument) into
+    /// a `Raw(I64)` register, mapping a runtime `None` to `default` (CPython:
+    /// `xs[1:None]`, `islice(it, None)`). A statically `int` / `bool` operand
+    /// takes the plain checked unbox; a possibly-`None` one (`Optional[int]`,
+    /// gradual) branches on `rt_is_none` first, so `None` never reaches the
+    /// integer unbox (which would raise / mis-read it).
+    fn index_or_none(&mut self, e: Idx<HirExpr>, default: i64) -> Result<LocalId> {
+        let ty = self.func.exprs[e].ty.clone();
+        let (el, er) = self.lower_expr(e)?;
+        if matches!(ty, SemTy::Int | SemTy::Bool) {
+            return self.coerce_to_i64(el, er);
+        }
+        let tagged = self.coerce(el, er, Repr::Tagged)?;
+        let result = self.alloc_temp(Repr::Raw(RawKind::I64));
+        let is_none = self.alloc_temp(Repr::Raw(RawKind::I8));
+        self.emit(MirInst::CallRuntime {
+            dst: Some(is_none),
+            def: &pyaot_core_defs::runtime_func_def::RT_IS_NONE,
+            args: vec![Operand::Local(tagged)],
+        });
+        let none_bb = self.reserve_block();
+        let int_bb = self.reserve_block();
+        let join_bb = self.reserve_block();
+        self.seal(MirTerminator::Branch {
+            cond: Operand::Local(is_none),
+            then: none_bb,
+            else_: int_bb,
+        });
+        self.switch(none_bb);
+        self.emit(MirInst::Const {
+            dst: result,
+            val: Const::Int(default),
+        });
+        self.seal(MirTerminator::Jump(join_bb));
+        self.switch(int_bb);
+        let v = self.coerce(tagged, Repr::Tagged, Repr::Raw(RawKind::I64))?;
+        self.coerce_into(result, v, Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64))?;
+        self.seal(MirTerminator::Jump(join_bb));
+        self.switch(join_bb);
+        Ok(result)
     }
 
     /// Emit a `CallRuntime` for descriptor `def` with already-legalized arg
@@ -2374,7 +2693,11 @@ impl<'a> FnLower<'a> {
                     args: ops,
                 });
                 let result_repr = repr_of(&self.func.exprs[call_idx].ty);
-                let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
+                // The descriptor's declared return type IS the runtime contract
+                // (including the documented `Optional[T]` → `T` narrowing, whose
+                // `None`/null result the frozen runtime accepts back as a
+                // receiver), so the narrowing is trusted rather than re-checked.
+                let coerced = self.coerce_trusted(dst, ret_repr, result_repr.clone())?;
                 Ok((coerced, result_repr))
             }
             None => {
@@ -3094,6 +3417,28 @@ impl<'a> FnLower<'a> {
         let span = self.func.exprs[value].span;
         let result_repr = repr_of(&self.func.exprs[attr_idx].ty);
 
+        // `super().attr`: the next class's property getter (on `self`) or class
+        // attribute — never the overriding definition on the current class.
+        if let HirExprKind::Super(cid) = self.func.exprs[value].kind {
+            let next = pyaot_typeck::super_attr_class(self.classes, cid, name).ok_or_else(|| {
+                CompilerError::semantic_error(
+                    format!("super() has no attribute `.{}`", self.interner.resolve(name)),
+                    span,
+                )
+            })?;
+            let info = self.classes.get(next).expect("class in MRO");
+            if let Some(getter) = info.property(name).map(|p| p.getter) {
+                let self_local = LocalId::new(0);
+                let sr = self.local_repr(self_local);
+                let (r, rr) = self.emit_dunder_call(getter, vec![(self_local, sr)])?;
+                let c = self.coerce(r, rr, result_repr.clone())?;
+                return Ok((c, result_repr));
+            }
+            let a = info.class_attr(name).expect("super_attr_class found it");
+            let (owner, idx) = (a.owner, a.attr_idx);
+            return self.read_class_attr(owner, idx, result_repr);
+        }
+
         // `type(x).__name__` → the bare class name. `type(x)` already produces
         // the `<class 'mod.Name'>` repr string at runtime (builtins via the type
         // tag, user instances via the registered qualname); `rt_type_name_extract`
@@ -3181,7 +3526,8 @@ impl<'a> FnLower<'a> {
                 def: &field.codegen,
                 args,
             });
-            let coerced = self.coerce(dst, ret_repr, result_repr.clone())?;
+            // Descriptor result: trusted, as in `emit_runtime_call`.
+            let coerced = self.coerce_trusted(dst, ret_repr, result_repr.clone())?;
             return Ok((coerced, result_repr));
         }
 
@@ -3197,7 +3543,8 @@ impl<'a> FnLower<'a> {
                         span,
                     )
                 })?;
-            return self.read_class_attr(cid, attr.attr_idx, result_repr);
+            let (owner, idx) = (attr.owner, attr.attr_idx);
+            return self.read_class_attr(owner, idx, result_repr);
         }
 
         let bt = self.func.exprs[value].ty.clone();
@@ -3209,6 +3556,10 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.property(name))
                 .map(|p| p.getter)
             {
+                let getter = self
+                    .dispatch
+                    .get(cid, name, dispatch::MemberKind::PropGet)
+                    .unwrap_or(getter);
                 let (bl, br) = self.lower_expr(value)?;
                 return self.emit_dunder_call(getter, vec![(bl, br)]);
             }
@@ -3219,15 +3570,24 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.field_slot(name))
                 .is_some();
             if !is_field {
-                if let Some(idx) = self
+                if let Some((owner, idx)) = self
                     .classes
                     .get(cid)
                     .and_then(|i| i.class_attr(name))
-                    .map(|a| a.attr_idx)
+                    .map(|a| (a.owner, a.attr_idx))
                 {
+                    // A subclass redefining the attribute: select by the
+                    // receiver's runtime class (Root B).
+                    if let Some(disp) = self.dispatch.get(cid, name, dispatch::MemberKind::ClassAttr)
+                    {
+                        let (bl, br) = self.lower_expr(value)?;
+                        let (r, rr) = self.emit_dunder_call(disp, vec![(bl, br)])?;
+                        let c = self.coerce(r, rr, result_repr.clone())?;
+                        return Ok((c, result_repr));
+                    }
                     // Evaluate the receiver for side effects, then read the class slot.
                     let _ = self.lower_expr(value)?;
-                    return self.read_class_attr(cid, idx, result_repr);
+                    return self.read_class_attr(owner, idx, result_repr);
                 }
             }
         }
@@ -3236,8 +3596,10 @@ impl<'a> FnLower<'a> {
         // RUNTIME by name hash (Phase 8H, D4) — `rt_getattr_name` raises
         // AttributeError on a miss/non-instance. Method-calls on `Dyn` stay a
         // loud compile error (no generic thunk for an unknown signature).
-        // Other unknown receivers keep the loud `field_slot` error.
-        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+        // Other unknown receivers keep the loud `field_slot` error. A field that
+        // only a SUBCLASS of the static class declares is resolved the same
+        // by-name way (the receiver may really be that subclass).
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) || self.field_only_below(&bt, name) {
             let (bl, br) = self.lower_expr(value)?;
             let base = self.coerce(bl, br, Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Tagged);
@@ -3273,6 +3635,42 @@ impl<'a> FnLower<'a> {
             self.emit_check_bound(dst, 2, name)?
         } else {
             dst
+        };
+        // A field shadowing a class attribute (`inst.n = v` on a class with a
+        // class-level `n`): an instance that never assigned it still reads the
+        // class attribute — CPython's instance-dict-then-class lookup.
+        let dst = match class_of(&bt, self.classes).and_then(|cid| {
+            self.classes
+                .get(cid)
+                .and_then(|i| i.class_attr(name))
+                .map(|a| (cid, a.owner, a.attr_idx))
+        }) {
+            Some((cid, owner, idx)) => {
+                let ca = match self.dispatch.get(cid, name, dispatch::MemberKind::ClassAttr) {
+                    Some(disp) => {
+                        let bt_ = self.coerce(bl, self.local_repr(bl), Repr::Tagged)?;
+                        let (r, rr) = self.emit_dunder_call(disp, vec![(bt_, Repr::Tagged)])?;
+                        self.coerce(r, rr, Repr::Tagged)?
+                    }
+                    None => {
+                        let d = self.alloc_temp(Repr::Tagged);
+                        self.emit(MirInst::GetClassAttr {
+                            dst: d,
+                            class_id: owner,
+                            attr_idx: idx,
+                        });
+                        d
+                    }
+                };
+                let out = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::CallRuntime {
+                    dst: Some(out),
+                    def: &pyaot_core_defs::runtime_func_def::RT_VALUE_OR,
+                    args: vec![Operand::Local(dst), Operand::Local(ca)],
+                });
+                out
+            }
+            None => dst,
         };
         // The field's static type drives the read's representation; the
         // Tagged→repr coercion is guarded by `typeck::check_repr_boundaries`.
@@ -3380,11 +3778,11 @@ impl<'a> FnLower<'a> {
 
         // (a) `ClassName.attr = v` → class-level attribute write (Phase 5D).
         if let Some(cid) = self.class_name_ref(base) {
-            let idx = self
+            let (cid, idx) = self
                 .classes
                 .get(cid)
                 .and_then(|i| i.class_attr(name))
-                .map(|a| a.attr_idx)
+                .map(|a| (a.owner, a.attr_idx))
                 .ok_or_else(|| {
                     CompilerError::semantic_error(
                         format!("class has no attribute `.{}`", self.interner.resolve(name)),
@@ -3410,6 +3808,10 @@ impl<'a> FnLower<'a> {
                 .and_then(|i| i.property(name))
                 .and_then(|p| p.setter)
             {
+                let setter = self
+                    .dispatch
+                    .get(cid, name, dispatch::MemberKind::PropSet)
+                    .unwrap_or(setter);
                 let (bl, br) = self.lower_expr(base)?;
                 let (vl, vr) = self.lower_expr(value)?;
                 self.emit_dunder_call(setter, vec![(bl, br), (vl, vr)])?;
@@ -3442,8 +3844,9 @@ impl<'a> FnLower<'a> {
         }
 
         // (d) Instance field write. A `Dyn` receiver writes by name hash at
-        // runtime (Phase 8H, D4) — AttributeError on a miss/non-instance.
-        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) {
+        // runtime (Phase 8H, D4) — AttributeError on a miss/non-instance. So
+        // does a field only a subclass of the static class declares.
+        if matches!(bt, SemTy::Dyn | SemTy::Union(_)) || self.field_only_below(&bt, name) {
             let (bl, br) = self.lower_expr(base)?;
             let bt = self.coerce(bl, br, Repr::Tagged)?;
             let (vl, vr) = self.lower_expr(value)?;
@@ -3788,6 +4191,51 @@ impl<'a> FnLower<'a> {
         if matches!(recv_ty, SemTy::Dyn | SemTy::Union(_)) {
             return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
         }
+        // A live dict view (`d.keys().isdisjoint(s)`) has no static method
+        // table: its few methods dispatch on the view's runtime tag through
+        // the same `rt_obj_method` seam (typeck types the result).
+        if recv_ty.dict_view().is_some() {
+            return self.lower_dyn_method_call(recv, method_name, args, kwargs, span);
+        }
+        // A generator (typed `Iterator(T)`): `send(v)` / `close()` lower to the
+        // generator ops. Decided by the receiver's type — never by the method
+        // name alone, so a StringIO/file/user-class `.close()` keeps its own
+        // method. `throw(exc)` raises at the suspended yield via the runtime.
+        if let SemTy::Iterator(_) = recv_ty {
+            let name = self.interner.resolve(method_name);
+            let gen_op = match (name, args.len(), kwargs.is_empty()) {
+                ("send", 1, true) => Some((GenOp::Send, Some(args[0]))),
+                ("close", 0, true) => Some((GenOp::Close, None)),
+                ("throw", 1, true) => {
+                    // Raise the exception at the suspended yield
+                    // (`rt_generator_throw`; the resume point's closing check
+                    // raises it inside the generator's own handlers).
+                    let (gl, gr) = self.lower_expr(recv)?;
+                    let g = self.coerce(gl, gr, Repr::Tagged)?;
+                    let (el, er) = self.lower_expr(args[0])?;
+                    let e = self.coerce(el, er, Repr::Tagged)?;
+                    let dst = self.alloc_temp(Repr::Tagged);
+                    self.emit(MirInst::CallRuntime {
+                        dst: Some(dst),
+                        def: &pyaot_core_defs::runtime_func_def::RT_GENERATOR_THROW,
+                        args: vec![Operand::Local(g), Operand::Local(e)],
+                    });
+                    return Ok((dst, Repr::Tagged));
+                }
+                ("throw", _, _) => {
+                    return Err(CompilerError::semantic_error(
+                        "generator.throw() takes exactly one exception instance here \
+                         (the legacy (type, value, traceback) form is out of scope)"
+                            .to_string(),
+                        span,
+                    ))
+                }
+                _ => None,
+            };
+            if let Some((op, value)) = gen_op {
+                return self.lower_gen_query(op, recv, 0, value);
+            }
+        }
         // Class receiver: a `@staticmethod`/`@classmethod` called on an instance,
         // else an instance method (devirtualized unless overridden below — D7).
         if let Some(cid) = class_of(&recv_ty, self.classes) {
@@ -3932,26 +4380,7 @@ impl<'a> FnLower<'a> {
 
         // Pack the positional args into a `tuple[Tagged]` (the uniform-call shape).
         let tup_repr = Repr::Heap(HeapShape::TupleVar(Box::new(Repr::Tagged)));
-        let size = self.raw_i64_const(args.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, a) in args.iter().enumerate() {
-            let (al, ar) = self.lower_expr(*a)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (al, ar),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), args.len(), |this, i| this.lower_expr(args[i]))?;
         let args_tuple = self.coerce(tup, tup_repr, Repr::Tagged)?;
 
         // Keywords → a `dict[str, Tagged]`, or the null `__kwargs__` sentinel on
@@ -3964,28 +4393,11 @@ impl<'a> FnLower<'a> {
                 Box::new(Repr::Tagged),
                 Box::new(Repr::Tagged),
             ));
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-            for (kname, kexpr) in kwargs {
-                self.str_pool
-                    .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(*kname),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                let (vl, vr) = self.lower_expr(*kexpr)?;
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+            let d = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                let (kname, kexpr) = kwargs[i];
+                let (vl, vr) = this.lower_expr(kexpr)?;
+                Ok((kname, vl, vr))
+            })?;
             self.coerce(d, dict_repr, Repr::Tagged)?
         };
 
@@ -4078,6 +4490,24 @@ impl<'a> FnLower<'a> {
                 )
             })?;
         let ret = self.sigs[fid.index()].ret.clone();
+        // A self-less `def m(*args)` (no fixed parameter at all): CPython binds
+        // the instance as `args[0]`, so the receiver is packed into the
+        // `*args` tuple ahead of the call-site positionals instead of filling
+        // a (nonexistent) `self` slot.
+        let sig = &self.sigs[fid.index()];
+        if sig.varargs && sig.params.len() == 1 + usize::from(sig.kwargs) {
+            let mut all = Vec::with_capacity(args.len() + 1);
+            all.push(recv);
+            all.extend_from_slice(args);
+            let argvals = self.build_call_operands(fid, false, &all, kwargs, span)?;
+            let dst = self.alloc_temp(ret.clone());
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: fid,
+                args: argvals,
+            });
+            return Ok((dst, ret));
+        }
         let self_param = self.sigs[fid.index()].params[0].clone();
         let (rl, rr) = self.lower_expr(recv)?;
         let self_arg = self.coerce(rl, rr, self_param)?;
@@ -4183,53 +4613,17 @@ impl<'a> FnLower<'a> {
         if varargs {
             let tup_repr = params[first + fixed].clone();
             let excess = &pos_vals[n_pos..];
-            let size = self.raw_i64_const(excess.len() as i64);
-            let (tup, _) = self.emit_container(
-                ContainerOp::TupleNew,
-                vec![(size, Repr::Raw(RawKind::I64))],
-                Some(tup_repr.clone()),
-            )?;
-            let tup = tup.expect("TupleNew produces a tuple");
-            for (i, (el, er)) in excess.iter().cloned().enumerate() {
-                let pos = self.raw_i64_const(i as i64);
-                self.emit_container(
-                    ContainerOp::TupleSet,
-                    vec![
-                        (tup, tup_repr.clone()),
-                        (pos, Repr::Raw(RawKind::I64)),
-                        (el, er),
-                    ],
-                    None,
-                )?;
-            }
+            let tup = self.pack_tuple(tup_repr, excess.len(), |_, i| Ok(excess[i].clone()))?;
             argvals.push(Operand::Local(tup));
         }
         if has_kwargs {
             let dict_repr = params.last().expect("kwargs param exists").clone();
-            let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
             // Leftover keywords (written order) land in the `**kwargs` dict.
-            for &k in &m.leftover {
-                let name = kw_names[k];
-                self.str_pool
-                    .insert(name, self.interner.resolve(name).as_bytes().to_vec());
-                let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                self.emit(MirInst::Const {
-                    dst: key,
-                    val: Const::Str(name),
-                });
-                let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let d = self.pack_kwargs_dict(dict_repr, m.leftover.len(), |_, i| {
+                let k = m.leftover[i];
                 let (vl, vr) = kw_vals[k].clone();
-                let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                self.emit_container(
-                    ContainerOp::DictSet,
-                    vec![
-                        (d, dict_repr.clone()),
-                        (key_t, Repr::Tagged),
-                        (val_t, Repr::Tagged),
-                    ],
-                    None,
-                )?;
-            }
+                Ok((kw_names[k], vl, vr))
+            })?;
             argvals.push(Operand::Local(d));
         }
         Ok(argvals)
@@ -4334,6 +4728,23 @@ impl<'a> FnLower<'a> {
             }
             None => return Ok(None),
         };
+        // `instance.staticmethod()` / `instance.classmethod()` where a subclass
+        // redefines it: the receiver's runtime class selects (Root B).
+        if let Some(r) = recv {
+            if let Some(disp) = self.dispatch.get(cid, name, dispatch::MemberKind::StaticViaInst) {
+                let (rl, rr) = self.lower_expr(r)?;
+                let rt = self.coerce(rl, rr, Repr::Tagged)?;
+                let mut argvals = vec![Operand::Local(rt)];
+                argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+                let dst = self.alloc_temp(Repr::Tagged);
+                self.emit(MirInst::Call {
+                    dst: Some(dst),
+                    func: disp,
+                    args: argvals,
+                });
+                return Ok(Some((dst, Repr::Tagged)));
+            }
+        }
         // Evaluate the receiver for side effects (`instance.staticmethod()`).
         if let Some(r) = recv {
             let _ = self.lower_expr(r)?;
@@ -4350,6 +4761,47 @@ impl<'a> FnLower<'a> {
         Ok(Some((dst, ret)))
     }
 
+    /// `super().__init__([msg])` reaching the BUILTIN exception base (no user
+    /// parent defines `__init__`): `BaseException.__init__` records the
+    /// message on the instance (`rt_exc_set_instance_message`) so `str(e)` and
+    /// tracebacks show it. One positional argument at most (CPython's
+    /// multi-argument `args` tuple form is out of scope).
+    fn lower_base_exception_init(
+        &mut self,
+        args: &[Idx<HirExpr>],
+        kwargs: &[(InternedString, Idx<HirExpr>)],
+        span: pyaot_utils::Span,
+    ) -> Result<(LocalId, Repr)> {
+        if args.len() > 1 || !kwargs.is_empty() {
+            return Err(CompilerError::semantic_error(
+                "super().__init__() of a builtin exception takes at most one \
+                 positional argument here",
+                span,
+            ));
+        }
+        let self_local = LocalId::new(0);
+        let self_from = self.local_repr(self_local);
+        let self_tagged = self.coerce(self_local, self_from, Repr::Tagged)?;
+        let msg = match args.first() {
+            Some(a) => {
+                let (l, r) = self.lower_expr(*a)?;
+                self.coerce(l, r, Repr::Tagged)?
+            }
+            None => self.null_temp(),
+        };
+        self.emit(MirInst::CallRuntime {
+            dst: None,
+            def: &pyaot_core_defs::runtime_func_def::RT_EXC_SET_INSTANCE_MESSAGE,
+            args: vec![Operand::Local(self_tagged), Operand::Local(msg)],
+        });
+        let dst = self.alloc_temp(Repr::Tagged);
+        self.emit(MirInst::Const {
+            dst,
+            val: Const::None,
+        });
+        Ok((dst, Repr::Tagged))
+    }
+
     /// Lower `super().m(args)`: resolve the parent method via the enclosing class's
     /// MRO and direct-`Call` it with the *current* `self` (param 0), cast to the
     /// parent's `self` repr.
@@ -4361,18 +4813,38 @@ impl<'a> FnLower<'a> {
         kwargs: &[(InternedString, Idx<HirExpr>)],
         span: pyaot_utils::Span,
     ) -> Result<(LocalId, Repr)> {
-        let fid = self
-            .classes
-            .resolve_super_method(cid, method_name)
-            .ok_or_else(|| {
-                CompilerError::semantic_error(
-                    format!(
-                        "super() has no method `.{}()`",
-                        self.interner.resolve(method_name)
-                    ),
-                    span,
-                )
-            })?;
+        let resolved = self.classes.resolve_super_method(cid, method_name);
+        if resolved.is_none()
+            && self.interner.resolve(method_name) == "__init__"
+            && self.classes.is_exception_class(cid)
+        {
+            return self.lower_base_exception_init(args, kwargs, span);
+        }
+        let fid = resolved.ok_or_else(|| {
+            CompilerError::semantic_error(
+                format!(
+                    "super() has no method `.{}()`",
+                    self.interner.resolve(method_name)
+                ),
+                span,
+            )
+        })?;
+        // A diamond: which definition `super()` reaches depends on the
+        // receiver's runtime class (its MRO) — route through the dispatcher.
+        if let Some(disp) = self.dispatch.get(cid, method_name, dispatch::MemberKind::SuperMethod) {
+            let self_local = LocalId::new(0);
+            let self_from = self.local_repr(self_local);
+            let st = self.coerce(self_local, self_from, Repr::Tagged)?;
+            let mut argvals = vec![Operand::Local(st)];
+            argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: disp,
+                args: argvals,
+            });
+            return Ok((dst, Repr::Tagged));
+        }
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         // `self` is parameter 0 of the current method.
@@ -4416,6 +4888,23 @@ impl<'a> FnLower<'a> {
                     span,
                 )
             })?;
+        // An override with a different calling convention (an extra defaulted
+        // parameter, other reprs) cannot share the vtable call's ABI: route
+        // through the runtime-class dispatcher, which binds each override's
+        // own parameters (Root B).
+        if let Some(disp) = self.dispatch.get(cid, method_name, dispatch::MemberKind::Method) {
+            let (rl, rr) = self.lower_expr(recv)?;
+            let self_arg = self.coerce(rl, rr, Repr::Tagged)?;
+            let mut argvals = vec![Operand::Local(self_arg)];
+            argvals.extend(self.build_call_operands(disp, true, args, kwargs, span)?);
+            let dst = self.alloc_temp(Repr::Tagged);
+            self.emit(MirInst::Call {
+                dst: Some(dst),
+                func: disp,
+                args: argvals,
+            });
+            return Ok((dst, Repr::Tagged));
+        }
         let params = self.sigs[fid.index()].params.clone();
         let ret = self.sigs[fid.index()].ret.clone();
         // Keyword/default adaptation happens at the CALL SITE against the
@@ -4552,6 +5041,24 @@ impl<'a> FnLower<'a> {
     /// overridden in a subclass — else the dynamic path is needed), return its
     /// resolved `FuncId`. Used to compiler-route the dunders the runtime does *not*
     /// dispatch (`__eq__`/`__len__`/`__getitem__`/…) to a direct devirtualized call.
+    /// True iff `name` is not a field of `ty`'s class but is one of some
+    /// subclass of it — an access that must resolve by name at run time.
+    fn field_only_below(&self, ty: &SemTy, name: InternedString) -> bool {
+        let Some(cid) = class_of(ty, self.classes) else {
+            return false;
+        };
+        let Some(info) = self.classes.get(cid) else {
+            return false;
+        };
+        info.field_slot(name).is_none()
+            && info.property(name).is_none()
+            && info.class_attr(name).is_none()
+            && self
+                .classes
+                .iter()
+                .any(|k| k.mro.contains(&cid) && k.field_slot(name).is_some())
+    }
+
     fn concrete_dunder(&self, ty: &SemTy, name: &str) -> Option<FuncId> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
@@ -4560,7 +5067,11 @@ impl<'a> FnLower<'a> {
             .iter()
             .find(|m| self.interner.resolve(m.name) == name)?;
         if self.classes.method_overridden_below(cid, m.name) {
-            return None;
+            // A subclass overrides it: the runtime-class dispatcher selects the
+            // receiver's actual definition (Root B).
+            return self
+                .dispatch
+                .get(cid, m.name, dispatch::MemberKind::Method);
         }
         Some(m.func_id)
     }
@@ -4796,26 +5307,7 @@ impl<'a> FnLower<'a> {
         elems: &[Idx<HirExpr>],
     ) -> Result<(LocalId, Repr)> {
         let tup_repr = repr_of(&self.func.exprs[idx].ty);
-        let size = self.raw_i64_const(elems.len() as i64);
-        let (tup, _) = self.emit_container(
-            ContainerOp::TupleNew,
-            vec![(size, Repr::Raw(RawKind::I64))],
-            Some(tup_repr.clone()),
-        )?;
-        let tup = tup.expect("TupleNew produces a tuple");
-        for (i, e) in elems.iter().enumerate() {
-            let (el, er) = self.lower_expr(*e)?;
-            let pos = self.raw_i64_const(i as i64);
-            self.emit_container(
-                ContainerOp::TupleSet,
-                vec![
-                    (tup, tup_repr.clone()),
-                    (pos, Repr::Raw(RawKind::I64)),
-                    (el, er),
-                ],
-                None,
-            )?;
-        }
+        let tup = self.pack_tuple(tup_repr.clone(), elems.len(), |this, i| this.lower_expr(elems[i]))?;
         Ok((tup, tup_repr))
     }
 
@@ -5063,10 +5555,7 @@ impl<'a> FnLower<'a> {
     /// fixnum range, so the `raw_i64_const` tag round-trip would corrupt them.
     fn slice_bound(&mut self, bound: Option<Idx<HirExpr>>, default: i64) -> Result<LocalId> {
         match bound {
-            Some(e) => {
-                let (el, er) = self.lower_expr(e)?;
-                self.coerce_to_i64(el, er)
-            }
+            Some(e) => self.index_or_none(e, default),
             None => {
                 let t = self.alloc_temp(Repr::Raw(RawKind::I64));
                 self.emit(MirInst::Const {
@@ -5239,11 +5728,11 @@ impl<'a> FnLower<'a> {
                     self.none_value()
                 }
                 M::Extend if argn == 1 => {
-                    self.emit_container(
-                        ContainerOp::ListExtend,
-                        vec![recv_arg, a[0].clone()],
-                        None,
-                    )?;
+                    // `rt_list_extend` reads a `ListObj`; any other iterable
+                    // (a dict view, set, tuple, generator, …) is materialized
+                    // into a list through the iterator protocol first.
+                    let src = self.materialize_list_from(a[0].0, a[0].1.clone())?;
+                    self.emit_container(ContainerOp::ListExtend, vec![recv_arg, src], None)?;
                     self.none_value()
                 }
                 // `list.remove(x)` — mutate in place (ValueError on miss, raised
@@ -5345,29 +5834,11 @@ impl<'a> FnLower<'a> {
                             Box::new(Repr::Tagged),
                             Box::new(Repr::Tagged),
                         ));
-                        let (kd, _) =
-                            self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
-                        for (kname, kexpr) in kwargs {
-                            self.str_pool
-                                .insert(*kname, self.interner.resolve(*kname).as_bytes().to_vec());
-                            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
-                            self.emit(MirInst::Const {
-                                dst: key,
-                                val: Const::Str(*kname),
-                            });
-                            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
-                            let (vl, vr) = self.lower_expr(*kexpr)?;
-                            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
-                            self.emit_container(
-                                ContainerOp::DictSet,
-                                vec![
-                                    (kd, dict_repr.clone()),
-                                    (key_t, Repr::Tagged),
-                                    (val_t, Repr::Tagged),
-                                ],
-                                None,
-                            )?;
-                        }
+                        let kd = self.pack_kwargs_dict(dict_repr.clone(), kwargs.len(), |this, i| {
+                            let (kname, kexpr) = kwargs[i];
+                            let (vl, vr) = this.lower_expr(kexpr)?;
+                            Ok((kname, vl, vr))
+                        })?;
                         self.emit_container(
                             ContainerOp::DictUpdate,
                             vec![recv_arg.clone(), (kd, dict_repr)],
@@ -5643,27 +6114,58 @@ impl<'a> FnLower<'a> {
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
         let mop = map_binop(op);
+        // `+=` / `*=` mutate in place only for a mutable left operand (a list, a
+        // user instance, or an unknown value); on an immutable one (numbers,
+        // `str`, `bytes`, `tuple`) they ARE the binary operator, which keeps the
+        // raw / typed container fast paths.
+        let mop = if may_mutate_in_place(&self.func.exprs[l].ty) {
+            mop
+        } else {
+            match mop {
+                MBinOp::IAdd => MBinOp::Add,
+                MBinOp::IMul => MBinOp::Mul,
+                MBinOp::IDiv => MBinOp::Div,
+                MBinOp::IFloorDiv => MBinOp::FloorDiv,
+                MBinOp::IMod => MBinOp::Mod,
+                MBinOp::IPow => MBinOp::Pow,
+                MBinOp::IMatMul => MBinOp::MatMul,
+                MBinOp::IShl => MBinOp::Shl,
+                MBinOp::IShr => MBinOp::Shr,
+                // `-=` on a number is plain subtraction (keeps raw fast paths);
+                // `&=`/`|=`/`^=` keep their in-place op (sets / dicts may be
+                // typed precisely, and their int path is the same call).
+                MBinOp::ISub if matches!(self.func.exprs[l].ty, SemTy::Int | SemTy::Float | SemTy::Bool) => MBinOp::Sub,
+                m => m,
+            }
+        };
         let (ll, lr) = self.lower_expr(l)?;
         let (rl, rr) = self.lower_expr(r)?;
 
         // Container `+` / `*`: the tagged `rt_obj_add`/`rt_obj_mul` handle only
         // str + numeric, so list/tuple/bytes concatenation and repetition dispatch
         // by static type to the typed runtime ops.
-        if let Some(res) = self.try_container_binop(mop, ll, &lr, rl, &rr)? {
+        let res_repr = repr_of(&self.func.exprs[idx].ty);
+        if let Some(res) = self.try_container_binop(mop, ll, &lr, rl, &rr, &res_repr)? {
             return Ok(res);
         }
 
-        let raw_addsubmul = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul);
+        // Raw float fast path: `+ - * /` on two `Raw(F64)` operands (or one
+        // `Raw(F64)` and an exactly-representable int literal) stays unboxed.
+        // `/` inlines `fdiv` with a zero-divisor check that raises
+        // `ZeroDivisionError` through the runtime (codegen).
+        let raw_float_op = matches!(mop, MBinOp::Add | MBinOp::Sub | MBinOp::Mul | MBinOp::Div);
         let f64 = Repr::Raw(RawKind::F64);
-        if raw_addsubmul && lr == f64 && rr == f64 {
-            let dst = self.alloc_temp(f64.clone());
-            self.emit(MirInst::BinOp {
-                dst,
-                op: mop,
-                l: Operand::Local(ll),
-                r: Operand::Local(rl),
-            });
-            return Ok((dst, f64));
+        if raw_float_op {
+            if let Some((la, ra)) = self.raw_f64_operands(l, ll, &lr, r, rl, &rr) {
+                let dst = self.alloc_temp(f64.clone());
+                self.emit(MirInst::BinOp {
+                    dst,
+                    op: mop,
+                    l: Operand::Local(la),
+                    r: Operand::Local(ra),
+                });
+                return Ok((dst, f64));
+            }
         }
 
         // Raw int fast path (Phase 3c). `Add`/`Sub` fire whenever an operand is a
@@ -5717,6 +6219,7 @@ impl<'a> FnLower<'a> {
         lr: &Repr,
         rl: LocalId,
         rr: &Repr,
+        res_repr: &Repr,
     ) -> Result<Option<(LocalId, Repr)>> {
         use pyaot_core_defs::runtime_func_def as rf;
         use pyaot_core_defs::TypeTagKind;
@@ -5758,10 +6261,17 @@ impl<'a> FnLower<'a> {
                     (Repr::Heap(Bytes), Repr::Heap(Bytes)) => ContainerOp::BytesConcat,
                     _ => return Ok(None),
                 };
+                // The result's own heap shape (typeck's: a fixed-tuple concat
+                // has the summed arity, a list concat the guarded element join);
+                // the left operand's shape only as a fallback.
+                let heap = match res_repr {
+                    Repr::Heap(_) => res_repr.clone(),
+                    _ => lr.clone(),
+                };
                 let (dst, ret) = self.emit_container(
                     cop,
                     vec![(ll, lr.clone()), (rl, rr.clone())],
-                    Some(lr.clone()),
+                    Some(heap),
                 )?;
                 Ok(Some((dst.expect("concat produces a container"), ret)))
             }
@@ -5871,6 +6381,20 @@ impl<'a> FnLower<'a> {
     fn lower_unary(&mut self, op: HUnaryOp, operand: Idx<HirExpr>) -> Result<(LocalId, Repr)> {
         let mop = map_unaryop(op);
         let (ol, orr) = self.lower_expr(operand)?;
+        // Raw float `-x` is an inline IEEE negation (no boxing); `+x` on a
+        // float is the value itself.
+        if orr == Repr::Raw(RawKind::F64) && matches!(mop, MUnaryOp::Neg | MUnaryOp::Pos) {
+            if mop == MUnaryOp::Pos {
+                return Ok((ol, orr));
+            }
+            let dst = self.alloc_temp(orr.clone());
+            self.emit(MirInst::Unary {
+                dst,
+                op: mop,
+                operand: Operand::Local(ol),
+            });
+            return Ok((dst, orr));
+        }
         let ot = self.coerce(ol, orr, Repr::Tagged)?;
         let dst_repr = if mop == MUnaryOp::Not {
             Repr::Raw(RawKind::I8)
@@ -5924,6 +6448,7 @@ impl<'a> FnLower<'a> {
         op: HCmpOp,
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
+        want_value: bool,
     ) -> Result<Option<(LocalId, Repr)>> {
         let lt = self.func.exprs[l].ty.clone();
         let rt = self.func.exprs[r].ty.clone();
@@ -5953,7 +6478,7 @@ impl<'a> FnLower<'a> {
         // with a present reflected dunder.
         let fwd_is_tagged = fwd_fid.is_some_and(|f| self.sigs[f.index()].ret == Repr::Tagged);
         let needs_protocol = fwd_is_tagged || (fwd_fid.is_none() && rev_fid.is_some());
-        if !needs_protocol {
+        if !needs_protocol || (want_value && fwd_fid.is_some() && !fwd_is_tagged) {
             return Ok(None);
         }
 
@@ -5966,15 +6491,21 @@ impl<'a> FnLower<'a> {
         let (rl, rr) = self.lower_expr(r)?;
         let right = self.coerce(rl, rr, Repr::Tagged)?;
 
-        // The merged bool result, written on each non-diverging arm.
-        let result = self.alloc_temp(Repr::Raw(RawKind::I8));
+        // The merged result, written on each non-diverging arm: the dunder's
+        // truthiness, or (`want_value`) the dunder's value itself.
+        let result_repr = if want_value {
+            Repr::Tagged
+        } else {
+            Repr::Raw(RawKind::I8)
+        };
+        let result = self.alloc_temp(result_repr.clone());
         let reflected_bb = self.reserve_block();
         let default_bb = self.reserve_block();
         let merge_bb = self.reserve_block();
 
         // ── forward: call `left.fwd(right)`; on NI fall to the reflected arm ──
         if let Some(ffid) = fwd_fid {
-            self.emit_compare_arm(ffid, left, right, result, reflected_bb, merge_bb)?;
+            self.emit_compare_arm(ffid, left, right, result, reflected_bb, merge_bb, want_value)?;
         } else {
             self.seal(MirTerminator::Jump(reflected_bb));
         }
@@ -5982,7 +6513,7 @@ impl<'a> FnLower<'a> {
         // ── reflected: call `right.rev(left)` (operands SWAPPED); NI → default ──
         self.switch(reflected_bb);
         if let Some(rfid) = rev_fid {
-            self.emit_compare_arm(rfid, right, left, result, default_bb, merge_bb)?;
+            self.emit_compare_arm(rfid, right, left, result, default_bb, merge_bb, want_value)?;
         } else {
             self.seal(MirTerminator::Jump(default_bb));
         }
@@ -5991,7 +6522,7 @@ impl<'a> FnLower<'a> {
         self.switch(default_bb);
         if is_eq {
             let id = self.rt_is_i8(left, right);
-            self.coerce_into(result, id, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            self.coerce_into(result, id, Repr::Raw(RawKind::I8), result_repr.clone())?;
             self.seal(MirTerminator::Jump(merge_bb));
         } else {
             self.emit(MirInst::Raise(MirRaise::Builtin {
@@ -6004,7 +6535,7 @@ impl<'a> FnLower<'a> {
         // ── merge: the result bool, negated for a derived `!=` ──
         self.switch(merge_bb);
         if negate {
-            let tagged = self.coerce(result, Repr::Raw(RawKind::I8), Repr::Tagged)?;
+            let tagged = self.coerce(result, result_repr.clone(), Repr::Tagged)?;
             let dst = self.alloc_temp(Repr::Raw(RawKind::I8));
             self.emit(MirInst::Unary {
                 dst,
@@ -6013,7 +6544,7 @@ impl<'a> FnLower<'a> {
             });
             return Ok(Some((dst, Repr::Raw(RawKind::I8))));
         }
-        Ok(Some((result, Repr::Raw(RawKind::I8))))
+        Ok(Some((result, result_repr)))
     }
 
     /// One arm of the §4b comparison diamond: call dunder `fid(recv, arg)`; if it
@@ -6029,6 +6560,7 @@ impl<'a> FnLower<'a> {
         result: LocalId,
         ni_bb: BlockId,
         merge_bb: BlockId,
+        want_value: bool,
     ) -> Result<()> {
         let (res, res_repr) =
             self.emit_dunder_call(fid, vec![(recv, Repr::Tagged), (arg, Repr::Tagged)])?;
@@ -6045,8 +6577,17 @@ impl<'a> FnLower<'a> {
                 else_: not_ni_bb,
             });
             self.switch(not_ni_bb);
-            let b = self.truthy_i8(res_t, Repr::Tagged)?;
-            self.coerce_into(result, b, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            if want_value {
+                self.coerce_into(result, res_t, Repr::Tagged, Repr::Tagged)?;
+            } else {
+                let b = self.truthy_i8(res_t, Repr::Tagged)?;
+                self.coerce_into(result, b, Repr::Raw(RawKind::I8), Repr::Raw(RawKind::I8))?;
+            }
+            self.seal(MirTerminator::Jump(merge_bb));
+        } else if want_value {
+            // A typed non-`NotImplemented` result: hand the value back.
+            let t = self.coerce(res, res_repr, Repr::Tagged)?;
+            self.coerce_into(result, t, Repr::Tagged, Repr::Tagged)?;
             self.seal(MirTerminator::Jump(merge_bb));
         } else {
             // A pure-`Bool` (`Raw(I8)`) dunder: no NI possible, use directly.
@@ -6059,13 +6600,19 @@ impl<'a> FnLower<'a> {
 
     fn lower_compare(
         &mut self,
+        idx: Idx<HirExpr>,
         op: HCmpOp,
         l: Idx<HirExpr>,
         r: Idx<HirExpr>,
     ) -> Result<(LocalId, Repr)> {
+        // A user comparison dunder may return a non-`bool` (CPython hands the
+        // value back unchanged: `a < b` → whatever `__lt__` returned). typeck
+        // types such a comparison `Dyn`; then the dunder's value is the result
+        // (Tagged) instead of its truthiness.
+        let want_value = self.func.exprs[idx].ty != SemTy::Bool;
         // §4b: the rich-comparison `NotImplemented` protocol (forward→reflected→
         // identity/TypeError) for user-class operands whose dunder may return NI.
-        if let Some(res) = self.try_compare_protocol(op, l, r)? {
+        if let Some(res) = self.try_compare_protocol(op, l, r, want_value)? {
             return Ok(res);
         }
         // Class comparison dunders the runtime does NOT dispatch: route a
@@ -6087,6 +6634,10 @@ impl<'a> FnLower<'a> {
                 });
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
+            if want_value {
+                let t = self.coerce(res, rrep, Repr::Tagged)?;
+                return Ok((t, Repr::Tagged));
+            }
             let dst = self.truthy_i8(res, rrep)?;
             return Ok((dst, Repr::Raw(RawKind::I8)));
         }
@@ -6102,6 +6653,10 @@ impl<'a> FnLower<'a> {
                 let (ll, lr) = self.lower_expr(l)?;
                 let (rl, rr) = self.lower_expr(r)?;
                 let (res, rrep) = self.emit_dunder_call(fid, vec![(ll, lr), (rl, rr)])?;
+                if want_value {
+                    let t = self.coerce(res, rrep, Repr::Tagged)?;
+                    return Ok((t, Repr::Tagged));
+                }
                 let dst = self.truthy_i8(res, rrep)?;
                 return Ok((dst, Repr::Raw(RawKind::I8)));
             }
@@ -6134,10 +6689,19 @@ impl<'a> FnLower<'a> {
         let i64r = Repr::Raw(RawKind::I64);
         // Raw int compare (Phase 3c): when both operands are range-proven
         // `Raw(I64)` cursors (the `range()` loop guard `cursor < stop`), compare
-        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Anything
-        // else runs on the tagged baseline (a lone raw operand re-tags soundly).
+        // them with a machine `icmp` — no tagging, no `rt_obj_cmp` call. Raw
+        // float operands (or a float against an exact int literal) compare with
+        // an IEEE `fcmp` (NaN-correct). Anything else runs on the tagged
+        // baseline (a lone raw operand re-tags soundly).
+        let raw_f64 = if want_value {
+            None
+        } else {
+            self.raw_f64_operands(l, ll, &lr, r, rl, &rr)
+        };
         let (la, ra) = if lr == i64r && rr == i64r {
             (ll, rl)
+        } else if let Some(pair) = raw_f64 {
+            pair
         } else {
             (
                 self.coerce(ll, lr, Repr::Tagged)?,
@@ -6550,14 +7114,20 @@ impl<'a> FnLower<'a> {
                 if args.is_empty() {
                     return self.empty_container(C::DictNew, result_heap);
                 }
-                let (pl, pr) = self.lower_expr(args[0])?;
+                let (mut pl, mut pr) = self.lower_expr(args[0])?;
                 // `dict(d)` on a known dict is a copy, not an iteration of
                 // key/value PAIRS (`rt_dict_from_pairs` expects a pair list).
-                let op = if self.func.exprs[args[0]].ty.dict_kv().is_some() {
+                let arg_ty = self.func.exprs[args[0]].ty.clone();
+                let op = if arg_ty.dict_kv().is_some() {
                     C::DictCopy
                 } else {
                     C::DictFromPairs
                 };
+                // `dict(d.items())`: materialize the live view's pairs into the
+                // list `rt_dict_from_pairs` reads.
+                if arg_ty.dict_view().is_some() {
+                    (pl, pr) = self.materialize_list_from(pl, pr)?;
+                }
                 let (dst, ret) = self.emit_container(op, vec![(pl, pr)], Some(result_heap))?;
                 Ok((dst.unwrap(), ret))
             }
@@ -6682,6 +7252,74 @@ impl<'a> FnLower<'a> {
 
     /// Build an empty container (`ListNew`/`DictNew`/`SetNew`/`TupleNew`) of the
     /// given heap representation.
+    /// Build an `n`-element tuple: `TupleNew(n)`, then one `TupleSet` per
+    /// slot, each element produced by `elem(self, i)` right before its store
+    /// (so element evaluation interleaves exactly as written). The single
+    /// shape for argument tuples and tuple literals — the one `devirt`
+    /// recognizes as a dead args-tuple builder.
+    fn pack_tuple(
+        &mut self,
+        tup_repr: Repr,
+        n: usize,
+        mut elem: impl FnMut(&mut Self, usize) -> Result<(LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let size = self.raw_i64_const(n as i64);
+        let (tup, _) = self.emit_container(
+            ContainerOp::TupleNew,
+            vec![(size, Repr::Raw(RawKind::I64))],
+            Some(tup_repr.clone()),
+        )?;
+        let tup = tup.expect("TupleNew produces a tuple");
+        for i in 0..n {
+            let (el, er) = elem(self, i)?;
+            let pos = self.raw_i64_const(i as i64);
+            self.emit_container(
+                ContainerOp::TupleSet,
+                vec![
+                    (tup, tup_repr.clone()),
+                    (pos, Repr::Raw(RawKind::I64)),
+                    (el, er),
+                ],
+                None,
+            )?;
+        }
+        Ok(tup)
+    }
+
+    /// Build a keyword-argument dict of `n` entries (`str` keys, tagged
+    /// values), each `(name, value)` produced by `entry(self, i)` in order —
+    /// the `**kwargs` / uniform-call keyword shape.
+    fn pack_kwargs_dict(
+        &mut self,
+        dict_repr: Repr,
+        n: usize,
+        mut entry: impl FnMut(&mut Self, usize) -> Result<(InternedString, LocalId, Repr)>,
+    ) -> Result<LocalId> {
+        let (d, _) = self.empty_container(ContainerOp::DictNew, dict_repr.clone())?;
+        for i in 0..n {
+            let (name, vl, vr) = entry(self, i)?;
+            self.str_pool
+                .insert(name, self.interner.resolve(name).as_bytes().to_vec());
+            let key = self.alloc_temp(Repr::Heap(HeapShape::Str));
+            self.emit(MirInst::Const {
+                dst: key,
+                val: Const::Str(name),
+            });
+            let key_t = self.coerce(key, Repr::Heap(HeapShape::Str), Repr::Tagged)?;
+            let val_t = self.coerce(vl, vr, Repr::Tagged)?;
+            self.emit_container(
+                ContainerOp::DictSet,
+                vec![
+                    (d, dict_repr.clone()),
+                    (key_t, Repr::Tagged),
+                    (val_t, Repr::Tagged),
+                ],
+                None,
+            )?;
+        }
+        Ok(d)
+    }
+
     fn empty_container(&mut self, op: ContainerOp, heap: Repr) -> Result<(LocalId, Repr)> {
         let cap = self.raw_i64_const(0);
         let (dst, ret) =
@@ -6857,6 +7495,15 @@ fn map_binop(op: HBinOp) -> MBinOp {
         HBinOp::BitAnd => MBinOp::BitAnd,
         HBinOp::BitOr => MBinOp::BitOr,
         HBinOp::IOr => MBinOp::IOr,
+        HBinOp::IAdd => MBinOp::IAdd,
+        HBinOp::IMul => MBinOp::IMul,
+        HBinOp::IDiv => MBinOp::IDiv,
+        HBinOp::IFloorDiv => MBinOp::IFloorDiv,
+        HBinOp::IMod => MBinOp::IMod,
+        HBinOp::IPow => MBinOp::IPow,
+        HBinOp::IMatMul => MBinOp::IMatMul,
+        HBinOp::IShl => MBinOp::IShl,
+        HBinOp::IShr => MBinOp::IShr,
         HBinOp::BitXor => MBinOp::BitXor,
         HBinOp::IAnd => MBinOp::IAnd,
         HBinOp::ISub => MBinOp::ISub,
@@ -6886,8 +7533,43 @@ fn map_cmpop(op: HCmpOp) -> MCmpOp {
     }
 }
 
+/// True iff `+=` / `*=` on a value of type `t` may mutate it in place: a
+/// `list`, a user instance (`__iadd__`), a mutable stdlib object, or a value of
+/// unknown type. Numbers, `str`, `bytes` and tuples are immutable.
+fn may_mutate_in_place(t: &SemTy) -> bool {
+    use pyaot_core_defs::TypeTagKind as T;
+    match t {
+        SemTy::Int | SemTy::Float | SemTy::Bool | SemTy::Str | SemTy::Bytes | SemTy::NoneTy => {
+            false
+        }
+        SemTy::RuntimeObject(tag) => matches!(tag, T::ByteArray | T::Deque),
+        _ => t.tuple_elems().is_none() && t.tuple_var_elem().is_none(),
+    }
+}
+
 fn cg_illegal(from: &Repr, to: &Repr) -> CompilerError {
     CompilerError::codegen_error(format!("illegal coercion {from:?} -> {to:?}"), None)
+}
+
+/// Build the `Coerce` payload `src: from → dst: to`. With `guard`, a `Tagged`
+/// narrowing into a guard-backed repr (`Raw` unbox / guarded `Heap` shape) is
+/// the CHECKED coercion; everything else (and `guard == false`) is the plain
+/// table coercion. An illegal pair is a loud internal error.
+fn make_coerce(
+    dst: LocalId,
+    src: LocalId,
+    from: &Repr,
+    to: &Repr,
+    guard: bool,
+) -> Result<CoerceInst> {
+    let checked = if guard && from != to {
+        CoerceInst::new_checked(dst, Operand::Local(src), from.clone(), to.clone())
+    } else {
+        None
+    };
+    checked
+        .or_else(|| CoerceInst::new(dst, Operand::Local(src), from.clone(), to.clone()))
+        .ok_or_else(|| cg_illegal(from, to))
 }
 
 /// The receiver family a container method dispatches on.
@@ -7011,6 +7693,29 @@ fn class_of(ty: &SemTy, classes: &ClassTable) -> Option<ClassId> {
 /// `TypeSpec`: an `I64` register holds a raw integer for `Int` params and a
 /// tagged `Value` for everything else (strings, containers, objects, `Any`).
 /// `F64`/`I8`/`I32` registers are always raw.
+/// [`runtime_param_repr`] for param `i` of `def`, honoring an explicit tagged
+/// parameter declaration (`mir_param_semantics`): such a param takes a `Value`
+/// even for an `int` spec (the bignum-exact `math.gcd`).
+fn runtime_param_repr_of(
+    def: &pyaot_core_defs::RuntimeFuncDef,
+    i: usize,
+    spec: Option<&pyaot_stdlib_defs::TypeSpec>,
+) -> Repr {
+    if declares_tagged_param(def, i) {
+        Repr::Tagged
+    } else {
+        runtime_param_repr(def.params[i], spec)
+    }
+}
+
+/// True iff `def` explicitly declares param `i` a tagged `Value`.
+fn declares_tagged_param(def: &pyaot_core_defs::RuntimeFuncDef, i: usize) -> bool {
+    use pyaot_core_defs::runtime_func_def::MirSemantic;
+    def.mir_param_semantics
+        .and_then(|ps| ps.get(i))
+        .is_some_and(|s| *s == MirSemantic::Tagged)
+}
+
 fn runtime_param_repr(
     pt: pyaot_core_defs::runtime_func_def::ParamType,
     spec: Option<&pyaot_stdlib_defs::TypeSpec>,
@@ -7037,8 +7742,13 @@ fn runtime_return_repr(
     def: &pyaot_core_defs::RuntimeFuncDef,
     spec: &pyaot_stdlib_defs::TypeSpec,
 ) -> Repr {
-    use pyaot_core_defs::runtime_func_def::ReturnType;
+    use pyaot_core_defs::runtime_func_def::{MirSemantic, ReturnType};
     use pyaot_stdlib_defs::TypeSpec;
+    // A descriptor that explicitly declares a tagged result (e.g. the
+    // bignum-exact `math.factorial`) returns a `Value` even for an `int` spec.
+    if def.mir_return_semantic == Some(MirSemantic::Tagged) {
+        return Repr::Tagged;
+    }
     match def.returns {
         Some(ReturnType::F64) => Repr::Raw(RawKind::F64),
         Some(ReturnType::I8) => Repr::Raw(RawKind::I8),

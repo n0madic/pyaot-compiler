@@ -54,6 +54,16 @@ unsafe fn all_chars(str_obj: *mut Obj, who: &str, pred: fn(char) -> bool) -> i8 
     }
 }
 
+/// `c.isspace()` — Unicode whitespace (CPython's `Py_UNICODE_ISSPACE`), the
+/// set the argument-less `str.strip()` / `str.split()` use.
+#[inline]
+pub(crate) fn is_py_space(c: char) -> bool {
+    if c.is_ascii() {
+        return matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1f');
+    }
+    char_flags(c) & FLAG_SPACE != 0
+}
+
 /// Packed Unicode flags of `c` (0 = no tracked property). Binary search over the
 /// generated, sorted range table (O(log n), no alloc).
 #[inline]
@@ -284,7 +294,9 @@ mod tests {
     #[test]
     fn char_table_matches_system_python() {
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/gen_unicode_tables.py");
-        let Ok(out) = std::process::Command::new("python3").arg(script).output() else {
+        // `PYAOT_PYTHON` selects the same oracle as the differential gate.
+        let python = std::env::var("PYAOT_PYTHON").unwrap_or_else(|_| "python3".into());
+        let Ok(out) = std::process::Command::new(python).arg(script).output() else {
             return; // no python3 here — nothing to compare against
         };
         if !out.status.success() {

@@ -202,4 +202,21 @@ assert len(strftime_import_no_t) == 4
 strftime_import_year: int = int(strftime_import_no_t)
 assert strftime_import_year >= 2024
 
+
+# ===== SECTION: explicit negative / fractional timestamps (no in-band sentinel) =====
+
+def _time_explicit_negative() -> None:
+    t = time.gmtime(-1.0)
+    assert (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) == (1969, 12, 31, 23, 59, 59)
+    t = time.gmtime(-0.5)
+    assert (t.tm_year, t.tm_sec) == (1969, 59)
+    t = time.gmtime(0)
+    assert (t.tm_year, t.tm_hour) == (1970, 0)
+    t = time.gmtime(86400.9)
+    assert (t.tm_mday, t.tm_sec) == (2, 0)
+
+
+_time_explicit_negative()
+
+
 print("All time module tests passed!")

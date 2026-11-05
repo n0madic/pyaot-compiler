@@ -42,4 +42,4 @@ pub use repr::{
     generic_sig, repr_of, sig_repr, HeapCheck, HeapShape, RawKind, Repr, SigRepr,
     RAW_I64_NARROW_BOUND,
 };
-pub use sem::{SemTy, Sig};
+pub use sem::{DictViewKind, SemTy, Sig};

@@ -60,24 +60,19 @@ pub static RANDOM_SHUFFLE: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::void("rt_random_shuffle", &[P_I64]),
 };
 
-/// random.seed(n) -> None
-/// The runtime receives the user-supplied argument count as a second i64 parameter.
-/// When arg_count == 0, the runtime uses system entropy regardless of the seed value.
-/// This avoids the i64::MIN sentinel collision problem.
+/// random.seed(a=None) -> None
+/// `a` is a tagged `Value` (any size of int, float, str or None); an absent
+/// argument arrives as the null sentinel, which the runtime treats as None
+/// (system entropy).
 pub static RANDOM_SEED: StdlibFunctionDef = StdlibFunctionDef {
     name: "seed",
     runtime_name: "rt_random_seed",
-    params: &[ParamDef::optional_with_default(
-        "n",
-        TypeSpec::Int,
-        ConstValue::Int(0), // placeholder; ignored when arg_count == 0
-    )],
+    params: &[ParamDef::optional("a", TypeSpec::Any)],
     return_type: TypeSpec::None,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
-    // pass_arg_count: lowering appends an extra PI64 for the arg count
-    codegen: RuntimeFuncDef::void("rt_random_seed", &[P_I64, P_I64]),
+    hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::void("rt_random_seed", &[P_I64]),
 };
 
 /// random.uniform(a, b) -> float
@@ -99,18 +94,20 @@ pub static RANDOM_UNIFORM: StdlibFunctionDef = StdlibFunctionDef {
 pub static RANDOM_RANDRANGE: StdlibFunctionDef = StdlibFunctionDef {
     name: "randrange",
     runtime_name: "rt_random_randrange",
+    // The defaults are placeholders: the trailing user-written argument count
+    // tells the runtime which form was called (no in-band sentinel).
     params: &[
         ParamDef::required("start", TypeSpec::Int),
-        ParamDef::optional_with_default("stop", TypeSpec::Int, ConstValue::Int(i64::MIN)),
-        ParamDef::optional_with_default("step", TypeSpec::Int, ConstValue::Int(0)),
+        ParamDef::optional_with_default("stop", TypeSpec::Int, ConstValue::Int(0)),
+        ParamDef::optional_with_default("step", TypeSpec::Int, ConstValue::Int(1)),
     ],
     return_type: TypeSpec::Int,
     min_args: 1,
     max_args: 3,
-    hints: LoweringHints::NO_AUTO_BOX,
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
     codegen: RuntimeFuncDef::new(
         "rt_random_randrange",
-        &[P_I64, P_I64, P_I64],
+        &[P_I64, P_I64, P_I64, P_I64],
         Some(R_I64),
         false,
     ),

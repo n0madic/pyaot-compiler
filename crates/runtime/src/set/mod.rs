@@ -15,6 +15,8 @@ pub use comparison::{rt_set_eq, rt_set_isdisjoint, rt_set_issubset, rt_set_issup
 
 pub use convert::rt_set_to_list;
 
+pub(crate) use core::{is_set_family, set_from_iterable};
+
 pub use core::{rt_make_set, rt_set_len, rt_set_minmax, rt_set_minmax_with_key, set_finalize};
 
 pub use ops::{

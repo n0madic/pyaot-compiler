@@ -168,6 +168,33 @@ impl<'a> FnLowerer<'a> {
             return Err(parse_error("multiple star patterns in a sequence", span));
         }
 
+        // Only a SEQUENCE subject matches (CPython: `collections.abc.Sequence`
+        // minus str/bytes/bytearray) — here a list or a tuple. A `str` / `dict`
+        // / other value with a fitting `len()` must not match (or be indexed).
+        let ok_b = self.new_block();
+        let try_tuple = self.new_block();
+        for (target, else_) in [
+            (SemTy::list_of(SemTy::Dyn), try_tuple),
+            (SemTy::tuple_var_of(SemTy::Dyn), fail),
+        ] {
+            let s = self.local_ref(scr, span);
+            let is = self.alloc(
+                HirExprKind::IsInstanceBuiltin { value: s, target },
+                SemTy::Bool,
+                span,
+            );
+            self.seal(HirTerminator::Branch {
+                cond: is,
+                then: ok_b,
+                else_,
+            });
+            self.switch(else_);
+            if else_ == fail {
+                break;
+            }
+        }
+        self.switch(ok_b);
+
         // n = len(subject), staged once.
         let s = self.local_ref(scr, span);
         let len_e = self.alloc(

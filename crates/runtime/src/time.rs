@@ -63,15 +63,14 @@ pub extern "C" fn rt_time_perf_counter() -> f64 {
 /// time.ctime([seconds]) - Convert seconds to readable local time string
 /// Format: "Mon Feb  2 14:00:00 2026" (24 characters + newline removed)
 /// If seconds is negative, uses current time
-pub fn rt_time_ctime(seconds: f64) -> *mut Obj {
-    // Get timestamp: use current time if sentinel (-1.0) or negative
-    let timestamp = if seconds < 0.0 {
-        SystemTime::now()
+pub fn rt_time_ctime(seconds: Option<f64>) -> *mut Obj {
+    let timestamp = match seconds {
+        None => SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    } else {
-        seconds as i64
+            .unwrap_or(0),
+        // CPython floors a fractional timestamp (`gmtime(-0.5)` is 23:59:59).
+        Some(s) => s.floor() as i64,
     };
 
     // Format using libc localtime and strftime
@@ -82,8 +81,10 @@ pub fn rt_time_ctime(seconds: f64) -> *mut Obj {
 }
 #[export_name = "rt_time_ctime"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_ctime_abi(seconds: f64) -> Value {
-    Value::from_ptr(rt_time_ctime(seconds))
+pub extern "C" fn rt_time_ctime_abi(seconds: f64, arg_count: i64) -> Value {
+    // `arg_count` (user-written argument count) distinguishes "no argument"
+    // (current time) from any explicit value, negative timestamps included.
+    Value::from_ptr(rt_time_ctime((arg_count > 0).then_some(seconds)))
 }
 
 /// Format timestamp as ctime string using libc
@@ -145,14 +146,14 @@ unsafe fn create_struct_time_obj(tm: &libc::tm) -> *mut Obj {
 
 /// time.localtime([seconds]) - Convert seconds to local struct_time
 /// If seconds is negative, uses current time
-pub fn rt_time_localtime(seconds: f64) -> *mut Obj {
-    let timestamp = if seconds < 0.0 {
-        SystemTime::now()
+pub fn rt_time_localtime(seconds: Option<f64>) -> *mut Obj {
+    let timestamp = match seconds {
+        None => SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    } else {
-        seconds as i64
+            .unwrap_or(0),
+        // CPython floors a fractional timestamp (`gmtime(-0.5)` is 23:59:59).
+        Some(s) => s.floor() as i64,
     };
 
     unsafe {
@@ -173,20 +174,22 @@ pub fn rt_time_localtime(seconds: f64) -> *mut Obj {
 }
 #[export_name = "rt_time_localtime"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_localtime_abi(seconds: f64) -> Value {
-    Value::from_ptr(rt_time_localtime(seconds))
+pub extern "C" fn rt_time_localtime_abi(seconds: f64, arg_count: i64) -> Value {
+    // `arg_count` (user-written argument count) distinguishes "no argument"
+    // (current time) from any explicit value, negative timestamps included.
+    Value::from_ptr(rt_time_localtime((arg_count > 0).then_some(seconds)))
 }
 
 /// time.gmtime([seconds]) - Convert seconds to UTC struct_time
 /// If seconds is negative, uses current time
-pub fn rt_time_gmtime(seconds: f64) -> *mut Obj {
-    let timestamp = if seconds < 0.0 {
-        SystemTime::now()
+pub fn rt_time_gmtime(seconds: Option<f64>) -> *mut Obj {
+    let timestamp = match seconds {
+        None => SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    } else {
-        seconds as i64
+            .unwrap_or(0),
+        // CPython floors a fractional timestamp (`gmtime(-0.5)` is 23:59:59).
+        Some(s) => s.floor() as i64,
     };
 
     unsafe {
@@ -207,8 +210,10 @@ pub fn rt_time_gmtime(seconds: f64) -> *mut Obj {
 }
 #[export_name = "rt_time_gmtime"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_gmtime_abi(seconds: f64) -> Value {
-    Value::from_ptr(rt_time_gmtime(seconds))
+pub extern "C" fn rt_time_gmtime_abi(seconds: f64, arg_count: i64) -> Value {
+    // `arg_count` (user-written argument count) distinguishes "no argument"
+    // (current time) from any explicit value, negative timestamps included.
+    Value::from_ptr(rt_time_gmtime((arg_count > 0).then_some(seconds)))
 }
 
 /// time.mktime(t) - Convert struct_time to seconds since epoch

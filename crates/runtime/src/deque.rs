@@ -382,8 +382,19 @@ pub fn rt_deque_rotate(deque: *mut Obj, n: i64) {
             return;
         }
 
-        // Rotate right by moving head back
-        (*d).head = ((*d).head + (*d).capacity - steps) % (*d).capacity;
+        let (data, head, cap) = ((*d).data, (*d).head, (*d).capacity);
+        if len == cap {
+            // Full ring: rotating right is just moving head back.
+            (*d).head = (head + cap - steps) % cap;
+            return;
+        }
+        // Spare capacity: moving `head` alone would expose unused ring slots
+        // as elements. Permute the live window in place instead (no GC
+        // allocation happens here, so holding the raw Values is safe).
+        let vals: Vec<Value> = (0..len).map(|i| *data.add((head + i) % cap)).collect();
+        for (i, v) in vals.into_iter().enumerate() {
+            *data.add((head + (i + steps) % len) % cap) = v;
+        }
     }
 }
 #[export_name = "rt_deque_rotate"]

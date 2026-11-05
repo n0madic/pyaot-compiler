@@ -4,7 +4,7 @@
 
 use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
-    StdlibModuleDef, TypeSpec,
+    StdlibModuleDef, TypeSpec, INTERCEPTED_BY_FRONTEND,
 };
 #[allow(unused_imports)]
 use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
@@ -16,21 +16,18 @@ use pyaot_core_defs::RuntimeFuncDef;
 // Dict already preserves insertion order. OrderedDict adds move_to_end and
 // popitem(last=True/False). The constructor maps to rt_make_dict.
 
-/// OrderedDict() constructor -- creates an empty ordered dict (same as dict)
-/// The capacity parameter maps to rt_make_dict(capacity); default 0 = use default size.
+/// OrderedDict([iterable_or_mapping]) constructor -- a dict (dicts preserve
+/// insertion order) built like `dict(arg)`: empty, a mapping copy, or an
+/// iterable of key/value pairs.
 static ORDERED_DICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "OrderedDict",
-    runtime_name: "rt_make_dict",
-    params: &[ParamDef::optional_with_default(
-        "capacity",
-        TypeSpec::Int,
-        ConstValue::Int(0),
-    )],
+    runtime_name: "rt_dict_from_any",
+    params: &[ParamDef::optional("iterable", TypeSpec::Any)],
     return_type: TypeSpec::Dict(&TypeSpec::Any, &TypeSpec::Any),
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_dict", &[P_I64], Some(R_I64), false),
+    hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_dict_from_any", &[P_I64], Some(R_I64), false),
 };
 
 /// OrderedDict.move_to_end(key, last=True)
@@ -250,7 +247,8 @@ pub static COUNTER_ITEMS: StdlibMethodDef = StdlibMethodDef {
 /// Counter(iterable?) -- registered as function for import recognition only.
 /// Its sentinel `runtime_name` ("rt_make_counter", which has no runtime symbol)
 /// is what the frontend matches on to intercept construction; the actual call is
-/// routed to `COUNTER_EMPTY` / `COUNTER_FROM_ITER` by arity.
+/// routed to `COUNTER_EMPTY` / `COUNTER_FROM_ITER` by arity, so its `codegen`
+/// is the never-emitted [`INTERCEPTED_BY_FRONTEND`] marker.
 pub static COUNTER_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "Counter",
     runtime_name: "rt_make_counter",
@@ -259,7 +257,7 @@ pub static COUNTER_NEW: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_counter", &[P_I64], Some(R_I64), false),
+    codegen: INTERCEPTED_BY_FRONTEND,
 };
 
 /// `Counter()` — empty construction. The frontend routes the 0-arg form here;
@@ -480,7 +478,7 @@ pub static DEQUE_NEW: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_deque", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: INTERCEPTED_BY_FRONTEND,
 };
 
 /// `deque()` — empty, unlimited (`maxlen=None`). The 0-arg construction target

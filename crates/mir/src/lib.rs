@@ -36,7 +36,7 @@ pub use coerce::CoerceInst;
 pub(crate) use coerce::is_legal_checked_coercion;
 pub use cold::cold_blocks;
 pub use liveness::roots_needed;
-pub use verify::{verify, VerifyError};
+pub use verify::{verify, verify_program, VerifyError};
 
 // Re-exported so consumers (`lowering`, `codegen`) can name builtin kinds.
 pub use pyaot_core_defs::BuiltinFunctionKind;
@@ -84,6 +84,10 @@ pub struct MirClass {
     pub qualname: InternedString,
     /// Direct runtime parent (255 = none), for `rt_register_class`.
     pub parent: Option<ClassId>,
+    /// Every user ancestor (the MRO minus the class itself), registered with
+    /// `rt_register_class_ancestor` so `isinstance` / `except` see all bases of
+    /// a multiply-inheriting class, not just the first.
+    pub ancestors: Vec<ClassId>,
     /// The builtin exception tag this class derives from (Phase 7C). With no
     /// user `parent`, `__pyaot_classinit` registers the tag as the runtime
     /// parent (builtin tags ARE runtime class ids), so `rt_exc_isinstance_class`
@@ -449,6 +453,24 @@ pub enum MirInst {
     /// as having side effects so DCE keeps it; excluded from the inliner's
     /// size accounting.
     LineMarker(u32),
+    /// A [`MirInst::LineMarker`] inside code the inliner spliced in from
+    /// other functions: `line` is the 1-based line in the innermost inlined
+    /// function, `frames` the inline chain OUTERMOST first — `frames[0]` is
+    /// the function inlined directly into this one, called from line
+    /// `frames[0].call_line` of this function; `frames[k].call_line` is the
+    /// line in `frames[k-1].func` that called `frames[k].func`. Codegen turns
+    /// it into a traceback location that prints every inlined frame, so
+    /// inlining does not erase frames. Same DCE / size treatment as
+    /// `LineMarker`; only the inliner produces it.
+    InlinedLine { line: u32, frames: Vec<InlineFrame> },
+}
+
+/// One frame of an [`MirInst::InlinedLine`] chain: `func` was inlined at a
+/// call on line `call_line` of its (possibly itself inlined) caller.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InlineFrame {
+    pub func: FuncId,
+    pub call_line: u32,
 }
 
 impl MirInst {
@@ -481,15 +503,19 @@ impl MirInst {
             // any of which RAISES on a bad shape (TypeError allocates the
             // exception); `BoxFloat` allocates a `FloatObj`. Every other bridge is
             // bit ops / a load.
+            // `BoxFloat` allocates a `FloatObj`; `TagInt` boxes an
+            // out-of-fixnum-range `i64` as a `BigInt` (`rt_box_i64`); a checked
+            // coercion may raise (allocating the exception).
             MirInst::Coerce(c) => {
-                c.checked() || classify_coercion(c.from(), c.to()) == Some(Coercion::BoxFloat)
+                c.checked()
+                    || matches!(
+                        classify_coercion(c.from(), c.to()),
+                        Some(Coercion::BoxFloat | Coercion::TagInt)
+                    )
             }
-            MirInst::BinOp {
-                dst: _,
-                op: _,
-                l,
-                r,
-            } => non_raw(l) || non_raw(r),
+            // A raw float `/` raises `ZeroDivisionError` (allocating the
+            // exception) on a zero divisor; the other raw ops cannot raise.
+            MirInst::BinOp { dst: _, op, l, r } => non_raw(l) || non_raw(r) || *op == BinOp::Div,
             MirInst::Compare {
                 dst: _,
                 op: _,
@@ -501,8 +527,11 @@ impl MirInst {
                 op: _,
                 operand,
             } => non_raw(operand),
-            // Truthiness never allocates (tag test / len check).
-            MirInst::Truthy { dst: _, operand: _ } => false,
+            // A raw operand is a register test. A tagged one goes through
+            // `rt_is_truthy`, which on a class instance calls the user's
+            // `__bool__`/`__len__` — arbitrary code that can allocate and
+            // collect, so live heap locals must stay rooted across it.
+            MirInst::Truthy { dst: _, operand } => non_raw(operand),
             // Any call can re-enter user code or the allocating runtime.
             MirInst::Call { .. }
             | MirInst::CallBuiltin { .. }
@@ -516,9 +545,13 @@ impl MirInst {
             | MirInst::MakeClosure { .. }
             | MirInst::MakeCell { .. }
             | MirInst::MakeGenerator { .. } => true,
-            // Field/cell/global/class-attr traffic is load/store on existing
-            // objects (uniform tagged storage, no allocation).
-            MirInst::GetField { .. } | MirInst::SetField { .. } => false,
+            // Field traffic on a statically-known instance is a load/store
+            // (uniform tagged storage, no allocation). A `Tagged` base is
+            // shape-checked at runtime and RAISES TypeError (allocating the
+            // exception) when it is not an instance.
+            MirInst::GetField { base, .. } | MirInst::SetField { base, .. } => {
+                matches!(repr_of(base), Repr::Tagged)
+            }
             // The by-name forms can RAISE AttributeError (allocates).
             MirInst::GetFieldNamed { .. } | MirInst::SetFieldNamed { .. } => true,
             MirInst::IsInstance { .. } => false,
@@ -566,7 +599,7 @@ impl MirInst {
             // Every raise allocates the exception value / traceback entry.
             MirInst::Raise(_) => true,
             // Compile-time metadata — no machine code at all.
-            MirInst::LineMarker(_) => false,
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => false,
         }
     }
 
@@ -623,6 +656,15 @@ impl MirInst {
                     | BinOp::IAnd
                     | BinOp::ISub
                     | BinOp::IXor
+                    | BinOp::IAdd
+                    | BinOp::IMul
+                    | BinOp::IDiv
+                    | BinOp::IFloorDiv
+                    | BinOp::IMod
+                    | BinOp::IPow
+                    | BinOp::IMatMul
+                    | BinOp::IShl
+                    | BinOp::IShr
                     | BinOp::Div
                     | BinOp::FloorDiv
                     | BinOp::Mod
@@ -644,8 +686,10 @@ impl MirInst {
                 l,
                 r,
             } => non_raw(l) || non_raw(r),
-            // Truthiness is a tag test / len check — never raises.
-            MirInst::Truthy { .. } => false,
+            // A raw truthiness test is a register compare. A tagged one may
+            // run a user `__bool__`/`__len__` (side effects, exceptions), so
+            // it must never be deleted as dead.
+            MirInst::Truthy { dst: _, operand } => non_raw(operand),
             // Calls run arbitrary code.
             MirInst::Call { .. }
             | MirInst::CallBuiltin { .. }
@@ -658,9 +702,11 @@ impl MirInst {
             | MirInst::MakeClosure { .. }
             | MirInst::MakeCell { .. }
             | MirInst::MakeGenerator { .. } => false,
+            // A `Tagged`-base field read raises TypeError on a non-instance,
+            // so it is only removable on a statically-known instance.
+            MirInst::GetField { base, .. } => matches!(repr_of(base), Repr::Tagged),
             // Reads of existing objects.
-            MirInst::GetField { .. }
-            | MirInst::GetClassAttr { .. }
+            MirInst::GetClassAttr { .. }
             | MirInst::IsInstance { .. }
             | MirInst::CellGet { .. }
             | MirInst::GlobalGet { .. } => false,
@@ -707,7 +753,7 @@ impl MirInst {
             MirInst::Raise(_) => true,
             // No dst and no reads — answering `false` would let DCE sweep
             // it; the marker is load-bearing metadata for codegen.
-            MirInst::LineMarker(_) => true,
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => true,
         }
     }
 
@@ -756,7 +802,8 @@ impl MirInst {
             | MirInst::ExcOp(_)
             | MirInst::ArmCause(_)
             | MirInst::Raise(_)
-            | MirInst::LineMarker(_) => None,
+            | MirInst::LineMarker(_)
+            | MirInst::InlinedLine { .. } => None,
         }
     }
 
@@ -898,7 +945,7 @@ impl MirInst {
                 MirRaise::Instance { value } => map_op(value, &mut f),
                 MirRaise::Reraise => {}
             },
-            MirInst::LineMarker(_) => {}
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         }
     }
 
@@ -993,7 +1040,7 @@ impl MirInst {
                 MirRaise::Instance { value } => f(value),
                 MirRaise::Reraise => {}
             },
-            MirInst::LineMarker(_) => {}
+            MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         }
     }
 }
@@ -1066,6 +1113,21 @@ pub enum BinOp {
     IAnd,
     ISub,
     IXor,
+    /// In-place `+=` / `*=` — always Tagged; `rt_obj_iadd` / `rt_obj_imul`
+    /// mutate a `list` (or call `__iadd__`/`__imul__`) and return the same
+    /// object, delegating everything else to the new-object add / mul.
+    IAdd,
+    IMul,
+    /// The remaining augmented assignments (`/=`, `//=`, `%=`, `**=`, `@=`,
+    /// `<<=`, `>>=`): an instance's `__i<op>__` runs first, else the binary
+    /// operator — always Tagged (`rt_obj_inplace`).
+    IDiv,
+    IFloorDiv,
+    IMod,
+    IPow,
+    IMatMul,
+    IShl,
+    IShr,
     Shl,
     Shr,
 }
@@ -1190,12 +1252,12 @@ impl StrPool {
 /// The kind of bridging a [`MirInst::Coerce`] performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coercion {
-    /// Zero machine instructions: the bits are already valid at `to`.
+    /// Zero machine instructions: the bits are already valid at `to`. This
+    /// includes widening a typed heap pointer (or a closure) to the universal
+    /// tagged value — free in this runtime's ABI (heap pointers *are* tagged
+    /// `Value`s), so that direction needs no kind of its own.
     Noop,
-    /// A typed heap pointer reinterpreted as the universal tagged value — free
-    /// in this runtime's ABI (heap pointers *are* tagged `Value`s).
-    HeapToTagged,
-    /// The sound reverse: a tagged value re-typed as a heap pointer. Bit-identical
+    /// The narrowing direction: a tagged value re-typed as a heap pointer. Bit-identical
     /// (a heap pointer *is* a tagged value), so it is a zero-instruction Noop in
     /// codegen — unlike `UnboxFloat`/`UntagBool`, it does **not** reinterpret bits
     /// by an assumed primitive type, so a value of the wrong dynamic type is not

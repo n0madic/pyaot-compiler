@@ -79,7 +79,7 @@ pub extern "C" fn rt_list_eq_abi(a: Value, b: Value) -> i8 {
 
 /// Lexicographic ordering comparison for two lists.
 /// After F.7c all slots are uniform tagged Values.
-unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
+pub(crate) unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
     if a.is_null() && b.is_null() {
         return Ordering::Equal;
     }

@@ -251,7 +251,24 @@ pub struct StdlibFunctionDef {
     pub codegen: RuntimeFuncDef,
 }
 
+/// The `codegen` descriptor of a recognition-only stdlib function — one the
+/// frontend always intercepts and reroutes (by its `runtime_name`) before the
+/// generic runtime-call seam: `functools.reduce` (HOF desugar), `Counter(...)`
+/// and `deque(...)` (construction routed by arity to the real `rt_*` targets).
+/// It names no runtime symbol and must never be emitted; lowering rejects a
+/// call that reaches it ([`StdlibFunctionDef::is_intercepted`]). Using one
+/// shared marker keeps the sentinels from carrying invented signatures for
+/// symbols that are missing or have a different ABI.
+pub const INTERCEPTED_BY_FRONTEND: RuntimeFuncDef =
+    RuntimeFuncDef::new("<intercepted by the frontend>", &[], None, false);
+
 impl StdlibFunctionDef {
+    /// Is this a recognition-only definition whose call the frontend always
+    /// reroutes (its `codegen` is [`INTERCEPTED_BY_FRONTEND`])?
+    pub fn is_intercepted(&self) -> bool {
+        self.codegen.symbol == INTERCEPTED_BY_FRONTEND.symbol
+    }
+
     /// Check if the argument count is valid
     pub const fn valid_arg_count(&self, count: usize) -> bool {
         count >= self.min_args && count <= self.max_args

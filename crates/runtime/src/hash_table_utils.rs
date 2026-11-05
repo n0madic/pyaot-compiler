@@ -3,7 +3,7 @@
 //! This module provides common hashing and equality functions
 //! used by both dictionaries and sets.
 
-use crate::object::{BytesObj, FloatObj, Obj, StrObj, TupleObj, TypeTagKind};
+use crate::object::{BytesObj, Obj, StrObj, TupleObj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 // FNV-1a hash constants
@@ -24,83 +24,23 @@ fn hash_int(value: i64) -> u64 {
     x
 }
 
-/// Hash a Python object for use in hash tables.
-/// Supports Int, Str, Bool types. Other types return 0.
+/// Hash a Python object for use in hash tables: CPython's `hash()` value
+/// ([`crate::hash::py_hash`] — numeric hashes agree across int / bignum /
+/// float / bool, instances dispatch `__hash__`), scrambled for bucket
+/// placement. Raises `TypeError: unhashable type` for an unhashable key.
 ///
 /// # Safety
-/// `obj` must be null or a valid pointer to an Obj.
+/// `obj` must be null or a valid pointer to an Obj (or a tagged immediate).
 pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
     if obj.is_null() {
         return 0;
     }
-    // Check Value-tagged primitives before heap pointer dereference.
     let v = Value(obj as u64);
+    // Fast path: a fixnum's CPython hash is itself (mod 2**61-1).
     if v.is_int() {
-        return hash_int(v.unwrap_int());
+        return hash_int(crate::hash::py_hash_i64(v.unwrap_int()));
     }
-    if v.is_bool() {
-        return hash_int(if v.unwrap_bool() { 1 } else { 0 });
-    }
-    if v.is_none() {
-        return 0;
-    }
-    match (*obj).type_tag() {
-        TypeTagKind::Str => {
-            let str_obj = obj as *mut StrObj;
-            let len = (*str_obj).len;
-            let data = (*str_obj).data.as_ptr();
-            // FNV-1a hash
-            let mut hash = FNV_OFFSET_BASIS;
-            for i in 0..len {
-                hash ^= *data.add(i) as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash
-        }
-        TypeTagKind::Bytes => {
-            // Same layout as StrObj; hash the raw bytes via FNV-1a. A
-            // collision with an equal-content Str is harmless because
-            // `eq_hashable_obj` rejects the Str-vs-Bytes type mismatch first.
-            let bytes_obj = obj as *mut BytesObj;
-            let len = (*bytes_obj).len;
-            let data = (*bytes_obj).data.as_ptr();
-            let mut hash = FNV_OFFSET_BASIS;
-            for i in 0..len {
-                hash ^= *data.add(i) as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash
-        }
-        TypeTagKind::Float => {
-            let float_obj = obj as *mut FloatObj;
-            let v = (*float_obj).value;
-            if v == 0.0 {
-                // CPython compat: hash(-0.0) == hash(0.0) == 0
-                return 0;
-            }
-            if v.fract() == 0.0 && v.is_finite() {
-                // Integer-valued float: same hash as the equivalent integer
-                hash_int(v as i64)
-            } else {
-                // Non-integer float: use bit representation as input to the scramble
-                hash_int(v.to_bits() as i64)
-            }
-        }
-        TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj) as u64,
-        // A frozenset is hashable (unlike a set): order-independent content
-        // hash so two equal frozensets hash equal as dict keys / set elements.
-        TypeTagKind::FrozenSet => crate::frozenset::frozenset_content_hash(obj),
-        TypeTagKind::None => 0, // CPython: hash(None) == 0
-        // Identity-equality heap objects (class instances, files, closures,
-        // …): `eq_hashable_obj` compares them by pointer (its `_ => a == b`
-        // arm), so the pointer is the correct hash — and the GC is
-        // non-moving mark-sweep, so it is stable for the object's lifetime.
-        // Matches CPython's id()-based default object hash. The previous
-        // constant 0 degenerated an instance-keyed set/dict into a linear
-        // probe chain per operation (microgpt's backward() visited-set went
-        // O(n^2) — Phase 9 profile: 85% of runtime under eq_hashable_obj).
-        _ => hash_int(obj as i64),
-    }
+    hash_int(crate::hash::py_hash_or_raise(obj))
 }
 
 /// Check equality of two hashable Python objects.
@@ -154,17 +94,29 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
         return false;
     }
 
-    // One is a primitive, one is a heap pointer.
-    // Only Int/Bool primitives can equal heap Floats (e.g., 1 == 1.0).
+    // A user class instance on either side: its `__eq__` (forward, then
+    // reflected); identity (already checked above) when it defines none.
+    if let Some(r) = crate::ops::try_instance_key_eq(a, b) {
+        return r;
+    }
+
+    // The numeric tower (int / bool / bignum / float): exact value equality
+    // (`10**30 == 1e30`, `2**53 + 1 != 2.0**53`).
+    let is_numeric_heap = |p: *mut Obj, v: Value| {
+        v.is_ptr() && matches!((*p).type_tag(), TypeTagKind::Float | TypeTagKind::BigInt)
+    };
+    if is_numeric_heap(a, va) || is_numeric_heap(b, vb) {
+        return match (
+            crate::bigint::classify_num(va),
+            crate::bigint::classify_num(vb),
+        ) {
+            (Some(x), Some(y)) => crate::bigint::num_eq(&x, &y),
+            _ => false,
+        };
+    }
+
+    // One is a primitive, one is a non-numeric heap object: never equal.
     if !va.is_ptr() || !vb.is_ptr() {
-        let (prim_v, heap_ptr) = if !va.is_ptr() { (va, b) } else { (vb, a) };
-        if let Some(int_val) = as_int_primitive(prim_v) {
-            // Check if heap side is Float with matching value
-            if !heap_ptr.is_null() && (*heap_ptr).type_tag() == TypeTagKind::Float {
-                let fv = (*(heap_ptr as *mut FloatObj)).value;
-                return fv.fract() == 0.0 && fv.is_finite() && fv as i64 == int_val;
-            }
-        }
         return false;
     }
 
@@ -172,19 +124,7 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();
     if tag_a != tag_b {
-        // Cross-type equality for heap types: Float vs Int (heap Int not possible in Stage C,
-        // but keep the check for correctness during the mixed-migration period).
-        return match (tag_a, tag_b) {
-            (TypeTagKind::Int, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Int) => {
-                let (int_val, float_val) = if tag_a == TypeTagKind::Int {
-                    (Value(a as u64).unwrap_int(), (*(b as *mut FloatObj)).value)
-                } else {
-                    (Value(b as u64).unwrap_int(), (*(a as *mut FloatObj)).value)
-                };
-                float_val.fract() == 0.0 && float_val.is_finite() && float_val as i64 == int_val
-            }
-            _ => false,
-        };
+        return false;
     }
     match tag_a {
         TypeTagKind::Str => {
@@ -212,11 +152,6 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             let data_a = (*bytes_a).data.as_ptr();
             let data_b = (*bytes_b).data.as_ptr();
             std::slice::from_raw_parts(data_a, len) == std::slice::from_raw_parts(data_b, len)
-        }
-        TypeTagKind::Float => {
-            let float_a = a as *mut FloatObj;
-            let float_b = b as *mut FloatObj;
-            (*float_a).value == (*float_b).value
         }
         TypeTagKind::Tuple => {
             let tuple_a = a as *mut TupleObj;

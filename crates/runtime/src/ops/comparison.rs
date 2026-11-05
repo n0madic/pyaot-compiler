@@ -9,7 +9,7 @@ use pyaot_core_defs::Value;
 /// Helper to get type name for error messages.
 /// Delegates to TypeTagKind::type_name() from core-defs (single source of truth).
 #[inline]
-pub(super) fn type_name(tag: TypeTagKind) -> &'static str {
+pub(crate) fn type_name(tag: TypeTagKind) -> &'static str {
     tag.type_name()
 }
 
@@ -43,6 +43,12 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     }
     if a.is_null() || b.is_null() {
         let non_null = if a.is_null() { b } else { a };
+        let v = Value(non_null as u64);
+        // The other side may be a tagged immediate (int/bool/None): test the
+        // tag, never dereference it as a header.
+        if !v.is_ptr() {
+            return v.is_none() as i8;
+        }
         unsafe {
             return if (*non_null).type_tag() == TypeTagKind::None {
                 1
@@ -117,47 +123,39 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     // 1.0`, etc. A tagged Int/Bool on one side and a heap-boxed FloatObj on
     // the other should compare as f64 to match CPython.
     if !va.is_ptr() || !vb.is_ptr() {
-        let primitive_as_f64 = |v: Value| -> Option<f64> {
-            if v.is_int() {
-                Some(v.unwrap_int() as f64)
-            } else if v.is_bool() {
-                Some(if v.unwrap_bool() { 1.0 } else { 0.0 })
-            } else {
-                None
-            }
-        };
-        let heap_float_as_f64 = |p: *mut Obj| -> Option<f64> {
-            if p.is_null() {
-                return None;
-            }
-            unsafe {
-                if (*p).type_tag() == TypeTagKind::Float {
-                    Some((*(p as *mut FloatObj)).value)
-                } else {
-                    None
-                }
-            }
-        };
-        let f_a = if va.is_ptr() {
-            heap_float_as_f64(a)
+        // Exact int-vs-float equality (`2**53 + 1 != 2.0**53`).
+        let (prim, heap) = if va.is_ptr() { (vb, a) } else { (va, b) };
+        let int_val = if prim.is_int() {
+            prim.unwrap_int()
+        } else if prim.is_bool() {
+            prim.unwrap_bool() as i64
         } else {
-            primitive_as_f64(va)
+            return 0;
         };
-        let f_b = if vb.is_ptr() {
-            heap_float_as_f64(b)
-        } else {
-            primitive_as_f64(vb)
-        };
-        return match (f_a, f_b) {
-            (Some(x), Some(y)) if x == y => 1,
-            _ => 0,
-        };
+        if heap.is_null() {
+            return 0;
+        }
+        unsafe {
+            if (*heap).type_tag() != TypeTagKind::Float {
+                return 0;
+            }
+            let f = (*(heap as *mut FloatObj)).value;
+            return (crate::bigint::cmp_i64_float(int_val, f) == Some(std::cmp::Ordering::Equal))
+                as i8;
+        }
     }
 
     // Both are real heap pointers — safe to dereference.
     unsafe {
         let tag_a = (*a).type_tag();
         let tag_b = (*b).type_tag();
+
+        // A dict view on either side: set-like equality for keys/items views
+        // (against a set / frozenset / another set-like view), identity for a
+        // values view.
+        if let Some(eq) = crate::dict_view::try_view_eq(a, b) {
+            return eq;
+        }
 
         // Different types → not equal (float/int cross-type not handled here;
         // the Union equality path goes through hash_table_utils::eq_hashable_obj)
@@ -225,7 +223,7 @@ pub extern "C" fn rt_obj_eq_abi(a: Value, b: Value) -> i8 {
 
 /// Helper function to compare two orderable heap objects
 /// Returns Ordering or panics with TypeError for incompatible types
-pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
+pub(crate) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     // Handle null (None) - None is not orderable
@@ -262,27 +260,30 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
         };
         return ia.cmp(&ib);
     }
-    // Int (tagged) vs Float (heap) — promote int to float
-    if va.is_int() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
-        let fa = va.unwrap_int() as f64;
-        let fb = (*(b as *mut FloatObj)).value;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    // Int/Bool (tagged) vs Float (heap) — exact comparison (never through a
+    // lossy int -> float conversion). NaN orders as Greater (unchanged).
+    let small_int = |v: Value| -> Option<i64> {
+        if v.is_int() {
+            Some(v.unwrap_int())
+        } else if v.is_bool() {
+            Some(v.unwrap_bool() as i64)
+        } else {
+            None
+        }
+    };
+    if let Some(i) = small_int(va) {
+        if vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
+            let fb = (*(b as *mut FloatObj)).value;
+            return crate::bigint::cmp_i64_float(i, fb).unwrap_or(Ordering::Greater);
+        }
     }
-    if vb.is_int() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
-        let fa = (*(a as *mut FloatObj)).value;
-        let fb = vb.unwrap_int() as f64;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
-    }
-    // Bool (tagged) vs Float (heap) — same as Int vs Float
-    if va.is_bool() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
-        let fa = va.unwrap_bool() as i64 as f64;
-        let fb = (*(b as *mut FloatObj)).value;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
-    }
-    if vb.is_bool() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
-        let fa = (*(a as *mut FloatObj)).value;
-        let fb = vb.unwrap_bool() as i64 as f64;
-        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    if let Some(i) = small_int(vb) {
+        if va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
+            let fa = (*(a as *mut FloatObj)).value;
+            return crate::bigint::cmp_i64_float(i, fa)
+                .map(Ordering::reverse)
+                .unwrap_or(Ordering::Greater);
+        }
     }
     // Tagged None is not orderable
     if va.is_none() || vb.is_none() {
@@ -460,6 +461,10 @@ pub fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
                 };
             }
         }
+        // Set-like dict views order by subset / superset.
+        if let Some(r) = crate::dict_view::try_view_cmp(a, b, op_tag) {
+            return r;
+        }
         // NaN comparisons always return False in Python
         if involves_nan(a, b) {
             return 0;
@@ -525,7 +530,9 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 let boxed_key =
                     pyaot_core_defs::Value::from_int(index).0 as *mut crate::object::Obj;
                 match (*obj).type_tag() {
-                    TypeTagKind::DefaultDict => crate::defaultdict::rt_defaultdict_get(obj, boxed_key),
+                    TypeTagKind::DefaultDict => {
+                        crate::defaultdict::rt_defaultdict_get(obj, boxed_key)
+                    }
                     TypeTagKind::Counter => crate::counter::rt_counter_get(obj, boxed_key),
                     _ => crate::dict::rt_dict_getitem(obj, boxed_key),
                 }
@@ -534,7 +541,38 @@ pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 // String subscript returns single-char string
                 crate::string::rt_str_getchar(obj, index)
             }
-            _ => std::ptr::null_mut(),
+            // A gradual `<dyn deque>[i]` (e.g. the result of `copy.copy(dq)`).
+            TypeTagKind::Deque => crate::deque::rt_deque_get(obj, index),
+            // `bytes[i]` is an int (`rt_bytes_get` raises IndexError).
+            TypeTagKind::Bytes => {
+                pyaot_core_defs::Value::from_int(crate::bytes::rt_bytes_get(obj, index)).0
+                    as *mut Obj
+            }
+            TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_get(obj, index),
+            // A class instance subscripts through its `__getitem__`.
+            TypeTagKind::Instance => {
+                let key = pyaot_core_defs::Value::from_int(index).0 as *mut Obj;
+                match super::dunder_dispatch::try_class_dunder(
+                    obj,
+                    key,
+                    super::dunder_dispatch::FNV_GETITEM,
+                    0,
+                ) {
+                    Some(v) => v,
+                    None => raise_exc!(
+                        crate::exceptions::ExceptionType::TypeError,
+                        "'{}' object is not subscriptable",
+                        crate::ops::instance_class_name(
+                            (*(obj as *const crate::object::InstanceObj)).class_id
+                        )
+                    ),
+                }
+            }
+            other => raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "'{}' object is not subscriptable",
+                type_name(other)
+            ),
         }
     }
 }
@@ -723,6 +761,9 @@ pub fn rt_obj_len(obj: *mut Obj) -> i64 {
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
             TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_len(obj),
             TypeTagKind::Deque => crate::deque::rt_deque_len(obj),
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                crate::dict_view::view_len(obj)
+            }
             _ => 0,
         }
     }
@@ -795,6 +836,9 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
                 rt_bytes_contains_value(container, elem)
             }
             TypeTagKind::ByteArray => crate::bytearray::rt_bytearray_contains(container, elem),
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                crate::dict_view::view_contains(container, elem)
+            }
             _ => {
                 let tag_str = type_name((*container).type_tag());
                 crate::raise_exc!(
@@ -1128,6 +1172,10 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
                 } else {
                     0
                 }
+            }
+            // A dict view is truthy iff the viewed dict is non-empty.
+            TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+                (crate::dict_view::view_len(obj) > 0) as i8
             }
             TypeTagKind::Bytes => {
                 let bytes_obj = obj as *mut BytesObj;

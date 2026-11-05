@@ -165,7 +165,7 @@ pub fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
         let mut start = 0;
         while start < len {
             let c = *data.add(start);
-            if c != b' ' && c != b'\t' && c != b'\n' && c != b'\r' {
+            if !crate::slice_utils::is_bytes_space(c) {
                 break;
             }
             start += 1;
@@ -174,7 +174,7 @@ pub fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
         let mut end = len;
         while end > start {
             let c = *data.add(end - 1);
-            if c != b' ' && c != b'\t' && c != b'\n' && c != b'\r' {
+            if !crate::slice_utils::is_bytes_space(c) {
                 break;
             }
             end -= 1;
@@ -206,7 +206,7 @@ pub fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
         let mut start = 0;
         while start < len {
             let c = *data.add(start);
-            if c != b' ' && c != b'\t' && c != b'\n' && c != b'\r' {
+            if !crate::slice_utils::is_bytes_space(c) {
                 break;
             }
             start += 1;
@@ -238,7 +238,7 @@ pub fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
         let mut end = len;
         while end > 0 {
             let c = *data.add(end - 1);
-            if c != b' ' && c != b'\t' && c != b'\n' && c != b'\r' {
+            if !crate::slice_utils::is_bytes_space(c) {
                 break;
             }
             end -= 1;

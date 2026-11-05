@@ -583,11 +583,13 @@ fn int_local(func: &HirFunction, resolve: &ResolveResult, idx: Idx<HirExpr>) -> 
 /// Combine an integer binary operator's operand intervals.
 fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
     match op {
-        BinOp::Add => lv.add(rv),
-        BinOp::Sub => lv.sub(rv),
-        BinOp::Mul => lv.mul(rv),
-        BinOp::Mod => lv.modulo(rv),
-        BinOp::FloorDiv => lv.floordiv(rv),
+        // `+=` / `*=` on ints are the plain operators (lowering routes them
+        // to `Add` / `Mul` for an `int` operand).
+        BinOp::Add | BinOp::IAdd => lv.add(rv),
+        BinOp::Sub | BinOp::ISub => lv.sub(rv),
+        BinOp::Mul | BinOp::IMul => lv.mul(rv),
+        BinOp::Mod | BinOp::IMod => lv.modulo(rv),
+        BinOp::FloorDiv | BinOp::IFloorDiv => lv.floordiv(rv),
         // True `/` is float; `**` and bitwise/shift are bignum-possible; `@` is a
         // class dunder and the in-place container ops `|=`/`&=`/`-=`/`^=`
         // (`IOr`/`IAnd`/`ISub`/`IXor`) are set/dict mutations (never a raw-int
@@ -596,8 +598,12 @@ fn binop_interval(op: BinOp, lv: Interval, rv: Interval) -> Interval {
         | BinOp::MatMul
         | BinOp::IOr
         | BinOp::IAnd
-        | BinOp::ISub
         | BinOp::IXor
+        | BinOp::IDiv
+        | BinOp::IPow
+        | BinOp::IMatMul
+        | BinOp::IShl
+        | BinOp::IShr
         | BinOp::Pow
         | BinOp::BitAnd
         | BinOp::BitOr
@@ -623,12 +629,12 @@ fn arith_iv(
 ) -> Option<Interval> {
     let iv = match &func.exprs[idx].kind {
         HirExprKind::IntLit(v) => Interval::range(*v as i128, *v as i128),
-        // A bignum literal does not fit i64 by construction; a bool is `0`/`1`.
-        HirExprKind::BigIntLit(_) => Interval::Top,
-        HirExprKind::BoolLit(b) => {
-            let v = *b as i128;
-            Interval::range(v, v)
-        }
+        // A bignum literal does not fit i64 by construction. A bool literal is
+        // numerically `0`/`1`, but `bool ⊂ int` means it may flow into an
+        // `int`-typed slot (`x = True if c else 1`, `return True` from `-> int`)
+        // that must keep printing `True`: a `Raw(I64)` slot would erase the bool
+        // tag, so a bool leaf is `⊤` (the slot stays `Tagged`).
+        HirExprKind::BigIntLit(_) | HirExprKind::BoolLit(_) => Interval::Top,
         HirExprKind::Local(lid) => {
             if func.locals[lid.index()].ty == SemTy::Int {
                 env[lid.index()]

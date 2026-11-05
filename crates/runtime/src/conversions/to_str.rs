@@ -271,6 +271,14 @@ pub fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
             }
             TypeTagKind::Str => obj, // already a string
             TypeTagKind::None => rt_none_to_str(),
+            // `str(e)` of an exception without a user `__str__`/`__repr__`
+            // is its message, not its repr.
+            TypeTagKind::Instance
+                if crate::ops::try_str_dunder(obj).is_none()
+                    && crate::exceptions::exception_class_name(obj).is_some() =>
+            {
+                crate::exceptions::rt_exc_instance_str(obj)
+            }
             _ => {
                 // For containers and other types, build repr string
                 let s = obj_to_repr_string(obj);
@@ -317,11 +325,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             let data = (*str_obj).data.as_ptr();
             let bytes = std::slice::from_raw_parts(data, len);
             let mut s = String::with_capacity(len + 2);
-            s.push('\'');
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                super::repr::repr_escape_into(&mut s, text);
-            }
-            s.push('\'');
+            super::repr::repr_str_into(&mut s, &String::from_utf8_lossy(bytes));
             s
         }
         TypeTagKind::ByteArray => crate::bytearray::bytearray_repr_string(obj),
@@ -330,16 +334,7 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             let len = (*src).len;
             let data = (*src).data.as_ptr();
             let mut s = String::with_capacity(len + 3);
-            s.push_str("b'");
-            for i in 0..len {
-                let b = *data.add(i);
-                if (0x20..0x7f).contains(&b) && b != b'\'' && b != b'\\' {
-                    s.push(b as char);
-                } else {
-                    s.push_str(&format!("\\x{:02x}", b));
-                }
-            }
-            s.push('\'');
+            super::repr::bytes_repr_into(&mut s, std::slice::from_raw_parts(data, len));
             s
         }
         TypeTagKind::None => "None".to_string(),
@@ -468,8 +463,48 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             }
             crate::instance::instance_default_repr(obj)
         }
+        TypeTagKind::DictKeys | TypeTagKind::DictValues | TypeTagKind::DictItems => {
+            dict_view_repr_string(obj)
+        }
         _ => format!("<object at {:p}>", obj),
     }
+}
+
+/// Build the repr of a live dict view over the dict's current contents:
+/// `dict_keys(['a', 'b'])`, `dict_values([1, 2])`,
+/// `dict_items([('a', 1), ('b', 2)])` (CPython `dictview_repr`; `str()` is the
+/// same). Shared by `str()`/`repr()` (here) and the stdout print path.
+pub(crate) unsafe fn dict_view_repr_string(obj: *mut Obj) -> String {
+    use crate::object::{DictObj, DictViewObj};
+    let tag = (*obj).type_tag();
+    let dict = (*(obj as *mut DictViewObj)).dict as *mut DictObj;
+    let mut s = String::from(tag.type_name());
+    s.push_str("([");
+    let mut first = true;
+    for i in 0..(*dict).entries_len {
+        let entry = (*dict).entries.add(i);
+        let key = (*entry).key;
+        if key.0 == 0 {
+            continue;
+        }
+        if !first {
+            s.push_str(", ");
+        }
+        first = false;
+        match tag {
+            TypeTagKind::DictKeys => obj_repr_string(&mut s, key.0 as *mut Obj),
+            TypeTagKind::DictValues => obj_repr_string(&mut s, (*entry).value.0 as *mut Obj),
+            _ => {
+                s.push('(');
+                obj_repr_string(&mut s, key.0 as *mut Obj);
+                s.push_str(", ");
+                obj_repr_string(&mut s, (*entry).value.0 as *mut Obj);
+                s.push(')');
+            }
+        }
+    }
+    s.push_str("])");
+    s
 }
 
 /// Build the repr string of a `Counter` — `Counter({k: c, ...})` with entries in
@@ -556,11 +591,7 @@ pub(super) unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let len = (*str_obj).len;
             let data = (*str_obj).data.as_ptr();
             let bytes = std::slice::from_raw_parts(data, len);
-            s.push('\'');
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                super::repr::repr_escape_into(s, text);
-            }
-            s.push('\'');
+            super::repr::repr_str_into(s, &String::from_utf8_lossy(bytes));
         }
         TypeTagKind::None => s.push_str("None"),
         TypeTagKind::Instance => {

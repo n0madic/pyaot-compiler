@@ -269,4 +269,56 @@ kwargs_result: list[int] = random.choices([1, 2, 3], weights=[10.0, 1.0, 1.0], k
 assert len(kwargs_result) == 5, f"kwargs choices: expected 5, got {len(kwargs_result)}"
 print("Stdlib keyword arguments passed!")
 
+# ── review fixes: choices() edge cases ──
+assert random.choices([1, 2, 3], k=-1) == []
+assert random.choices([], k=0) == []
+_choices_raised = False
+try:
+    random.choices([1, 2, 3], weights=[1.0], k=2)
+except ValueError:
+    _choices_raised = True
+assert _choices_raised
+random.seed(1)
+_int_weighted: list[int] = random.choices([1, 2, 3], weights=[1, 2, 3], k=4)
+assert _int_weighted == [1, 3, 3, 2], _int_weighted
+print("Stdlib choices edge cases passed!")
+
+
+# ===== SECTION: CPython-exact sample(), any-int/float/str seeds, randrange forms =====
+
+def _random_cpython_exact() -> None:
+    random.seed(42)
+    assert random.sample(list(range(100)), 10) == [81, 14, 3, 94, 35, 31, 28, 17, 13, 86]
+    assert random.sample([1, 2, 3, 4, 5], 3) == [5, 1, 3]
+    assert random.sample(list(range(1000)), 5) == [432, 32, 30, 95, 223]
+    assert random.sample((1, 2, 3), 2) == [1, 3]
+    random.seed(10**30)
+    assert random.random() == 0.9341508484568806
+    random.seed(-7)
+    assert random.random() == 0.32383276483316237
+    random.seed(2**64)
+    assert random.randint(1, 100) == 95
+    random.seed(1.5)
+    assert random.random() == 0.551763726942059
+    random.seed("hello")
+    assert random.random() == 0.3537754404730722
+    random.seed(5)
+    got = [random.randrange(10), random.randrange(5, 10), random.randrange(0, 20, 3)]
+    got.append(random.randrange(10, 0, -2))
+    assert got == [9, 7, 15, 6]
+    errors: list[str] = []
+    try:
+        random.randrange(0, 10, 0)
+    except ValueError as e:
+        errors.append(str(e))
+    try:
+        random.sample([1, 2], 3)
+    except ValueError as e:
+        errors.append(str(e))
+    assert errors == ["zero step for randrange()", "Sample larger than population or is negative"]
+
+
+_random_cpython_exact()
+
+
 print("All random tests passed!")

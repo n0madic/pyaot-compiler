@@ -12,9 +12,9 @@ pub use to_str::{
     rt_obj_to_str, rt_str_to_float, rt_str_to_int,
 };
 
-pub(crate) use repr::repr_escape_into;
+pub(crate) use repr::{bytes_repr_into, repr_str_into};
 
-pub(crate) use to_str::counter_repr_string;
+pub(crate) use to_str::{counter_repr_string, dict_view_repr_string};
 
 pub use repr::{rt_repr_bool, rt_repr_collection, rt_repr_float, rt_repr_int, rt_repr_none};
 

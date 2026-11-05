@@ -1,7 +1,7 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
 use super::dunder_dispatch::{
-    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_AND, FNV_FLOORDIV,
+    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_AND, FNV_IADD, FNV_IMUL, FNV_FLOORDIV,
     FNV_INVERT, FNV_LSHIFT, FNV_MATMUL, FNV_MOD, FNV_MUL, FNV_NEG, FNV_OR, FNV_POS, FNV_POW,
     FNV_RADD, FNV_RAND, FNV_RFLOORDIV, FNV_RLSHIFT, FNV_RMATMUL, FNV_RMOD, FNV_RMUL, FNV_ROR,
     FNV_RPOW, FNV_RRSHIFT, FNV_RSHIFT, FNV_RSUB, FNV_RTRUEDIV, FNV_RXOR, FNV_SUB, FNV_TRUEDIV,
@@ -84,7 +84,7 @@ pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
     if b == 0 {
-        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "integer modulo by zero") }
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
     }
     if a == i64::MIN && b == -1 {
         unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") }
@@ -118,9 +118,14 @@ pub extern "C" fn rt_mul_float(a: f64, b: f64) -> f64 {
     a * b
 }
 
-/// Divide two floats
+/// Divide two floats (Python `/`): a zero divisor (`0.0` or `-0.0`) raises
+/// `ZeroDivisionError` like CPython instead of producing inf/nan. Compiled code
+/// inlines the non-zero case and calls this only on the zero-divisor path.
 #[no_mangle]
 pub extern "C" fn rt_div_float(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
+    }
     a / b
 }
 
@@ -208,6 +213,12 @@ pub extern "C" fn rt_obj_add_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        // A set-like dict view operand: `set(a) - b` (CPython dictviews_sub).
+        if let Some(r) =
+            crate::dict_view::try_view_setop(a, b, crate::dict_view::ViewSetOp::Sub)
+        {
+            return r;
+        }
         if either_is_instance(a, b) {
             if let Some(result) = try_class_dunder(a, b, FNV_SUB, FNV_RSUB) {
                 return result;
@@ -266,22 +277,36 @@ pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         } else {
             vb_tagged.primitive_type().unwrap()
         };
-        // String repetition: str * int or int * str
-        if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Int {
-            let count = if vb_tagged.is_int() {
-                vb_tagged.unwrap_int()
-            } else {
-                0
+        // Sequence repetition through the gradual path: `seq * n` / `n * seq`
+        // for str / list / tuple / bytes (CPython `sq_repeat`). `n` may be an
+        // int, a bool or a bignum.
+        let is_seq = |t: TypeTagKind| {
+            matches!(
+                t,
+                TypeTagKind::Str | TypeTagKind::List | TypeTagKind::Tuple | TypeTagKind::Bytes
+            )
+        };
+        let is_count = |t: TypeTagKind| {
+            matches!(
+                t,
+                TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::BigInt
+            )
+        };
+        let seq_count = if is_seq(tag_a) && is_count(tag_b) {
+            Some((a, tag_a, vb_tagged))
+        } else if is_count(tag_a) && is_seq(tag_b) {
+            Some((b, tag_b, va_tagged))
+        } else {
+            None
+        };
+        if let Some((seq, seq_tag, count_v)) = seq_count {
+            let count = repeat_count(count_v);
+            return match seq_tag {
+                TypeTagKind::Str => crate::string::rt_str_mul(seq, count),
+                TypeTagKind::List => crate::list::rt_list_repeat(seq, count),
+                TypeTagKind::Tuple => crate::tuple::rt_tuple_repeat(seq, count),
+                _ => crate::bytes::rt_bytes_repeat(seq, count),
             };
-            return crate::string::rt_str_mul(a, count);
-        }
-        if tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Str {
-            let count = if va_tagged.is_int() {
-                va_tagged.unwrap_int()
-            } else {
-                0
-            };
-            return crate::string::rt_str_mul(b, count);
         }
         match (
             crate::bigint::classify_num(va_tagged),
@@ -396,9 +421,33 @@ pub extern "C" fn rt_obj_floordiv_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_floordiv(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
+/// The repeat count of `seq * n`: an int / bool, or a bignum (which can only
+/// be a negative count → empty, or an impossible allocation).
+unsafe fn repeat_count(v: Value) -> i64 {
+    if v.is_int() {
+        return v.unwrap_int();
+    }
+    if v.is_bool() {
+        return v.unwrap_bool() as i64;
+    }
+    match crate::bigint::classify_num(v) {
+        Some(crate::bigint::Num::Big(b)) if num_traits::Signed::is_negative(&b) => 0,
+        _ => raise_exc!(
+            ExceptionType::OverflowError,
+            "cannot fit 'int' into an index-sized integer"
+        ),
+    }
+}
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        // `str % args` — printf-style formatting (the left operand decides,
+        // even when `args` is a class instance: `'%s' % obj`).
+        let va = Value(a as u64);
+        if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Str {
+            return crate::percent_format::percent_format(a, b);
+        }
         if either_is_instance(a, b) {
             if let Some(result) = try_class_dunder(a, b, FNV_MOD, FNV_RMOD) {
                 return result;
@@ -474,9 +523,20 @@ pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
 
 macro_rules! bitwise_op {
     ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr) => {
+        bitwise_op!($name, $abi, $export, $num, $fwd, $refl, None, None);
+    };
+    ($name:ident, $abi:ident, $export:literal, $num:ident, $fwd:expr, $refl:expr, $logic:expr, $view:expr) => {
         #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub fn $name(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             unsafe {
+                // A set-like dict view operand (`d.keys() & s`, `s | d.items()`):
+                // the result is a fresh `set` (CPython dictviews_and/or/xor).
+                let view: Option<crate::dict_view::ViewSetOp> = $view;
+                if let Some(op) = view {
+                    if let Some(r) = crate::dict_view::try_view_setop(a, b, op) {
+                        return r;
+                    }
+                }
                 // Class instance operand: route through user-defined bitwise
                 // dunders (`__and__`/`__rand__`, etc.) following CPython's
                 // forward-then-reflected protocol — the same as `rt_obj_add`.
@@ -489,6 +549,14 @@ macro_rules! bitwise_op {
                 }
                 let va = Value(a as u64);
                 let vb = Value(b as u64);
+                // `bool & | ^ bool` is a `bool` (CPython `bool.__and__` etc.).
+                let logic: Option<fn(bool, bool) -> bool> = $logic;
+                if let Some(f) = logic {
+                    if va.is_bool() && vb.is_bool() {
+                        return Value::from_bool(f(va.unwrap_bool(), vb.unwrap_bool())).0
+                            as *mut Obj;
+                    }
+                }
                 match (
                     crate::bigint::classify_num(va),
                     crate::bigint::classify_num(vb),
@@ -516,7 +584,9 @@ bitwise_op!(
     "rt_obj_bitand",
     num_bitand,
     FNV_AND,
-    FNV_RAND
+    FNV_RAND,
+    Some(|x, y| x & y),
+    Some(crate::dict_view::ViewSetOp::And)
 );
 bitwise_op!(
     rt_obj_bitor,
@@ -524,7 +594,9 @@ bitwise_op!(
     "rt_obj_bitor",
     num_bitor,
     FNV_OR,
-    FNV_ROR
+    FNV_ROR,
+    Some(|x, y| x | y),
+    Some(crate::dict_view::ViewSetOp::Or)
 );
 bitwise_op!(
     rt_obj_bitxor,
@@ -532,7 +604,9 @@ bitwise_op!(
     "rt_obj_bitxor",
     num_bitxor,
     FNV_XOR,
-    FNV_RXOR
+    FNV_RXOR,
+    Some(|x, y| x ^ y),
+    Some(crate::dict_view::ViewSetOp::Xor)
 );
 bitwise_op!(
     rt_obj_lshift,
@@ -560,6 +634,9 @@ bitwise_op!(
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_ior(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IOR) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() {
             match (*a).type_tag() {
@@ -582,6 +659,144 @@ pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_ior(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
+/// An instance's own in-place dunder (`__isub__`, `__ior__`, …) for an
+/// augmented assignment, if it defines one and it does not return
+/// `NotImplemented` — CPython tries it before the binary operator.
+unsafe fn try_inplace_dunder(a: *mut Obj, b: *mut Obj, hash: u64) -> Option<*mut Obj> {
+    let va = Value(a as u64);
+    if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Instance {
+        return try_class_dunder(a, b, hash, 0);
+    }
+    None
+}
+
+/// The remaining augmented assignments (contract addition): `kind` selects
+/// `/=` (0), `//=` (1), `%=` (2), `**=` (3), `@=` (4), `<<=` (5), `>>=` (6).
+/// An instance's `__i<op>__` runs first; otherwise the binary operator (with
+/// its reflected fallback) applies, exactly as for `a = a <op> b`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_inplace(a: *mut Obj, b: *mut Obj, kind: i64) -> *mut Obj {
+    use super::dunder_dispatch as d;
+    let hash = match kind {
+        0 => d::FNV_ITRUEDIV,
+        1 => d::FNV_IFLOORDIV,
+        2 => d::FNV_IMOD,
+        3 => d::FNV_IPOW,
+        4 => d::FNV_IMATMUL,
+        5 => d::FNV_ILSHIFT,
+        _ => d::FNV_IRSHIFT,
+    };
+    unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, hash) {
+            return r;
+        }
+    }
+    match kind {
+        0 => rt_obj_div(a, b),
+        1 => rt_obj_floordiv(a, b),
+        2 => rt_obj_mod(a, b),
+        3 => rt_obj_pow(a, b),
+        4 => rt_obj_matmul(a, b),
+        5 => rt_obj_lshift(a, b),
+        _ => rt_obj_rshift(a, b),
+    }
+}
+#[export_name = "rt_obj_inplace"]
+pub extern "C" fn rt_obj_inplace_abi(a: Value, b: Value, kind: i64) -> Value {
+    Value::from_ptr(rt_obj_inplace(a.unwrap_ptr(), b.unwrap_ptr(), kind))
+}
+
+/// In-place add `a += b` (contract addition). A `list` receiver extends in
+/// place (`list.__iadd__`, any list / tuple operand) and returns the SAME
+/// object, so an alias observes it; an instance defining `__iadd__` runs it;
+/// everything else delegates to the new-object `rt_obj_add` (numbers, `str`,
+/// `tuple` — immutable `+=` rebinds).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_iadd(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        if va.is_ptr() && !a.is_null() {
+            match (*a).type_tag() {
+                TypeTagKind::List if vb.is_ptr() && !b.is_null() => match (*b).type_tag() {
+                    TypeTagKind::List => {
+                        crate::list::rt_list_extend(a, b);
+                        return a;
+                    }
+                    TypeTagKind::Tuple => {
+                        use crate::gc::{gc_pop, gc_push, ShadowFrame};
+                        let tmp = crate::list::rt_list_from_tuple(b);
+                        let mut roots: [*mut Obj; 2] = [a, tmp];
+                        let mut frame = ShadowFrame {
+                            prev: std::ptr::null_mut(),
+                            nroots: 2,
+                            roots: roots.as_mut_ptr(),
+                        };
+                        gc_push(&mut frame);
+                        crate::list::rt_list_extend(a, tmp);
+                        gc_pop();
+                        return a;
+                    }
+                    _ => {}
+                },
+                TypeTagKind::Instance => {
+                    if let Some(r) = try_class_dunder(a, b, FNV_IADD, 0) {
+                        return r;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rt_obj_add(a, b)
+    }
+}
+#[export_name = "rt_obj_iadd"]
+pub extern "C" fn rt_obj_iadd_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_iadd(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+/// In-place multiply `a *= n` (contract addition). A `list` receiver is
+/// repeated in place (`list.__imul__`) and returned; an instance defining
+/// `__imul__` runs it; everything else delegates to `rt_obj_mul`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_imul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    unsafe {
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        if va.is_ptr() && !a.is_null() {
+            match (*a).type_tag() {
+                TypeTagKind::List if vb.is_int() || vb.is_bool() => {
+                    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+                    let n = if vb.is_int() { vb.unwrap_int() } else { vb.unwrap_bool() as i64 };
+                    let rep = crate::list::rt_list_repeat(a, n);
+                    let mut roots: [*mut Obj; 2] = [a, rep];
+                    let mut frame = ShadowFrame {
+                        prev: std::ptr::null_mut(),
+                        nroots: 2,
+                        roots: roots.as_mut_ptr(),
+                    };
+                    gc_push(&mut frame);
+                    crate::list::rt_list_clear(a);
+                    crate::list::rt_list_extend(a, rep);
+                    gc_pop();
+                    return a;
+                }
+                TypeTagKind::Instance => {
+                    if let Some(r) = try_class_dunder(a, b, FNV_IMUL, 0) {
+                        return r;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rt_obj_mul(a, b)
+    }
+}
+#[export_name = "rt_obj_imul"]
+pub extern "C" fn rt_obj_imul_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_imul(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 /// In-place bitwise-and `a &= b`. For a `set` receiver this mutates `a` in place
 /// (`set.__iand__`) and returns the SAME object, so the compiler's `a = a & b`
 /// augmented-assignment rebind is a no-op and aliases observe the mutation.
@@ -591,6 +806,9 @@ pub extern "C" fn rt_obj_ior_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_iand(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IAND) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_intersection_update(a, b);
@@ -611,6 +829,9 @@ pub extern "C" fn rt_obj_iand_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_isub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_ISUB) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_difference_update(a, b);
@@ -630,6 +851,9 @@ pub extern "C" fn rt_obj_isub_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_ixor(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if let Some(r) = try_inplace_dunder(a, b, super::dunder_dispatch::FNV_IXOR) {
+            return r;
+        }
         let va = Value(a as u64);
         if va.is_ptr() && !a.is_null() && (*a).type_tag() == TypeTagKind::Set {
             crate::set::rt_set_symmetric_difference_update(a, b);

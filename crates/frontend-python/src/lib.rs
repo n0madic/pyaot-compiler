@@ -26,7 +26,8 @@ mod freevars;
 mod lower;
 
 use rustpython_parser::ast::{Mod, Stmt};
-use rustpython_parser::{parse as rustpython_parse, Mode};
+use rustpython_parser::text_size::TextSize;
+use rustpython_parser::{parse_starts_at, Mode};
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{HirModule, HirProgram};
@@ -52,6 +53,13 @@ pub trait ModuleSource {
             format!("{}.py", path.join("/"))
         }
     }
+
+    /// Called once per imported module, before it is parsed, with its display
+    /// path, the global offset its spans start at, and its source text — so the
+    /// caller can build a [`pyaot_utils::SourceMap`] and render a diagnostic in
+    /// an imported module against the right file. (The entry script is always
+    /// at base 0.) Default: ignored.
+    fn module_loaded(&mut self, _display: &str, _base: u32, _src: &str) {}
 }
 
 /// A loader with no modules — every import fails. Used by [`parse`] (single-file
@@ -82,16 +90,20 @@ pub fn parse_program(
     loader: &mut dyn ModuleSource,
     interner: &mut StringInterner,
 ) -> Result<HirProgram> {
-    let body = parse_module_body(src)?;
+    let body = parse_module_body(src, 0)?;
     ProgramLowerer::new(interner, loader).run(body, src, entry_file)
 }
 
-/// Parse a module's source text into its top-level statement list.
-pub(crate) fn parse_module_body(src: &str) -> Result<Vec<Stmt>> {
-    let parsed = rustpython_parse(src, Mode::Module, "<input>").map_err(|e| {
-        let off = e.offset.to_u32();
-        CompilerError::parse_error(e.to_string(), Span::new(off, off))
-    })?;
+/// Parse a module's source text into its top-level statement list. Every
+/// range in the AST is offset by `base` (the module's global source-map base).
+pub(crate) fn parse_module_body(src: &str, base: u32) -> Result<Vec<Stmt>> {
+    let parsed =
+        parse_starts_at(src, Mode::Module, "<input>", TextSize::from(base)).map_err(|e| {
+            let off = e.offset.to_u32();
+            // The message names the file-local offset (the span stays global).
+            let msg = format!("{} at byte offset {}", e.error, off.saturating_sub(base));
+            CompilerError::parse_error(msg, Span::new(off, off))
+        })?;
     match parsed {
         Mod::Module(m) => Ok(m.body),
         _ => Err(CompilerError::parse_error(

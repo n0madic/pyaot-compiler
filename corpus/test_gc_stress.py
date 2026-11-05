@@ -548,9 +548,75 @@ _p2_gc_stress()
 _p4_gc_stress()
 _p5_gc_stress()
 _p6_gc_stress()
+# ── review fixes: Truthy / sorted() rooting ──
+#
+# `if obj:` on a class instance runs the user's `__bool__`, which may allocate
+# and collect: heap locals live across the test must stay rooted, and the
+# test itself must never be deleted as dead code. A user `__lt__` that
+# allocates during `sorted()` must not free the fresh result list.
+class _RfAllocBool:
+    def __init__(self) -> None:
+        self.n = 0
+
+    def __bool__(self) -> bool:
+        junk: list[str] = []
+        for i in range(2000):
+            junk.append("x" + str(i))
+        self.n += 1
+        return len(junk) > 0
+
+
+class _RfBox:
+    def __init__(self) -> None:
+        self.v = "init"
+
+
+def _rf_truthy_keeps_roots(b: _RfAllocBool, k: int, bx: _RfBox) -> str:
+    s = "abc" + str(k)
+    t = "def" + str(k)
+    if b:
+        bx.v = s
+        return t
+    return "no"
+
+
+def _rf_truthy_dead_test(b: _RfAllocBool) -> None:
+    if b:
+        pass
+
+
+class _RfAllocLt:
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+    def __lt__(self, other: "_RfAllocLt") -> bool:
+        junk = [str(i) for i in range(20)]
+        return self.v < other.v and len(junk) > 0
+
+
+def _review_fix_gc_stress():
+    b = _RfAllocBool()
+    bx = _RfBox()
+    for k in range(10):
+        assert _rf_truthy_keeps_roots(b, k, bx) == "def" + str(k)
+        assert bx.v == "abc" + str(k)
+    _rf_truthy_dead_test(b)
+    x = 1 if b else 1
+    assert x == 1
+    assert b.n == 12, b.n
+    ps = [_RfAllocLt((i * 7919) % 1000) for i in range(600)]
+    out = sorted(ps)
+    extra = [[i] * 10 for i in range(5000)]
+    assert len(extra) == 5000
+    assert len(out) == 600
+    for i in range(1, len(out)):
+        assert out[i - 1].v <= out[i].v
+
+
 _p7_gc_stress()
 _p9_root_narrowing_gc_stress()
 _p9_zip_fresh_elems_gc_stress()
 _test_gc_simple()
+_review_fix_gc_stress()
 
 print("All GC stress tests passed!")

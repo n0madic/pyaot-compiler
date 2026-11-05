@@ -58,6 +58,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `await` | ❌ | Out of scope |
 | Walrus `:=` | ✅ | All scopes (if/while/comprehension/global) |
 | f-strings | ✅ | Conversions, nested fields, dynamic format specs |
+| printf-style `str % args` | ✅ | Full `%[(key)][flags][width][.prec]type` grammar (`*` width/precision, `#0- +`, `d i u o x X e E f F g G c r s a %`), tuple / mapping / single argument, CPython error messages |
 | f-string `=` self-doc (`f"{x=}"`) | ❌ | PEP 501 spec form not implemented |
 
 ---
@@ -75,6 +76,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `tuple` | ✅ | Fixed-arity & homogeneous; lexicographic compare |
 | `dict` | ✅ | Insertion-ordered; merge `|`/`|=`, `fromkeys`; `d[k]` on a missing key raises `KeyError(k)` (typed and dynamic bases; a dynamic `defaultdict`/`Counter` keeps its own miss rule) |
 | `set` | ✅ | `\| & - ^`, `pop`, and update/relational methods |
+| dict views (`dict_keys`/`dict_values`/`dict_items`) | ✅ | `keys()`/`values()`/`items()` return LIVE views (later dict mutation visible): `len`, iteration ("dictionary changed size during iteration" RuntimeError), `in`, `reversed`, repr, `list`/`sorted`/`tuple`/`set`/`dict` of a view; keys/items views are set-like (`& \| - ^` → `set`, `==`/`<`/`<=` vs sets/views, `isdisjoint`); subscripting raises TypeError; typed and `Dyn` receivers. Gaps: `mapping` attribute; typed `Counter.keys()/values()/items()` still return list snapshots |
 | `range` | ✅ | Lazy iterator, negative/variable step |
 | `NoneType` | ✅ | `None` sentinel, `is`/`is not` |
 | `frozenset` | ✅ | Pragmatic core: ctors, protocol, hashable (dict key/set elem), `\| & - ^`, union/intersection/difference/symmetric_difference/copy/issubset/issuperset/isdisjoint. Gap: ordering (`< <=`), multi-element repr order follows set model |
@@ -88,7 +90,8 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 
 | Group | Status | Notes |
 |---|---|---|
-| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization |
+| Arithmetic `+ - * / // % **` | ✅ | Bignum + float tower; raw-int specialization. Dynamic paths are exact like CPython: `int / int` correctly rounded (`10**400 / 10**399`), float `//`/`%` via `fmod` (`1.0 // 0.1 == 9.0`), `OverflowError` for an int too large for a float; gradual `seq * n` for str/list/tuple/bytes |
+| Mixed int/float comparison | ✅ | Exact on the dynamic paths (`2**53 + 1 != 2.0**53`); a statically typed `int` vs `float` compare still converts the int to a double |
 | Matrix multiply `@` | ✅ | `__matmul__` / `__rmatmul__` |
 | Bitwise `& \| ^ ~ << >>` | ✅ | |
 | Comparison `< <= > >= == !=` | ✅ | Rich-comparison dunders, chained compares |
@@ -96,7 +99,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Membership `in` / `not in` | ✅ | Containers + user `__contains__` |
 | Boolean `and` / `or` / `not` | ✅ | Short-circuit, truthiness via `__bool__`/`__len__` |
 | Ternary `a if c else b` | ✅ | |
-| Reflected & in-place dunders | ✅ | `__radd__`, `__iadd__`, … |
+| Reflected & in-place dunders | ✅ | Reflected `__radd__`, … ✅. Every augmented assignment tries the instance's `__i<op>__` first (`__iadd__` … `__imatmul__`, `__ior__`/`__iand__`/`__ixor__`/`__ilshift__`/`__irshift__`), then the binary dunder; list `+=`/`*=`, set `\|= &= -= ^=` and dict `\|=` mutate in place |
 
 ---
 
@@ -105,7 +108,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Feature | Status | Notes |
 |---|---|---|
 | Positional / default params | ✅ | Mutable defaults eval-once (CPython aliasing) |
-| `*args` | ✅ | |
+| `*args` | ✅ | Incl. a self-less method `def m(*args)` (the instance is packed as `args[0]`; direct calls — not an overridden/virtual one) |
 | `**kwargs` | ✅ | |
 | Keyword-only / positional-only params | ✅ | `kwonlyargs` / `posonlyargs`; a keyword named like a positional-only param goes to `**kwargs` |
 | Keyword arguments at call site | ✅ | Eval-order preserving |
@@ -115,7 +118,7 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Decorators / decorator factories | ✅ | |
 | Recursion | ✅ | |
 | First-class functions / callables as values | ✅ | Uniform value-call ABI |
-| Generators (`yield`, `send`, `close`, `yield from`) | ✅ | |
+| Generators (`yield`, `send`, `close`, `throw`, `yield from`) | ✅ | `send`/`close` dispatch by receiver type (static generator or `Dyn` by runtime tag); `throw(exc)` raises at the suspended `yield` (statically-typed generator receiver; one exception-instance argument) |
 | Generator expressions | ✅ | |
 
 ---
@@ -127,10 +130,10 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Class definition, fields, methods | ✅ | |
 | `__init__` / instance construction | ✅ | |
 | Single inheritance | ✅ | Base may be defined in module-level control flow; a base bound later in execution order is rejected (CPython `NameError`) |
-| Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice |
-| `super()` | ✅ | |
+| Multiple inheritance + C3 MRO | ✅ | MRO-aware type lattice; every MRO ancestor is registered at run time (`isinstance` / `except` see all bases); members overridden in a subclass dispatch on the receiver's runtime class |
+| `super()` | ✅ | Zero-arg `super().m(...)`, two-arg `super(C, self)`, `super().prop` / class attribute, and `super()` inside a `@classmethod` (same-module single-inheritance chain). A cooperative diamond follows the receiver's runtime MRO. `super().__init__([msg])` in an exception class whose parents define no `__init__` records the message |
 | `@property` | ✅ | |
-| `@staticmethod` / `@classmethod` | ✅ | `cls` is a compile-time alias of the enclosing class (`cls()` / `cls.attr` / `cls.method`); statically enclosing class, not a runtime subclass. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
+| `@staticmethod` / `@classmethod` | ✅ | Inherited along the MRO. `cls` is a compile-time alias of the class the method is reached through (each subclass gets its own copy of an inherited classmethod — same-module bases), so `Sub.make()` builds a `Sub`. `Cls.smeth` usable as a first-class value (`g = Cls.smeth`, `map(Cls.smeth, …)`) via the receiver-less uniform thunk. (An *unbound instance* method `Cls.imeth` as a value is still out of scope.) |
 | Dunder methods (arith/compare/container/iter) | ✅ | Return Tagged, read via `rt_is_truthy` |
 | Iterator protocol (`__iter__`/`__next__`) | ✅ | Per-class compiled iter-next thunk |
 | `__slots__` | 🟡 | Accepted but ignored (no layout effect) |
@@ -175,8 +178,9 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | Multiple `except` clauses | ✅ | |
 | Exception binding `except E as e` | ✅ | |
 | Custom exception subclasses | ✅ | |
-| Built-in exception hierarchy | ✅ | `ValueError`, `TypeError`, `IndexError`, `IOError`, … |
-| Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table` |
+| Built-in exception hierarchy | ✅ | All concrete CPython builtin exceptions with their real parents (`except OSError` catches `FileNotFoundError`, `except LookupError` catches `KeyError`, `ArithmeticError`, `ConnectionError` subtree, …); `IOError`/`EnvironmentError` are aliases of `OSError`. No `Warning` hierarchy, no `ExceptionGroup` |
+| Bare `raise` / `__context__` with nested handlers | ✅ | Runtime handling stack (CPython `exc_info` stack): every handler exit pops it, including exceptional exits via a cleanup landing pad. Boundary: a generator suspended inside a handler does not save/restore its entry |
+| Real tracebacks (file/line) | ✅ | Lazy PC−1 resolution, `pyaot_tb_table`; CPython frame names (`m`, `inner`, `<lambda>`, generator name; dispatch thunks hidden); inlined frames kept under optimization (inline chains). No source-line echo |
 | `except*` / `ExceptionGroup` | ❌ | Not implemented |
 
 ---
@@ -204,9 +208,9 @@ Implementation status of `pyaot-compiler` relative to standard Python 3.
 | `map`, `filter` | ✅ | Eager desugar (single iterable) |
 | `sorted`, `reversed`, `min`, `max`, `sum` | ✅ | `key=` / `reverse=` |
 | `abs`, `round`, `pow`, `divmod` | ✅ | |
-| `all`, `any`, `id`, `hash` | ✅ | |
+| `all`, `any`, `id`, `hash` | ✅ | `hash()` matches CPython for int / bignum / float / bool / None / tuple (mod `2**61-1`, xxHash tuple hash); str/bytes hashes differ (CPython's are randomized). Instances: `__hash__`, unhashable with `__eq__` but no `__hash__`, else identity. Dict/set keys use the same hash and `__eq__` |
 | `bin`, `hex`, `oct`, `ord`, `chr` | ✅ | |
-| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language; user `__repr__`/`__format__` |
+| `repr`, `str`, `format`, `ascii` | ✅ | Full format mini-language (CPython float rules: no-type-code repr-like form, `g` decided after rounding, `-0.0`, `nan`/`inf` case, grouping inside `0`-padding, `_` groups of 4 for hex); user `__repr__`/`__format__` |
 | `int`, `float`, `bool` | ✅ | Incl. `int(str, base)` with CPython's literal grammar (one sign, radix prefix + optional `_`, base-0 leading-zero rule); `int()` of a big int / out-of-range float yields a bignum |
 | `list`, `dict`, `set`, `tuple`, `bytes` | ✅ | |
 | `type(x)` (1-arg) | ✅ | |
@@ -252,12 +256,12 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 
 | Module | Status | Notes |
 |---|---|---|
-| `math` | ✅ | Core functions + constants |
-| `random` | ✅ | |
+| `math` | ✅ | Core functions + constants; `factorial`/`gcd`/`lcm`/`comb`/`perm` are exact on big ints |
+| `random` | ✅ | MT19937 identical to CPython: `seed` (any-size int, float, str, None), `random`/`randint`/`randrange`/`choice`/`choices`/`shuffle`/`sample`/`uniform`/`gauss` produce CPython's sequences |
 | `sys` | ✅ | `argv`, `exit`, `intern`, `path`; constants `platform`/`maxsize`/`maxunicode`/`byteorder` |
 | `time` | ✅ | Live timestamps (self-checking test mode) |
-| `re` | ✅ | `Match`, common pattern ops (gated `stdlib-regex`) |
-| `json` | ✅ | Object types, `ensure_ascii` (gated `stdlib-json`) |
+| `re` | ✅ | `search`/`match`/`sub` + `Match` (`group`/`groups`/`start`/`end`/`span`); `sub` replacement templates follow CPython (`\1`, `\g<name>`, escapes, errors). Engine is `regex-lite` (no backreferences/lookaround in patterns; empty-match adjacency may differ) (gated `stdlib-regex`) |
+| `json` | ✅ | `dumps`/`loads`/`dump`/`load`, CPython-exact output with default options: insertion order, big ints, `NaN`/`Infinity`, int/float/bool/None keys, `ensure_ascii`, `JSONDecodeError` messages (raised as `ValueError`). In-tree codec (no external crate). No `indent`/`sort_keys`/`separators`/`default` kwargs |
 | `os` / `os.path` | ✅ | Submodule chains, `environ`, `posixpath`; constants `sep`/`linesep`/`pathsep`/`curdir`/`pardir`/`extsep`/`devnull` |
 | `subprocess` | ✅ | |
 | `itertools` | ✅ | |
@@ -283,7 +287,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Feature | Status | Notes |
 |---|---|---|
 | Type annotations on params/returns/vars | ✅ | Drive representation & inference |
-| Type inference (constraint-based) | ✅ | One solver, finished before lowering |
+| Type inference (constraint-based) | ✅ | One solver, finished before lowering; container element types are precise only for non-escaping containers (escape/alias analysis), every `Tagged → Raw/Heap` narrowing is runtime-checked by default |
 | Gradual typing (`Dyn` / unannotated) | ✅ | Always-correct Tagged baseline |
 | Generics / monomorphization | ✅ | `Generic`, `TypeVar` |
 | `typing.Protocol` (structural) | ✅ | Instance-level |
@@ -300,6 +304,7 @@ common subset, not the entire API. The runtime stdlib surface is feature-gated
 | Cranelift native codegen | ✅ | `opt_level=speed` default |
 | MIR optimizer (inline/constfold/peephole/DCE/cold-layout) | ✅ | |
 | Raw-int interval specialization | ✅ | Interprocedural fixpoint |
+| Unboxed float / raw-int arithmetic | ✅ | `Raw(F64)` `+ - * /`, comparisons (IEEE, NaN-correct) and negation inline (zero divisor → `ZeroDivisionError`); raw-int `+ - *` are inline overflow-checked machine ops (`test_raw_fastpaths.py`) |
 | Parallel codegen | ✅ | Byte-identical output |
 | GC (shadow-frame roots, table unwinding) | ✅ | GC-rootness derived from `Repr` |
 | Real tracebacks | ✅ | |

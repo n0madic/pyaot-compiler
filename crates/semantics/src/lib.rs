@@ -191,6 +191,23 @@ pub fn collect_classes(
         (Vec::<()>::new(), class_maps)
     };
     let n_ns = class_maps.len();
+    // Attribute names assigned through an instance anywhere (`obj.n = v` with a
+    // non-`Name` base — a class is only ever referenced by name). A class
+    // attribute with such a name also gets an instance field ("shadow" slot):
+    // CPython's `inst.n = v` creates an instance attribute and leaves the class
+    // attribute alone; reads take the slot when set, else the class attribute.
+    let mut instance_written: HashSet<InternedString> = HashSet::new();
+    for f in &module.functions {
+        for (_, block) in f.blocks.iter() {
+            for stmt in &block.stmts {
+                if let HirStmt::SetAttr { base, name, .. } = stmt {
+                    if !matches!(f.exprs[*base].kind, pyaot_hir::HirExprKind::Name(_)) {
+                        instance_written.insert(*name);
+                    }
+                }
+            }
+        }
+    }
     let mut by_id: HashMap<ClassId, &HirClass> = HashMap::new();
     for c in &module.classes {
         by_id.insert(c.class_id, c);
@@ -321,6 +338,14 @@ pub fn collect_classes(
                 None => fields.push(fi),
             }
         }
+        for a in &c.class_attrs {
+            if instance_written.contains(&a.name) && !fields.iter().any(|f| f.name == a.name) {
+                fields.push(FieldInfo {
+                    name: a.name,
+                    ty: SemTy::Dyn,
+                });
+            }
+        }
 
         // ── Methods: own + inherited; MRO order gives override precedence ──
         let mut methods: Vec<MethodInfo> = Vec::new();
@@ -346,68 +371,96 @@ pub fn collect_classes(
             let Some(ac) = by_id.get(ancestor) else {
                 continue;
             };
-            for (mname, fid) in &ac.methods {
-                if seen.contains_key(mname) {
+            // A name redefined in one body: the LAST `def` wins (CPython binds
+            // the class namespace in order).
+            for (mname, fid) in dedup_last(&ac.methods) {
+                if seen.contains_key(&mname) {
                     continue;
                 }
-                seen.insert(*mname, ());
+                seen.insert(mname, ());
                 methods.push(MethodInfo {
-                    name: *mname,
-                    func_id: *fid,
-                    slot: slot_of[mname],
+                    name: mname,
+                    func_id: fid,
+                    slot: slot_of[&mname],
                 });
             }
         }
 
-        // Decorated members + class attributes (Phase 5D), own-only: a `@property`/
-        // `@staticmethod`/`@classmethod`/class attribute is not inherited in 5D.
-        let static_methods = c
-            .static_methods
-            .iter()
-            .map(|(n, f)| MethodInfo {
-                name: *n,
-                func_id: *f,
-                slot: 0,
-            })
-            .collect();
-        let class_methods = c
-            .class_methods
-            .iter()
-            .map(|(n, f)| MethodInfo {
-                name: *n,
-                func_id: *f,
-                slot: 0,
-            })
-            .collect();
-        let properties: Vec<PropertyInfo> = c
-            .properties
-            .iter()
-            .map(|p| PropertyInfo {
-                name: p.name,
-                getter: p.getter,
-                setter: p.setter,
-                ty: p.ty.clone(),
-            })
-            .collect();
-        let class_attrs: Vec<ClassAttrInfo> = c
-            .class_attrs
-            .iter()
-            .enumerate()
-            .map(|(i, a)| ClassAttrInfo {
-                name: a.name,
-                ty: a.ty.clone(),
-                attr_idx: i as u32,
-                init: a.init.clone(),
-            })
-            .collect();
+        // Decorated members + class attributes (Phase 5D), resolved along the
+        // MRO like methods: the most-derived definition of each name wins, so a
+        // subclass inherits its bases' `@staticmethod`/`@classmethod`/
+        // `@property`/class attributes. An inherited class attribute keeps its
+        // defining class as the storage `owner`.
+        let mut static_methods: Vec<MethodInfo> = Vec::new();
+        let mut class_methods: Vec<MethodInfo> = Vec::new();
+        let mut properties: Vec<PropertyInfo> = Vec::new();
+        let mut class_attrs: Vec<ClassAttrInfo> = Vec::new();
+        let mut member_seen: HashSet<InternedString> = HashSet::new();
+        for ancestor in &mro {
+            let Some(ac) = by_id.get(ancestor) else {
+                continue;
+            };
+            // A name defined by a more-derived class in ANY member kind shadows
+            // the ancestors' definitions of it (a subclass method named like a
+            // base property replaces the property).
+            let mut here: HashSet<InternedString> = HashSet::new();
+            for (n, f) in dedup_last(&ac.static_methods) {
+                if !member_seen.contains(&n) {
+                    static_methods.push(MethodInfo { name: n, func_id: f, slot: 0 });
+                }
+                here.insert(n);
+            }
+            for (n, f) in dedup_last(&ac.class_methods) {
+                if !member_seen.contains(&n) {
+                    class_methods.push(MethodInfo { name: n, func_id: f, slot: 0 });
+                }
+                here.insert(n);
+            }
+            for p in &ac.properties {
+                if !member_seen.contains(&p.name) && !here.contains(&p.name) {
+                    properties.retain(|q: &PropertyInfo| q.name != p.name);
+                    properties.push(PropertyInfo {
+                        name: p.name,
+                        getter: p.getter,
+                        setter: p.setter,
+                        ty: p.ty.clone(),
+                    });
+                }
+            }
+            for p in &ac.properties {
+                here.insert(p.name);
+            }
+            for (i, a) in ac.class_attrs.iter().enumerate() {
+                if !member_seen.contains(&a.name) {
+                    // A later duplicate in the same body overrides an earlier one.
+                    class_attrs.retain(|b: &ClassAttrInfo| !(b.name == a.name && b.owner == *ancestor));
+                    class_attrs.push(ClassAttrInfo {
+                        name: a.name,
+                        ty: a.ty.clone(),
+                        attr_idx: i as u32,
+                        init: a.init.clone(),
+                        owner: *ancestor,
+                    });
+                }
+            }
+            for a in &ac.class_attrs {
+                here.insert(a.name);
+            }
+            for (n, _) in &ac.methods {
+                here.insert(*n);
+            }
+            member_seen.extend(here);
+        }
 
         // The effective builtin exception base (Phase 7C): a direct builtin
-        // base, else inherited through the first user parent (already resolved
-        // — bases are declared before subclasses).
-        let exception_base = direct_exc_base
-            .get(&c.class_id)
-            .copied()
-            .or_else(|| parent.and_then(|p| table.get(p).and_then(|info| info.exception_base)));
+        // base of this class, else of the first class along the MRO that has
+        // one (`class E(Mixin, ValueError)`, or a user exception reached
+        // through a non-first base).
+        let exception_base = direct_exc_base.get(&c.class_id).copied().or_else(|| {
+            mro.iter()
+                .skip(1)
+                .find_map(|a| table.get(*a).and_then(|info| info.exception_base))
+        });
 
         table.insert(ClassInfo {
             class_id: c.class_id,
@@ -417,7 +470,7 @@ pub fn collect_classes(
             mro,
             fields,
             methods,
-            own_methods: c.methods.clone(),
+            own_methods: dedup_last(&c.methods),
             static_methods,
             class_methods,
             properties,
@@ -430,6 +483,22 @@ pub fn collect_classes(
     }
 
     Ok(table)
+}
+
+/// `(name, FuncId)` pairs with each name kept once, at its first position but
+/// bound to its LAST definition — the class-body namespace semantics of a
+/// redefined `def`.
+fn dedup_last(
+    entries: &[(InternedString, pyaot_utils::FuncId)],
+) -> Vec<(InternedString, pyaot_utils::FuncId)> {
+    let mut out: Vec<(InternedString, pyaot_utils::FuncId)> = Vec::new();
+    for (n, f) in entries {
+        match out.iter_mut().find(|(m, _)| m == n) {
+            Some(slot) => slot.1 = *f,
+            None => out.push((*n, *f)),
+        }
+    }
+    out
 }
 
 /// Discover the instance fields a class *directly* declares: class-level

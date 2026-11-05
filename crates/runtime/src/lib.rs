@@ -175,6 +175,7 @@ pub mod math_ops;
 pub mod bytearray;
 pub mod bytes;
 pub mod dict;
+pub mod dict_view;
 pub mod frozenset;
 pub mod hash_table_utils;
 pub mod list;
@@ -225,6 +226,7 @@ pub mod counter;
 pub mod defaultdict;
 pub mod deque;
 pub mod format;
+pub mod percent_format;
 pub mod functools;
 #[cfg(feature = "stdlib-crypto")]
 pub mod hashlib;

@@ -91,6 +91,15 @@ fn fold_inst(
                         // `ISub`/`IXor`) are container mutations, so none ever
                         // reach this int-int fold either.
                         BinOp::MatMul
+                        | BinOp::IAdd
+                        | BinOp::IMul
+                        | BinOp::IDiv
+                        | BinOp::IFloorDiv
+                        | BinOp::IMod
+                        | BinOp::IPow
+                        | BinOp::IMatMul
+                        | BinOp::IShl
+                        | BinOp::IShr
                         | BinOp::IOr
                         | BinOp::IAnd
                         | BinOp::ISub

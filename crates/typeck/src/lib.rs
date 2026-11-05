@@ -80,7 +80,7 @@ use la_arena::Idx;
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    BinOp, BuiltinFunctionKind, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
+    BinOp, BuiltinFunctionKind, ClassInfo, ClassTable, ContainerMethod, ContainerOp, HirExpr, HirExprKind,
     HirFunction, HirModule, HirStmt, HirTerminator, ResolveResult, Symbol, SymbolRef, UnaryOp,
 };
 use pyaot_types::{repr_of, RawKind, Repr, SemTy, Sig, TypeLattice};
@@ -282,7 +282,7 @@ pub fn infer(
     let mut states: Vec<FuncState> = module
         .functions
         .iter()
-        .map(|f| FuncState::collect(f, n_globals, interner))
+        .map(|f| FuncState::collect(f, n_globals, resolve, interner))
         .collect();
 
     // **solve** — chaotic iteration of the module variables (see the module
@@ -566,7 +566,10 @@ fn move_field_tys(
             continue;
         }
         let tys = &contribs[vi];
-        let joined = join_tys(tys, classes);
+        // A field container is reachable through every alias of its instance:
+        // its element slots are not inferable from the field writes alone
+        // ([`escape`]).
+        let joined = escape::erase_elems(&join_tys(tys, classes));
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the variable stays at bottom
         }
@@ -609,10 +612,12 @@ fn move_global_tys(
         if vars.global_pinned[vid] || demoted[vid] || authoritative[vid] || !main_writes[vid] {
             continue;
         }
-        let joined = erase_vars(
+        // A global container is reachable from every function: its element
+        // slots cannot be inferred from `__main__`'s writes alone ([`escape`]).
+        let joined = escape::erase_elems(&erase_vars(
             &main_st.join_writes(&main_st.global_writes[vid], classes),
             classes,
-        );
+        ));
         if joined == SemTy::Never {
             continue; // no write evaluated yet — the slot stays at bottom
         }
@@ -625,6 +630,49 @@ fn move_global_tys(
         ) {
             moved[vid] = true;
         }
+    }
+}
+
+/// The binary operator an augmented assignment falls back to when the left
+/// operand has no in-place dunder (`IOr`/`IAnd`/`ISub`/`IXor` keep their own
+/// set / dict typing and are not listed).
+fn inplace_base(op: BinOp) -> Option<BinOp> {
+    Some(match op {
+        BinOp::IAdd => BinOp::Add,
+        BinOp::IMul => BinOp::Mul,
+        BinOp::IDiv => BinOp::Div,
+        BinOp::IFloorDiv => BinOp::FloorDiv,
+        BinOp::IMod => BinOp::Mod,
+        BinOp::IPow => BinOp::Pow,
+        BinOp::IMatMul => BinOp::MatMul,
+        BinOp::IShl => BinOp::Shl,
+        BinOp::IShr => BinOp::Shr,
+        _ => return None,
+    })
+}
+
+/// The class after `anchor` in its MRO that provides attribute `name` as a
+/// property or class attribute — the target of `super().name`.
+pub fn super_attr_class(
+    classes: &ClassTable,
+    anchor: ClassId,
+    name: InternedString,
+) -> Option<ClassId> {
+    let mro = &classes.get(anchor)?.mro;
+    mro.iter().skip(1).copied().find(|c| {
+        classes
+            .get(*c)
+            .is_some_and(|i| i.property(name).is_some() || i.class_attr(name).is_some())
+    })
+}
+
+/// True iff a comparison dunder returning `t` yields a `bool` comparison:
+/// `bool`, `NotImplemented`, a union of those, or a not-yet-solved `Never`.
+fn is_bool_result(t: &SemTy) -> bool {
+    match t {
+        SemTy::Bool | SemTy::NotImplementedT | SemTy::Never => true,
+        SemTy::Union(ms) => ms.iter().all(is_bool_result),
+        _ => false,
     }
 }
 
@@ -656,6 +704,54 @@ fn raw_uniform(joined: SemTy, contribs: &[SemTy]) -> SemTy {
         if !uniform {
             return SemTy::Dyn;
         }
+    }
+    // The guard applies at every nesting level: a container's element / key /
+    // value slot is itself a representation-deciding join of the contributors'
+    // matching slots (`[1.0] if c else [2]` must not be `list[float]`).
+    if let SemTy::Generic { base, args } = &joined {
+        let slot_contribs = |j: usize| -> Option<Vec<SemTy>> {
+            let mut out = Vec::new();
+            for c in contribs {
+                if *c == SemTy::Never {
+                    continue;
+                }
+                let slot = if joined.list_elem().is_some() {
+                    c.list_elem().cloned()
+                } else if joined.set_elem().is_some() {
+                    c.set_elem().cloned()
+                } else if joined.dict_kv().is_some() {
+                    c.dict_kv().map(|(k, v)| if j == 0 { k.clone() } else { v.clone() })
+                } else if joined.tuple_var_elem().is_some() {
+                    match (c.tuple_var_elem(), c.tuple_elems()) {
+                        (Some(e), _) => Some(e.clone()),
+                        (None, Some(es)) => {
+                            out.extend(es.iter().cloned());
+                            continue;
+                        }
+                        _ => None,
+                    }
+                } else if joined.tuple_elems().is_some() {
+                    c.tuple_elems().and_then(|es| es.get(j).cloned())
+                } else {
+                    return None; // a user generic: its args are not slots here
+                };
+                // A contributor of another shape (a gradual member) carries no
+                // slot information: stay conservative.
+                out.push(slot.unwrap_or(SemTy::Dyn));
+            }
+            Some(out)
+        };
+        let mut new_args = Vec::with_capacity(args.len());
+        for (j, a) in args.iter().enumerate() {
+            match slot_contribs(j) {
+                Some(sub) => new_args.push(raw_uniform(a.clone(), &sub)),
+                None => return joined,
+            }
+        }
+        return SemTy::Generic {
+            base: *base,
+            args: new_args,
+        };
     }
     joined
 }
@@ -996,8 +1092,10 @@ fn check_repr_boundaries(
                         let callee = &module.functions[fid.index()];
                         let p = &callee.params[..];
                         let p = if skip_self { &p[1.min(p.len())..] } else { p };
-                        let cut =
-                            p.len() - usize::from(callee.varargs) - usize::from(callee.kwargs);
+                        // Saturating: `def m(*args)` (no `self`) has its only
+                        // param consumed by the self-skip.
+                        let tail = usize::from(callee.varargs) + usize::from(callee.kwargs);
+                        let cut = p.len().saturating_sub(tail);
                         let p = &p[..cut.min(p.len())];
                         // Keyword args pair with their NAMED parameter (Phase
                         // 10); names without a fixed param feed the `**kwargs`
@@ -1087,8 +1185,9 @@ fn union_has_numeric(t: &SemTy) -> bool {
 /// no check. The rule per param spec:
 /// * `Float` / `Int` (raw ABI slots) admit the numeric types, gradual `Dyn`,
 ///   and numeric-containing Unions — lowering emits a CHECKED unbox for the
-///   gradual cases (Phase 8H, D3); `Bool` / `Str` require the exact semantic
-///   type (`Bool` is admitted where `Int` is expected, matching Python's
+///   gradual cases (Phase 8H, D3); `Bool` / `Str` admit their exact semantic
+///   type or a gradual (`Dyn` / Union) value, which lowering checks at run
+///   time (`Bool` is admitted where `Int` is expected, matching Python's
 ///   bool ⊂ int).
 /// * Object specs (`StructTime`, `Match`, …) require the matching
 ///   `RuntimeObject` (or gradual `Dyn`, carried Tagged).
@@ -1128,8 +1227,10 @@ fn check_call_runtime_args(
             TypeSpec::Int => {
                 matches!(got, SemTy::Int | SemTy::Bool | SemTy::Dyn) || union_has_numeric(got)
             }
-            TypeSpec::Bool => matches!(got, SemTy::Bool),
-            TypeSpec::Str => matches!(got, SemTy::Str),
+            // A gradual `Bool`/`Str` argument is checked at run time by
+            // lowering (`rt_unbox_bool` / the `Tagged → Heap(Str)` guard).
+            TypeSpec::Bool => matches!(got, SemTy::Bool | SemTy::Dyn | SemTy::Union(_)),
+            TypeSpec::Str => matches!(got, SemTy::Str | SemTy::Dyn | SemTy::Union(_)),
             spec => {
                 let want = pyaot_hir::semty_from_typespec(spec);
                 match want {
@@ -1522,6 +1623,20 @@ enum Write {
     PushIter(Idx<HirExpr>),
     /// `x[k] = v` / dict-comprehension `ContainerInsert` — a keyed write.
     Insert(Idx<HirExpr>, Idx<HirExpr>),
+    /// `d.update(other)` — every key/value of a mapping (or, for a set, every
+    /// element of an iterable) merged into the container.
+    Merge(Idx<HirExpr>),
+    /// An element-level write whose value type typeck cannot name
+    /// (`d.setdefault(k)` stores `None`, `d.update(pairs)` from a non-mapping):
+    /// every element slot widens to `Dyn`.
+    Opaque,
+}
+
+impl Write {
+    /// True for the element-level writes (everything but a whole-value `Val`).
+    fn is_element_write(&self) -> bool {
+        !matches!(self, Write::Val(_))
+    }
 }
 
 /// Per-function constraint state. Built ONCE by [`FuncState::collect`]; the
@@ -1536,8 +1651,13 @@ struct FuncState {
     /// locals, `Never` otherwise — what `reset` restores before a re-solve.
     local_bottom: Vec<SemTy>,
     /// Writes into each local, indexed by `LocalId`: whole-value assignments
-    /// plus element-level container writes (Phase 8H, D1).
+    /// plus element-level container writes (Phase 8H, D1). Element writes are
+    /// shared across an alias class (`y = x`), see [`escape`].
     assignments: Vec<Vec<Write>>,
+    /// `escaped[i]`: local `i`'s container may be written through a path
+    /// typeck cannot see, so its inferred element slots widen to `Dyn`
+    /// ([`escape::erase_elems`]).
+    escaped: Vec<bool>,
     /// Value expressions written into the cell held by each local (`CellSet`
     /// plus the `MakeCell` init), indexed by the cell local's `LocalId` — the
     /// per-cell constraint of Phase 6A (the B10 field-join shape).
@@ -1563,7 +1683,12 @@ struct FuncState {
 
 impl FuncState {
     /// **collect** — seed the assignment tables and the authoritative-local set.
-    fn collect(func: &HirFunction, n_globals: usize, interner: &StringInterner) -> Self {
+    fn collect(
+        func: &HirFunction,
+        n_globals: usize,
+        resolve: &ResolveResult,
+        interner: &StringInterner,
+    ) -> Self {
         let n = func.locals.len();
         // A frontend type other than `Dyn` is authoritative: it comes from a
         // parameter annotation, a `name: T` annotation, or a synthetic local the
@@ -1651,34 +1776,59 @@ impl FuncState {
                             assignments[i].push(Write::Insert(*index, *value));
                         }
                     }
-                    // `xs.append(v)` / `s.add(v)` / `xs.insert(i, v)` /
-                    // `xs.extend(it)` as a statement-expression on a direct local.
-                    HirStmt::Expr(e) => {
-                        if let HirExprKind::MethodCall {
-                            recv,
-                            method_name,
-                            args,
-                            kwargs: _,
-                        } = &func.exprs[*e].kind
-                        {
-                            if let Some(i) = direct_local(*recv) {
-                                match (interner.resolve(*method_name), args.as_slice()) {
-                                    ("append" | "add", [v]) => {
-                                        assignments[i].push(Write::Push(*v));
-                                    }
-                                    ("insert", [_, v]) => {
-                                        assignments[i].push(Write::Push(*v));
-                                    }
-                                    ("extend", [it]) => {
-                                        assignments[i].push(Write::PushIter(*it));
-                                    }
-                                    _ => {}
-                                }
-                            }
+                    // `xs[a:b] = it` — every element of `it` lands in `xs`.
+                    HirStmt::SetSlice { base, value, .. } => {
+                        if let Some(i) = direct_local(*base) {
+                            assignments[i].push(Write::PushIter(*value));
                         }
                     }
                     _ => {}
                 }
+            }
+        }
+        // `xs.append(v)` / `s.add(v)` / `xs.insert(i, v)` / `xs.extend(it)` /
+        // `d.setdefault(k, v)` / `d.update(m)` on a direct local, wherever the
+        // call appears (a statement, or nested: `d.setdefault(k, []).append(v)`).
+        for (_, expr) in func.exprs.iter() {
+            if let HirExprKind::MethodCall {
+                recv,
+                method_name,
+                args,
+                kwargs,
+            } = &expr.kind
+            {
+                let Some(i) = direct_local(*recv) else {
+                    continue;
+                };
+                let w = match (interner.resolve(*method_name), args.as_slice()) {
+                    ("append" | "add", [v]) => Write::Push(*v),
+                    ("insert", [_, v]) => Write::Push(*v),
+                    ("extend", [it]) => Write::PushIter(*it),
+                    ("setdefault", [k, v]) => Write::Insert(*k, *v),
+                    ("setdefault", [_]) => Write::Opaque,
+                    ("update", [m]) if kwargs.is_empty() => Write::Merge(*m),
+                    ("update", _) => Write::Opaque,
+                    _ => continue,
+                };
+                assignments[i].push(w);
+            }
+        }
+
+        // Alias classes share one container object: every element write
+        // through one name is a write through all of them.
+        let esc = escape::analyze(func, resolve, interner);
+        let mut class_writes: HashMap<usize, Vec<Write>> = HashMap::new();
+        for (i, ws) in assignments.iter().enumerate() {
+            let c = esc.alias_class[i];
+            class_writes
+                .entry(c)
+                .or_default()
+                .extend(ws.iter().filter(|w| w.is_element_write()).copied());
+        }
+        for (i, ws) in assignments.iter_mut().enumerate() {
+            ws.retain(|w| !w.is_element_write());
+            if let Some(cw) = class_writes.get(&esc.alias_class[i]) {
+                ws.extend(cw.iter().copied());
             }
         }
 
@@ -1687,6 +1837,7 @@ impl FuncState {
             authoritative,
             local_bottom,
             assignments,
+            escaped: esc.escaped,
             cell_writes,
             global_writes,
             attr_writes,
@@ -1793,6 +1944,29 @@ impl FuncState {
                         elems.push(self.ety(*v));
                     }
                 }
+                Write::Merge(m) => {
+                    let mt = self.ety(*m);
+                    if is_dict {
+                        match mt.dict_kv() {
+                            Some((k, v)) => {
+                                keys.push(k.clone());
+                                dvals.push(v.clone());
+                            }
+                            None if mt == SemTy::Never => {}
+                            None => {
+                                keys.push(SemTy::Dyn);
+                                dvals.push(SemTy::Dyn);
+                            }
+                        }
+                    } else if is_list || is_set {
+                        elems.push(iter_elem_ty(&mt, classes));
+                    }
+                }
+                Write::Opaque => {
+                    elems.push(SemTy::Dyn);
+                    keys.push(SemTy::Dyn);
+                    dvals.push(SemTy::Dyn);
+                }
             }
         }
         let join_slot = |tys: &[SemTy]| join_tys(tys, classes);
@@ -1879,10 +2053,16 @@ impl<'a> Sweeper<'a> {
                     continue;
                 }
                 // Recompute the local from its assigned values, applying the
-                // `Raw`-repr soundness guard (see the module docs).
-                let new = self
+                // `Raw`-repr soundness guard (see the module docs) and the
+                // container escape seal ([`escape`]).
+                let joined = self
                     .st
                     .join_local_writes(&self.st.assignments[i], self.classes);
+                let new = if self.st.escaped[i] {
+                    escape::erase_elems(&joined)
+                } else {
+                    escape::seal_nested(&joined)
+                };
                 if self.st.local_ty[i] != new {
                     self.st.local_ty[i] = new;
                     changed = true;
@@ -1939,7 +2119,7 @@ impl<'a> Sweeper<'a> {
             // real writes, and `check_reinterpret` admits a `Never` write into
             // any slot (the read-guard, not the type, enforces unboundness).
             HirExprKind::Unbound => SemTy::Never,
-            HirExprKind::Compare { .. } => SemTy::Bool,
+            HirExprKind::Compare { op, l, r } => self.compare_ty(*op, *l, *r),
             HirExprKind::Local(lid) => self.st.local_ty[lid.index()].clone(),
             HirExprKind::Name(symref) => self.name_ty(*symref),
             HirExprKind::Unary { op, operand } => self.unary_ty(*op, self.ety(*operand)),
@@ -1985,8 +2165,14 @@ impl<'a> Sweeper<'a> {
                 }
                 let numeric = |t: &SemTy| matches!(t, SemTy::Int | SemTy::Float | SemTy::Bool);
                 if numeric(&elem) && numeric(&start_ty) {
-                    if elem == SemTy::Float || start_ty == SemTy::Float {
+                    if start_ty == SemTy::Float {
                         SemTy::Float
+                    } else if elem == SemTy::Float {
+                        // `sum(floats)` with an `int` start is the start `0`
+                        // itself when the iterable is empty (CPython prints
+                        // `0`, not `0.0`), so the result is `int | float` —
+                        // gradual (`Tagged`), never a `Raw(F64)` slot.
+                        SemTy::Dyn
                     } else {
                         SemTy::Int
                     }
@@ -2020,10 +2206,23 @@ impl<'a> Sweeper<'a> {
                 // `ClassName.m()` static/classmethod resolves on the class; an
                 // ordinary receiver dispatches by its static type.
                 if let HirExprKind::Super(cid) = self.func.exprs[*recv].kind {
-                    self.classes
-                        .resolve_super_method(cid, *method_name)
-                        .map(|fid| self.callee_ret_ty(fid))
-                        .unwrap_or(SemTy::Dyn)
+                    // The definition reached depends on the receiver's runtime
+                    // MRO (a diamond): join every one a subclass can reach.
+                    let name = *method_name;
+                    match self.classes.resolve_super_method(cid, name) {
+                        Some(_) => self.family_join(cid, |k| {
+                            let at = k.mro.iter().position(|c| *c == cid)?;
+                            k.mro[at + 1..].iter().find_map(|c| {
+                                self.classes.get(*c).and_then(|i| {
+                                    i.own_methods
+                                        .iter()
+                                        .find(|(n, _)| *n == name)
+                                        .map(|(_, f)| self.callee_ret_ty(*f))
+                                })
+                            })
+                        }),
+                        None => SemTy::Dyn,
+                    }
                 } else if let Some(cid) = self.name_class_ref(*recv) {
                     self.classes
                         .get(cid)
@@ -2038,6 +2237,20 @@ impl<'a> Sweeper<'a> {
                 }
             }
             HirExprKind::Attribute { value, name } => {
+                // `super().attr` → the next class (in the anchor's MRO)'s
+                // property / class attribute.
+                if let HirExprKind::Super(cid) = self.func.exprs[*value].kind {
+                    return match super_attr_class(self.classes, cid, *name) {
+                        Some(next) => self.attribute_ty(
+                            SemTy::Class {
+                                class_id: next,
+                                name: self.classes.get(next).map(|i| i.name).unwrap_or(*name),
+                            },
+                            *name,
+                        ),
+                        None => SemTy::Dyn,
+                    };
+                }
                 // `ClassName.attr` → a class attribute (or static-method ref).
                 if let Some(cid) = self.name_class_ref(*value) {
                     self.classes
@@ -2145,8 +2358,14 @@ impl<'a> Sweeper<'a> {
                     // frontend (the slot itself is a pin_tagged cell pointer).
                     l.ty.clone()
                 } else {
-                    self.st
-                        .join_writes(&self.st.cell_writes[cell.index()], self.classes)
+                    // A cell's content is shared with every closure over it, so
+                    // a container in it is written through paths this function
+                    // cannot see ([`escape`]).
+                    escape::erase_elems(
+                        &self
+                            .st
+                            .join_writes(&self.st.cell_writes[cell.index()], self.classes),
+                    )
                 }
             }
             // ── generators (Phase 6E) ──
@@ -2243,15 +2462,19 @@ impl<'a> Sweeper<'a> {
             return SemTy::Never;
         }
         if let Some(cid) = class_of(&recv, self.classes) {
+            let resolve = |info: &ClassInfo| {
+                info.method(method_name)
+                    .or_else(|| info.static_method(method_name))
+                    .or_else(|| info.class_method(method_name))
+                    .map(|m| m.func_id)
+            };
+            // A subclass override may run instead (virtual dispatch / the
+            // runtime-class dispatcher): join every definition's return.
             let ret = self
                 .classes
                 .get(cid)
-                .and_then(|info| {
-                    info.method(method_name)
-                        .or_else(|| info.static_method(method_name))
-                        .or_else(|| info.class_method(method_name))
-                })
-                .map(|m| self.callee_ret_ty(m.func_id));
+                .and_then(resolve)
+                .map(|_| self.family_join(cid, |k| resolve(k).map(|f| self.callee_ret_ty(f))));
             return match ret {
                 // Substitute the generic type params for a `Stack[int]` receiver.
                 Some(t) => self.apply_subst(&recv, t),
@@ -2295,6 +2518,16 @@ impl<'a> Sweeper<'a> {
                 }
                 "split" | "rsplit" => return SemTy::list_of(SemTy::Bytes),
                 "decode" => return SemTy::Str,
+                _ => {}
+            }
+        }
+        // Generator methods (Phase 6E): a generator is typed `Iterator(T)`.
+        // `send` yields the next value (gradual: the sent value can steer it);
+        // `close` returns None.
+        if let SemTy::Iterator(_) = recv {
+            match self.interner.resolve(method_name) {
+                "send" | "throw" => return SemTy::Dyn,
+                "close" => return SemTy::NoneTy,
                 _ => {}
             }
         }
@@ -2370,21 +2603,31 @@ impl<'a> Sweeper<'a> {
         let Some(info) = self.classes.get(cid) else {
             return SemTy::Dyn;
         };
-        let raw = if let Some(p) = info.property(name) {
-            p.ty.clone()
+        let raw = if info.property(name).is_some() {
+            // A subclass may override the property: the read dispatches on the
+            // receiver's runtime class, so its type joins every definition.
+            self.family_join(cid, |k| k.property(name).map(|p| p.ty.clone()))
         } else if let Some(t) = info.field_ty(name) {
             // B10: an unannotated field of a non-generic defining class reads
             // its solver variable (`Never` while still climbing — the working
             // bottom, exactly like `callee_ret_ty`). Annotated /
             // generic-class fields keep the static type.
-            if let Some(d) = defining_class(self.classes, cid, name) {
-                if let Some(&vi) = self.field_vars.get(&(d, name)) {
-                    return self.field_var_ty(vi);
-                }
+            let ft = match defining_class(self.classes, cid, name)
+                .and_then(|d| self.field_vars.get(&(d, name)).copied())
+            {
+                Some(vi) => self.field_var_ty(vi),
+                None => t.clone(),
+            };
+            // A field shadowing a class attribute reads the class value while
+            // unassigned on the instance.
+            if info.class_attr(name).is_some() {
+                let ca = self.family_join(cid, |k| k.class_attr(name).map(|a| a.ty.clone()));
+                join_tys(&[ft, ca], self.classes)
+            } else {
+                ft
             }
-            t.clone()
-        } else if let Some(a) = info.class_attr(name) {
-            a.ty.clone()
+        } else if info.class_attr(name).is_some() {
+            self.family_join(cid, |k| k.class_attr(name).map(|a| a.ty.clone()))
         } else {
             return SemTy::Dyn;
         };
@@ -2404,6 +2647,35 @@ impl<'a> Sweeper<'a> {
 
     /// The declared return type of a concrete-class dunder `name` on `ty`, if any
     /// (used to type class operator results precisely — `v + v → Vector`).
+    /// Result type of `l <op> r`. Builtin comparisons are `bool`, and so is a
+    /// user rich-comparison dunder returning `bool` (possibly `NotImplemented`
+    /// on some paths). A dunder returning anything else makes the comparison
+    /// yield that value unchanged (CPython), so the expression is gradual `Dyn`
+    /// and lowering hands the dunder's value back instead of its truthiness.
+    fn compare_ty(&self, op: pyaot_hir::CmpOp, l: Idx<HirExpr>, r: Idx<HirExpr>) -> SemTy {
+        use pyaot_hir::CmpOp;
+        let (lt, rt) = (self.ety(l), self.ety(r));
+        let fwd = match op {
+            CmpOp::Eq => "__eq__",
+            CmpOp::NotEq => "__ne__",
+            CmpOp::Lt => "__lt__",
+            CmpOp::LtE => "__le__",
+            CmpOp::Gt => "__gt__",
+            CmpOp::GtE => "__ge__",
+        };
+        let rev = pyaot_types::dunders::reflected_name(fwd);
+        let rets = [
+            self.class_dunder_ret(&lt, fwd),
+            rev.and_then(|n| self.class_dunder_ret(&rt, n)),
+        ];
+        let non_bool = rets.iter().flatten().any(|t| !is_bool_result(t));
+        if non_bool {
+            SemTy::Dyn
+        } else {
+            SemTy::Bool
+        }
+    }
+
     fn class_dunder_ret(&self, ty: &SemTy, name: &str) -> Option<SemTy> {
         let cid = class_of(ty, self.classes)?;
         let info = self.classes.get(cid)?;
@@ -2411,7 +2683,24 @@ impl<'a> Sweeper<'a> {
             .methods
             .iter()
             .find(|m| self.interner.resolve(m.name) == name)?;
-        Some(self.callee_ret_ty(m.func_id))
+        let mname = m.name;
+        // Overrides below `cid` dispatch on the receiver's runtime class.
+        Some(self.family_join(cid, |k| k.method(mname).map(|m| self.callee_ret_ty(m.func_id))))
+    }
+
+    /// Join `get(K)` over `cid` and every subclass `K` of it (the classes an
+    /// instance statically typed `cid` can really have) — the type of a member
+    /// a subclass may override. Classes where `get` yields nothing are skipped.
+    fn family_join(&self, cid: ClassId, get: impl Fn(&ClassInfo) -> Option<SemTy>) -> SemTy {
+        let mut tys: Vec<SemTy> = Vec::new();
+        for k in self.classes.iter() {
+            if k.class_id == cid || k.mro.contains(&cid) {
+                if let Some(t) = get(k) {
+                    tys.push(t);
+                }
+            }
+        }
+        join_tys(&tys, self.classes)
     }
 
     /// Result type of a subscript read `base[index]`, from the base's container
@@ -2628,12 +2917,54 @@ impl<'a> Sweeper<'a> {
             BinOp::IAnd => "__iand__",
             BinOp::ISub => "__isub__",
             BinOp::IXor => "__ixor__",
+            BinOp::IAdd => "__iadd__",
+            BinOp::IMul => "__imul__",
+            BinOp::IDiv => "__itruediv__",
+            BinOp::IFloorDiv => "__ifloordiv__",
+            BinOp::IMod => "__imod__",
+            BinOp::IPow => "__ipow__",
+            BinOp::IMatMul => "__imatmul__",
+            BinOp::IShl => "__ilshift__",
+            BinOp::IShr => "__irshift__",
             BinOp::BitXor => "__xor__",
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
         };
         if let Some(t) = self.class_dunder_ret(&l, dunder) {
             return t;
+        }
+        // `+=` / `*=` without `__iadd__` / `__imul__` fall back to the binary
+        // operator (CPython), and type exactly like it otherwise.
+        if let Some(base) = inplace_base(op) {
+            return self.binop_ty(base, l, r);
+        }
+        // Set operators with a set-like dict view (keys / items) on either side
+        // (`d.keys() & s`, `s - d.items()`, `d.keys() | e.keys()`) always yield
+        // a fresh `set` (CPython `dictviews_*`). Its elements come from both
+        // operands, so the element type is the guarded join of both sides'
+        // iteration types (a sound superset for every operator).
+        if matches!(
+            op,
+            BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Sub
+                | BinOp::IAnd
+                | BinOp::IOr
+                | BinOp::IXor
+                | BinOp::ISub
+        ) {
+            let setlike = |t: &SemTy| {
+                t.dict_view()
+                    .is_some_and(|(k, _)| k != pyaot_types::DictViewKind::Values)
+            };
+            if setlike(&l) || setlike(&r) {
+                if l == SemTy::Never || r == SemTy::Never {
+                    return SemTy::Never;
+                }
+                let elems = [iter_elem_ty(&l, self.classes), iter_elem_ty(&r, self.classes)];
+                return SemTy::set_of(join_tys(&elems, self.classes));
+            }
         }
         // bytearray concatenation: `ba + bytes-like` → bytearray. `+=` desugars
         // to `ba = ba + x`, so preserving the static `ByteArray` type here keeps
@@ -2663,7 +2994,7 @@ impl<'a> Sweeper<'a> {
                 } else if is_int_like(&l) && is_sequence(&r) {
                     r
                 } else {
-                    l.join(&r, self.classes)
+                    self.arith_join(l, r)
                 }
             }
             // `+` over two same-base containers already joins to that container
@@ -2671,8 +3002,27 @@ impl<'a> Sweeper<'a> {
             // correctly without a special case.
             // `-=` (`ISub`) joins here too: `set[int] -= set[int]` → `set[int]`
             // (covariant join), numeric `-=` stays numeric.
+            // (In-place ops returned above via their binary operator.)
+            BinOp::IAdd
+            | BinOp::IMul
+            | BinOp::IDiv
+            | BinOp::IFloorDiv
+            | BinOp::IMod
+            | BinOp::IPow
+            | BinOp::IMatMul
+            | BinOp::IShl
+            | BinOp::IShr => self.arith_join(l, r),
             BinOp::Add | BinOp::Sub | BinOp::ISub | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-                l.join(&r, self.classes)
+                // Fixed-tuple concatenation keeps every slot (`(1,) + (2.0,)` is
+                // `tuple[int, float]`), not the per-slot join.
+                if op == BinOp::Add {
+                    if let (Some(a), Some(b)) = (l.tuple_elems(), r.tuple_elems()) {
+                        let mut elems = a.to_vec();
+                        elems.extend(b.iter().cloned());
+                        return SemTy::tuple_of(elems);
+                    }
+                }
+                self.arith_join(l, r)
             }
             // `@` has no built-in numeric meaning — only the `__matmul__` dunder
             // (handled above). On any non-class pair it is a runtime `TypeError`,
@@ -2695,10 +3045,14 @@ impl<'a> Sweeper<'a> {
             // the frontend `Dyn` fallback, and is wrongly rejected at the `float`
             // constructor slot (§6). Two unresolved/gradual operands stay
             // `Never`/`Dyn`; two non-numerics → `Dyn` (a runtime `TypeError`).
+            //
+            // Only the unresolved `Never` anchors, never a gradual `Dyn`: a `Dyn`
+            // operand may be an instance whose `__truediv__` / `__rtruediv__`
+            // returns anything, so `Dyn / x` and `x / Dyn` stay `Dyn`.
             BinOp::Div => {
-                let gradual = |t: &SemTy| matches!(t, SemTy::Never | SemTy::Dyn);
-                if (is_numeric(&l) && (is_numeric(&r) || gradual(&r)))
-                    || (gradual(&l) && is_numeric(&r))
+                let unresolved = |t: &SemTy| *t == SemTy::Never;
+                if (is_numeric(&l) && (is_numeric(&r) || unresolved(&r)))
+                    || (unresolved(&l) && is_numeric(&r))
                 {
                     SemTy::Float
                 } else if l == SemTy::Never || r == SemTy::Never {
@@ -2720,15 +3074,47 @@ impl<'a> Sweeper<'a> {
             | BinOp::BitXor
             | BinOp::Shl
             | BinOp::Shr => {
-                if is_int_like(&l) && is_int_like(&r) {
+                let logical = matches!(
+                    op,
+                    BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::IOr
+                        | BinOp::IAnd
+                        | BinOp::IXor
+                        | BinOp::BitXor
+                );
+                if logical && l == SemTy::Bool && r == SemTy::Bool {
+                    // `bool & | ^ bool` is a `bool` (`True & False` → `False`).
+                    SemTy::Bool
+                } else if is_int_like(&l) && is_int_like(&r) {
                     SemTy::Int
                 } else if l == SemTy::Never || r == SemTy::Never {
                     SemTy::Never
                 } else {
-                    l.join(&r, self.classes)
+                    join_tys(&[l, r], self.classes)
                 }
             }
         }
+    }
+
+    /// The result type of numeric arithmetic / container `+`: the numeric tower
+    /// with `bool` promoted to `int` (`True + True` is `2`, an `int`; any `float`
+    /// operand makes a `float`), else the representation-guarded join (so
+    /// `[1.0] + [2]` is a `list` whose element slot stays `Tagged`).
+    fn arith_join(&self, l: SemTy, r: SemTy) -> SemTy {
+        if is_numeric(&l) && is_numeric(&r) {
+            return if l == SemTy::Float || r == SemTy::Float {
+                SemTy::Float
+            } else {
+                SemTy::Int
+            };
+        }
+        // A lone `bool` against an unresolved operand promotes like `int`.
+        let promote = |t: SemTy| if t == SemTy::Bool { SemTy::Int } else { t };
+        if l == SemTy::Never || r == SemTy::Never {
+            return promote(l.join(&r, self.classes));
+        }
+        join_tys(&[l, r], self.classes)
     }
 
     /// Result type of a call: a compiled function's declared return, a
@@ -2855,9 +3241,11 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             M::Get => SemTy::optional(v.clone()),
             // `pop` raises `KeyError` on a miss (no `None`), `setdefault` inserts.
             M::Pop | M::Setdefault => v.clone(),
-            M::Keys => SemTy::list_of(k.clone()),
-            M::Values => SemTy::list_of(v.clone()),
-            M::Items => SemTy::list_of(SemTy::tuple_of(vec![k.clone(), v.clone()])),
+            // Live views over the dict (not list snapshots): iterating one
+            // yields `K` / `V` / `tuple[K, V]` (see `SemTy::dict_view`).
+            M::Keys => SemTy::dict_keys_of(k.clone()),
+            M::Values => SemTy::dict_values_of(v.clone()),
+            M::Items => SemTy::dict_items_of(k.clone(), v.clone()),
             // `OrderedDict.move_to_end(...)` mutates in place → `None`.
             M::Update | M::Clear | M::MoveToEnd => none,
             M::Copy => recv.clone(),
@@ -2885,6 +3273,13 @@ fn method_ty(recv: &SemTy, method: ContainerMethod) -> SemTy {
             }
             M::IsSubset | M::IsSuperset | M::IsDisjoint => SemTy::Bool,
             M::IntersectionUpdate | M::DifferenceUpdate | M::SymmetricDifferenceUpdate => none,
+            _ => SemTy::Dyn,
+        };
+    }
+    // Dict-view receiver: `isdisjoint` on the set-like keys / items views.
+    if let Some((kind, _)) = recv.dict_view() {
+        return match method {
+            M::IsDisjoint if kind != pyaot_types::DictViewKind::Values => SemTy::Bool,
             _ => SemTy::Dyn,
         };
     }
@@ -2940,6 +3335,10 @@ fn iter_elem_raw(t: &SemTy, classes: &ClassTable) -> SemTy {
     if let Some((k, _)) = t.dict_kv() {
         // Iterating a dict yields its keys.
         return k.clone();
+    }
+    if let Some((_, elem)) = t.dict_view() {
+        // A live dict view yields keys / values / `(key, value)` pairs.
+        return elem;
     }
     match t {
         SemTy::Str => SemTy::Str,
@@ -3056,6 +3455,7 @@ fn is_empty_container_literal(expr: &HirExpr) -> bool {
     }
 }
 
+mod escape;
 mod intervals;
 
 #[cfg(test)]

@@ -1066,3 +1066,27 @@ mod tests {
         assert_eq!(result, 45);
     }
 }
+
+/// `tuple * n` — a new tuple repeating `tuple`'s elements `n` times (`n <= 0`
+/// gives the empty tuple). The caller keeps `tuple` rooted.
+pub fn rt_tuple_repeat(tuple: *mut Obj, count: i64) -> *mut Obj {
+    use crate::object::TupleObj;
+    if tuple.is_null() || count <= 0 {
+        return rt_make_tuple(0);
+    }
+    unsafe {
+        let len = (*(tuple as *mut TupleObj)).len;
+        let Some(total) = len.checked_mul(count as usize) else {
+            crate::raise_exc!(crate::exceptions::ExceptionType::MemoryError, "");
+        };
+        let result = rt_make_tuple(total as i64);
+        let src = (*(tuple as *mut TupleObj)).data.as_ptr();
+        let dst = (*(result as *mut TupleObj)).data.as_mut_ptr();
+        for r in 0..count as usize {
+            for i in 0..len {
+                *dst.add(r * len + i) = *src.add(i);
+            }
+        }
+        result
+    }
+}

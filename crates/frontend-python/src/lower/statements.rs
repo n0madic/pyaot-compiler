@@ -38,6 +38,8 @@ impl<'a> FnLowerer<'a> {
     /// Lower one statement. Returns `true` if it terminated the current block
     /// (`break` / `continue` / `return`).
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<bool> {
+        // Pending operands never cross a statement boundary.
+        self.pending.clear();
         // Real tracebacks: establish this statement's source line in the
         // current block before any of its code is emitted.
         self.mark_line(to_span(stmt.range()));
@@ -185,6 +187,9 @@ impl<'a> FnLowerer<'a> {
             }
             Stmt::Return(r) => {
                 let span = to_span(r.range());
+                if self.is_main {
+                    return Err(parse_error("'return' outside function", span));
+                }
                 // In a generator, `return` ends the generator (exhaust). The
                 // returned value (StopIteration.value) is out of scope (6E).
                 if self.gen.is_some() {
@@ -247,7 +252,19 @@ impl<'a> FnLowerer<'a> {
             }
             // Binding-analysis inputs only (Phase 6B): the declarations were
             // consumed by `freevars` / the module pre-scan; nothing to emit.
-            Stmt::Global(_) | Stmt::Nonlocal(_) => Ok(false),
+            Stmt::Global(g) => {
+                for n in &g.names {
+                    let name = self.intern(n.as_str());
+                    if self.seen_names.contains(&name) {
+                        return Err(parse_error(
+                            format!("name '{}' is used prior to global declaration", n.as_str()),
+                            to_span(g.range()),
+                        ));
+                    }
+                }
+                Ok(false)
+            }
+            Stmt::Nonlocal(_) => Ok(false),
             Stmt::Delete(d) => self.lower_delete(d),
             // A PEP 695 `type X = T` alias is a compile-time annotation binding
             // (collected in the module pre-scan into `type_aliases`); it emits no
@@ -286,7 +303,11 @@ impl<'a> FnLowerer<'a> {
                 // stages a value and reads it back positionally.
                 let has_star = targets.iter().any(|t| matches!(t, Expr::Starred(_)));
                 if !has_star {
-                    if let Some(values) = seq_target_elts(a.value.as_ref()) {
+                    // A starred RHS element (`(*xs, 2)`) has no static arity:
+                    // build the value and unpack it positionally instead.
+                    let values = seq_target_elts(a.value.as_ref())
+                        .filter(|vs| !vs.iter().any(|v| matches!(v, Expr::Starred(_))));
+                    if let Some(values) = values {
                         if targets.len() != values.len() {
                             return Err(parse_error(
                                 format!(
@@ -322,6 +343,28 @@ impl<'a> FnLowerer<'a> {
     /// Bind `value` to one assignment target: a simple name (`x = …`) or a
     /// subscript write (`a[i] = …` → [`HirStmt::SetItem`]).
     pub(super) fn assign_to_target(&mut self, target: &Expr, value: Idx<HirExpr>) -> Result<()> {
+        // CPython evaluates the right-hand side BEFORE the target's base and
+        // index (`d[k()] = v()` calls `v` first). The value is a lazy HIR
+        // expression the store would evaluate after them, so pin it first when
+        // the target has operands to evaluate.
+        let value = if matches!(target, Expr::Subscript(_) | Expr::Attribute(_))
+            && !matches!(
+                self.exprs[value].kind,
+                HirExprKind::Local(_)
+                    | HirExprKind::IntLit(_)
+                    | HirExprKind::FloatLit(_)
+                    | HirExprKind::StrLit(_)
+                    | HirExprKind::BoolLit(_)
+                    | HirExprKind::NoneLit
+                    | HirExprKind::Name(_)
+            ) {
+            let span = self.exprs[value].span;
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.push_stmt(HirStmt::Assign { target: tmp, value });
+            self.local_ref(tmp, span)
+        } else {
+            value
+        };
         match target {
             Expr::Name(n) => {
                 let name = self.intern(n.id.as_str());
@@ -838,6 +881,17 @@ impl<'a> FnLowerer<'a> {
             BinOp::BitAnd => BinOp::IAnd,
             BinOp::Sub => BinOp::ISub,
             BinOp::BitXor => BinOp::IXor,
+            // `+=` / `*=`: in place for a mutable operand (`list.__iadd__`,
+            // user `__iadd__`), the binary operator otherwise.
+            BinOp::Add => BinOp::IAdd,
+            BinOp::Mul => BinOp::IMul,
+            BinOp::Div => BinOp::IDiv,
+            BinOp::FloorDiv => BinOp::IFloorDiv,
+            BinOp::Mod => BinOp::IMod,
+            BinOp::Pow => BinOp::IPow,
+            BinOp::MatMul => BinOp::IMatMul,
+            BinOp::Shl => BinOp::IShl,
+            BinOp::Shr => BinOp::IShr,
             other => other,
         };
         match a.target.as_ref() {
@@ -1040,6 +1094,7 @@ impl<'a> FnLowerer<'a> {
     /// `global` declaration — an undeclared assignment binds locally, as in
     /// CPython); else a fresh local.
     pub(super) fn resolve_write_place(&mut self, name: InternedString, ty: SemTy) -> Place {
+        self.seen_names.insert(name);
         if let Some(b) = self.scope.get(&name).copied() {
             return Place::Bind(b);
         }

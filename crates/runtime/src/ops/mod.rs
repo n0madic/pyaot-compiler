@@ -18,7 +18,11 @@ pub use dunder_dispatch::{
     try_abs_dunder, try_float_dunder, try_format_dunder, try_hash_dunder, try_instance_lt_ordering,
     try_int_dunder, try_iter_dunder, try_repr_dunder, try_str_dunder,
 };
+pub use dunder_dispatch::{instance_class_name, instance_defines_eq, try_instance_key_eq};
+pub(crate) use dunder_dispatch::fnv1a;
 
+pub(crate) use comparison::obj_cmp_ordering;
+pub(crate) use comparison::type_name as comparison_type_name;
 pub use comparison::{
     rt_any_delitem, rt_any_getitem, rt_check_bound, rt_is, rt_is_none, rt_is_truthy, rt_obj_cmp,
     rt_obj_contains, rt_obj_eq,

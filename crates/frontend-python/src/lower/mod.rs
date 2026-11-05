@@ -42,6 +42,7 @@ mod calls;
 mod classes;
 mod closures;
 mod comprehensions;
+mod definite;
 mod exceptions;
 mod expressions;
 mod generators;
@@ -198,6 +199,17 @@ struct DecoratedDef {
 /// stable regardless of nesting), plus the per-module thunk memo.
 pub(crate) struct Shared {
     funcs: Vec<Option<HirFunction>>,
+    /// Per class: its effective `@classmethod` definitions (own plus inherited,
+    /// not redefined) with the namespace they were written in. A subclass in
+    /// the same namespace re-lowers each inherited one with `cls` bound to
+    /// ITSELF, so `Sub.make()` / `inst.cm()` see `cls is Sub` (Root B).
+    class_cms: HashMap<ClassId, Vec<(u32, StmtFunctionDef, String)>>,
+    /// First base of each class (same-module single-inheritance chain), the
+    /// order `super()` inside a `@classmethod` walks.
+    class_first_base: HashMap<ClassId, ClassId>,
+    /// The class whose body the `@classmethod` currently being lowered was
+    /// written in (`super()` inside it continues after that class).
+    cm_anchor: Option<String>,
     /// Owning namespace id per `FuncId` (parallel to `funcs`), set at reserve
     /// time from `current_ns` (Phase 8). Every function — including synthetics
     /// (thunks / lambdas / generator resumes) — belongs to the module being
@@ -271,6 +283,9 @@ impl Shared {
             deletable_globals: HashMap::new(),
             deletable_fields: HashSet::new(),
             dyn_method_names: HashSet::new(),
+            class_cms: HashMap::new(),
+            class_first_base: HashMap::new(),
+            cm_anchor: None,
             method_uniform_thunks: HashMap::new(),
             iternext_thunks: HashMap::new(),
             copy_thunks: HashMap::new(),
@@ -373,6 +388,9 @@ pub(crate) struct ProgramLowerer<'a> {
     loaded: HashMap<String, ModuleExports>,
     loading: Vec<String>,
     init_emitted: HashSet<String>,
+    /// Global offset at which the next imported module's spans start (each
+    /// module gets a disjoint range, see [`pyaot_utils::SourceMap`]).
+    next_base: u32,
 }
 
 
@@ -394,8 +412,11 @@ enum ScopeCtx {
     },
     /// A `try` body protected by an except handler. Cleanup: exit the region.
     TryFrame { outer: Option<Idx<HirBlock>> },
-    /// An `except` handler body. Cleanup: `EndHandling`.
-    Handler,
+    /// A handling block entered by `StartHandling` (an `except` body, the
+    /// exceptional-edge `finally` body), run under its own cleanup landing pad
+    /// (see `FnLowerer::begin_handling`). Cleanup: exit that region (back to
+    /// `outer`) + `EndHandling`.
+    Handler { outer: Option<Idx<HirBlock>> },
     /// A `try` body protected by a finally handler. Cleanup: exit the region +
     /// the re-lowered (cloned) finalbody.
     Finally {
@@ -498,6 +519,8 @@ pub(crate) struct FnLowerer<'a> {
     /// `super()` / `object.__new__(cls)`: `cls` is the statically enclosing
     /// class, never a runtime subclass.)
     cls_ref: Option<(ClassId, InternedString)>,
+    /// Inside a `@classmethod`: the class whose body defined this method.
+    cm_anchor: Option<String>,
     params: Vec<HirParam>,
     ret_ty: SemTy,
     exprs: Arena<HirExpr>,
@@ -542,10 +565,23 @@ pub(crate) struct FnLowerer<'a> {
     /// `None` from "not filled yet", and backs the one-context-per-block
     /// debug assertion).
     stamped: HashSet<Idx<HirBlock>>,
+    /// Lowered-but-lazy operand values of the expression being built, in
+    /// evaluation order (see [`Self::flush_pending`]): an HIR value expression
+    /// is evaluated where its parent node is, so when a LATER operand emits
+    /// statements (`f() + (g() or 2)`, `x + (x := 5)`, a comprehension), the
+    /// earlier operands are staged into temporaries first to keep Python's
+    /// left-to-right evaluation order.
+    pending: Vec<Idx<HirExpr>>,
+    /// Names this function has referenced so far (source order) — a later
+    /// `global x` of one of them is CPython's SyntaxError.
+    seen_names: HashSet<InternedString>,
     /// Last `HirStmt::Line` marker emitted into the CURRENT block (real
     /// tracebacks). Reset on every `switch` — codegen's srcloc state follows
     /// emission order, so each block must re-establish its line.
     cur_line: Option<u32>,
+    /// Line of the statement being lowered (the last `mark_line`),
+    /// re-established lazily in every block that statement's code spans.
+    stmt_line: Option<u32>,
     scope_stack: Vec<ScopeCtx>,
     /// Uniquifier for sibling synthetic functions (lambdas / nested defs).
     synth_counter: u32,

@@ -342,6 +342,7 @@ pub(super) fn lower_callable(
             ret_ty,
             enclosing,
             nested.is_some(),
+            span,
         )?;
         return Ok(fid);
     }
@@ -353,6 +354,7 @@ pub(super) fn lower_callable(
     // from param 0, which a classmethod does not have.
     if let FirstParam::ClsMethod { class_id, name } = first {
         fl.cls_ref = Some((class_id, name));
+        fl.cm_anchor = fl.shared.cm_anchor.clone();
     }
     fl.set_scope_facts(facts);
     if nested.is_some() {
@@ -402,7 +404,10 @@ pub(super) fn parse_params(
         .enumerate()
     {
         let ty = match (i, first) {
-            (0, FirstParam::Method(t)) => t.clone(),
+            // An unannotated first param of a method is the receiver. An
+            // annotated one keeps its annotation: a no-`self` method called via
+            // the class (`Point.add(3, 4)`) binds ordinary values there.
+            (0, FirstParam::Method(t)) if awd.def.annotation.is_none() => t.clone(),
             _ => match &awd.def.annotation {
                 Some(a) => annotation_to_semty(a.as_ref(), ctx),
                 None => SemTy::Dyn,

@@ -24,6 +24,7 @@ impl<'a> FnLowerer<'a> {
             base_name: base_name.to_string(),
             enclosing_class,
             cls_ref: None,
+            cm_anchor: None,
             params: Vec::new(),
             ret_ty,
             exprs: Arena::new(),
@@ -42,7 +43,10 @@ impl<'a> FnLowerer<'a> {
             sealed: HashSet::new(),
             cur_handler: None,
             stamped: HashSet::new(),
+            pending: Vec::new(),
+            seen_names: HashSet::new(),
             cur_line: None,
+            stmt_line: None,
             scope_stack: Vec::new(),
             synth_counter: 0,
             self_capture: None,
@@ -239,8 +243,71 @@ impl<'a> FnLowerer<'a> {
     }
 
     pub(super) fn push_stmt(&mut self, stmt: HirStmt) {
+        if !matches!(stmt, HirStmt::Line(_)) {
+            self.ensure_line();
+            let consumed = stmt_operands(&stmt);
+            self.flush_pending(&consumed);
+        }
         self.stamp_handler();
         self.blocks[self.cur].stmts.push(stmt);
+    }
+
+    /// Stage every pending lazy operand (see [`FnLowerer::pending`]) that the
+    /// code about to be emitted does not itself consume: move its node to a
+    /// fresh arena slot, evaluate it into a temporary NOW, and turn the
+    /// original slot (still referenced by its parent) into a read of that
+    /// temporary. Literals and names are stable and never staged.
+    pub(super) fn flush_pending(&mut self, consumed: &[Idx<HirExpr>]) {
+        if self.pending.is_empty() || !self.cur_open() {
+            self.pending.retain(|_| false);
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        // Everything reachable from the consumed operands is evaluated in its
+        // own place by them (a parent built with `alloc` directly, not through
+        // `lower_expr`, leaves its children on the stack).
+        let mut reach: HashSet<Idx<HirExpr>> = HashSet::new();
+        let mut work: Vec<Idx<HirExpr>> = consumed.to_vec();
+        while let Some(e) = work.pop() {
+            if reach.insert(e) {
+                work.extend(expr_children(&self.exprs[e].kind));
+            }
+        }
+        for idx in pending {
+            if reach.contains(&idx) || !stageable(&self.exprs[idx].kind) {
+                continue;
+            }
+            let old = self.exprs[idx].clone();
+            let moved = self.exprs.alloc(old.clone());
+            let tmp = self.fresh_local(SemTy::Dyn);
+            self.stamp_handler();
+            self.blocks[self.cur].stmts.push(HirStmt::Assign {
+                target: tmp,
+                value: moved,
+            });
+            self.exprs[idx] = HirExpr {
+                kind: HirExprKind::Local(tmp),
+                ty: SemTy::Dyn,
+                span: old.span,
+                raw_int_ok: false,
+            };
+        }
+    }
+
+    /// Re-establish the enclosing statement's line in a block entered
+    /// mid-statement (a loop header, a short-circuit / ternary arm, a join
+    /// block) before it receives code: codegen's srcloc follows block
+    /// emission order, so without it such code would be attributed to
+    /// whatever line the previously emitted block ended on. Lazy — a block
+    /// that only jumps gets no marker (keeps it threadable by the peephole).
+    fn ensure_line(&mut self) {
+        if self.cur_line.is_none() {
+            if let Some(line) = self.stmt_line {
+                self.stamp_handler();
+                self.blocks[self.cur].stmts.push(HirStmt::Line(line));
+                self.cur_line = Some(line);
+            }
+        }
     }
 
     /// Seal the current block with `term` (only if still open) and leave `cur`
@@ -249,6 +316,23 @@ impl<'a> FnLowerer<'a> {
     /// terminator) because an explicit `Unreachable` seal — the Phase-7 `raise`
     /// shape — must not be overwritten by a later structural seal.
     pub(super) fn seal(&mut self, term: HirTerminator) {
+        // A terminator that evaluates an expression may raise (`__bool__`,
+        // a returned call): it needs the statement's line too.
+        if matches!(
+            term,
+            HirTerminator::Branch { .. } | HirTerminator::Return(Some(_))
+        ) && !self.sealed.contains(&self.cur)
+        {
+            self.ensure_line();
+        }
+        if !self.sealed.contains(&self.cur) {
+            let consumed: Vec<Idx<HirExpr>> = match &term {
+                HirTerminator::Branch { cond, .. } => vec![*cond],
+                HirTerminator::Return(Some(v)) => vec![*v],
+                _ => Vec::new(),
+            };
+            self.flush_pending(&consumed);
+        }
         self.stamp_handler();
         if self.sealed.insert(self.cur) {
             self.blocks[self.cur].term = term;
@@ -264,6 +348,7 @@ impl<'a> FnLowerer<'a> {
     /// block has not already established it (real tracebacks).
     pub(super) fn mark_line(&mut self, span: Span) {
         let line = self.shared.line_map.line_number(span.start);
+        self.stmt_line = Some(line);
         if self.cur_line != Some(line) {
             self.push_stmt(HirStmt::Line(line));
             self.cur_line = Some(line);
@@ -392,7 +477,8 @@ impl<'a> FnLowerer<'a> {
                 ScopeCtx::TryFrame { outer } => {
                     self.exit_protected(outer);
                 }
-                ScopeCtx::Handler => {
+                ScopeCtx::Handler { outer } => {
+                    self.exit_protected(outer);
                     self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
                 }
                 ScopeCtx::Finally { outer, stmts } => {
@@ -442,6 +528,40 @@ impl<'a> FnLowerer<'a> {
         self.cur_handler = outer;
     }
 
+    /// Emit `StartHandling` and open the region of the handling block that
+    /// follows it: every exception escaping the block lands on a cleanup pad
+    /// that pops the handling stack (`EndHandling`) and re-raises, so the
+    /// runtime's handling stack stays balanced however the block exits
+    /// (CPython's `POP_EXCEPT` cleanup handler). Returns the cleanup pad; the
+    /// caller closes the region with [`Self::end_handling_region`].
+    pub(super) fn begin_handling(&mut self) -> Idx<HirBlock> {
+        self.push_stmt(HirStmt::ExcOp(ExcOp::StartHandling));
+        let cleanup = self.new_block();
+        let body = self.new_block();
+        self.seal(HirTerminator::Jump(body));
+        self.switch(body);
+        self.cur_handler = Some(cleanup);
+        cleanup
+    }
+
+    /// Close a region opened by [`Self::begin_handling`]: restore `outer` as
+    /// the handler context and emit the cleanup pad (under `outer`). The
+    /// current block is left where it was (the caller has already sealed or
+    /// continued it under `outer`).
+    pub(super) fn end_handling_region(
+        &mut self,
+        cleanup: Idx<HirBlock>,
+        outer: Option<Idx<HirBlock>>,
+    ) {
+        let resume = self.cur;
+        self.cur_handler = outer;
+        self.switch(cleanup);
+        self.push_stmt(HirStmt::ExcOp(ExcOp::EndHandling));
+        self.push_stmt(HirStmt::Raise(HirRaise::Reraise));
+        self.seal(HirTerminator::Unreachable);
+        self.switch(resume);
+    }
+
     /// Emit `mgr.__exit__(None, None, None)` as a statement (the normal-path
     /// context-manager epilogue; the result is ignored).
     pub(super) fn emit_exit_none_call(&mut self, mgr: LocalId, span: Span) {
@@ -463,4 +583,202 @@ impl<'a> FnLowerer<'a> {
         self.push_stmt(HirStmt::Expr(call));
     }
 
+}
+
+/// Kinds of lazy value expression worth staging to preserve evaluation
+/// order: anything that reads mutable state or runs code. Literals, names
+/// (function / class / global references), and the protocol queries whose
+/// evaluation point the desugars fix deliberately (exception / generator
+/// state) are left in place.
+fn stageable(kind: &HirExprKind) -> bool {
+    matches!(
+        kind,
+        HirExprKind::Local(_)
+            | HirExprKind::BinOp { .. }
+            | HirExprKind::Unary { .. }
+            | HirExprKind::Compare { .. }
+            | HirExprKind::Call { .. }
+            | HirExprKind::CallValue { .. }
+            | HirExprKind::MethodCallValue { .. }
+            | HirExprKind::MethodCall { .. }
+            | HirExprKind::Subscript { .. }
+            | HirExprKind::Slice { .. }
+            | HirExprKind::Attribute { .. }
+            | HirExprKind::ListLit { .. }
+            | HirExprKind::TupleLit { .. }
+            | HirExprKind::SetLit { .. }
+            | HirExprKind::DictLit { .. }
+            | HirExprKind::FormatValue { .. }
+            | HirExprKind::CellGet { .. }
+            | HirExprKind::CallRuntime { .. }
+            | HirExprKind::IsNone { .. }
+            | HirExprKind::Is { .. }
+            | HirExprKind::GetAttrByName { .. }
+            | HirExprKind::Sum { .. }
+    )
+}
+
+/// The value expressions a statement evaluates directly (its own operands,
+/// which it consumes in its own position — never staged ahead of it).
+pub(super) fn stmt_operands(stmt: &HirStmt) -> Vec<Idx<HirExpr>> {
+    let opt = |o: &Option<Idx<HirExpr>>| o.iter().copied().collect::<Vec<_>>();
+    match stmt {
+        HirStmt::Line(_) | HirStmt::ExcOp(_) => Vec::new(),
+        HirStmt::Expr(e) | HirStmt::Assert { cond: e } => vec![*e],
+        HirStmt::Assign { value, .. } => vec![*value],
+        HirStmt::Print { args, .. } => args.clone(),
+        HirStmt::SetItem { base, index, value } => vec![*base, *index, *value],
+        HirStmt::DelItem { base, index } => vec![*base, *index],
+        HirStmt::SetSlice {
+            base,
+            start,
+            end,
+            step,
+            value,
+        } => {
+            let mut v = vec![*base, *value];
+            v.extend(opt(start));
+            v.extend(opt(end));
+            v.extend(opt(step));
+            v
+        }
+        HirStmt::DelSlice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            let mut v = vec![*base];
+            v.extend(opt(start));
+            v.extend(opt(end));
+            v.extend(opt(step));
+            v
+        }
+        HirStmt::SetAttr { base, value, .. } => vec![*base, *value],
+        HirStmt::ContainerPush { value, .. } => vec![*value],
+        HirStmt::ContainerInsert { key, value, .. } => vec![*key, *value],
+        HirStmt::CellSet { value, .. } | HirStmt::GlobalSet { value, .. } => vec![*value],
+        HirStmt::GenSetLocal { gen, value, .. } => vec![*gen, *value],
+        HirStmt::GenSetState { gen, .. } | HirStmt::GenSetExhausted { gen } => vec![*gen],
+        HirStmt::ArmCause(c) => match c {
+            pyaot_hir::ArmCause::Suppress => Vec::new(),
+            other => arm_cause_exprs(other),
+        },
+        HirStmt::Raise(r) => match r {
+            pyaot_hir::HirRaise::Builtin { msg, .. } | pyaot_hir::HirRaise::Stdlib { msg, .. } => {
+                opt(msg)
+            }
+            pyaot_hir::HirRaise::Custom { args, .. } => args.clone(),
+            pyaot_hir::HirRaise::Instance { value } => vec![*value],
+            pyaot_hir::HirRaise::Reraise => Vec::new(),
+        },
+    }
+}
+
+fn arm_cause_exprs(c: &pyaot_hir::ArmCause) -> Vec<Idx<HirExpr>> {
+    match c {
+        pyaot_hir::ArmCause::Suppress => Vec::new(),
+        pyaot_hir::ArmCause::Builtin { cause_msg, .. } => cause_msg.iter().copied().collect(),
+        pyaot_hir::ArmCause::Value(v) => vec![*v],
+    }
+}
+
+/// The direct value sub-expressions of an expression node.
+pub(super) fn expr_children(kind: &HirExprKind) -> Vec<Idx<HirExpr>> {
+    use HirExprKind as K;
+    let opt = |o: &Option<Idx<HirExpr>>| o.iter().copied().collect::<Vec<_>>();
+    match kind {
+        K::StrLit(_)
+        | K::IntLit(_)
+        | K::BigIntLit(_)
+        | K::FloatLit(_)
+        | K::BoolLit(_)
+        | K::NoneLit
+        | K::NotImplementedLit
+        | K::Unbound
+        | K::Name(_)
+        | K::Local(_)
+        | K::BytesLit(_)
+        | K::Super(_)
+        | K::IsSubclass { .. }
+        | K::CellGet { .. }
+        | K::GlobalGet { .. }
+        | K::MakeGenerator { .. }
+        | K::ExcQuery(_) => Vec::new(),
+        K::ObjectNew { cls } => vec![*cls],
+        K::BinOp { l, r, .. } | K::Compare { l, r, .. } | K::Is { l, r } => vec![*l, *r],
+        K::Unary { operand, .. } => vec![*operand],
+        K::Call { callee, args } => {
+            let mut v = vec![*callee];
+            v.extend(args.iter().copied());
+            v
+        }
+        K::CallValue {
+            callee,
+            args,
+            kwargs,
+        } => {
+            let mut v = vec![*callee, *args];
+            v.extend(opt(kwargs));
+            v
+        }
+        K::MethodCallValue {
+            recv, args, kwargs, ..
+        } => {
+            let mut v = vec![*recv, *args];
+            v.extend(opt(kwargs));
+            v
+        }
+        K::ListLit { elems } | K::TupleLit { elems } | K::SetLit { elems } => elems.clone(),
+        K::DictLit { pairs } => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+        K::Subscript { base, index } => vec![*base, *index],
+        K::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            let mut v = vec![*base];
+            v.extend(opt(start));
+            v.extend(opt(end));
+            v.extend(opt(step));
+            v
+        }
+        K::FormatValue { value, spec } => vec![*value, *spec],
+        K::Sum { iterable, start } => {
+            let mut v = vec![*iterable];
+            v.extend(opt(start));
+            v
+        }
+        K::ContainerExpr { args, .. } => args.clone(),
+        K::MethodCall {
+            recv, args, kwargs, ..
+        } => {
+            let mut v = vec![*recv];
+            v.extend(args.iter().copied());
+            v.extend(kwargs.iter().map(|(_, e)| *e));
+            v
+        }
+        K::Attribute { value, .. }
+        | K::IsInstance { value, .. }
+        | K::IsInstanceBuiltin { value, .. }
+        | K::HasAttr { value, .. }
+        | K::IsCallable { value }
+        | K::IsNone { value }
+        | K::ExcInstanceStr { value } => vec![*value],
+        K::GetAttrByName { value, default, .. } => {
+            let mut v = vec![*value];
+            v.extend(opt(default));
+            v
+        }
+        K::CallRuntime { args, .. } => args.iter().flatten().copied().collect(),
+        K::GenericConstruct { args, .. } => args.clone(),
+        K::MakeClosure { captures, .. } => captures.clone(),
+        K::MakeCell { init } => opt(init),
+        K::GenQuery { gen, value, .. } => {
+            let mut v = vec![*gen];
+            v.extend(opt(value));
+            v
+        }
+    }
 }

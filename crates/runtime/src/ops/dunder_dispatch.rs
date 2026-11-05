@@ -29,6 +29,19 @@ pub(crate) const fn fnv1a(s: &[u8]) -> u64 {
 }
 
 pub(super) const FNV_ADD: u64 = fnv1a(b"__add__");
+pub(super) const FNV_IADD: u64 = fnv1a(b"__iadd__");
+pub(super) const FNV_ISUB: u64 = fnv1a(b"__isub__");
+pub(super) const FNV_IAND: u64 = fnv1a(b"__iand__");
+pub(super) const FNV_IOR: u64 = fnv1a(b"__ior__");
+pub(super) const FNV_IXOR: u64 = fnv1a(b"__ixor__");
+pub(super) const FNV_ITRUEDIV: u64 = fnv1a(b"__itruediv__");
+pub(super) const FNV_IFLOORDIV: u64 = fnv1a(b"__ifloordiv__");
+pub(super) const FNV_IMOD: u64 = fnv1a(b"__imod__");
+pub(super) const FNV_IPOW: u64 = fnv1a(b"__ipow__");
+pub(super) const FNV_IMATMUL: u64 = fnv1a(b"__imatmul__");
+pub(super) const FNV_ILSHIFT: u64 = fnv1a(b"__ilshift__");
+pub(super) const FNV_IRSHIFT: u64 = fnv1a(b"__irshift__");
+pub(super) const FNV_IMUL: u64 = fnv1a(b"__imul__");
 pub(super) const FNV_RADD: u64 = fnv1a(b"__radd__");
 pub(super) const FNV_SUB: u64 = fnv1a(b"__sub__");
 pub(super) const FNV_RSUB: u64 = fnv1a(b"__rsub__");
@@ -56,6 +69,7 @@ pub(super) const FNV_FORMAT: u64 = fnv1a(b"__format__");
 pub(super) const FNV_LT: u64 = fnv1a(b"__lt__");
 pub(super) const FNV_EQ: u64 = fnv1a(b"__eq__");
 pub(super) const FNV_HASH: u64 = fnv1a(b"__hash__");
+pub(super) const FNV_GETITEM: u64 = fnv1a(b"__getitem__");
 pub(super) const FNV_ITER: u64 = fnv1a(b"__iter__");
 pub(super) const FNV_BOOL: u64 = fnv1a(b"__bool__");
 pub(super) const FNV_LEN: u64 = fnv1a(b"__len__");
@@ -392,4 +406,32 @@ pub unsafe fn try_instance_lt_ordering(a: *mut Obj, b: *mut Obj) -> Option<std::
         }
     }
     Some(Ordering::Equal)
+}
+
+/// Does `class_id` define (or inherit) a user `__eq__`? A class that does
+/// without a `__hash__` is unhashable (CPython sets `__hash__ = None`).
+pub fn instance_defines_eq(class_id: u8) -> bool {
+    unsafe { !lookup_dunder_func(class_id, FNV_EQ).is_null() }
+}
+
+/// The bare class name of a user class (for `unhashable type: 'C'`-style
+/// messages): the registered qualname's last component, else `object`.
+pub fn instance_class_name(class_id: u8) -> String {
+    match crate::instance::lookup_class_qualname(class_id) {
+        Some(qn) => qn.rsplit('.').next().unwrap_or("object").to_string(),
+        None => "object".to_string(),
+    }
+}
+
+/// Instance-aware equality for hash-table keys: the user `__eq__` (forward,
+/// then reflected) when either side is an instance defining one; `None` to
+/// fall back to the builtin comparison (identity for plain instances).
+///
+/// # Safety
+/// `a` and `b` must be valid object pointers or tagged immediates.
+pub unsafe fn try_instance_key_eq(a: *mut Obj, b: *mut Obj) -> Option<bool> {
+    if !is_instance(a) && !is_instance(b) {
+        return None;
+    }
+    try_instance_eq(a, b).map(|r| r != 0)
 }

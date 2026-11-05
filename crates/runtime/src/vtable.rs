@@ -5,9 +5,12 @@
 
 use std::cell::UnsafeCell;
 
-/// Maximum number of classes supported.
-/// Limited by u8 class_id type. User-defined classes start at FIRST_USER_CLASS_ID (29),
-/// allowing ~227 user classes. Programs exceeding this limit need a wider class_id type.
+/// Maximum number of classes supported (the whole u8 `class_id` space).
+/// Ids below [`FIRST_USER_CLASS_ID`] are taken by built-in exceptions, the
+/// reserved stdlib exception slots and the builtin generic types (see
+/// `pyaot_core_defs::FIRST_USER_CLASS_ID` for the exact ranges); user classes
+/// get `FIRST_USER_CLASS_ID..NO_PARENT`. Programs exceeding this limit need a
+/// wider class_id type.
 const MAX_CLASSES: usize = 256;
 
 /// Sentinel value for "no parent" (class is at the root of hierarchy)
@@ -76,6 +79,27 @@ static INSTANCE_ITERNEXT_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
 
 /// Register a class with its parent
+/// Per-class ancestor bitsets (one bit per class id): every base along the
+/// class's MRO, so a multiply-inheriting class `C(A, B)` is a subclass of `B`
+/// too — the parent chain alone only reaches `A`.
+static ANCESTORS: RegistryStorage<[u64; MAX_CLASSES / 64], MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([[0; MAX_CLASSES / 64]; MAX_CLASSES]));
+
+/// Record `ancestor_id` as an ancestor of `class_id` (contract addition,
+/// emitted by `__pyaot_classinit` for each MRO entry).
+#[no_mangle]
+pub extern "C" fn rt_register_class_ancestor(class_id: u8, ancestor_id: u8) {
+    unsafe {
+        let a = ancestor_id as usize;
+        (*ANCESTORS.0.get())[class_id as usize][a / 64] |= 1u64 << (a % 64);
+    }
+}
+
+fn has_registered_ancestor(class_id: u8, ancestor_id: u8) -> bool {
+    let a = ancestor_id as usize;
+    unsafe { (*ANCESTORS.0.get())[class_id as usize][a / 64] & (1u64 << (a % 64)) != 0 }
+}
+
 #[no_mangle]
 pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
     unsafe {
@@ -224,24 +248,46 @@ pub extern "C" fn rt_class_inherits_from(child_class_id: u8, target_class_id: u8
     if child_class_id == target_class_id {
         return 1;
     }
+    if parent_chain_reaches(child_class_id, target_class_id)
+        || has_registered_ancestor(child_class_id, target_class_id)
+    {
+        return 1;
+    }
+    // Multiple inheritance: every registered ancestor (MRO entry) of the class
+    // contributes its own parent chain — e.g. the builtin exception hierarchy
+    // above an exception base reached through a non-first base.
+    let row = unsafe { (*ANCESTORS.0.get())[child_class_id as usize] };
+    for (w, bits) in row.iter().enumerate() {
+        let mut b = *bits;
+        while b != 0 {
+            let a = (w * 64 + b.trailing_zeros() as usize) as u8;
+            b &= b - 1;
+            if parent_chain_reaches(a, target_class_id) {
+                return 1;
+            }
+        }
+    }
+    0
+}
 
-    // Walk up the parent chain
-    let mut current = child_class_id;
+/// Walk `class_id`'s registered parent chain looking for `target`.
+fn parent_chain_reaches(class_id: u8, target: u8) -> bool {
+    let mut current = class_id;
     unsafe {
         let registry = &*CLASS_REGISTRY.0.get();
         // Limit iterations to MAX_CLASSES to prevent infinite loops from circular inheritance
         for _ in 0..MAX_CLASSES {
+            if current == target {
+                return true;
+            }
             let parent = registry[current as usize].parent_class_id;
             if parent == NO_PARENT {
-                return 0;
-            }
-            if parent == target_class_id {
-                return 1;
+                return false;
             }
             current = parent;
         }
     }
-    0
+    false
 }
 
 // ==================== Built-in Exception Class Registration ====================
@@ -251,93 +297,29 @@ use std::sync::Once;
 static INIT_BUILTIN_EXCEPTIONS: Once = Once::new();
 
 /// Initialize built-in exception classes in the class registry.
-/// This maps exception type tags (0-27) to class IDs with proper inheritance:
-/// - Exception (0) is the root (no parent)
-/// - All other built-in exceptions inherit from Exception (0)
+/// Builtin exception tags ARE runtime class ids; each one's parent comes from
+/// the single-source parent column in `core-defs` (`BuiltinExceptionKind::
+/// parent`), so the registry walk (`rt_class_inherits_from`) reproduces
+/// CPython's exception tree (`FileNotFoundError ⊂ OSError ⊂ Exception ⊂
+/// BaseException`, `KeyError ⊂ LookupError`, `SystemExit ⊂ BaseException`, …).
 ///
 /// This function is idempotent and thread-safe.
 #[no_mangle]
 pub extern "C" fn rt_init_builtin_exception_classes() {
     INIT_BUILTIN_EXCEPTIONS.call_once(|| unsafe {
         let registry = &mut *CLASS_REGISTRY.0.get();
-
-        // BaseException (28) - ultimate root, no parent
-        registry[pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() as usize] = ClassInfo {
-            parent_class_id: NO_PARENT,
-            field_count: 0,
-        };
-
-        // Exception (0) inherits from BaseException (28)
-        registry[pyaot_core_defs::BuiltinExceptionKind::Exception.tag() as usize] = ClassInfo {
-            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::BaseException.tag(),
-            field_count: 0,
-        };
-
-        // SystemExit, KeyboardInterrupt, GeneratorExit inherit from BaseException (NOT Exception)
-        let base_exc_tag = pyaot_core_defs::BuiltinExceptionKind::BaseException.tag();
-        for &tag in &[
-            pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag(),
-        ] {
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: base_exc_tag,
-                field_count: 0,
-            };
-        }
-
-        // All other built-in exceptions (tags 1-27 except 7, 20, 21) inherit from Exception (0)
-        let exception_tag = pyaot_core_defs::BuiltinExceptionKind::Exception.tag();
         for kind in pyaot_core_defs::BuiltinExceptionKind::ALL {
-            let tag = kind.tag();
-            // Skip Exception (0), BaseException (28), and BaseException-only types
-            if tag == exception_tag
-                || tag == base_exc_tag
-                || tag == pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag()
-                || tag == pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag()
-                || tag == pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag()
-            {
-                continue;
-            }
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: exception_tag,
-                field_count: 0,
-            };
-        }
-
-        // UnboundLocalError is a subclass of NameError in CPython (the loop
-        // above defaulted it to Exception); fix its parent so
-        // `except NameError:` also catches it.
-        registry[pyaot_core_defs::BuiltinExceptionKind::UnboundLocalError.tag() as usize] =
-            ClassInfo {
-                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::NameError.tag(),
-                field_count: 0,
-            };
-
-        // §9 encode/decode error hierarchy (the loop defaulted these to
-        // Exception). LookupError stays under Exception (correct); UnicodeError ⊂
-        // ValueError; Unicode{En,De}codeError ⊂ UnicodeError. This MRO is what
-        // makes `except ValueError:` catch a `UnicodeEncodeError`, matching
-        // CPython.
-        registry[pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag() as usize] = ClassInfo {
-            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            field_count: 0,
-        };
-        for &tag in &[
-            pyaot_core_defs::BuiltinExceptionKind::UnicodeEncodeError.tag(),
-            pyaot_core_defs::BuiltinExceptionKind::UnicodeDecodeError.tag(),
-        ] {
-            registry[tag as usize] = ClassInfo {
-                parent_class_id: pyaot_core_defs::BuiltinExceptionKind::UnicodeError.tag(),
+            registry[kind.tag() as usize] = ClassInfo {
+                parent_class_id: kind.parent().map_or(NO_PARENT, |p| p.tag()),
                 field_count: 0,
             };
         }
     });
 }
 
-/// Get the first available class ID for user classes.
-/// Built-in exception classes use IDs 0-28, so user classes start at 29.
-pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT;
+/// The first class ID the frontend assigns to user classes — re-exported from
+/// `pyaot_core_defs` (the single source of truth for the class-id ranges).
+pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::FIRST_USER_CLASS_ID;
 
 // ==================== Method Name Registry (for Protocol dispatch) ====================
 // Maps (class_id, method_name_hash) → vtable_slot for name-based virtual dispatch.
@@ -607,6 +589,20 @@ pub extern "C" fn rt_getattr_name(
                 pyaot_core_defs::Value(raw as u64)
             }
             Err(()) => {
+                // `t.__name__` on a gradual type value: `type(x)` yields the
+                // `<class '…'>` string object (the static `type(x).__name__`
+                // path extracts the same way).
+                const FNV_NAME: u64 = crate::ops::fnv1a(b"__name__");
+                if name_hash as u64 == FNV_NAME && obj.is_ptr() && !ptr.is_null() {
+                    let o = ptr as *mut crate::object::Obj;
+                    if (*o).type_tag() == crate::object::TypeTagKind::Str
+                        && crate::utils::str_obj_to_rust_string(o).starts_with("<class '")
+                    {
+                        return pyaot_core_defs::Value(
+                            crate::conversions::rt_type_name_extract(o) as u64,
+                        );
+                    }
+                }
                 raise_exc!(
                     crate::exceptions::ExceptionType::AttributeError,
                     "object has no attribute (by-name lookup failed)"

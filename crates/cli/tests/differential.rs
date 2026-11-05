@@ -5,6 +5,15 @@
 //! `pyaot`, run the resulting executable, run the same file under `python3`, and
 //! compare the two stdouts per the entry's [`DiffMode`]. CPython is the live
 //! oracle (no `.expected` fixtures).
+//!
+//! Every entry is compiled and checked at both the default opt level and
+//! `--opt-level none`. Environment knobs:
+//! - `PYAOT_PYTHON` — oracle interpreter (default `python3`; the corpus
+//!   targets CPython 3.14 semantics).
+//! - `PYAOT_GC_STRESS=1` — link a collect-on-every-allocation runtime (slow:
+//!   minutes per entry; usually combined with `PYAOT_CORPUS_FILTER`).
+//! - `PYAOT_CORPUS_FILTER=a,b` — only entries containing one of the substrings.
+//! - `PYAOT_NET_TESTS=1` — add the live-network entries.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,6 +91,11 @@ const PHASE_CORPUS: &[&str] = &[
     // test_collections_dict_set_bytes.py; folds p4_methods, p15_tuple_slice_slot,
     // p21_container_methods, p35_counter, p51_container_aug_ops).
     "test_collections.py",
+    // Live dict views (dict_keys / dict_values / dict_items): liveness after
+    // mutation, iteration + size-change RuntimeError, `in`, set operators,
+    // `==`/subset ordering, repr, reversed, Dyn-receiver dispatch, and the
+    // self-less `def m(*args)` method binding.
+    "test_dict_views.py",
     // ── Builtins & strings ──
     // Scalar/introspection builtins, zip(N≥3), int methods, conversions,
     // isinstance-tuple, type(), builtins-as-values (folds p17_type_builtin,
@@ -114,6 +128,15 @@ const PHASE_CORPUS: &[&str] = &[
     // p9_*_gc_stress, gc_simple). Run under `RUSTFLAGS="--cfg gc_stress_test"` to
     // surface a missed root as a use-after-free.
     "test_gc_stress.py",
+    // Inference soundness regressions.
+    "test_inference_soundness.py",
+    // Raw (unboxed) arithmetic fast paths: float `/` / compare / neg, inline
+    // overflow-checked raw int `+ - *`.
+    "test_raw_fastpaths.py",
+    // Override dispatch regressions.
+    "test_override_dispatch.py",
+    // Evaluation order / scoping regressions.
+    "test_eval_order.py",
     // ── Modules / imports / annotations ──
     "test_global_scoping.py",
     "test_import.py",
@@ -161,7 +184,9 @@ fn phase_corpus_matches_cpython() {
         .to_path_buf();
     let runtime_lib = ensure_runtime_lib(&target_dir);
     let corpus_dir = workspace_root().join("corpus");
-    let out_dir = std::env::temp_dir().join("pyaot_phase1");
+    // Per-process: two concurrent gate runs must not overwrite (and then
+    // exec a half-written) binary of each other ("Text file busy").
+    let out_dir = std::env::temp_dir().join(format!("pyaot_phase1_{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).expect("create temp out dir");
 
     // The default gate is PHASE_CORPUS; `PYAOT_NET_TESTS` adds the live-network
@@ -170,7 +195,21 @@ fn phase_corpus_matches_cpython() {
     if std::env::var_os("PYAOT_NET_TESTS").is_some() {
         entries.extend_from_slice(NET_TESTS);
     }
+    // `PYAOT_CORPUS_FILTER=a,b`: only entries whose name contains one of the
+    // comma-separated substrings (e.g. to run the slow GC-stress mode on a
+    // subset: `PYAOT_GC_STRESS=1 PYAOT_CORPUS_FILTER=gc_stress,collections`).
+    if let Ok(filter) = std::env::var("PYAOT_CORPUS_FILTER") {
+        let pats: Vec<&str> = filter.split(',').filter(|p| !p.is_empty()).collect();
+        entries.retain(|e| pats.iter().any(|p| e.contains(p)));
+        assert!(!entries.is_empty(), "PYAOT_CORPUS_FILTER={filter} matches no entry");
+    }
 
+    // The oracle interpreter. The corpus targets CPython 3.14 semantics (PEP 649
+    // deferred annotations), so `PYAOT_PYTHON` lets a host whose `python3` is
+    // older point the gate at a 3.14 interpreter.
+    let python = std::env::var("PYAOT_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    let mut failures: Vec<String> = Vec::new();
     for entry in &entries {
         let source = corpus_dir.join(entry);
         assert!(
@@ -179,73 +218,137 @@ fn phase_corpus_matches_cpython() {
             source.display()
         );
 
-        let exe = out_dir.join(Path::new(entry).file_stem().unwrap());
-
-        // ── Compile with pyaot. ──
-        let compile = Command::new(&pyaot)
-            .arg(&source)
-            .arg("-o")
-            .arg(&exe)
-            .arg("--runtime-lib")
-            .arg(&runtime_lib)
-            .output()
-            .expect("failed to spawn pyaot");
-        assert!(
-            compile.status.success(),
-            "pyaot failed to compile {}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            entry,
-            String::from_utf8_lossy(&compile.stdout),
-            String::from_utf8_lossy(&compile.stderr),
-        );
-
-        // ── Run the compiled executable. ──
-        let compiled = Command::new(&exe)
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run compiled {}: {e}", exe.display()));
-        assert!(
-            compiled.status.success(),
-            "compiled {} exited with failure: {:?}\nstderr:\n{}",
-            entry,
-            compiled.status,
-            String::from_utf8_lossy(&compiled.stderr),
-        );
-
-        // ── Run the CPython oracle live. ──
-        let oracle = Command::new("python3")
+        // ── Run the CPython oracle live (once per entry). ──
+        // PYTHONCOERCECLOCALE=0: under a C/POSIX locale CPython (PEP 538)
+        // injects `LC_CTYPE` into its own `os.environ`, which the compiled
+        // binary (correctly) does not — an oracle artifact, not a divergence.
+        // Both processes get the variable so `os.environ` stays identical.
+        let oracle = Command::new(&python)
+            .env("PYTHONCOERCECLOCALE", "0")
             .arg(&source)
             .output()
-            .expect("failed to spawn python3");
+            .unwrap_or_else(|e| panic!("failed to spawn oracle `{python}`: {e}"));
         assert!(
             oracle.status.success(),
-            "python3 failed on {}:\n{}",
+            "{python} failed on {}:\n{}",
             entry,
             String::from_utf8_lossy(&oracle.stderr),
         );
 
-        // ── Compare stdout: byte-for-byte, or final-line for self-checking
-        // entries (both already exited 0 above). ──
-        if SELF_CHECKING.contains(entry) || NET_TESTS.contains(entry) {
-            let last = |out: &[u8]| -> String {
-                String::from_utf8_lossy(out)
-                    .lines()
-                    .rev()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            assert_eq!(
-                last(&compiled.stdout),
-                last(&oracle.stdout),
-                "final self-check line mismatch for {entry} (pyaot vs CPython)",
-            );
-        } else {
-            assert_eq!(
-                String::from_utf8_lossy(&compiled.stdout),
-                String::from_utf8_lossy(&oracle.stdout),
-                "stdout mismatch for {entry} (pyaot vs CPython)",
-            );
+        // Every entry is checked at each opt level: optimizer-only bugs
+        // (effect classification, devirt, inlining) diverge between levels.
+        for (label, opt_args) in OPT_LEVELS {
+            let stem = Path::new(entry).file_stem().unwrap().to_string_lossy();
+            let exe = out_dir.join(format!("{stem}.{label}"));
+            if let Err(msg) = check_entry(
+                &pyaot,
+                &runtime_lib,
+                &source,
+                &exe,
+                opt_args,
+                entry,
+                &oracle,
+            ) {
+                failures.push(format!("[{entry} @ {label}] {msg}"));
+            }
         }
     }
+    assert!(
+        failures.is_empty(),
+        "{} differential failure(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// Opt levels every corpus entry is compiled at: the default pipeline and the
+/// unoptimized one (`--opt-level none` also skips the MIR optimizer).
+const OPT_LEVELS: &[(&str, &[&str])] = &[("default", &[]), ("none", &["--opt-level", "none"])];
+
+/// Compile `source` with `opt_args`, run it, and compare its stdout with the
+/// oracle's per the entry's mode. Returns a human-readable failure on mismatch.
+fn check_entry(
+    pyaot: &Path,
+    runtime_lib: &Path,
+    source: &Path,
+    exe: &Path,
+    opt_args: &[&str],
+    entry: &str,
+    oracle: &std::process::Output,
+) -> Result<(), String> {
+    let compile = Command::new(pyaot)
+        .arg(source)
+        .arg("-o")
+        .arg(exe)
+        .arg("--runtime-lib")
+        .arg(runtime_lib)
+        .args(opt_args)
+        .output()
+        .expect("failed to spawn pyaot");
+    if !compile.status.success() {
+        return Err(format!(
+            "pyaot failed to compile:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr),
+        ));
+    }
+
+    let compiled = Command::new(exe)
+        .env("PYTHONCOERCECLOCALE", "0") // same env as the oracle
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run compiled {}: {e}", exe.display()));
+    if !compiled.status.success() {
+        return Err(format!(
+            "compiled binary exited with failure: {:?}\nstderr:\n{}",
+            compiled.status,
+            String::from_utf8_lossy(&compiled.stderr),
+        ));
+    }
+
+    // Compare stdout: byte-for-byte, or final-line for self-checking entries
+    // (both already exited 0).
+    if SELF_CHECKING.contains(&entry) || NET_TESTS.contains(&entry) {
+        let last = |out: &[u8]| -> String {
+            String::from_utf8_lossy(out)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (got, want) = (last(&compiled.stdout), last(&oracle.stdout));
+        if got != want {
+            return Err(format!(
+                "final self-check line mismatch:\n  pyaot:   {got}\n  CPython: {want}"
+            ));
+        }
+    } else if compiled.stdout != oracle.stdout {
+        return Err(format!(
+            "stdout mismatch:\n{}",
+            first_diff(&compiled.stdout, &oracle.stdout)
+        ));
+    }
+    Ok(())
+}
+
+/// The first differing line between two outputs, for a readable failure.
+fn first_diff(got: &[u8], want: &[u8]) -> String {
+    let (got, want) = (String::from_utf8_lossy(got), String::from_utf8_lossy(want));
+    let (mut g, mut w) = (got.lines(), want.lines());
+    for n in 1.. {
+        match (g.next(), w.next()) {
+            (None, None) => break,
+            (a, b) if a == b => continue,
+            (a, b) => {
+                return format!(
+                    "  line {n}:\n    pyaot:   {}\n    CPython: {}",
+                    a.unwrap_or("<eof>"),
+                    b.unwrap_or("<eof>")
+                )
+            }
+        }
+    }
+    "  (outputs differ only in trailing bytes)".to_string()
 }
 
 /// Locate (and rebuild) the runtime staticlib next to the `pyaot` binary,
@@ -259,19 +362,36 @@ fn phase_corpus_matches_cpython() {
 /// fix would not take effect and could SIGSEGV at link-clean compile time
 /// (this bit the Phase-10 `rt_sorted` ABI change).
 fn ensure_runtime_lib(target_dir: &Path) -> PathBuf {
-    let lib = target_dir.join("libpyaot_runtime.a");
-
     // The profile is the parent dir's name (e.g. `debug` / `release`).
     let profile = target_dir
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("debug");
+        .unwrap_or("debug")
+        .to_string();
 
     let mut cmd = Command::new(env!("CARGO"));
     cmd.arg("build").arg("-p").arg("pyaot-runtime");
     if profile == "release" {
         cmd.arg("--release");
     }
+
+    // `PYAOT_GC_STRESS=1`: link a runtime that collects on EVERY allocation
+    // (`--cfg gc_stress_test`), so a missed GC root surfaces as a
+    // use-after-free / output mismatch. Built into its own target dir so the
+    // cfg flag never pollutes the normal runtime build cache.
+    let lib = if std::env::var_os("PYAOT_GC_STRESS").is_some() {
+        let stress_dir = target_dir
+            .parent()
+            .expect("target dir has a parent")
+            .join("gc-stress");
+        cmd.arg("--target-dir")
+            .arg(&stress_dir)
+            .env("RUSTFLAGS", "--cfg gc_stress_test");
+        stress_dir.join(&profile).join("libpyaot_runtime.a")
+    } else {
+        target_dir.join("libpyaot_runtime.a")
+    };
+
     let build = cmd
         .output()
         .expect("failed to spawn cargo build for runtime");

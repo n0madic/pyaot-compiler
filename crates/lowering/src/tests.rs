@@ -17,9 +17,7 @@ fn lowered(src: &str) -> MirProgram {
         pyaot_semantics::collect_classes(&module, &ns, &interner).expect("collect_classes");
     pyaot_typeck::infer(&mut module, &resolve, &mut classes, &interner).expect("infer");
     let program = super::lower(&module, &resolve, &interner, &classes).expect("lower");
-    for f in &program.funcs {
-        pyaot_mir::verify(f, &program.funcs).expect("verify");
-    }
+    pyaot_mir::verify_program(&program).expect("verify");
     program
 }
 
@@ -99,16 +97,25 @@ fn float_accumulator_loop_is_unboxed() {
 }
 
 #[test]
-fn float_division_stays_tagged() {
-    // `/` is NOT specialized (CPython `x/0.0` raises; we keep tagged semantics).
-    let p = lowered("print(7.0 / 2.0)\n");
+fn float_division_compare_and_neg_lower_unboxed() {
+    // `/` on floats is a Raw(F64) BinOp (codegen guards the zero divisor and
+    // raises ZeroDivisionError through the runtime); float comparison and
+    // negation are raw too — no float boxing anywhere.
+    let f64 = Repr::Raw(RawKind::F64);
+    let p = lowered("x = 7.0\ny = 2.0\nprint(x / y)\nprint(x < y)\nprint(-x)\n");
     let f = main_fn(&p);
     let divs: Vec<_> = binops_with_repr(f)
         .into_iter()
         .filter(|(op, _)| *op == BinOp::Div)
         .collect();
     assert_eq!(divs.len(), 1, "expected one Div");
-    assert_eq!(divs[0].1, Repr::Tagged, "float division must stay tagged");
+    assert_eq!(divs[0].1, f64, "float division runs raw");
+    assert!(compare_operand_reprs(f).contains(&f64), "float compare runs raw");
+    let raw_neg = f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+        matches!(i, MirInst::Unary { dst, op: pyaot_mir::UnaryOp::Neg, .. }
+                 if f.locals[dst.index()].repr == f64)
+    });
+    assert!(raw_neg, "float negation runs raw");
 }
 
 #[test]
@@ -156,18 +163,23 @@ fn bounded_call_specializes_params_and_return_to_raw() {
 }
 
 #[test]
-fn mixed_int_float_add_stays_tagged() {
-    // Only when BOTH operands are statically float does the raw path fire; mixed
-    // int/float falls back to the tagged baseline (the runtime promotes).
-    let p = lowered("print(3 + 1.5)\n");
-    let f = main_fn(&p);
-    let adds: Vec<_> = binops_with_repr(f)
-        .into_iter()
-        .filter(|(op, _)| *op == BinOp::Add)
-        .collect();
+fn mixed_int_float_add() {
+    // A float against an exactly-representable int LITERAL stays raw (the
+    // literal becomes an f64 constant); a float against an int VARIABLE (which
+    // may be a bignum) falls back to the tagged baseline (the runtime promotes).
+    let f64 = Repr::Raw(RawKind::F64);
+    let adds = |src: &str| -> Vec<Repr> {
+        let p = lowered(src);
+        binops_with_repr(main_fn(&p))
+            .into_iter()
+            .filter(|(op, _)| *op == BinOp::Add)
+            .map(|(_, r)| r)
+            .collect()
+    };
+    assert!(adds("print(3 + 1.5)\n").contains(&f64), "literal mix runs raw");
     assert!(
-        adds.iter().any(|(_, r)| *r == Repr::Tagged),
-        "mixed add must be tagged"
+        adds("n = 10**30\nprint(n + 1.5)\n").contains(&Repr::Tagged),
+        "int-variable mix must be tagged"
     );
 }
 
@@ -930,19 +942,30 @@ fn stdlib_math_ceil_returns_raw_i64() {
 }
 
 #[test]
-fn stdlib_random_seed_appends_arg_count() {
-    // `random.seed(42)` is a pass_arg_count descriptor: the descriptor's two
-    // raw-i64 params are the seed plus the user-written arg count (1).
+fn stdlib_randrange_appends_arg_count() {
+    // `random.randrange(10)` is a pass_arg_count descriptor: three raw-i64
+    // params (start, stop, step — the latter two default-filled) plus the
+    // user-written arg count (1).
+    let p = lowered("import random\nprint(random.randrange(10))\n");
+    let calls = runtime_calls(&p);
+    let rr = calls
+        .iter()
+        .find(|(s, _, _)| *s == "rt_random_randrange")
+        .expect("randrange call");
+    assert_eq!(rr.1, vec![Repr::Raw(RawKind::I64); 4]);
+}
+
+#[test]
+fn stdlib_random_seed_takes_a_tagged_value() {
+    // `random.seed(a)` accepts any int (bignums included), float, str or None,
+    // so its one param is a Tagged `Value`.
     let p = lowered("import random\nrandom.seed(42)\nprint(random.random())\n");
     let calls = runtime_calls(&p);
     let seed = calls
         .iter()
         .find(|(s, _, _)| *s == "rt_random_seed")
         .expect("seed call");
-    assert_eq!(
-        seed.1,
-        vec![Repr::Raw(RawKind::I64), Repr::Raw(RawKind::I64)]
-    );
+    assert_eq!(seed.1, vec![Repr::Tagged]);
     assert_eq!(seed.2, None, "void descriptor has no dst");
 }
 
@@ -1398,10 +1421,10 @@ print(math.sqrt(pick(True)))
 
 #[test]
 fn dyn_stdlib_int_arg_takes_checked_unbox() {
-    // A Dyn argument into a raw-i64 stdlib param (math.gcd) takes the CHECKED
-    // Coerce (runtime-validated rt_unbox_int), not a blind untag.
+    // A Dyn argument into a raw-i64 stdlib param (random.randint) takes the
+    // CHECKED Coerce (runtime-validated rt_unbox_int), not a blind untag.
     let src = "\
-import math
+import random
 
 
 def pick(flag):
@@ -1410,7 +1433,7 @@ def pick(flag):
     return \"oops\"
 
 
-print(math.gcd(pick(True), 18))
+print(random.randint(pick(True), 18))
 ";
     let p = lowered(src);
     let has_checked = p.funcs.iter().any(|f| {

@@ -6,9 +6,9 @@ use super::timsort;
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
-use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::object::{ListObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
-use std::alloc::{alloc_zeroed, realloc, Layout};
+use std::alloc::{alloc_zeroed, realloc};
 
 /// Append element to list (mutates list)
 /// This is the same as rt_list_push, but named to match Python's .append()
@@ -138,15 +138,12 @@ pub fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
             let data = (*list_obj).data;
 
             if data.is_null() {
-                let new_layout = Layout::array::<Value>(new_capacity)
-                    .expect("Allocation size overflow - capacity too large");
-                let new_data = alloc_zeroed(new_layout) as *mut Value;
+                let new_layout = super::value_layout(new_capacity);
+                let new_data = super::alloc_zeroed_values(new_layout);
                 (*list_obj).data = new_data;
             } else {
-                let old_layout = Layout::array::<Value>(capacity)
-                    .expect("Allocation size overflow - capacity too large");
-                let new_layout = Layout::array::<Value>(new_capacity)
-                    .expect("Allocation size overflow - capacity too large");
+                let old_layout = super::value_layout(capacity);
+                let new_layout = super::value_layout(new_capacity);
                 let new_data =
                     realloc(data as *mut u8, old_layout, new_layout.size()) as *mut Value;
                 if new_data.is_null() {
@@ -337,10 +334,8 @@ pub fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
                 new_capacity = list_grow_capacity(new_capacity);
             }
 
-            let old_layout = Layout::array::<Value>(capacity)
-                .expect("Allocation size overflow - capacity too large");
-            let new_layout = Layout::array::<Value>(new_capacity)
-                .expect("Allocation size overflow - new_capacity too large");
+            let old_layout = super::value_layout(capacity);
+            let new_layout = super::value_layout(new_capacity);
 
             let old_data = (*list_obj).data as *mut u8;
             let new_data = if old_data.is_null() {
@@ -377,116 +372,15 @@ pub extern "C" fn rt_list_extend_abi(list: Value, other: Value) {
     rt_list_extend(list.unwrap_ptr(), other.unwrap_ptr())
 }
 
-/// Compare two objects for sorting. Values are uniform tagged Values after F.7c.
-/// Returns -1 if a < b, 0 if a == b, 1 if a > b
-unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
-    // Check Value tags before dereferencing as a heap pointer.
-    let va = Value(a as u64);
-    let vb = Value(b as u64);
-
-    if va.is_int() && vb.is_int() {
-        let av = va.unwrap_int();
-        let bv = vb.unwrap_int();
-        return if av < bv {
-            -1
-        } else if av > bv {
-            1
-        } else {
-            0
-        };
-    }
-    if va.is_bool() && vb.is_bool() {
-        let av = va.unwrap_bool();
-        let bv = vb.unwrap_bool();
-        return if !av && bv {
-            -1
-        } else if av && !bv {
-            1
-        } else {
-            0
-        };
-    }
-
-    if a.is_null() && b.is_null() {
-        return 0;
-    }
-    if a.is_null() {
-        return -1;
-    }
-    if b.is_null() {
-        return 1;
-    }
-
-    // None is encoded as a tagged Value (NONE_TAG = 0b101), not null, so it
-    // would otherwise be dereferenced as a heap pointer below. Order None
-    // before any non-None value (mirrors the null handling above).
-    if va.is_none() && vb.is_none() {
-        return 0;
-    }
-    if va.is_none() {
-        return -1;
-    }
-    if vb.is_none() {
-        return 1;
-    }
-
-    let a_header = a as *mut ObjHeader;
-    let a_type = (*a_header).type_tag;
-
-    if a_type == TypeTagKind::Str {
-        let a_str = a as *mut StrObj;
-        let b_str = b as *mut StrObj;
-        let a_len = (*a_str).len;
-        let b_len = (*b_str).len;
-        let min_len = a_len.min(b_len);
-
-        let a_data = (*a_str).data.as_ptr();
-        let b_data = (*b_str).data.as_ptr();
-
-        for i in 0..min_len {
-            let a_byte = *a_data.add(i);
-            let b_byte = *b_data.add(i);
-            if a_byte < b_byte {
-                return -1;
-            }
-            if a_byte > b_byte {
-                return 1;
-            }
-        }
-        if a_len < b_len {
-            -1
-        } else if a_len > b_len {
-            1
-        } else {
-            0
-        }
-    } else if a_type == TypeTagKind::Float {
-        let a_val = (*(a as *mut crate::object::FloatObj)).value;
-        let b_val = (*(b as *mut crate::object::FloatObj)).value;
-        match a_val.partial_cmp(&b_val) {
-            Some(std::cmp::Ordering::Less) => -1,
-            Some(std::cmp::Ordering::Greater) => 1,
-            None => 1, // NaN sorts to the end
-            _ => 0,
-        }
-    } else if a_type == TypeTagKind::Instance {
-        // Class instances order via their `__lt__` dunder (CPython sorts with
-        // `<`). Falls back to a stable address ordering when the class
-        // defines no `__lt__`. Shared with `sorted()`'s comparator.
-        match crate::ops::try_instance_lt_ordering(a, b) {
-            Some(std::cmp::Ordering::Less) => -1,
-            Some(std::cmp::Ordering::Greater) => 1,
-            Some(std::cmp::Ordering::Equal) => 0,
-            None if a < b => -1,
-            None if a > b => 1,
-            None => 0,
-        }
-    } else if a < b {
-        -1
-    } else if a > b {
-        1
+/// Sort comparator shared by `rt_list_sort` and `rt_list_sort_by_keys`: the
+/// one runtime ordering (`sorted::compare_list_elements`), with `reverse`
+/// flipping only Less/Greater so equal elements keep their order (stability).
+unsafe fn sort_ordering(a: Value, b: Value, reverse: i8) -> std::cmp::Ordering {
+    let ord = crate::sorted::compare_list_elements(a.0 as *mut Obj, b.0 as *mut Obj);
+    if reverse != 0 {
+        ord.reverse()
     } else {
-        0
+        ord
     }
 }
 
@@ -514,22 +408,7 @@ pub fn rt_list_sort(list: *mut Obj, reverse: i8) {
         // Use Timsort for O(n log n) performance.
         // After F.7c all slots are uniform tagged Values — dispatch on Value::tag() at compare time.
         let slice = std::slice::from_raw_parts_mut(data, len);
-        timsort::timsort_with_cmp(slice, |a, b| {
-            let cmp = compare_objects(a.0 as *mut Obj, b.0 as *mut Obj);
-            if reverse != 0 {
-                match cmp {
-                    c if c < 0 => std::cmp::Ordering::Greater,
-                    c if c > 0 => std::cmp::Ordering::Less,
-                    _ => std::cmp::Ordering::Equal,
-                }
-            } else {
-                match cmp {
-                    c if c < 0 => std::cmp::Ordering::Less,
-                    c if c > 0 => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                }
-            }
-        });
+        timsort::timsort_with_cmp(slice, |a, b| sort_ordering(*a, *b, reverse));
     }
 }
 #[export_name = "rt_list_sort"]
@@ -542,7 +421,7 @@ pub extern "C" fn rt_list_sort_abi(list: Value, reverse: i8) {
 /// the parallel `keys` list. The `key=` callback runs as COMPILED code in a
 /// frontend-desugared loop that builds `keys` BEFORE this call — the runtime
 /// performs no callbacks (the PITFALLS-A4 `key_return_tag` ABI is gone).
-/// The comparator is `compare_objects`, the same one `rt_list_sort` uses;
+/// The comparator is `sort_ordering`, the same one `rt_list_sort` uses;
 /// `reverse` flips only Less/Greater — Equal stays Equal, so equal keys keep
 /// their original order (CPython stability). No allocation happens between
 /// reading the `Value` slots and writing them back, and the GC is non-moving,
@@ -586,20 +465,7 @@ pub fn rt_list_sort_by_keys(list: *mut Obj, keys: *mut Obj, reverse: i8) {
         let mut pairs: Vec<(Value, Value)> =
             (0..len).map(|i| (*kdata.add(i), *data.add(i))).collect();
         timsort::timsort_with_cmp(&mut pairs, |(key_a, _), (key_b, _)| {
-            let cmp = compare_objects(key_a.0 as *mut Obj, key_b.0 as *mut Obj);
-            if reverse != 0 {
-                match cmp {
-                    c if c < 0 => std::cmp::Ordering::Greater,
-                    c if c > 0 => std::cmp::Ordering::Less,
-                    _ => std::cmp::Ordering::Equal,
-                }
-            } else {
-                match cmp {
-                    c if c < 0 => std::cmp::Ordering::Less,
-                    c if c > 0 => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                }
-            }
+            sort_ordering(*key_a, *key_b, reverse)
         });
 
         for (i, (_, value)) in pairs.iter().enumerate() {
@@ -620,7 +486,6 @@ pub extern "C" fn rt_list_sort_by_keys_abi(list: Value, keys: Value, reverse: i8
 /// Replace list[start:stop] with values from another list
 pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut Obj) {
     use crate::slice_utils::normalize_slice_indices;
-    use std::alloc::{alloc_zeroed, Layout};
 
     if list.is_null() {
         return;
@@ -644,7 +509,7 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
             let vlist = values as *mut ListObj;
             let vlen = (*vlist).len;
             let copy = std::alloc::alloc(
-                std::alloc::Layout::array::<Value>(vlen.max(1)).expect("alloc layout overflow"),
+                super::value_layout(vlen.max(1)),
             ) as *mut Value;
             if vlen > 0 {
                 std::ptr::copy_nonoverlapping((*vlist).data, copy, vlen);
@@ -668,9 +533,8 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
                 new_capacity = list_grow_capacity(new_capacity);
             }
 
-            let new_layout = Layout::array::<Value>(new_capacity)
-                .expect("Allocation size overflow - capacity too large");
-            let new_data = alloc_zeroed(new_layout) as *mut Value;
+            let new_layout = super::value_layout(new_capacity);
+            let new_data = super::alloc_zeroed_values(new_layout);
 
             // Copy existing elements into the new buffer
             let old_data = (*list_obj).data;
@@ -681,7 +545,7 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
             // Free the old data buffer (list data is std::alloc-managed, not GC-managed)
             if !old_data.is_null() && capacity > 0 {
                 let old_layout =
-                    Layout::array::<Value>(capacity).expect("list old layout overflow");
+                    super::value_layout(capacity);
                 std::alloc::dealloc(old_data as *mut u8, old_layout);
             }
 
@@ -713,8 +577,7 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
         if values_is_alias && !values_data.is_null() {
             std::alloc::dealloc(
                 values_data as *mut u8,
-                std::alloc::Layout::array::<Value>(values_len.max(1))
-                    .expect("alloc layout overflow"),
+                super::value_layout(values_len.max(1)),
             );
         }
     }
@@ -779,7 +642,13 @@ pub fn rt_list_setslice(list: *mut Obj, start: i64, stop: i64, step: i64, values
 }
 #[export_name = "rt_list_setslice"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_list_setslice_abi(list: Value, start: i64, stop: i64, step: i64, values: Value) {
+pub extern "C" fn rt_list_setslice_abi(
+    list: Value,
+    start: i64,
+    stop: i64,
+    step: i64,
+    values: Value,
+) {
     let l = unsafe { crate::utils::expect_ptr_or_type_error::<Obj>(list, "list slice assignment") };
     rt_list_setslice(l, start, stop, step, values.unwrap_ptr())
 }

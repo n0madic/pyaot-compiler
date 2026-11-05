@@ -38,8 +38,9 @@ pub use ffi::{
     rt_exc_raise, rt_exc_raise_attr_error, rt_exc_raise_custom, rt_exc_raise_custom_with_instance,
     rt_exc_raise_index_error, rt_exc_raise_instance, rt_exc_raise_key_error, rt_exc_raise_owned,
     rt_exc_raise_type_error, rt_exc_raise_value_error, rt_exc_register_class_name, rt_exc_reraise,
-    rt_exc_start_handling,
+    rt_exc_set_instance_message, rt_exc_start_handling,
 };
 
+pub(crate) use ffi::{exception_class_name, exception_repr, exception_str, raise_exception_value};
 pub use unwind::rt_exc_register_table;
 pub(crate) use unwind::walk_return_pcs;

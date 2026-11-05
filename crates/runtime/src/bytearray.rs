@@ -667,7 +667,7 @@ pub extern "C" fn rt_bytearray_count_abi(ba: Value, sub: Value) -> i64 {
 
 /// `ba.startswith(prefix)` → bool (as i8).
 pub fn rt_bytearray_startswith(ba: *mut Obj, prefix: *mut Obj) -> i8 {
-    unsafe { with_snapshot(ba, |snap| crate::bytes::rt_bytes_startswith(snap, prefix) as i8) }
+    unsafe { with_snapshot(ba, |snap| crate::bytes::rt_bytes_startswith(snap, prefix)) }
 }
 #[export_name = "rt_bytearray_startswith"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -677,7 +677,7 @@ pub extern "C" fn rt_bytearray_startswith_abi(ba: Value, prefix: Value) -> i8 {
 
 /// `ba.endswith(suffix)` → bool (as i8).
 pub fn rt_bytearray_endswith(ba: *mut Obj, suffix: *mut Obj) -> i8 {
-    unsafe { with_snapshot(ba, |snap| crate::bytes::rt_bytes_endswith(snap, suffix) as i8) }
+    unsafe { with_snapshot(ba, |snap| crate::bytes::rt_bytes_endswith(snap, suffix)) }
 }
 #[export_name = "rt_bytearray_endswith"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

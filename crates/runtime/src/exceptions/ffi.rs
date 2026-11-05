@@ -103,27 +103,26 @@ pub unsafe extern "C" fn rt_exc_arm_cause_value(cause: pyaot_core_defs::Value) {
     }
 }
 
-/// Called when entering an except handler block.
-/// Preserves the current exception in handling_exception so if a new exception
-/// is raised during handling, the original becomes its __context__.
+/// Called when entering an except handler block (and the exceptional edge of
+/// `finally` / `with`). Pushes the in-flight exception onto the handling stack
+/// (a `None` entry when there is none, so pushes and pops stay balanced): a
+/// new exception raised during handling captures the top entry as its
+/// `__context__`, and a bare `raise` re-raises it.
 #[no_mangle]
 pub extern "C" fn rt_exc_start_handling() {
     with_exception_state(|state| {
-        // Take the current exception and save it as the one being handled
-        // A new exception raised during handling will capture this as __context__
-        if let Some(exc) = state.current_exception.take() {
-            state.handling_exception = Some(exc);
-        }
+        let exc = state.current_exception.take();
+        state.handling_stack.push(exc);
     });
 }
 
-/// Called when exiting an except handler block normally (not via exception).
-/// Clears the handling_exception since we're done handling.
+/// Called on every exit of a handler block entered by
+/// [`rt_exc_start_handling`] — normal, early (`return`/`break`/`continue`) and
+/// exceptional (the compiler's cleanup landing pad). Pops the handling stack.
 #[no_mangle]
 pub extern "C" fn rt_exc_end_handling() {
     with_exception_state(|state| {
-        // Clear the handled exception since we're done with the handler
-        let _ = state.handling_exception.take();
+        let _ = state.handling_stack.pop();
     });
 }
 
@@ -135,21 +134,20 @@ pub extern "C" fn rt_exc_end_handling() {
 /// The caller must ensure a valid exception handler frame exists on the handler stack.
 #[no_mangle]
 pub unsafe extern "C" fn rt_exc_reraise() -> ! {
-    // First, restore the exception from handling_exception if it exists
-    // This handles the case where we're reraising after calling rt_exc_start_handling
-    with_exception_state(|state| {
+    // In flight: propagate it (the no-match tail of a handler chain, or a
+    // cleanup landing pad). Otherwise re-raise the innermost HANDLED exception
+    // (a bare `raise` in an `except` body, or the end of a `finally` run on
+    // the exceptional edge) — a copy: its handling-stack entry is popped by
+    // the enclosing block's cleanup.
+    let has_exception = with_exception_state(|state| {
         if state.current_exception.is_none() {
-            if let Some(exc) = state.handling_exception.take() {
-                state.current_exception = Some(exc);
-            }
+            state.current_exception = state.handled().map(|e| Box::new(e.deep_clone()));
         }
+        state.current_exception.is_some()
     });
-
-    // Check if there's actually an exception to re-raise
-    let has_exception = with_exception_state(|state| state.current_exception.is_some());
     if !has_exception {
         // No active exception - raise RuntimeError (matches CPython behavior)
-        crate::utils::raise_runtime_error("No active exception to re-raise");
+        crate::utils::raise_runtime_error("No active exception to reraise");
     }
 
     // Re-dispatch the existing exception (already stored in current_exception)
@@ -158,15 +156,12 @@ pub unsafe extern "C" fn rt_exc_reraise() -> ! {
 
 /// Get the current exception type tag
 /// Returns the type tag of current exception, or -1 if no exception.
-/// Checks both current_exception and handling_exception (the latter is set
+/// Checks both current_exception and the handling stack (the latter is set
 /// after ExcStartHandling in except handlers, e.g. context manager __exit__).
 #[no_mangle]
 pub extern "C" fn rt_exc_get_type() -> i32 {
     with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
+        let exc = state.current_or_handled();
         if let Some(exc) = exc {
             exc.exc_type as i32
         } else {
@@ -305,16 +300,13 @@ pub unsafe extern "C" fn rt_exc_raise_attr_error(message: *const u8, len: usize)
 /// For custom exceptions with a pre-created instance, returns that instance.
 /// Returns null if no exception is pending.
 ///
-/// This function checks both current_exception and handling_exception, as the exception
-/// may have been moved to handling_exception by rt_exc_start_handling().
+/// This function checks both current_exception and the handling stack, as the
+/// exception may have been moved there by rt_exc_start_handling().
 #[no_mangle]
 pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
     // Fast path: return an already-created instance (no allocation needed).
     let existing = with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
+        let exc = state.current_or_handled();
         exc.map(|e| e.instance)
     });
 
@@ -332,10 +324,7 @@ pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
     // → borrow_mut() — which panics with BorrowMutError if we are still holding
     // the outer borrow_mut here.
     let (exc_type, custom_class_id, msg_ptr, msg_len) = with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
+        let exc = state.current_or_handled();
         match exc {
             Some(e) => (e.exc_type, e.custom_class_id, e.message, e.message_len),
             None => (
@@ -364,10 +353,7 @@ pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
 
     // Store the created instance back into the exception state.
     with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_mut()
-            .or(state.handling_exception.as_mut());
+        let exc = state.current_or_handled_mut();
         if let Some(exc) = exc {
             if exc.instance.is_null() {
                 exc.instance = instance;
@@ -397,10 +383,7 @@ pub unsafe extern "C" fn rt_exc_class_name(
     // Get the exception name from thread-local state to correctly distinguish
     // built-in vs custom exceptions (their class_ids overlap in the vtable).
     let name = with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
+        let exc = state.current_or_handled();
         if let Some(exc) = exc {
             if exc.custom_class_id == NOT_CUSTOM_CLASS {
                 return exc.exc_type.name().to_string();
@@ -432,10 +415,7 @@ pub extern "C" fn rt_exc_get_current_message() -> *mut crate::object::Obj {
     // Doing that inside the borrow_mut would trigger get_exception_pointers() →
     // borrow_mut() → BorrowMutError panic.
     let (msg_ptr, msg_len) = with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
+        let exc = state.current_or_handled();
 
         if let Some(exc) = exc {
             if exc.message_len > 0 && !exc.message.is_null() {
@@ -465,32 +445,36 @@ pub extern "C" fn rt_exc_instance_str(
 ) -> *mut crate::object::Obj {
     // Try to get message from ExceptionState first
     // This works for both built-in and custom exceptions
+    // Copy the message location out of the borrow and allocate AFTER
+    // releasing it: `rt_make_str` may collect, and the GC's root scan cannot
+    // read the exception state while it is mutably borrowed.
     let msg = with_exception_state(|state| {
-        let exc = state
-            .current_exception
-            .as_ref()
-            .or(state.handling_exception.as_ref());
-        if let Some(exc) = exc {
-            // Check if this is the same instance
-            if !instance.is_null() && exc.instance == instance {
+        let exc = state.current_or_handled();
+        match exc {
+            // Same instance: its owned message buffer (stable across a GC —
+            // the collector never frees exception-state buffers).
+            Some(exc) if !instance.is_null() && exc.instance == instance => {
                 if exc.message_len > 0 && !exc.message.is_null() {
-                    return Some(unsafe {
-                        crate::string::rt_make_str(exc.message, exc.message_len)
-                    });
+                    Some((exc.message, exc.message_len))
+                } else {
+                    Some((std::ptr::null(), 0))
                 }
-                return Some(unsafe { crate::string::rt_make_str(std::ptr::null(), 0) });
             }
+            _ => None,
         }
-        None
     });
 
-    if let Some(msg) = msg {
-        return msg;
+    if let Some((ptr, len)) = msg {
+        return unsafe { crate::string::rt_make_str(ptr, len) };
     }
 
     // Fallback: try to read .args from instance (for lazy-created built-in exception instances)
     if instance.is_null() {
         return unsafe { crate::string::rt_make_str(std::ptr::null(), 0) };
+    }
+    // A user exception whose message `BaseException.__init__` recorded.
+    if let Some(m) = super::core::instance_message(instance) {
+        return unsafe { crate::string::rt_make_str(m.as_ptr(), m.len()) };
     }
 
     unsafe {
@@ -531,37 +515,13 @@ pub extern "C" fn rt_exc_instance_str(
     }
 }
 
-/// Check if current exception matches the given type tag
-/// Returns 1 if it matches, 0 otherwise
+/// Check if the current exception is an instance of the builtin exception
+/// `type_tag` (subclasses included — builtin tags ARE runtime class ids, so this
+/// is the same registry walk as [`rt_exc_isinstance_class`]).
+/// Returns 1 if it matches, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn rt_exc_isinstance(type_tag: u8) -> i8 {
-    with_exception_state(|state| {
-        if let Some(ref exc) = state.current_exception {
-            // BaseException (tag 28) catches ALL exceptions
-            if type_tag == BuiltinExceptionKind::BaseException.tag() {
-                return 1;
-            }
-            // Exception (tag 0) catches all EXCEPT SystemExit, KeyboardInterrupt, GeneratorExit
-            if type_tag == BuiltinExceptionKind::Exception.tag() {
-                let exc_tag = exc.exc_type as u8;
-                if exc_tag == BuiltinExceptionKind::SystemExit.tag()
-                    || exc_tag == BuiltinExceptionKind::KeyboardInterrupt.tag()
-                    || exc_tag == BuiltinExceptionKind::GeneratorExit.tag()
-                {
-                    return 0;
-                }
-                return 1;
-            }
-            // Otherwise, check for exact type match
-            if exc.exc_type as u8 == type_tag {
-                1
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    })
+    rt_exc_isinstance_class(type_tag)
 }
 
 // ==================== Custom Exception Class Support ====================
@@ -580,7 +540,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
     let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
 
     // Capture implicit context from any exception being handled
-    let context = with_exception_state(|state| state.handling_exception.take());
+    let context = with_exception_state(|state| state.new_context(std::ptr::null_mut()));
 
     // Capture traceback at the point of raise
     let traceback = Some(crate::traceback::capture_traceback());
@@ -628,7 +588,7 @@ pub unsafe extern "C" fn rt_exc_raise_stdlib(
 
     let exc_type = exception_type_from_tag(exc_type_tag);
     let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
-    let context = with_exception_state(|state| state.handling_exception.take());
+    let context = with_exception_state(|state| state.new_context(std::ptr::null_mut()));
     let traceback = Some(crate::traceback::capture_traceback());
 
     let mut exc_obj = Box::new(ExceptionObject {
@@ -665,8 +625,18 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
     len: usize,
     instance: *mut crate::object::Obj,
 ) -> ! {
-    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
-    let context = with_exception_state(|state| state.handling_exception.take());
+    // No raise-site message: use the one `BaseException.__init__` recorded
+    // (`super().__init__(msg)`), if any.
+    let recorded = if len == 0 && !instance.is_null() {
+        super::core::instance_message(instance)
+    } else {
+        None
+    };
+    let (msg_ptr, msg_len, msg_capacity) = match &recorded {
+        Some(m) => copy_message_to_owned(m.as_ptr(), m.len()),
+        None => copy_message_to_owned(message, len),
+    };
+    let context = with_exception_state(|state| state.new_context(instance));
     let traceback = Some(crate::traceback::capture_traceback());
 
     let mut exc_obj = Box::new(ExceptionObject {
@@ -707,16 +677,13 @@ pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj
     let class_id = (*inst).class_id;
 
     // Try to recover the original message from the thread-local exception state.
-    // The exception may still be in handling_exception if we're inside an except block.
+    // The exception may be on the handling stack if we're inside an except block.
     // For built-in exceptions, field 0 is .args tuple containing the message.
     // For custom exceptions, fields are user-defined (not .args), so we don't read them.
     let (msg_ptr, msg_len, msg_capacity) = {
         // First try: get message from thread-local state (if exception is still there)
         let from_state = with_exception_state(|state| {
-            let exc = state
-                .current_exception
-                .as_ref()
-                .or(state.handling_exception.as_ref());
+            let exc = state.current_or_handled();
             if let Some(exc) = exc {
                 if exc.message_len > 0 && !exc.message.is_null() {
                     let slice = std::slice::from_raw_parts(exc.message, exc.message_len);
@@ -737,7 +704,7 @@ pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj
         }
     };
 
-    let context = with_exception_state(|state| state.handling_exception.take());
+    let context = with_exception_state(|state| state.new_context(instance));
     let traceback = Some(crate::traceback::capture_traceback());
 
     // Determine exc_type from class_id
@@ -794,13 +761,10 @@ pub extern "C" fn rt_exc_isinstance_class(target_class_id: u8) -> i8 {
                 exc.custom_class_id
             };
 
-            // Use vtable inheritance check.
-            // The vtable hierarchy correctly models CPython's exception tree:
-            // - BaseException (28) is the root (no parent)
-            // - Exception (0) inherits from BaseException
-            // - SystemExit/KeyboardInterrupt/GeneratorExit inherit from BaseException (NOT Exception)
-            // - All other built-in exceptions inherit from Exception
-            // - User class IDs start at BUILTIN_EXCEPTION_COUNT (29+), never overlapping built-in tags
+            // Registry inheritance walk. Builtin parents are seeded from the
+            // core-defs parent column (CPython's exception tree); user and
+            // stdlib exception classes register their own parents. User class
+            // ids never overlap builtin tags.
             crate::vtable::rt_class_inherits_from(exc_class_id, target_class_id)
         } else {
             0
@@ -832,4 +796,143 @@ pub extern "C" fn rt_exc_get_class_id() -> u8 {
 #[no_mangle]
 pub extern "C" fn rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize) {
     register_class_name(class_id, name, len);
+}
+
+/// `BaseException.__init__(self[, msg])` for a user exception instance —
+/// `super().__init__(msg)` in an exception class whose parents define no
+/// `__init__`: records `str(msg)` (empty without an argument) as the
+/// instance's message, which `str(e)` and an uncaught traceback then show.
+///
+/// # Safety
+/// `instance` must be a valid instance pointer; `msg` null (no argument), a
+/// tagged immediate, or a valid object pointer.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_set_instance_message(
+    instance: pyaot_core_defs::Value,
+    msg: pyaot_core_defs::Value,
+) {
+    let inst = instance.0 as *mut crate::object::Obj;
+    if inst.is_null() {
+        return;
+    }
+    let text = if msg.0 == 0 {
+        String::new()
+    } else {
+        let s = crate::conversions::rt_obj_to_str(msg.0 as *mut crate::object::Obj);
+        crate::utils::extract_str_unchecked(s)
+    };
+    super::core::set_instance_message(inst, text);
+}
+
+// ==================== Exception instance str / repr / type name ====================
+
+/// The class name of an exception instance's class (`ValueError`, a user
+/// `MyErr`, a stdlib `HTTPError`), or `None` when `obj` is not an exception
+/// instance. Second value: is it a builtin exception class.
+///
+/// # Safety
+/// `obj` must be null, a tagged immediate or a valid object pointer.
+pub(crate) unsafe fn exception_class_name(obj: *mut crate::object::Obj) -> Option<(String, bool)> {
+    let v = pyaot_core_defs::Value(obj as u64);
+    if !v.is_ptr() || obj.is_null() || (*obj).type_tag() != crate::object::TypeTagKind::Instance {
+        return None;
+    }
+    let class_id = (*(obj as *const crate::object::InstanceObj)).class_id;
+    if let Some(kind) = BuiltinExceptionKind::from_tag(class_id) {
+        return Some((kind.name().to_string(), true));
+    }
+    if crate::vtable::rt_class_inherits_from(class_id, BuiltinExceptionKind::BaseException.tag())
+        == 0
+    {
+        return None;
+    }
+    let name = match super::core::get_registered_exception_name(class_id) {
+        Some(n) => n,
+        None => crate::ops::instance_class_name(class_id),
+    };
+    Some((name, false))
+}
+
+/// `str(e)` of an exception instance as a Rust string (`None` if `obj` is not
+/// an exception instance).
+///
+/// # Safety
+/// See [`exception_class_name`].
+pub(crate) unsafe fn exception_str(obj: *mut crate::object::Obj) -> Option<String> {
+    exception_class_name(obj)?;
+    let s = rt_exc_instance_str(obj);
+    Some(crate::utils::extract_str_unchecked(s))
+}
+
+/// `repr(e)` of an exception instance: `ValueError('bad')`, `ValueError()`,
+/// `MyErr('m')` (`None` if `obj` is not an exception instance). A builtin
+/// exception renders its `.args`; a user exception renders its message (the
+/// constructor's full argument list is not retained).
+///
+/// # Safety
+/// See [`exception_class_name`].
+pub(crate) unsafe fn exception_repr(obj: *mut crate::object::Obj) -> Option<String> {
+    let (name, builtin) = exception_class_name(obj)?;
+    let mut parts: Vec<String> = Vec::new();
+    let args = if builtin {
+        crate::instance::rt_instance_get_field(obj, 0) as *mut crate::object::Obj
+    } else {
+        std::ptr::null_mut()
+    };
+    let av = pyaot_core_defs::Value(args as u64);
+    if av.is_ptr() && !args.is_null() && (*args).type_tag() == crate::object::TypeTagKind::Tuple {
+        let t = args as *mut crate::object::TupleObj;
+        // A KeyError's message is already `repr(key)` (its `__str__`).
+        let key_error = name == BuiltinExceptionKind::KeyError.name();
+        for i in 0..(*t).len {
+            let elem = (*(*t).data.as_ptr().add(i)).0 as *mut crate::object::Obj;
+            if key_error && (*t).len == 1 {
+                parts.push(crate::utils::extract_str_unchecked(
+                    crate::conversions::rt_obj_to_str(elem),
+                ));
+                continue;
+            }
+            let r = crate::builtins::rt_builtin_repr(elem);
+            parts.push(crate::utils::extract_str_unchecked(r));
+        }
+    } else {
+        let msg = crate::utils::extract_str_unchecked(rt_exc_instance_str(obj));
+        if !msg.is_empty() {
+            let mut q = String::new();
+            crate::conversions::repr_str_into(&mut q, &msg);
+            parts.push(q);
+        }
+    }
+    Some(format!("{}({})", name, parts.join(", ")))
+}
+
+/// Raise an exception given as a VALUE (an exception instance, e.g. the
+/// argument of `generator.throw(exc)`): its own class and message (`.args[0]`
+/// of a builtin exception, the `BaseException.__init__` message of a user
+/// one), with the usual implicit `__context__`. A non-exception raises
+/// `TypeError`, as CPython.
+///
+/// # Safety
+/// `exc` must be a tagged immediate or a valid object pointer.
+pub(crate) unsafe fn raise_exception_value(exc: pyaot_core_defs::Value) -> ! {
+    let mut obj = match exc_object_from_value(exc) {
+        Ok(o) => o,
+        Err(()) => {
+            let msg = b"exceptions must be classes or instances deriving from BaseException";
+            rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        }
+    };
+    if obj.message_len == 0 {
+        if let Some(m) = super::core::instance_message(obj.instance) {
+            let (p, l, c) = copy_message_to_owned(m.as_ptr(), m.len());
+            obj.message = p;
+            obj.message_len = l;
+            obj.message_capacity = c;
+        }
+    }
+    obj.context = with_exception_state(|state| state.new_context(obj.instance));
+    obj.traceback = Some(crate::traceback::capture_traceback());
+    let mut boxed = Box::new(obj);
+    apply_pending(&mut boxed);
+    dispatch_to_handler(boxed)
 }

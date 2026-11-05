@@ -41,6 +41,10 @@ pub const FLOAT_OBJ_VALUE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
 /// Offset of the vtable pointer inside `InstanceObj` (right after `ObjHeader`).
 pub const INSTANCE_VTABLE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
 
+/// Offset of the `class_id: u8` inside `InstanceObj` (right after the vtable
+/// pointer) — read by codegen's inline fast path of the checked instance guard.
+pub const INSTANCE_CLASS_ID_OFFSET: i32 = INSTANCE_VTABLE_OFFSET + PTR_SIZE as i32;
+
 /// Byte offset of the flexible `fields: [Value; 0]` array inside `InstanceObj`.
 ///
 /// ```text
@@ -181,3 +185,19 @@ pub const TB_RECORD_FILE_LEN_OFFSET: u32 = 24;
 pub const TB_RECORD_LOC_OFF_OFFSET: u32 = 28;
 /// Size of one line-area entry (`start`, `end`, `line` — u32 each).
 pub const TB_LOC_ENTRY_SIZE: u32 = 12;
+/// Contract extension (inlined frames): a `LocEntry.line` with this bit set
+/// is not a line but `TB_LOC_INLINE_FLAG | chain_off`, the table-relative
+/// offset of an inline chain — code the optimizer inlined, which prints as
+/// several frames:
+///
+/// ```text
+/// InlineChain { count: u32, then count × InlineFrame }   // OUTERMOST first
+/// InlineFrame { name_off: u32, name_len: u32, file_off: u32, file_len: u32,
+///               line: u32 }
+/// ```
+///
+/// The chain replaces the record's own single frame (its first entry is the
+/// record's function, at the line of the outermost inlined call).
+pub const TB_LOC_INLINE_FLAG: u32 = 1 << 31;
+/// Size of one `InlineFrame` entry of an inline chain.
+pub const TB_INLINE_FRAME_SIZE: u32 = 20;

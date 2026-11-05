@@ -17,6 +17,34 @@
         }
     }
 
+    // ── review Phase 3/4 diagnostics ──
+
+    #[test]
+    fn rejects_module_level_return() {
+        assert!(parse_err("print(1)\nreturn\n").contains("'return' outside function"));
+    }
+
+    #[test]
+    fn rejects_global_after_use() {
+        let e = parse_err("x = 1\ndef f():\n    print(x)\n    global x\n    x = 2\n");
+        assert!(e.contains("used prior to global declaration"), "{e}");
+    }
+
+    #[test]
+    fn rejects_redefined_module_level_function() {
+        let e = parse_err("def g():\n    return 1\ndef g():\n    return 2\n");
+        assert!(e.contains("defined more than once"), "{e}");
+    }
+
+    #[test]
+    fn keyword_construction_binds_init_params() {
+        let (_m, _i) = parsed(
+            "class P:\n    def __init__(self, a, b=2):\n        self.a = a\nP(b=5, a=1)\n",
+        );
+        let e = parse_err("class P:\n    def __init__(self, a):\n        self.a = a\nP(z=1, a=1)\n");
+        assert!(e.contains("unexpected keyword argument"), "{e}");
+    }
+
     // ── Phase 7 lexical restrictions ──
 
     #[test]

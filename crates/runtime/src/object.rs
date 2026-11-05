@@ -49,6 +49,14 @@ pub enum IteratorKind {
     /// `ByteArrayObj`'s buffer is a separate allocation (not the inline FAM
     /// `BytesObj` layout `iter_next_bytes` reads).
     ByteArray = 18,
+    /// A live `dict.values()` view iterator — `source` is the viewed dict
+    /// itself (no snapshot) and `index` the next position in its dense
+    /// `entries` array; deleted slots are skipped. `size_guard`/`expected_len`
+    /// raise CPython's "dictionary changed size during iteration".
+    DictValues = 19,
+    /// A live `dict.items()` view iterator — like [`IteratorKind::DictValues`]
+    /// but each step yields a fresh `(key, value)` 2-tuple.
+    DictItems = 20,
 }
 
 impl TryFrom<u8> for IteratorKind {
@@ -75,6 +83,8 @@ impl TryFrom<u8> for IteratorKind {
             16 => Ok(IteratorKind::FilterTagged),
             17 => Ok(IteratorKind::Instance),
             18 => Ok(IteratorKind::ByteArray),
+            19 => Ok(IteratorKind::DictValues),
+            20 => Ok(IteratorKind::DictItems),
             _ => Err(value),
         }
     }
@@ -259,6 +269,16 @@ pub struct DequeObj {
     pub maxlen: i64, // -1 for unbounded
 }
 
+/// A live dict view (`TypeTagKind::DictKeys` / `DictValues` / `DictItems`):
+/// one pointer to the viewed dict-family object (`Dict` / `DefaultDict` /
+/// `Counter`, all `DictObj` layout). It owns no storage of its own, so every
+/// operation observes the dict's current contents; the GC traces `dict`.
+#[repr(C)]
+pub struct DictViewObj {
+    pub header: ObjHeader,
+    pub dict: *mut Obj,
+}
+
 /// Set entry (for open-addressing hash table)
 #[repr(C)]
 pub struct SetEntry {
@@ -273,6 +293,9 @@ pub struct SetObj {
     pub len: usize,      // Number of active entries
     pub capacity: usize, // Total slots in entries array
     pub entries: *mut SetEntry,
+    /// Number of TOMBSTONE slots (deleted entries not yet compacted away).
+    /// `len + tombstones` is the table's fill, which drives resizing.
+    pub tombstones: usize,
 }
 
 /// Instance object (user-defined class instance)
@@ -290,6 +313,11 @@ pub struct InstanceObj {
 const _: () = assert!(
     std::mem::offset_of!(InstanceObj, vtable) == layout::INSTANCE_VTABLE_OFFSET as usize,
     "InstanceObj vtable offset does not match layout::INSTANCE_VTABLE_OFFSET"
+);
+// Compile-time assertion: class_id field offset must match the layout constant
+const _: () = assert!(
+    std::mem::offset_of!(InstanceObj, class_id) == layout::INSTANCE_CLASS_ID_OFFSET as usize,
+    "InstanceObj class_id offset does not match layout::INSTANCE_CLASS_ID_OFFSET"
 );
 // Compile-time assertion: size_of::<InstanceObj> equals INSTANCE_FIELDS_OFFSET
 // because the zero-length `fields` array adds no bytes.

@@ -13,6 +13,10 @@
 //! PCs are stored in the `ExceptionObject`; names/files/lines are resolved
 //! only if the exception goes unhandled and the traceback is printed.
 //!
+//! Code the optimizer inlined resolves to an *inline chain* (contract
+//! extension, `TB_LOC_INLINE_FLAG`): one PC prints as the frames of every
+//! function inlined at that point, so inlining does not erase frames.
+//!
 //! Documented divergences from CPython's traceback output: the source-line
 //! echo and `^^^` anchors are not printed (the binary does not embed source
 //! text), and a bare `raise` re-raise keeps the traceback captured at the
@@ -21,9 +25,9 @@
 use std::cell::UnsafeCell;
 
 use pyaot_core_defs::layout::{
-    TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET, TB_RECORD_FILE_LEN_OFFSET,
-    TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET,
-    TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
+    TB_INLINE_FRAME_SIZE, TB_LOC_ENTRY_SIZE, TB_LOC_INLINE_FLAG, TB_RECORD_CODE_SIZE_OFFSET,
+    TB_RECORD_FILE_LEN_OFFSET, TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET,
+    TB_RECORD_NAME_LEN_OFFSET, TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
 };
 
 /// One resolved function record. The string/loc slices point into the
@@ -36,6 +40,8 @@ struct FnRecord {
     /// `(start, end, line)` u32 triples, sorted by `start` (raw LE bytes).
     locs: &'static [u8],
     loc_count: u32,
+    /// The table base (inline-chain offsets are relative to it).
+    table: *const u8,
 }
 
 struct TbTable {
@@ -96,6 +102,7 @@ pub unsafe extern "C" fn rt_tb_register_table(ptr: *const u8, count: usize) {
                 loc_count as usize * TB_LOC_ENTRY_SIZE as usize,
             ),
             loc_count,
+            table: ptr,
         });
     }
     table.sorted = false;
@@ -108,10 +115,22 @@ struct Frame {
     line: u32,
 }
 
-/// Resolve a PC to its function record and source line. The caller passes a
-/// return address minus one, so a call at the very end of a line range
-/// attributes to the call itself, not to whatever instruction follows it.
-fn resolve(pc: usize) -> Option<Frame> {
+/// Read a little-endian u32 at `off` of a static table.
+///
+/// # Safety
+/// `base + off .. + 4` must lie inside the registered table.
+unsafe fn read_u32_at(base: *const u8, off: usize) -> u32 {
+    let mut b = [0u8; 4];
+    std::ptr::copy_nonoverlapping(base.add(off), b.as_mut_ptr(), 4);
+    u32::from_le_bytes(b)
+}
+
+/// Resolve a PC to the frames it stands for, OUTERMOST first: one frame for
+/// ordinary code, the whole inline chain for code the optimizer inlined.
+/// The caller passes a return address minus one, so a call at the very end
+/// of a line range attributes to the call itself, not to whatever
+/// instruction follows it.
+fn resolve(pc: usize) -> Option<Vec<Frame>> {
     let table = unsafe { &mut *TB_TABLE.0.get() };
     if table.records.is_empty() {
         return None;
@@ -150,11 +169,35 @@ fn resolve(pc: usize) -> Option<Frame> {
             break;
         }
     }
-    Some(Frame {
-        name: rec.name,
-        file: rec.file,
-        line,
-    })
+    if line & TB_LOC_INLINE_FLAG == 0 {
+        return Some(vec![Frame {
+            name: rec.name,
+            file: rec.file,
+            line,
+        }]);
+    }
+    // SAFETY: codegen wrote a well-formed chain at this table offset.
+    unsafe {
+        let base = rec.table;
+        let off = (line & !TB_LOC_INLINE_FLAG) as usize;
+        let count = read_u32_at(base, off) as usize;
+        let str_at = |o: u32, l: u32| -> &'static str {
+            let bytes = std::slice::from_raw_parts(base.add(o as usize), l as usize);
+            std::str::from_utf8(bytes).unwrap_or("<bad-utf8>")
+        };
+        let frames = (0..count)
+            .map(|k| {
+                let at = off + 4 + k * TB_INLINE_FRAME_SIZE as usize;
+                let f = |i: usize| read_u32_at(base, at + 4 * i);
+                Frame {
+                    name: str_at(f(0), f(1)),
+                    file: str_at(f(2), f(3)),
+                    line: f(4),
+                }
+            })
+            .collect();
+        Some(frames)
+    }
 }
 
 /// Snapshot the current call stack as raw return PCs (innermost first),
@@ -185,7 +228,7 @@ pub fn format_traceback(pcs: &[usize]) {
     }
     eprintln!("Traceback (most recent call last):");
     for pc in pcs.iter().rev() {
-        if let Some(fr) = resolve(pc.wrapping_sub(1)) {
+        for fr in resolve(pc.wrapping_sub(1)).unwrap_or_default() {
             eprintln!("  File \"{}\", line {}, in {}", fr.file, fr.line, fr.name);
         }
     }

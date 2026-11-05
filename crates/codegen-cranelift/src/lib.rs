@@ -23,29 +23,30 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::{
-    condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
-    ExceptionTableData, ExceptionTableItem, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
+    condcodes::FloatCC, condcodes::IntCC, instructions::BlockArg, types, AbiParam, BlockCall, ExceptionTable,
+    ExceptionTableData, ExceptionTableItem, FuncRef, GlobalValue, InstBuilder, MemFlags, SigRef, Signature, StackSlot,
     StackSlotData, StackSlotKind, TrapCode, Type, Value,
 };
-use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_codegen::FinalizedMachExceptionHandler;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{
     default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module, ModuleReloc,
 };
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use pyaot_core_defs::tag;
+use pyaot_core_defs::{tag, TypeTagKind};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_mir::{
     classify_coercion, BinOp, CmpOp, Coercion, Const, ContainerCmpOp, ContainerOp, GenOp,
-    LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind, UnaryOp,
+    InlineFrame, LocalDecl, MirFunction, MirInst, MirProgram, MirTerminator, Operand, PrintKind,
+    UnaryOp,
 };
-use pyaot_types::{HeapCheck, RawKind, Repr};
+use pyaot_types::{HeapCheck, HeapShape, RawKind, Repr};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
 
 const FLOAT_VALUE_OFFSET: i32 = pyaot_core_defs::layout::FLOAT_OBJ_VALUE_OFFSET;
@@ -71,6 +72,7 @@ struct RuntimeFns {
     make_str_interned: FuncId,
     bigint_from_str: FuncId,
     box_float: FuncId,
+    box_i64: FuncId,
     unbox_float_checked: FuncId,
     unbox_int_checked: FuncId,
     unbox_bool_checked: FuncId,
@@ -83,6 +85,9 @@ struct RuntimeFns {
     add_int: FuncId,
     sub_int: FuncId,
     mul_int: FuncId,
+    /// `rt_div_float(a, b) -> f64`: the cold zero-divisor path of a raw `/`
+    /// (raises `ZeroDivisionError`).
+    div_float: FuncId,
     obj_add: FuncId,
     obj_sub: FuncId,
     obj_mul: FuncId,
@@ -99,6 +104,9 @@ struct RuntimeFns {
     is_truthy: FuncId,
     obj_bitand: FuncId,
     obj_bitor: FuncId,
+    obj_inplace: FuncId,
+    obj_iadd: FuncId,
+    obj_imul: FuncId,
     obj_ior: FuncId,
     obj_iand: FuncId,
     obj_isub: FuncId,
@@ -224,6 +232,7 @@ struct RuntimeFns {
     make_instance: FuncId,
     instance_get_field: FuncId,
     instance_set_field: FuncId,
+    register_class_ancestor: FuncId,
     register_class: FuncId,
     register_class_field_count: FuncId,
     register_class_qualname: FuncId,
@@ -318,6 +327,7 @@ impl RuntimeFns {
             make_str_interned: d("rt_make_str_interned", &[ptr, ti], &[ti])?,
             bigint_from_str: d("rt_bigint_from_str", &[ptr, ti], &[ti])?,
             box_float: d("rt_box_float", &[tf], &[ti])?,
+            box_i64: d("rt_box_i64", &[ti], &[ti])?,
             unbox_float_checked: d("rt_unbox_float", &[ti], &[tf])?,
             unbox_int_checked: d("rt_unbox_int", &[ti], &[ti])?,
             unbox_bool_checked: d("rt_unbox_bool", &[ti], &[t8])?,
@@ -334,6 +344,7 @@ impl RuntimeFns {
             add_int: d("rt_add_int", &[ti, ti], &[ti])?,
             sub_int: d("rt_sub_int", &[ti, ti], &[ti])?,
             mul_int: d("rt_mul_int", &[ti, ti], &[ti])?,
+            div_float: d("rt_div_float", &[tf, tf], &[tf])?,
             obj_add: d("rt_obj_add", &[ti, ti], &[ti])?,
             obj_sub: d("rt_obj_sub", &[ti, ti], &[ti])?,
             obj_mul: d("rt_obj_mul", &[ti, ti], &[ti])?,
@@ -351,6 +362,9 @@ impl RuntimeFns {
             obj_bitand: d("rt_obj_bitand", &[ti, ti], &[ti])?,
             obj_bitor: d("rt_obj_bitor", &[ti, ti], &[ti])?,
             obj_ior: d("rt_obj_ior", &[ti, ti], &[ti])?,
+            obj_iadd: d("rt_obj_iadd", &[ti, ti], &[ti])?,
+            obj_inplace: d("rt_obj_inplace", &[ti, ti, ti], &[ti])?,
+            obj_imul: d("rt_obj_imul", &[ti, ti], &[ti])?,
             obj_iand: d("rt_obj_iand", &[ti, ti], &[ti])?,
             obj_isub: d("rt_obj_isub", &[ti, ti], &[ti])?,
             obj_ixor: d("rt_obj_ixor", &[ti, ti], &[ti])?,
@@ -439,9 +453,9 @@ impl RuntimeFns {
             list_sort: d("rt_list_sort", &[ti, t8], &[])?,
             list_sort_by_keys: d("rt_list_sort_by_keys", &[ti, ti, t8], &[])?,
             dict_get_default: d("rt_dict_get_default", &[ti, ti, ti], &[ti])?,
-            dict_keys: d("rt_dict_keys", &[ti], &[ti])?,
-            dict_values: d("rt_dict_values", &[ti], &[ti])?,
-            dict_items: d("rt_dict_items", &[ti], &[ti])?,
+            dict_keys: d("rt_dict_keys_view", &[ti], &[ti])?,
+            dict_values: d("rt_dict_values_view", &[ti], &[ti])?,
+            dict_items: d("rt_dict_items_view", &[ti], &[ti])?,
             dict_pop: d("rt_dict_pop", &[ti, ti], &[ti])?,
             dict_setdefault: d("rt_dict_setdefault", &[ti, ti, ti], &[ti])?,
             dict_update: d("rt_dict_update", &[ti, ti], &[])?,
@@ -484,6 +498,7 @@ impl RuntimeFns {
             instance_get_field: d("rt_instance_get_field", &[ti, ti], &[ti])?,
             instance_set_field: d("rt_instance_set_field", &[ti, ti, ti], &[])?,
             register_class: d("rt_register_class", &[t8, t8], &[])?,
+            register_class_ancestor: d("rt_register_class_ancestor", &[t8, t8], &[])?,
             register_class_field_count: d("rt_register_class_field_count", &[t8, ti], &[])?,
             register_class_qualname: d("rt_register_class_qualname", &[ti, ti], &[])?,
             // Inheritance / dispatch. The vtable ptr is a code/data address (i64);
@@ -823,21 +838,23 @@ pub fn compile(
         if !sites.is_empty() {
             exc_sites.push((func_ids[i], sites));
         }
-        // Display name: module bodies (`__main__`, imported-module `<init>`s)
-        // print as CPython's `<module>`; everything else by the Python name.
+        // Display name: CPython's `co_name` for the frame; compiler-synthesized
+        // dispatch thunks get no record, so their frames drop out of the
+        // traceback (capture keeps only frames that resolve).
         let mf = &program.funcs[i];
-        let py_name = interner.resolve(mf.name);
-        let display = if py_name == "__main__" || py_name.ends_with(".<init>") {
-            "<module>".to_string()
-        } else {
-            py_name.to_string()
-        };
-        tb_funcs.push((
-            func_ids[i],
-            display,
-            interner.resolve(mf.file).to_string(),
-            tb,
-        ));
+        if let Some(display) = traceback_name(interner.resolve(mf.name)) {
+            let mut tb = tb;
+            tb.inline_chains = inline_locs(mf)
+                .into_iter()
+                .map(|(line, frames)| inline_chain(program, interner, &display, mf, line, &frames))
+                .collect();
+            tb_funcs.push((
+                func_ids[i],
+                display,
+                interner.resolve(mf.file).to_string(),
+                tb,
+            ));
+        }
 
         let compiled = ctx
             .compiled_code()
@@ -901,8 +918,8 @@ pub fn compile(
 /// Emit `__pyaot_generator_resume(gen) -> gen`: the dispatcher the runtime's
 /// `rt_generator_next/send/close` call (Phase 6E). It loads the generator's
 /// stored `func_id` (a `u32` at the frozen `GENERATOR_FUNC_ID_OFFSET`) and
-/// compare-chains it against each `gen_id` → calls the matching resume fn and
-/// returns its result; an unmatched id (or an empty table) traps. The resume
+/// switches on it (jump table) → calls the matching resume fn and returns its
+/// result; an unmatched id (or an empty table) traps. The resume
 /// fns have the compiled signature `(gen: i64) -> i64`, so the dispatcher
 /// reuses the platform pointer type as the `Value` ABI.
 fn emit_generator_dispatch(
@@ -938,25 +955,28 @@ fn emit_generator_dispatch(
             let func_id_val = builder
                 .ins()
                 .load(types::I32, MemFlags::trusted(), gen, offset);
-            // Compare-chain: for each gen_id, if func_id == gen_id call its
-            // resume fn and return; else fall to the next test.
-            for (gen_id, resume_fid) in program.generators.iter().enumerate() {
-                let matches = builder.create_block();
-                let next = builder.create_block();
-                let want = builder.ins().iconst(types::I32, gen_id as i64);
-                let eq = builder.ins().icmp(IntCC::Equal, func_id_val, want);
-                builder.ins().brif(eq, matches, &[], next, &[]);
-
-                builder.switch_to_block(matches);
-                builder.seal_block(matches);
+            // `Switch` lowers to a jump table / binary search over the dense
+            // `gen_id`s (O(1)/O(log n) per resume, not a linear compare chain):
+            // each case calls its resume fn and returns its result.
+            let default = builder.create_block();
+            let mut switch = Switch::new();
+            let mut cases = Vec::with_capacity(program.generators.len());
+            for gen_id in 0..program.generators.len() {
+                let b = builder.create_block();
+                switch.set_entry(gen_id as u128, b);
+                cases.push(b);
+            }
+            switch.emit(&mut builder, func_id_val, default);
+            for (b, resume_fid) in cases.into_iter().zip(&program.generators) {
+                builder.switch_to_block(b);
+                builder.seal_block(b);
                 let fref = module.declare_func_in_func(func_ids[resume_fid.index()], builder.func);
                 let call = builder.ins().call(fref, &[gen]);
                 let res = builder.inst_results(call)[0];
                 builder.ins().return_(&[res]);
-
-                builder.switch_to_block(next);
-                builder.seal_block(next);
             }
+            builder.switch_to_block(default);
+            builder.seal_block(default);
             // Unmatched func_id → trap (a corrupt generator object).
             builder.ins().trap(TrapCode::unwrap_user(2));
             builder.finalize();
@@ -1011,6 +1031,18 @@ fn emit_classinit(
             let parent8 = builder.ins().iconst(types::I32, parent);
             let rc = module.declare_func_in_func(rt.register_class, builder.func);
             builder.ins().call(rc, &[cid8, parent8]);
+            // Every user ancestor (multiple inheritance), plus the builtin
+            // exception base reached through a non-first base.
+            let mut extra: Vec<i64> = c.ancestors.iter().map(|a| a.0 as i64).collect();
+            if let Some(t) = c.exception_base {
+                extra.push(t as i64);
+            }
+            for a in extra {
+                let cidx = builder.ins().iconst(types::I32, c.class_id.0 as i64);
+                let av = builder.ins().iconst(types::I32, a);
+                let ra = module.declare_func_in_func(rt.register_class_ancestor, builder.func);
+                builder.ins().call(ra, &[cidx, av]);
+            }
 
             // Exception classes also register their bare name for display.
             if c.exception_base.is_some() {
@@ -1220,6 +1252,53 @@ fn thunk_addr(
     builder.ins().func_addr(ptr_ty, fref)
 }
 
+/// The tagged `Value` bits of an immediate constant, or `None` when the
+/// constant needs a runtime constructor: a float (boxed or raw), a heap
+/// literal (`Str`/`Bytes`/`BigIntStr`), or an `Int` outside the 61-bit fixnum
+/// range — shifting such an int into the tag would silently drop its high
+/// bits, so it is boxed through `rt_box_i64` instead. (The frontend turns
+/// out-of-range literals into `BigIntLit`, so the last case is a safety net,
+/// not a hot path.) Shared by function bodies and the class-attribute
+/// initializers so the two encodings cannot drift.
+fn tagged_immediate(val: &Const) -> Option<i64> {
+    match val {
+        Const::Int(i) if tag::int_fits(*i) => Some((*i << tag::INT_SHIFT) | tag::INT_TAG as i64),
+        Const::Int(_) => None,
+        Const::Bool(b) => Some(((*b as i64) << tag::BOOL_SHIFT) | tag::BOOL_TAG as i64),
+        Const::None => Some(tag::NONE_TAG as i64),
+        // The null-pointer `Value` — raw bits 0 (pointer tag, null payload):
+        // the stdlib "absent optional object" sentinel (Phase 8B).
+        Const::NullPtr => Some(0),
+        // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
+        Const::Unbound => Some(tag::RESERVED_TAG as i64),
+        Const::Float(_) | Const::Str(_) | Const::Bytes(_) | Const::BigIntStr(_) => None,
+    }
+}
+
+/// The runtime constructor `(ptr, len) -> Value` and string-pool id of a heap
+/// literal constant, or `None` for a scalar.
+fn heap_const_ctor(rt: &RuntimeFns, val: &Const) -> Option<(FuncId, InternedString)> {
+    match val {
+        // Intern literals so equal strings share one object (PITFALLS B8).
+        Const::Str(id) => Some((rt.make_str_interned, *id)),
+        Const::Bytes(id) => Some((rt.make_bytes, *id)),
+        Const::BigIntStr(id) => Some((rt.bigint_from_str, *id)),
+        _ => None,
+    }
+}
+
+/// An `iconst` immediate for a narrow raw type: Cranelift requires the
+/// immediate of an `I8`/`I32` constant to fit the type, so negative values are
+/// masked to their low bits (two's complement, same machine value).
+fn masked_imm(ty: Type, i: i64) -> i64 {
+    match ty.bits() {
+        64 => i,
+        bits => i & ((1i64 << bits) - 1),
+    }
+}
+
+/// Materialize a class-attribute initializer constant as a tagged `Value`
+/// (outside any `FnGen`: `__pyaot_classinit` has no MIR locals).
 fn materialize_const(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -1228,18 +1307,6 @@ fn materialize_const(
     ptr_ty: Type,
     val: &Const,
 ) -> Result<Value> {
-    let str_data = |module: &mut ObjectModule,
-                    builder: &mut FunctionBuilder,
-                    id: InternedString|
-     -> Result<(Value, Value)> {
-        let (data_id, len) = *data_ids
-            .get(&id)
-            .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
-        let gv = module.declare_data_in_func(data_id, builder.func);
-        let ptr = builder.ins().global_value(ptr_ty, gv);
-        let len_val = builder.ins().iconst(types::I64, len as i64);
-        Ok((ptr, len_val))
-    };
     let call1 = |module: &mut ObjectModule,
                  builder: &mut FunctionBuilder,
                  fid: FuncId,
@@ -1249,44 +1316,29 @@ fn materialize_const(
         let inst = builder.ins().call(fref, args);
         builder.inst_results(inst)[0]
     };
-    let v = match val {
-        Const::Int(i) => {
-            let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
-            builder.ins().iconst(types::I64, tagged)
-        }
-        Const::Bool(b) => {
-            let tagged = if *b {
-                ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
-            } else {
-                tag::BOOL_TAG as i64
-            };
-            builder.ins().iconst(types::I64, tagged)
-        }
-        Const::None => builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
-        // Never produced for class-attr initializers; materialize the raw null
-        // Value for exhaustiveness.
-        Const::NullPtr => builder.ins().iconst(types::I64, 0),
-        // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
-        Const::Unbound => builder.ins().iconst(types::I64, tag::RESERVED_TAG as i64),
+    if let Some(bits) = tagged_immediate(val) {
+        return Ok(builder.ins().iconst(types::I64, bits));
+    }
+    if let Some((ctor, id)) = heap_const_ctor(rt, val) {
+        let (data_id, len) = *data_ids
+            .get(&id)
+            .ok_or_else(|| cg_error("missing data object for class-attr literal"))?;
+        let gv = module.declare_data_in_func(data_id, builder.func);
+        let ptr = builder.ins().global_value(ptr_ty, gv);
+        let len_val = builder.ins().iconst(types::I64, len as i64);
+        return Ok(call1(module, builder, ctor, &[ptr, len_val]));
+    }
+    Ok(match val {
         Const::Float(f) => {
             let fv = builder.ins().f64const(*f);
             call1(module, builder, rt.box_float, &[fv])
         }
-        Const::Str(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            // Intern literals so equal strings share one object (PITFALLS B8).
-            call1(module, builder, rt.make_str_interned, &[ptr, len])
+        Const::Int(i) => {
+            let raw = builder.ins().iconst(types::I64, *i);
+            call1(module, builder, rt.box_i64, &[raw])
         }
-        Const::Bytes(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            call1(module, builder, rt.make_bytes, &[ptr, len])
-        }
-        Const::BigIntStr(id) => {
-            let (ptr, len) = str_data(module, builder, *id)?;
-            call1(module, builder, rt.bigint_from_str, &[ptr, len])
-        }
-    };
-    Ok(v)
+        other => return Err(cg_error(format!("unmaterializable class-attr constant {other:?}"))),
+    })
 }
 
 /// Emit the unwind-table data object: `count` 24-byte records
@@ -1366,9 +1418,9 @@ fn emit_tb_table(
     funcs: &[(FuncId, String, String, FnTb)],
 ) -> Result<Option<(DataId, u64)>> {
     use pyaot_core_defs::layout::{
-        TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET, TB_RECORD_FILE_LEN_OFFSET,
-        TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET, TB_RECORD_NAME_LEN_OFFSET,
-        TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
+        TB_INLINE_FRAME_SIZE, TB_LOC_ENTRY_SIZE, TB_RECORD_CODE_SIZE_OFFSET,
+        TB_RECORD_FILE_LEN_OFFSET, TB_RECORD_FILE_OFF_OFFSET, TB_RECORD_LOC_OFF_OFFSET,
+        TB_RECORD_NAME_LEN_OFFSET, TB_RECORD_NAME_OFF_OFFSET, TB_RECORD_SIZE,
     };
     if funcs.is_empty() {
         return Ok(None);
@@ -1402,6 +1454,39 @@ fn emit_tb_table(
             w32(&mut bytes, base + off_at as usize, off);
             w32(&mut bytes, base + len_at as usize, s.len() as u32);
         }
+        // Inline chains (contract extension, `TB_LOC_INLINE_FLAG`): one blob
+        // per inline-location id, referenced from the line area below.
+        let mut chain_offs: Vec<u32> = Vec::with_capacity(tb.inline_chains.len());
+        for chain in &tb.inline_chains {
+            let mut strs: Vec<[u32; 4]> = Vec::with_capacity(chain.len());
+            for (fname, ffile, _) in chain {
+                let mut pair = [0u32; 4];
+                for (k, s) in [fname, ffile].into_iter().enumerate() {
+                    let off = if let Some(&o) = aux_str.get(s.as_str()) {
+                        o
+                    } else {
+                        let o = bytes.len() as u32;
+                        bytes.extend_from_slice(s.as_bytes());
+                        aux_str.insert(s.as_str(), o);
+                        o
+                    };
+                    pair[2 * k] = off;
+                    pair[2 * k + 1] = s.len() as u32;
+                }
+                strs.push(pair);
+            }
+            while !bytes.len().is_multiple_of(4) {
+                bytes.push(0);
+            }
+            chain_offs.push(bytes.len() as u32);
+            bytes.extend_from_slice(&(chain.len() as u32).to_le_bytes());
+            for (pair, (_, _, line)) in strs.iter().zip(chain) {
+                for v in pair.iter().chain(std::iter::once(line)) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        debug_assert_eq!(TB_INLINE_FRAME_SIZE, 20);
         // Line area: count + (start, end, line) triples. 4-align it.
         while !bytes.len().is_multiple_of(4) {
             bytes.push(0);
@@ -1409,6 +1494,16 @@ fn emit_tb_table(
         let loc_off = bytes.len() as u32;
         bytes.extend_from_slice(&(tb.locs.len() as u32).to_le_bytes());
         for (start, end, line) in &tb.locs {
+            // An inline-location srcloc becomes a flagged chain offset.
+            let line = if line & INLINE_SRCLOC != 0 {
+                let off = chain_offs[(line & !INLINE_SRCLOC) as usize];
+                if off & INLINE_SRCLOC != 0 {
+                    return Err(cg_error("traceback table exceeds 2 GiB"));
+                }
+                INLINE_SRCLOC | off
+            } else {
+                *line
+            };
             bytes.extend_from_slice(&start.to_le_bytes());
             bytes.extend_from_slice(&end.to_le_bytes());
             bytes.extend_from_slice(&line.to_le_bytes());
@@ -1534,6 +1629,15 @@ fn translate_function(
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
+    // Pin the srcloc base to line 0. Cranelift stores each srcloc relative to
+    // the function's base (by default the FIRST srcloc set) with wrapping
+    // arithmetic, and the relative value `u32::MAX` means "no location": a
+    // later line exactly one below the first stamped line (e.g. an inlined
+    // callee defined just above its call site) would wrap onto that sentinel
+    // and resolve as `line 0`. With base 0 the relative value is the line.
+    ctx.func
+        .params
+        .ensure_base_srcloc(cranelift_codegen::ir::SourceLoc::new(0));
     let mut fctx = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
@@ -1607,6 +1711,13 @@ fn translate_function(
             frame_slot,
             cur_handler: None,
             trampolines,
+            inline_loc_ids: inline_locs(mf)
+                .into_iter()
+                .enumerate()
+                .map(|(i, key)| (key, i as u32))
+                .collect(),
+            fref_cache: HashMap::new(),
+            gv_cache: HashMap::new(),
         };
 
         for (bi, mblock) in mf.blocks.iter().enumerate() {
@@ -1718,6 +1829,7 @@ fn harvest_fn_metadata(ctx: &Context) -> Result<(Vec<ExcSite>, FnTb)> {
     }
 
     let tb = FnTb {
+        inline_chains: Vec::new(),
         code_size: compiled.buffer.total_size(),
         locs: compiled
             .buffer
@@ -1730,11 +1842,111 @@ fn harvest_fn_metadata(ctx: &Context) -> Result<(Vec<ExcSite>, FnTb)> {
     Ok((sites, tb))
 }
 
+/// The traceback frame name CPython would print (`co_name`) for a MIR
+/// function's internal name, or `None` for a compiler-synthesized dispatch
+/// thunk that has no CPython frame at all.
+///
+/// Internal names qualify for uniqueness: `C.m` (method), `mod.f` (imported
+/// module), `outer.<locals>.inner#0` (nested def / lambda / genexpr, with a
+/// sibling counter), `f.<orig>` (a decorated def's undecorated body),
+/// `g.<resume>` (a generator's state machine — CPython names the frame after
+/// the generator function). Module bodies (`__main__`, `pkg.<init>`) are
+/// `<module>`. Value-call / iterator / copy thunks (`….<uniform>`,
+/// `….<iternext>`, `….<__copy__>`, `….<__deepcopy__>`) are hidden.
+fn traceback_name(internal: &str) -> Option<String> {
+    if internal == "__main__" || internal.ends_with(".<init>") {
+        return Some("<module>".to_string());
+    }
+    const THUNKS: &[&str] = &[
+        ".<uniform>",
+        ".<iternext>",
+        ".<__copy__>",
+        ".<__deepcopy__>",
+    ];
+    if THUNKS.iter().any(|t| internal.ends_with(t)) {
+        return None;
+    }
+    let mut name = internal;
+    for suffix in [".<resume>", ".<orig>"] {
+        name = name.strip_suffix(suffix).unwrap_or(name);
+    }
+    // Innermost scope: after the last `.<locals>.` (a synthetic name's
+    // `<lambda>`/`<genexpr>` contains no `.`), then after the last `.`
+    // (class / module qualifier).
+    if let Some((_, inner)) = name.rsplit_once(".<locals>.") {
+        name = inner;
+    }
+    if let Some((base, counter)) = name.rsplit_once('#') {
+        if !counter.is_empty() && counter.bytes().all(|b| b.is_ascii_digit()) {
+            name = base;
+        }
+    }
+    if let Some((_, last)) = name.rsplit_once('.') {
+        name = last;
+    }
+    Some(name.to_string())
+}
+
 /// A function's traceback metadata: machine-code size and the sorted
 /// `[start, end) → source line` ranges harvested from Cranelift srclocs.
+/// A loc value with [`INLINE_SRCLOC`] set indexes `inline_chains`.
 struct FnTb {
     code_size: u32,
     locs: Vec<(u32, u32, u32)>,
+    /// Per inline-location id: the frames to print, OUTERMOST first, as
+    /// `(name, file, line)` (the record's own function included first).
+    inline_chains: Vec<Vec<(String, String, u32)>>,
+}
+
+/// Srcloc bit marking an inline-location id (vs. a plain line number); the
+/// same bit marks an inline-chain entry in the traceback table's loc area
+/// (`pyaot_core_defs::layout::TB_LOC_INLINE_FLAG`).
+const INLINE_SRCLOC: u32 = pyaot_core_defs::layout::TB_LOC_INLINE_FLAG;
+
+/// The distinct `(line, inline chain)` pairs of `mf`'s `InlinedLine` markers,
+/// in first-occurrence order — the function's inline-location table (index =
+/// srcloc payload). Deterministic, so translation and harvest agree.
+fn inline_locs(mf: &MirFunction) -> Vec<(u32, Vec<InlineFrame>)> {
+    let mut out: Vec<(u32, Vec<InlineFrame>)> = Vec::new();
+    let mut seen: HashMap<(u32, Vec<InlineFrame>), ()> = HashMap::new();
+    for block in &mf.blocks {
+        for inst in &block.insts {
+            if let MirInst::InlinedLine { line, frames } = inst {
+                let key = (*line, frames.clone());
+                if seen.insert(key.clone(), ()).is_none() {
+                    out.push(key);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Expand one inline location of `mf` (named `display`) into the CPython
+/// frames it stands for, outermost first: `mf` at the first call line, each
+/// inlined function at the line that called the next, the innermost at
+/// `line`. Inlined thunks (no CPython frame) are skipped.
+fn inline_chain(
+    program: &MirProgram,
+    interner: &StringInterner,
+    display: &str,
+    mf: &MirFunction,
+    line: u32,
+    frames: &[InlineFrame],
+) -> Vec<(String, String, u32)> {
+    let mut out = Vec::with_capacity(frames.len() + 1);
+    let mut cur = (display.to_string(), interner.resolve(mf.file).to_string());
+    for fr in frames {
+        out.push((cur.0, cur.1, fr.call_line));
+        let callee = &program.funcs[fr.func.index()];
+        cur = (
+            traceback_name(interner.resolve(callee.name)).unwrap_or_default(),
+            interner.resolve(callee.file).to_string(),
+        );
+    }
+    out.push((cur.0, cur.1, line));
+    out.retain(|(name, ..)| !name.is_empty());
+    out
 }
 
 /// One protected machine call site of a compiled function: the return-address
@@ -1888,6 +2100,12 @@ struct FnGen<'a, 'b> {
     cur_handler: Option<usize>,
     /// Program-wide Tail-trampoline registry for protected calls.
     trampolines: &'a mut Trampolines,
+    /// `(line, inline chain)` → index into [`inline_locs`]'s table: the
+    /// srcloc of an `InlinedLine` is `INLINE_SRCLOC | index`.
+    inline_loc_ids: HashMap<(u32, Vec<InlineFrame>), u32>,
+    /// Per-function import caches (see [`Self::func_ref`] / [`Self::str_data`]).
+    fref_cache: HashMap<FuncId, FuncRef>,
+    gv_cache: HashMap<DataId, GlobalValue>,
 }
 
 impl FnGen<'_, '_> {
@@ -1970,6 +2188,18 @@ impl FnGen<'_, '_> {
             .collect()
     }
 
+    /// The function's import (`FuncRef`) for `fid`, declared once per
+    /// function: `declare_func_in_func` appends a fresh external-function
+    /// entry on every call, so uncached it grows linearly per call site.
+    fn func_ref(&mut self, fid: FuncId) -> FuncRef {
+        if let Some(r) = self.fref_cache.get(&fid) {
+            return *r;
+        }
+        let r = self.module.declare_func_in_func(fid, self.builder.func);
+        self.fref_cache.insert(fid, r);
+        r
+    }
+
     /// Call a runtime/user function, returning its single result (if any).
     /// Inside a protected block, any callee that can raise is routed through
     /// a `CallConv::Tail` trampoline emitted as a `try_call` whose
@@ -1978,7 +2208,7 @@ impl FnGen<'_, '_> {
     /// calls in unprotected blocks) stay plain `call`s with no unwind
     /// metadata.
     fn call(&mut self, fid: FuncId, args: &[Value]) -> Option<Value> {
-        let fref = self.module.declare_func_in_func(fid, self.builder.func);
+        let fref = self.func_ref(fid);
         let sig_ref = self.builder.func.dfg.ext_funcs[fref].signature;
         let params = self.builder.func.dfg.signatures[sig_ref].params.clone();
         let args = self.adapt_args(&params, args);
@@ -1986,7 +2216,7 @@ impl FnGen<'_, '_> {
             if !self.rt.never_raises.contains(&fid) {
                 let sig = self.builder.func.dfg.signatures[sig_ref].clone();
                 let tramp = self.trampolines.direct(self.module, fid, &sig);
-                let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+                let tref = self.func_ref(tramp);
                 let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
                 return self.emit_protected_call(tramp_sig_ref, h, |b, et| {
                     b.ins().try_call(tref, &args, et)
@@ -2006,7 +2236,7 @@ impl FnGen<'_, '_> {
         if let Some(h) = self.cur_handler {
             let sig = self.builder.func.dfg.signatures[sig_ref].clone();
             let tramp = self.trampolines.indirect(self.module, &sig);
-            let tref = self.module.declare_func_in_func(tramp, self.builder.func);
+            let tref = self.func_ref(tramp);
             let tramp_sig_ref = self.builder.func.dfg.ext_funcs[tref].signature;
             let mut targs = args.to_vec();
             targs.push(callee);
@@ -2092,8 +2322,21 @@ impl FnGen<'_, '_> {
             // line; `get_srclocs_sorted()` hands the PC ranges back after
             // compilation for the traceback table.
             MirInst::LineMarker(line) => {
+                debug_assert!(
+                    *line < INLINE_SRCLOC,
+                    "line number overflows the srcloc space"
+                );
                 self.builder
                     .set_srcloc(cranelift_codegen::ir::SourceLoc::new(*line));
+                Ok(())
+            }
+            // Inlined code: the srcloc names an entry of the function's
+            // inline-location table, expanded to the whole frame chain in
+            // the traceback table.
+            MirInst::InlinedLine { line, frames } => {
+                let id = self.inline_loc_ids[&(*line, frames.clone())];
+                self.builder
+                    .set_srcloc(cranelift_codegen::ir::SourceLoc::new(INLINE_SRCLOC | id));
                 Ok(())
             }
             MirInst::Const { dst, val } => self.lower_const(*dst, val),
@@ -2501,9 +2744,7 @@ impl FnGen<'_, '_> {
         // runtime, and a later allocation must not collect it.
         self.def_local(dst, env);
 
-        let fref = self
-            .module
-            .declare_func_in_func(self.func_ids[func.index()], self.builder.func);
+        let fref = self.func_ref(self.func_ids[func.index()]);
         let addr = self.builder.ins().func_addr(self.ptr_ty, fref);
         let shifted = self.builder.ins().ishl_imm(addr, tag::INT_SHIFT as i64);
         let tagged_addr = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
@@ -2562,49 +2803,32 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_const(&mut self, dst: LocalId, val: &Const) -> Result<()> {
+        let dst_repr = &self.locals[dst.index()].repr;
         let v = match val {
-            Const::Int(i) => {
-                // A raw-repr destination takes the plain integer in its register
-                // class (Phase 8B descriptor-ABI immediates — field indexes, arg
-                // counts); a Tagged one takes the int-tagged Value bits.
-                if let Repr::Raw(_) = &self.locals[dst.index()].repr {
-                    let ty = clif_ty(&self.locals[dst.index()].repr);
-                    self.builder.ins().iconst(ty, *i)
-                } else {
-                    let tagged = ((*i) << tag::INT_SHIFT) | (tag::INT_TAG as i64);
-                    self.builder.ins().iconst(types::I64, tagged)
-                }
+            // A raw-repr destination takes the plain integer in its register
+            // class (Phase 8B descriptor-ABI immediates — field indexes, arg
+            // counts); the immediate is masked to the width of a narrow
+            // (`I8`/`I32`) type, which Cranelift requires to fit.
+            Const::Int(i) if matches!(dst_repr, Repr::Raw(_)) => {
+                let ty = clif_ty(dst_repr);
+                self.builder.ins().iconst(ty, masked_imm(ty, *i))
             }
-            // The null-pointer `Value` — raw bits 0 (pointer tag, null payload):
-            // the stdlib "absent optional object" sentinel (Phase 8B).
-            Const::NullPtr => self.builder.ins().iconst(types::I64, 0),
-            Const::Bool(b) => {
-                let tagged = if *b {
-                    ((1i64) << tag::BOOL_SHIFT) | (tag::BOOL_TAG as i64)
-                } else {
-                    tag::BOOL_TAG as i64
-                };
-                self.builder.ins().iconst(types::I64, tagged)
-            }
-            Const::None => self.builder.ins().iconst(types::I64, tag::NONE_TAG as i64),
-            // The `Value::UNBOUND` sentinel (`RESERVED_TAG` immediate).
-            Const::Unbound => self
-                .builder
-                .ins()
-                .iconst(types::I64, tag::RESERVED_TAG as i64),
+            // The verifier admits a float constant only into `Raw(F64)`.
             Const::Float(f) => self.builder.ins().f64const(*f),
-            Const::Str(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                // Intern literals so equal strings share one object (PITFALLS B8).
-                self.call(self.rt.make_str_interned, &[ptr, len]).unwrap()
-            }
-            Const::BigIntStr(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                self.call(self.rt.bigint_from_str, &[ptr, len]).unwrap()
-            }
-            Const::Bytes(id) => {
-                let (ptr, len) = self.str_data(*id)?;
-                self.call(self.rt.make_bytes, &[ptr, len]).unwrap()
+            _ => {
+                if let Some(bits) = tagged_immediate(val) {
+                    self.builder.ins().iconst(types::I64, bits)
+                } else if let Some((ctor, id)) = heap_const_ctor(self.rt, val) {
+                    let (ptr, len) = self.str_data(id)?;
+                    self.call(ctor, &[ptr, len]).unwrap()
+                } else if let Const::Int(i) = val {
+                    // Out of fixnum range: never shift-tag it (the high bits
+                    // would be lost) — box it as a `BigInt`.
+                    let raw = self.builder.ins().iconst(types::I64, *i);
+                    self.call(self.rt.box_i64, &[raw]).unwrap()
+                } else {
+                    return Err(cg_error(format!("unmaterializable constant {val:?}")));
+                }
             }
         };
         self.def_local(dst, v);
@@ -2617,10 +2841,163 @@ impl FnGen<'_, '_> {
             .data_ids
             .get(&id)
             .ok_or_else(|| cg_error("missing data object for interned string"))?;
-        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let gv = match self.gv_cache.get(&data_id) {
+            Some(gv) => *gv,
+            None => {
+                let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+                self.gv_cache.insert(data_id, gv);
+                gv
+            }
+        };
         let ptr = self.builder.ins().global_value(self.ptr_ty, gv);
         let len_val = self.builder.ins().iconst(types::I64, len as i64);
         Ok((ptr, len_val))
+    }
+
+    /// Inline fast path of the CHECKED `Tagged → Raw(F64)` unbox: a non-null
+    /// heap pointer whose header tag is `Float` loads its payload directly;
+    /// anything else (a tagged int/bool — the numeric tower —, a bignum, a
+    /// wrong-type value) takes the raising `rt_unbox_float` slow path. Keeps
+    /// the checked-by-default narrowing (invariant 2) nearly as cheap as the
+    /// unchecked load on the common path.
+    fn checked_unbox_float(&mut self, s: Value) -> Value {
+        let check_tag = self.builder.create_block();
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::F64);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let is_ptr = self.builder.ins().icmp_imm(IntCC::Equal, low, tag::PTR_TAG as i64);
+        let non_null = self.builder.ins().icmp_imm(IntCC::NotEqual, s, 0);
+        let ptr_ok = self.builder.ins().band(is_ptr, non_null);
+        self.builder.ins().brif(ptr_ok, check_tag, &[], slow, &[]);
+        self.builder.switch_to_block(check_tag);
+        let tag_byte = self.builder.ins().load(types::I8, MemFlags::trusted(), s, 0);
+        let is_float = self.builder.ins().icmp_imm(
+            IntCC::Equal,
+            tag_byte,
+            pyaot_core_defs::TypeTagKind::Float as i64,
+        );
+        self.builder.ins().brif(is_float, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let f = self
+            .builder
+            .ins()
+            .load(types::F64, MemFlags::trusted(), s, FLOAT_VALUE_OFFSET);
+        self.builder.ins().jump(join, &[f.into()]);
+        self.builder.switch_to_block(slow);
+        let f = self.call(self.rt.unbox_float_checked, &[s]).unwrap();
+        self.builder.ins().jump(join, &[f.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Inline fast path of a CHECKED `Tagged → Heap(shape)` guard: a non-null
+    /// heap pointer whose header tag is `fast_tag` (and, for a class instance,
+    /// whose `class_id` is exactly `class_id`) passes straight through; anything
+    /// else — a subclass instance, a `dict` subtype, a wrong value — takes the
+    /// raising runtime guard `slow`, which returns the value on success.
+    fn checked_heap_guard(
+        &mut self,
+        s: Value,
+        fast_tag: Option<TypeTagKind>,
+        class_id: Option<i64>,
+        slow: impl FnOnce(&mut Self, Value) -> Value,
+    ) -> Value {
+        let Some(fast_tag) = fast_tag else {
+            return slow(self, s);
+        };
+        let check_tag = self.builder.create_block();
+        let slow_block = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::I64);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let is_ptr = self.builder.ins().icmp_imm(IntCC::Equal, low, tag::PTR_TAG as i64);
+        let non_null = self.builder.ins().icmp_imm(IntCC::NotEqual, s, 0);
+        let ptr_ok = self.builder.ins().band(is_ptr, non_null);
+        self.builder.ins().brif(ptr_ok, check_tag, &[], slow_block, &[]);
+        self.builder.switch_to_block(check_tag);
+        let tag_byte = self.builder.ins().load(types::I8, MemFlags::trusted(), s, 0);
+        let tag_ok = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag_byte, fast_tag as i64);
+        match class_id {
+            None => {
+                self.builder.ins().brif(tag_ok, join, &[s.into()], slow_block, &[]);
+            }
+            Some(cid) => {
+                let check_cls = self.builder.create_block();
+                self.builder.ins().brif(tag_ok, check_cls, &[], slow_block, &[]);
+                self.builder.switch_to_block(check_cls);
+                let got = self.builder.ins().load(
+                    types::I8,
+                    MemFlags::trusted(),
+                    s,
+                    pyaot_core_defs::layout::INSTANCE_CLASS_ID_OFFSET,
+                );
+                let cls_ok = self.builder.ins().icmp_imm(IntCC::Equal, got, cid);
+                self.builder.ins().brif(cls_ok, join, &[s.into()], slow_block, &[]);
+            }
+        }
+        self.builder.switch_to_block(slow_block);
+        let v = slow(self, s);
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// `Raw(I64) → Tagged`: tag a machine integer as a fixnum when it fits the
+    /// 61-bit immediate range (`(v << 3) >> 3 == v`), else box it as a heap
+    /// `BigInt` via `rt_box_i64`. A raw integer is not always range-proven (a
+    /// stdlib result such as `len` / `ord` / a counter is a full `i64`), so the
+    /// unconditional shift would silently wrap — the overflow check keeps the
+    /// tag exact (PITFALLS B16).
+    fn tag_int_checked(&mut self, s: Value) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, types::I64);
+        let shifted = self.builder.ins().ishl_imm(s, tag::INT_SHIFT as i64);
+        let back = self.builder.ins().sshr_imm(shifted, tag::INT_SHIFT as i64);
+        let fits = self.builder.ins().icmp(IntCC::Equal, back, s);
+        self.builder.ins().brif(fits, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let tagged = self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64);
+        self.builder.ins().jump(join, &[tagged.into()]);
+        self.builder.switch_to_block(slow);
+        let boxed = self.call(self.rt.box_i64, &[s]).unwrap();
+        self.builder.ins().jump(join, &[boxed.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Inline fast path of the CHECKED `Tagged → Raw(I64|I8)` unbox: an
+    /// immediate carrying `imm_tag` (int / bool) is untagged in registers;
+    /// anything else takes the raising `slow_fn` (`rt_unbox_int` /
+    /// `rt_unbox_bool`, which also handle a bignum / the numeric tower).
+    fn checked_unbox_imm(&mut self, s: Value, imm_tag: u64, slow_fn: FuncId, ty: Type) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        let out = self.builder.append_block_param(join, ty);
+        let low = self.builder.ins().band_imm(s, tag::TAG_MASK as i64);
+        let ok = self.builder.ins().icmp_imm(IntCC::Equal, low, imm_tag as i64);
+        self.builder.ins().brif(ok, fast, &[], slow, &[]);
+        self.builder.switch_to_block(fast);
+        let v = if ty == types::I8 {
+            let shifted = self.builder.ins().ushr_imm(s, tag::BOOL_SHIFT as i64);
+            let bit = self.builder.ins().band_imm(shifted, 1);
+            self.builder.ins().ireduce(types::I8, bit)
+        } else {
+            self.builder.ins().sshr_imm(s, tag::INT_SHIFT as i64)
+        };
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(slow_fn, &[s]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
     }
 
     fn lower_coerce(
@@ -2639,25 +3016,55 @@ impl FnGen<'_, '_> {
         if checked {
             let s = self.use_operand(src);
             let v = match to {
-                Repr::Raw(RawKind::F64) => self.call(self.rt.unbox_float_checked, &[s]).unwrap(),
-                Repr::Raw(RawKind::I64) => self.call(self.rt.unbox_int_checked, &[s]).unwrap(),
-                Repr::Raw(RawKind::I8) => self.call(self.rt.unbox_bool_checked, &[s]).unwrap(),
+                Repr::Raw(RawKind::F64) => self.checked_unbox_float(s),
+                Repr::Raw(RawKind::I64) => self.checked_unbox_imm(
+                    s,
+                    tag::INT_TAG,
+                    self.rt.unbox_int_checked,
+                    types::I64,
+                ),
+                Repr::Raw(RawKind::I8) => self.checked_unbox_imm(
+                    s,
+                    tag::BOOL_TAG,
+                    self.rt.unbox_bool_checked,
+                    types::I8,
+                ),
                 // Heap-arg guard: a guarded `Tagged → Heap(shape)` coercion calls the
                 // shape's raising guard and returns the same tagged value on a
                 // match. The `dyn_check` is `Some` by construction — lowering
                 // only emits a checked heap coerce for a guarded shape (B18).
                 Repr::Heap(shape) => match shape.dyn_check() {
                     Some(HeapCheck::Kind(code)) => {
-                        let kind = self.builder.ins().iconst(types::I64, code as i64);
-                        self.call(self.rt.check_heap_kind, &[s, kind]).unwrap()
+                        let fast_tag = match shape {
+                            HeapShape::Str => Some(TypeTagKind::Str),
+                            HeapShape::Bytes => Some(TypeTagKind::Bytes),
+                            HeapShape::List(_) => Some(TypeTagKind::List),
+                            HeapShape::Dict(..) => Some(TypeTagKind::Dict),
+                            HeapShape::Set(_) => Some(TypeTagKind::Set),
+                            HeapShape::Tuple(_) | HeapShape::TupleVar(_) => {
+                                Some(TypeTagKind::Tuple)
+                            }
+                            _ => None,
+                        };
+                        self.checked_heap_guard(s, fast_tag, None, |cg, s| {
+                            let kind = cg.builder.ins().iconst(types::I64, code as i64);
+                            cg.call(cg.rt.check_heap_kind, &[s, kind]).unwrap()
+                        })
                     }
-                    Some(HeapCheck::Class(cid)) => {
-                        let class_id = self.builder.ins().iconst(types::I64, cid.0 as i64);
-                        self.call(self.rt.check_instance, &[s, class_id]).unwrap()
-                    }
+                    Some(HeapCheck::Class(cid)) => self.checked_heap_guard(
+                        s,
+                        Some(TypeTagKind::Instance),
+                        Some(cid.0 as i64),
+                        |cg, s| {
+                            let class_id = cg.builder.ins().iconst(types::I64, cid.0 as i64);
+                            cg.call(cg.rt.check_instance, &[s, class_id]).unwrap()
+                        },
+                    ),
                     Some(HeapCheck::RuntimeTag(tag)) => {
-                        let tag_imm = self.builder.ins().iconst(types::I64, tag.tag() as i64);
-                        self.call(self.rt.check_runtime_obj, &[s, tag_imm]).unwrap()
+                        self.checked_heap_guard(s, Some(tag), None, |cg, s| {
+                            let tag_imm = cg.builder.ins().iconst(types::I64, tag.tag() as i64);
+                            cg.call(cg.rt.check_runtime_obj, &[s, tag_imm]).unwrap()
+                        })
                     }
                     None => {
                         return Err(cg_error(format!(
@@ -2674,17 +3081,14 @@ impl FnGen<'_, '_> {
             .ok_or_else(|| cg_error(format!("illegal coercion {from:?} -> {to:?}")))?;
         let s = self.use_operand(src);
         let v = match kind {
-            Coercion::Noop | Coercion::HeapToTagged | Coercion::TaggedToHeap => s,
+            Coercion::Noop | Coercion::TaggedToHeap => s,
             Coercion::BoxFloat => self.call(self.rt.box_float, &[s]).unwrap(),
             Coercion::UnboxFloat => {
                 self.builder
                     .ins()
                     .load(types::F64, MemFlags::trusted(), s, FLOAT_VALUE_OFFSET)
             }
-            Coercion::TagInt => {
-                let shifted = self.builder.ins().ishl_imm(s, tag::INT_SHIFT as i64);
-                self.builder.ins().bor_imm(shifted, tag::INT_TAG as i64)
-            }
+            Coercion::TagInt => self.tag_int_checked(s),
             Coercion::UntagInt => self.builder.ins().sshr_imm(s, tag::INT_SHIFT as i64),
             Coercion::TagBool => {
                 let wide = self.builder.ins().uextend(types::I64, s);
@@ -2715,11 +3119,17 @@ impl FnGen<'_, '_> {
             (Repr::Raw(RawKind::F64), BinOp::Add) => self.builder.ins().fadd(a, b),
             (Repr::Raw(RawKind::F64), BinOp::Sub) => self.builder.ins().fsub(a, b),
             (Repr::Raw(RawKind::F64), BinOp::Mul) => self.builder.ins().fmul(a, b),
-            // Raw i64 (range-proven cursors): checked machine arithmetic that
-            // raises on i64 overflow — sound only because lowering proved range.
-            (Repr::Raw(RawKind::I64), BinOp::Add) => self.call(self.rt.add_int, &[a, b]).unwrap(),
-            (Repr::Raw(RawKind::I64), BinOp::Sub) => self.call(self.rt.sub_int, &[a, b]).unwrap(),
-            (Repr::Raw(RawKind::I64), BinOp::Mul) => self.call(self.rt.mul_int, &[a, b]).unwrap(),
+            // `/` on two floats: inline `fdiv`, except a zero divisor (`0.0` or
+            // `-0.0`) takes the cold `rt_div_float` call, which raises
+            // `ZeroDivisionError` (CPython never yields inf/nan from `x / 0.0`).
+            (Repr::Raw(RawKind::F64), BinOp::Div) => self.raw_float_div(a, b),
+            // Raw i64 (range-proven cursors): inline machine arithmetic with the
+            // overflow flag. Overflow is impossible by the range proof, but the
+            // cold path still calls the checked `rt_*_int`, which raises
+            // `OverflowError` — the same behaviour as before, minus the call.
+            (Repr::Raw(RawKind::I64), BinOp::Add) => self.raw_int_overflow_op(op, a, b),
+            (Repr::Raw(RawKind::I64), BinOp::Sub) => self.raw_int_overflow_op(op, a, b),
+            (Repr::Raw(RawKind::I64), BinOp::Mul) => self.raw_int_overflow_op(op, a, b),
             // Raw i64 `% //` (Phase 3c): inline `srem`/`sdiv` with the Python
             // floor-toward-−∞ correction. typeck's interval pass proved the
             // divisor statically positive (hence nonzero and never `INT_MIN/-1`),
@@ -2743,6 +3153,34 @@ impl FnGen<'_, '_> {
             // `|=` — in-place merge for `dict`/`set` (returns the same object),
             // numeric/TypeError delegated to `rt_obj_bitor` inside the runtime.
             (_, BinOp::IOr) => self.call(self.rt.obj_ior, &[a, b]).unwrap(),
+            // `+=` / `*=` — in-place for `list` / `__iadd__` / `__imul__`
+            // (returns the same object), else the new-object add / mul.
+            (_, BinOp::IAdd) => self.call(self.rt.obj_iadd, &[a, b]).unwrap(),
+            (_, BinOp::IMul) => self.call(self.rt.obj_imul, &[a, b]).unwrap(),
+            // The remaining augmented assignments: `__i<op>__` first, else the
+            // binary operator (`rt_obj_inplace`, op selected by `kind`).
+            (
+                _,
+                BinOp::IDiv
+                | BinOp::IFloorDiv
+                | BinOp::IMod
+                | BinOp::IPow
+                | BinOp::IMatMul
+                | BinOp::IShl
+                | BinOp::IShr,
+            ) => {
+                let kind = match op {
+                    BinOp::IDiv => 0,
+                    BinOp::IFloorDiv => 1,
+                    BinOp::IMod => 2,
+                    BinOp::IPow => 3,
+                    BinOp::IMatMul => 4,
+                    BinOp::IShl => 5,
+                    _ => 6,
+                };
+                let k = self.builder.ins().iconst(types::I64, kind);
+                self.call(self.rt.obj_inplace, &[a, b, k]).unwrap()
+            }
             // `&=` / `-=` / `^=` — in-place mutate for `set` (returns the same
             // object), numeric/TypeError delegated to `rt_obj_bitand`/`rt_obj_sub`/
             // `rt_obj_bitxor` inside the runtime.
@@ -2755,6 +3193,60 @@ impl FnGen<'_, '_> {
         };
         self.def_local(dst, v);
         Ok(())
+    }
+
+    /// Overflow-checked raw i64 `+ - *`: the `{s,ss,sm}{add,ub,ul}_overflow`
+    /// result is used directly; on the (cold) overflow edge the checked
+    /// runtime op (`rt_add_int`/`rt_sub_int`/`rt_mul_int`) recomputes and
+    /// raises `OverflowError`.
+    fn raw_int_overflow_op(&mut self, op: BinOp, a: Value, b: Value) -> Value {
+        let (res, of, slow_fn) = match op {
+            BinOp::Add => {
+                let (r, of) = self.builder.ins().sadd_overflow(a, b);
+                (r, of, self.rt.add_int)
+            }
+            BinOp::Sub => {
+                let (r, of) = self.builder.ins().ssub_overflow(a, b);
+                (r, of, self.rt.sub_int)
+            }
+            BinOp::Mul => {
+                let (r, of) = self.builder.ins().smul_overflow(a, b);
+                (r, of, self.rt.mul_int)
+            }
+            other => unreachable!("raw_int_overflow_op on {other:?}"),
+        };
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let out = self.builder.append_block_param(join, types::I64);
+        self.builder.ins().brif(of, slow, &[], join, &[res.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(slow_fn, &[a, b]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
+    }
+
+    /// Raw f64 `/`: inline `fdiv` unless the divisor compares equal to zero
+    /// (`0.0` / `-0.0`; a NaN divisor is not zero and divides normally), in
+    /// which case the cold `rt_div_float` call raises `ZeroDivisionError`.
+    fn raw_float_div(&mut self, a: Value, b: Value) -> Value {
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.set_cold_block(slow);
+        let out = self.builder.append_block_param(join, types::F64);
+        let zero = self.builder.ins().f64const(0.0);
+        let is_zero = self.builder.ins().fcmp(FloatCC::Equal, b, zero);
+        self.builder.ins().brif(is_zero, slow, &[], fast, &[]);
+        self.builder.switch_to_block(fast);
+        let q = self.builder.ins().fdiv(a, b);
+        self.builder.ins().jump(join, &[q.into()]);
+        self.builder.switch_to_block(slow);
+        let v = self.call(self.rt.div_float, &[a, b]).unwrap();
+        self.builder.ins().jump(join, &[v.into()]);
+        self.builder.switch_to_block(join);
+        out
     }
 
     /// Branchless Python floor modulo on raw i64 (`a % b`, result takes the sign
@@ -2791,8 +3283,12 @@ impl FnGen<'_, '_> {
     }
 
     fn lower_unary(&mut self, dst: LocalId, op: UnaryOp, operand: &Operand) -> Result<()> {
+        let raw_f64 = *self.operand_repr(operand) == Repr::Raw(RawKind::F64);
         let a = self.use_operand(operand);
         let v = match op {
+            // Raw f64 negation: an IEEE sign flip (`-0.0` stays exact, NaN
+            // stays NaN) — the verifier admits only `Neg` on `Raw(F64)`.
+            UnaryOp::Neg if raw_f64 => self.builder.ins().fneg(a),
             UnaryOp::Neg => self.call(self.rt.obj_neg, &[a]).unwrap(),
             UnaryOp::Pos => self.call(self.rt.obj_pos, &[a]).unwrap(),
             UnaryOp::Invert => self.call(self.rt.obj_invert, &[a]).unwrap(),
@@ -2823,6 +3319,23 @@ impl FnGen<'_, '_> {
                 CmpOp::GtE => IntCC::SignedGreaterThanOrEqual,
             };
             let v = self.builder.ins().icmp(cc, a, b);
+            self.def_local(dst, v);
+            return Ok(());
+        }
+        // Raw f64: an IEEE `fcmp` yielding the `I8` boolean. Python float
+        // comparison is IEEE: every ordered predicate is false on a NaN
+        // operand and `!=` is true (`FloatCC::NotEqual` is "unordered or not
+        // equal"); `0.0 == -0.0`.
+        if lrepr == Repr::Raw(RawKind::F64) {
+            let cc = match op {
+                CmpOp::Eq => FloatCC::Equal,
+                CmpOp::NotEq => FloatCC::NotEqual,
+                CmpOp::Lt => FloatCC::LessThan,
+                CmpOp::LtE => FloatCC::LessThanOrEqual,
+                CmpOp::Gt => FloatCC::GreaterThan,
+                CmpOp::GtE => FloatCC::GreaterThanOrEqual,
+            };
+            let v = self.builder.ins().fcmp(cc, a, b);
             self.def_local(dst, v);
             return Ok(());
         }
@@ -3120,5 +3633,66 @@ fn cmp_op_tag(op: ContainerCmpOp) -> i64 {
         ContainerCmpOp::Gt => 2,
         ContainerCmpOp::GtE => 3,
         ContainerCmpOp::Eq | ContainerCmpOp::NotEq => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{masked_imm, tagged_immediate, traceback_name};
+    use cranelift_codegen::ir::types;
+    use pyaot_core_defs::{Value, INT_MAX, INT_MIN};
+    use pyaot_mir::Const;
+
+    #[test]
+    fn tagged_immediates_match_value_encoding() {
+        for i in [0, 1, -1, INT_MAX, INT_MIN] {
+            assert_eq!(
+                tagged_immediate(&Const::Int(i)),
+                Some(Value::from_int(i).0 as i64)
+            );
+        }
+        // Out of the fixnum range: never shift-tagged (boxed instead).
+        assert_eq!(tagged_immediate(&Const::Int(INT_MAX + 1)), None);
+        assert_eq!(tagged_immediate(&Const::Int(i64::MIN)), None);
+        assert_eq!(tagged_immediate(&Const::Float(1.0)), None);
+        assert_eq!(tagged_immediate(&Const::NullPtr), Some(0));
+    }
+
+    #[test]
+    fn narrow_immediates_are_masked() {
+        assert_eq!(masked_imm(types::I8, -1), 0xff);
+        assert_eq!(masked_imm(types::I32, -2), 0xffff_fffe);
+        assert_eq!(masked_imm(types::I8, 5), 5);
+        assert_eq!(masked_imm(types::I64, -1), -1);
+    }
+
+    #[test]
+    fn traceback_names_match_cpython_co_name() {
+        let cases = [
+            ("__main__", Some("<module>")),
+            ("pkg.mod.<init>", Some("<module>")),
+            ("plain", Some("plain")),
+            ("C.m", Some("m")),
+            ("helper.f", Some("f")),
+            ("outer.<locals>.inner#0", Some("inner")),
+            ("outer.<locals>.<lambda>#3", Some("<lambda>")),
+            ("f.<locals>.<genexpr>#1.<resume>", Some("<genexpr>")),
+            ("gen.<resume>", Some("gen")),
+            ("C.gen.<resume>", Some("gen")),
+            ("deco.<orig>", Some("deco")),
+            ("a.<locals>.b#0.<locals>.c#2", Some("c")),
+            ("plain.<uniform>", None),
+            ("outer.<locals>.inner#0.<uniform>", None),
+            ("C.<iternext>", None),
+            ("C.<__copy__>", None),
+            ("C.<__deepcopy__>", None),
+        ];
+        for (internal, want) in cases {
+            assert_eq!(
+                traceback_name(internal).as_deref(),
+                want,
+                "traceback name of {internal:?}"
+            );
+        }
     }
 }

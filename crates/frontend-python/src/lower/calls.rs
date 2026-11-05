@@ -1,6 +1,39 @@
 use super::*;
 
 impl<'a> FnLowerer<'a> {
+    /// The `Super(anchor)` receiver of `super()` / `super(C, self)`: the
+    /// enclosing class, or the explicitly named class `C` (whose MRO successor
+    /// the lookup starts after). The instance is always the method's `self`.
+    pub(super) fn super_receiver(&mut self, e: &Expr, span: Span) -> Result<Idx<HirExpr>> {
+        let enclosing = self
+            .enclosing_class
+            .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
+        let Expr::Call(c) = e else {
+            return Err(parse_error("internal: malformed super()", span));
+        };
+        let cid = match c.args.first() {
+            None => enclosing,
+            Some(Expr::Name(cls)) => {
+                let Some(Expr::Name(obj)) = c.args.get(1) else {
+                    return Err(parse_error("super() expects (type, self)", span));
+                };
+                if obj.id.as_str() != "self" {
+                    return Err(parse_error(
+                        "two-argument super() is supported only as super(Class, self)",
+                        span,
+                    ));
+                }
+                self.ctx
+                    .class_map
+                    .get(cls.id.as_str())
+                    .map(|(cid, _)| *cid)
+                    .ok_or_else(|| parse_error("super() first argument must be a class", span))?
+            }
+            Some(_) => return Err(parse_error("super() expects (type, self)", span)),
+        };
+        Ok(self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span))
+    }
+
     /// A call used as a value (builtins now; user functions in 2d). `print` is a
     /// statement, not a value-call, so reject it here.
     pub(super) fn lower_call_expr(&mut self, c: &ExprCall, span: Span) -> Result<Idx<HirExpr>> {
@@ -248,41 +281,11 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // Generator `g.send(v)` / `g.close()` (Phase 6E): a generator-specific
-        // method (no user class in our subset defines these), routed to the
-        // runtime generator ops. `g.throw(...)` is out of scope.
-        if let Expr::Attribute(attr) = c.func.as_ref() {
-            match attr.attr.as_str() {
-                "send" if c.args.len() == 1 && c.keywords.is_empty() => {
-                    let gen = self.lower_expr(attr.value.as_ref())?;
-                    let value = self.lower_expr(&c.args[0])?;
-                    return Ok(self.alloc(
-                        HirExprKind::GenQuery {
-                            op: GenOp::Send,
-                            gen,
-                            imm: 0,
-                            value: Some(value),
-                        },
-                        SemTy::Dyn,
-                        span,
-                    ));
-                }
-                "close" if c.args.is_empty() && c.keywords.is_empty() => {
-                    let gen = self.lower_expr(attr.value.as_ref())?;
-                    return Ok(self.alloc(
-                        HirExprKind::GenQuery {
-                            op: GenOp::Close,
-                            gen,
-                            imm: 0,
-                            value: None,
-                        },
-                        SemTy::NoneTy,
-                        span,
-                    ));
-                }
-                _ => {}
-            }
-        }
+        // NOTE: `g.send(v)` / `g.close()` are ordinary method calls here. They
+        // used to be rewritten to generator ops BY NAME, which hijacked every
+        // `.close()` / `.send()` (StringIO, files, user classes). The receiver's
+        // type decides instead: lowering maps a statically-known generator to
+        // the generator ops, and a `Dyn` receiver dispatches by runtime tag.
         // `recv.method(args)` → a method call carrying the interned name. Lowering
         // dispatches by the receiver's static type: a container receiver to the
         // Phase-4D `ContainerMethod` path, a class receiver to the method's FuncId
@@ -411,11 +414,31 @@ impl<'a> FnLowerer<'a> {
                 }
             }
             let staging = !c.keywords.is_empty();
+            // `super().n(args)` inside a `@classmethod`: the hidden per-class
+            // copy of the next definition (see `lower_class`), on `cls`.
+            if is_super_call(attr.value.as_ref()) && self.enclosing_class.is_none() {
+                if let (Some((_, cls_name)), Some(anchor)) = (self.cls_ref, self.cm_anchor.clone()) {
+                    let recv = self.alloc(
+                        HirExprKind::Name(SymbolRef::Unresolved(cls_name)),
+                        SemTy::Dyn,
+                        span,
+                    );
+                    let hidden = self.intern(&format!("__super_{anchor}_{}__", attr.attr.as_str()));
+                    let args = self.lower_expr_list(&c.args)?;
+                    return Ok(self.alloc(
+                        HirExprKind::MethodCall {
+                            recv,
+                            method_name: hidden,
+                            args,
+                            kwargs: vec![],
+                        },
+                        SemTy::Dyn,
+                        span,
+                    ));
+                }
+            }
             let recv = if is_super_call(attr.value.as_ref()) {
-                let cid = self
-                    .enclosing_class
-                    .ok_or_else(|| parse_error("super() is only valid inside a method", span))?;
-                self.alloc(HirExprKind::Super(cid), SemTy::Dyn, span)
+                self.super_receiver(attr.value.as_ref(), span)?
             } else if staging && !matches!(attr.value.as_ref(), Expr::Name(_)) {
                 // Keyword calls stage a compound receiver too — its side
                 // effects come before every argument's (written order). A bare
@@ -698,6 +721,22 @@ impl<'a> FnLowerer<'a> {
                 {
                     if let Some(out) = self.lower_builtin_kwargs_call(n.id.as_str(), c, span)? {
                         return Ok(out);
+                    }
+                }
+            }
+        }
+        // A keyword construction of a user class: bind the keywords against
+        // its `__init__` (minus `self`) at compile time.
+        if let Expr::Name(n) = c.func.as_ref() {
+            if !c.keywords.is_empty() {
+                let iname = self.intern(n.id.as_str());
+                if !self.scope.contains_key(&iname)
+                    && self.global_read_slot(iname).is_none()
+                    && self.ctx.class_map.contains_key(n.id.as_str())
+                {
+                    let key = format!("#init:{}", n.id.as_str());
+                    if let Some(info) = self.ctx.top_defs.get(&key).cloned() {
+                        return self.lower_direct_known_call(&info, n.id.as_str(), c, span);
                     }
                 }
             }
@@ -2616,7 +2655,10 @@ pub(super) fn reject_call_extras(c: &ExprCall, span: Span, what: &str) -> Result
 /// explicit `super(Cls, self)` form is out of scope.
 pub(super) fn is_super_call(e: &Expr) -> bool {
     matches!(e, Expr::Call(c)
-        if c.args.is_empty() && c.keywords.is_empty()
+        if c.keywords.is_empty()
+            && (c.args.is_empty()
+                || (c.args.len() == 2
+                    && c.args.iter().all(|a| matches!(a, Expr::Name(_)))))
             && matches!(c.func.as_ref(), Expr::Name(n) if n.id.as_str() == "super"))
 }
 

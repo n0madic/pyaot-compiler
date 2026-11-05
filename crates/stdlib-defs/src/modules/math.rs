@@ -126,7 +126,7 @@ pub static MATH_FACTORIAL: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_factorial", &[P_I64], Some(R_I64), false),
+    codegen: RuntimeFuncDef::ptr_unary("rt_math_factorial"),
 };
 
 /// math.log(x[, base]) - logarithm (natural log when base is omitted)
@@ -135,13 +135,13 @@ pub static MATH_LOG: StdlibFunctionDef = StdlibFunctionDef {
     runtime_name: "rt_math_log",
     params: &[
         ParamDef::required("x", TypeSpec::Float),
-        ParamDef::optional_with_default("base", TypeSpec::Float, ConstValue::Float(f64::NAN)),
+        ParamDef::optional_with_default("base", TypeSpec::Float, ConstValue::Float(0.0)),
     ],
     return_type: TypeSpec::Float,
     min_args: 1,
     max_args: 2,
-    hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_log", &[P_F64, P_F64], Some(R_F64), false),
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    codegen: RuntimeFuncDef::new("rt_math_log", &[P_F64, P_F64, P_I64], Some(R_F64), false),
 };
 
 /// math.log2(x) - logarithm base 2
@@ -423,7 +423,7 @@ pub static MATH_GCD: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_gcd", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: RuntimeFuncDef::ptr_binary("rt_math_gcd"),
 };
 
 /// math.lcm(a, b) - least common multiple
@@ -438,7 +438,7 @@ pub static MATH_LCM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_lcm", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: RuntimeFuncDef::ptr_binary("rt_math_lcm"),
 };
 
 /// math.comb(n, k) - binomial coefficient (n choose k)
@@ -453,7 +453,7 @@ pub static MATH_COMB: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_comb", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: RuntimeFuncDef::ptr_binary("rt_math_comb"),
 };
 
 /// math.perm(n, k) - permutation count (n! / (n-k)!)
@@ -468,7 +468,7 @@ pub static MATH_PERM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_math_perm", &[P_I64, P_I64], Some(R_I64), false),
+    codegen: RuntimeFuncDef::ptr_binary("rt_math_perm"),
 };
 
 /// math module definition

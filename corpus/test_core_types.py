@@ -1227,4 +1227,121 @@ assert _review_in_present is True
 assert _review_in_order == ["left", "right"], "`in` evaluates left before right"
 
 
+# ===== SECTION: a bool flowing into an int slot keeps its bool identity =====
+# `bool ⊔ int = int` as a type, but the value must still be a bool at runtime
+# (prints `True`, `is True`) — the int slot must not be unboxed to a raw i64.
+def _review_bool_ret_int() -> int:
+    return True
+
+
+def _review_bool_param_int(q: int) -> int:
+    return q
+
+
+def _review_bool_int_join(c: bool) -> list[str]:
+    out: list[str] = []
+    x = True if c else 1
+    out.append(str(x))
+    y = 2
+    if c:
+        y = False
+    out.append(str(y))
+    z: int = 5
+    z = c
+    out.append(repr(z))
+    return out
+
+
+def _review_bool_int_identity() -> None:
+    assert _review_bool_int_join(True) == ["True", "False", "True"]
+    assert _review_bool_int_join(False) == ["1", "2", "False"]
+    assert str(_review_bool_ret_int()) == "True"
+    assert _review_bool_ret_int() is True
+    assert str(_review_bool_param_int(True)) == "True"
+    assert str(_review_bool_param_int(7)) == "7"
+    mixed = [True, 1, False, 0]
+    assert str(mixed) == "[True, 1, False, 0]"
+    assert str({"a": True, "b": 2}) == "{'a': True, 'b': 2}"
+
+
+_review_bool_int_identity()
+
+# ===== SECTION: exact numeric tower (int/float mixing, CPython hash) =====
+
+def _nt_ident(x):
+    return x
+
+
+def _numeric_tower_exact() -> None:
+    # float floor division / modulo via fmod (CPython float_divmod)
+    assert 1.0 // 0.1 == 9.0
+    assert _nt_ident(1.0) // _nt_ident(0.1) == 9.0
+    assert _nt_ident(1.0) % _nt_ident(0.1) == 0.09999999999999995
+    assert _nt_ident(-1.0) % _nt_ident(0.1) == 5.551115123125783e-17
+    assert str(_nt_ident(-7.0) % _nt_ident(7.0)) == "0.0"
+    assert str(_nt_ident(7.0) % _nt_ident(-7.0)) == "-0.0"
+    # int / int is correctly rounded, even beyond the double range of operands
+    assert 10**400 / 10**399 == 10.0
+    assert _nt_ident(10**400) / _nt_ident(10**399) == 10.0
+    assert _nt_ident(2**60 + 1) / _nt_ident(3) == 3.843071682022823e+17
+    assert _nt_ident(1) / _nt_ident(3) == 0.3333333333333333
+    assert _nt_ident(-(10**30)) / _nt_ident(7) == -1.4285714285714285e+29
+    overflow = False
+    try:
+        _nt_ident(10**400) / _nt_ident(1)
+    except OverflowError:
+        overflow = True
+    assert overflow
+    overflow = False
+    try:
+        _nt_ident(10**400) + _nt_ident(1.0)
+    except OverflowError:
+        overflow = True
+    assert overflow
+    # int vs float comparisons are exact
+    assert not (_nt_ident(2**53 + 1) == _nt_ident(2.0**53))
+    assert _nt_ident(2**53 + 1) > _nt_ident(2.0**53)
+    assert _nt_ident(2.0**53) < _nt_ident(2**53 + 1)
+    assert _nt_ident(10**30) != _nt_ident(1e30)
+    assert _nt_ident(10**22) == _nt_ident(1e22)
+    assert _nt_ident(10**400) > _nt_ident(1e308)
+    assert _nt_ident(10**400) < _nt_ident(float("inf"))
+    # float(bigint) is correctly rounded; abs() of a bignum / min fixnum
+    assert float(_nt_ident(10**30)) == 1e30
+    assert float(_nt_ident(2**64 + 1)) == 1.8446744073709552e19
+    assert abs(_nt_ident(-(10**30))) == 10**30
+    assert abs(_nt_ident(-(2**60))) == 2**60
+    assert abs(-(2**62)) == 2**62
+    # CPython's numeric hash: mod 2**61-1, consistent across representations
+    assert hash(10**30) == 465258685558744706
+    assert hash(-(10**30)) == -465258685558744706
+    assert hash(2**61 - 1) == 0
+    assert hash(2**61) == 1
+    assert hash(-1) == -2
+    assert hash(1.5) == 1152921504606846977
+    assert hash(1e30) == hash(1000000000000000019884624838656)
+    assert hash(float("inf")) == 314159
+    assert hash(2.0) == hash(2) == hash(True) + 1
+    assert hash((1, 2)) == -3550055125485641917
+    assert hash((1, (2, 3.5))) == hash((1, (2, 3.5)))
+    assert hash(()) == 5740354900026072187
+    # bignum keys hash and compare by value in dict / set / list.index
+    d = {10**30: "big"}
+    assert d[10**30] == "big"
+    assert 10**30 in {10**30}
+    assert [5, 10**30].index(10**30) == 1
+    assert {2**70: "x"}.get(2.0**70) == "x"
+    assert len({10**30, 10**30 + 0, 1e30}) == 2
+    # gradual sequence repetition and printf-style formatting
+    assert _nt_ident(3) * _nt_ident([1]) == [1, 1, 1]
+    assert _nt_ident([1, 2]) * _nt_ident(2) == [1, 2, 1, 2]
+    assert _nt_ident((1, 2)) * _nt_ident(2) == (1, 2, 1, 2)
+    assert _nt_ident(b"ab") * _nt_ident(2) == b"abab"
+    assert _nt_ident("ab") * _nt_ident(True) == "ab"
+    assert _nt_ident((1,)) * _nt_ident(-3) == ()
+
+
+_numeric_tower_exact()
+
+
 print("All core types and operator tests passed!")

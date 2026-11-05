@@ -55,6 +55,36 @@ pub fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
 
     obj
 }
+/// `v` unless it is the empty (null, `Value(0)`) slot, else `d` (contract
+/// addition): the read of an instance field that shadows a class attribute —
+/// an instance that never assigned the attribute sees the class value.
+#[export_name = "rt_value_or"]
+pub extern "C" fn rt_value_or_abi(v: Value, d: Value) -> Value {
+    if v.0 == 0 {
+        d
+    } else {
+        v
+    }
+}
+
+/// The runtime class id of a user-class instance, or `-1` for any other value
+/// (contract addition: the selector of the compiler's per-member dispatchers,
+/// which route a member overridden in a subclass by the receiver's actual
+/// class — review fix, "Root B").
+#[export_name = "rt_instance_class_id"]
+pub extern "C" fn rt_instance_class_id_abi(v: Value) -> i64 {
+    if !v.is_ptr() || v.0 == 0 {
+        return -1;
+    }
+    let obj = v.0 as *mut Obj;
+    unsafe {
+        if (*obj).type_tag() != crate::object::TypeTagKind::Instance {
+            return -1;
+        }
+        (*(obj as *mut crate::object::InstanceObj)).class_id as i64
+    }
+}
+
 #[export_name = "rt_make_instance"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_make_instance_abi(class_id: u8, field_count: i64) -> Value {
@@ -309,7 +339,13 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
         k::STR => heap_tag_is(obj, TypeTagKind::Str),
         k::BYTES => heap_tag_is(obj, TypeTagKind::Bytes),
         k::LIST => heap_tag_is(obj, TypeTagKind::List),
-        k::DICT => heap_tag_is(obj, TypeTagKind::Dict),
+        // `defaultdict` and `Counter` are dict subclasses (OrderedDict is a
+        // plain `Dict` at runtime).
+        k::DICT => {
+            heap_tag_is(obj, TypeTagKind::Dict)
+                || heap_tag_is(obj, TypeTagKind::DefaultDict)
+                || heap_tag_is(obj, TypeTagKind::Counter)
+        }
         k::SET => heap_tag_is(obj, TypeTagKind::Set),
         k::TUPLE => heap_tag_is(obj, TypeTagKind::Tuple),
         k::FROZENSET => heap_tag_is(obj, TypeTagKind::FrozenSet),
@@ -322,7 +358,7 @@ pub extern "C" fn rt_isinstance_builtin(obj: Value, kind: i64) -> i8 {
 /// The Python `type_name` of a runtime `Value`, for guard error messages.
 /// Immediates (`int`/`bool`/`None`) report their immediate kind; a heap pointer
 /// reports its tag's `type_name` (a null pointer reports `NoneType`).
-fn value_type_name(v: Value) -> &'static str {
+pub(crate) fn value_type_name(v: Value) -> &'static str {
     if v.is_int() {
         return "int";
     }
@@ -488,6 +524,10 @@ pub(crate) fn lookup_class_qualname(class_id: u8) -> Option<String> {
 /// `obj` must be a valid object pointer or a tagged primitive `Value`.
 pub(crate) unsafe fn instance_default_repr(obj: *mut Obj) -> String {
     use crate::object::InstanceObj;
+    // An exception instance's default repr is `Name(args)` (`ValueError('x')`).
+    if let Some(r) = crate::exceptions::exception_repr(obj) {
+        return r;
+    }
     let v = Value(obj as u64);
     if v.is_ptr() && !obj.is_null() && (*obj).type_tag() == TypeTagKind::Instance {
         let class_id = (*(obj as *const InstanceObj)).class_id;

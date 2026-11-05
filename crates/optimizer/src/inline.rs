@@ -33,16 +33,20 @@
 //! Noop-`Coerce` into the call's `dst` plus a `Jump` to the continuation
 //! block (which inherits the call block's suffix + original terminator).
 //!
+//! Spliced callee `LineMarker`s become `InlinedLine`s carrying the inline
+//! chain (`callee`, call line), so the traceback still prints the callee's
+//! frame — inlining never erases frames.
+//!
 //! Functions are NEVER deleted: `FuncId`s are dense indices held by
 //! `MakeClosure` / vtables / dunder tables / generator dispatch; dead bodies
 //! are the linker's problem (`-dead_strip` / `--gc-sections`).
 
 use pyaot_mir::{
-    CoerceInst, Const, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram, MirTerminator,
-    Operand,
+    CoerceInst, Const, InlineFrame, LocalDecl, MirBlock, MirFunction, MirInst, MirProgram,
+    MirTerminator, Operand,
 };
 use pyaot_types::{RawKind, Repr};
-use pyaot_utils::{BlockId, LocalId};
+use pyaot_utils::{BlockId, FuncId, LocalId};
 
 use crate::OptimizationPass;
 
@@ -97,33 +101,61 @@ impl OptimizationPass for Inline {
         let mut order: Vec<usize> = (0..program.funcs.len()).collect();
         order.sort_by_key(|&i| scc_of[i]);
 
+        // Current (grown) size of every function, maintained incrementally:
+        // a function's body changes only while it is the caller, so its entry
+        // is refreshed right after; callees are always final by then.
+        let mut sizes: Vec<usize> = program.funcs.iter().map(real_size).collect();
+        let ctx = InlineCtx {
+            scc_of: &scc_of,
+            original_ok: &original_ok,
+            max_insts: self.max_insts,
+            debug: std::env::var_os("PYAOT_INLINE_DEBUG").is_some(),
+        };
+
         for caller in order {
             if is_thunk[caller] {
                 continue;
             }
-            inline_into(program, caller, &scc_of, &original_ok, self.max_insts);
+            if inline_into(program, caller, &ctx, &sizes) {
+                sizes[caller] = real_size(&program.funcs[caller]);
+            }
         }
     }
 }
 
 /// The cloned parts of a callee needed for one splice.
 struct CalleeBody {
+    /// The callee itself — recorded in the inline chain of every spliced
+    /// line marker so tracebacks keep its frame.
+    func: FuncId,
     params: Vec<Repr>,
     locals: Vec<LocalDecl>,
     blocks: Vec<MirBlock>,
     entry: BlockId,
 }
 
-fn inline_into(
-    program: &mut MirProgram,
-    caller: usize,
-    scc_of: &[usize],
-    original_ok: &[bool],
+/// Program-wide inputs of one inlining run, computed once.
+struct InlineCtx<'a> {
+    scc_of: &'a [usize],
+    original_ok: &'a [bool],
     max_insts: usize,
-) {
+    /// `PYAOT_INLINE_DEBUG` is set: log every refused call site.
+    debug: bool,
+}
+
+/// Splice every eligible call in `caller`; `sizes` holds each function's
+/// current size (callees are final). Returns whether anything was spliced.
+fn inline_into(program: &mut MirProgram, caller: usize, ctx: &InlineCtx<'_>, sizes: &[usize]) -> bool {
+    let InlineCtx {
+        scc_of,
+        original_ok,
+        max_insts,
+        debug,
+    } = *ctx;
     // Worklist of caller-origin blocks to scan; continuation blocks created
     // by a splice join it, callee-copied blocks do not.
     let mut work: Vec<usize> = (0..program.funcs[caller].blocks.len()).collect();
+    let mut changed = false;
 
     while let Some(bi) = work.pop() {
         // Find the first eligible call in this block (immutable scan).
@@ -132,7 +164,7 @@ fn inline_into(
             funcs[caller].blocks[bi].insts.iter().enumerate().find_map(|(i, inst)| {
                 if let MirInst::Call { func, .. } = inst {
                     let callee = func.index();
-                    let grown: usize = real_size(&funcs[callee]);
+                    let grown = sizes[callee];
                     if callee != caller
                         && scc_of[callee] != scc_of[caller]
                         && original_ok[callee]
@@ -140,7 +172,7 @@ fn inline_into(
                     {
                         return Some((i, callee));
                     }
-                    if std::env::var_os("PYAOT_INLINE_DEBUG").is_some() {
+                    if debug {
                         eprintln!(
                             "inline refuse: caller={caller} callee={callee} scc={}/{} ok={} grown={grown}",
                             scc_of[callee], scc_of[caller], original_ok[callee],
@@ -154,11 +186,13 @@ fn inline_into(
             continue;
         };
 
-        let body = clone_body(&program.funcs[callee]);
+        let body = clone_body(&program.funcs[callee], FuncId::new(callee as u32));
         let cont = splice(&mut program.funcs[caller], bi, inst_idx, &body);
+        changed = true;
         // The continuation holds the rest of this block — keep scanning it.
         work.push(cont);
     }
+    changed
 }
 
 /// The set of functions that are the target of some `MakeClosure` (the uniform
@@ -187,7 +221,7 @@ fn real_size(f: &MirFunction) -> usize {
         .map(|b| {
             b.insts
                 .iter()
-                .filter(|i| !matches!(i, MirInst::LineMarker(_)))
+                .filter(|i| !matches!(i, MirInst::LineMarker(_) | MirInst::InlinedLine { .. }))
                 .count()
         })
         .sum()
@@ -206,8 +240,7 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
     // `default_ret`. An always-diverging `Never` callee with no `Return(None)`
     // stays inlinable (no default value is ever materialized).
     if matches!(f.ret, Repr::Never | Repr::FuncPtr(_))
-        && f
-            .blocks
+        && f.blocks
             .iter()
             .any(|b| matches!(b.term, MirTerminator::Return(None)))
     {
@@ -232,8 +265,9 @@ fn inlineable(f: &MirFunction, max_insts: usize) -> bool {
     true
 }
 
-fn clone_body(f: &MirFunction) -> CalleeBody {
+fn clone_body(f: &MirFunction, func: FuncId) -> CalleeBody {
     CalleeBody {
+        func,
         params: f.params.clone(),
         locals: f.locals.clone(),
         blocks: f
@@ -310,12 +344,30 @@ fn splice(caller: &mut MirFunction, bi: usize, inst_idx: usize, body: &CalleeBod
         .expect("identity coercion is always legal");
         caller.blocks[bi].insts.push(MirInst::Coerce(mv));
     }
+    // (4b) A real call starts with every callee local zeroed (codegen's
+    // implicit initial value); an inlined body re-entered — the call site in a
+    // loop — would instead see the previous activation's values. Re-zero each
+    // callee local that some path may read before writing.
+    for l in maybe_read_before_write(body) {
+        let dst = LocalId::new(l_off + l as u32);
+        let val = match &body.locals[l].repr {
+            Repr::Raw(RawKind::F64) => Const::Float(0.0),
+            Repr::Raw(_) => Const::Int(0),
+            Repr::Tagged => Const::NullPtr,
+            // A typed heap / closure slot is only ever read after a store.
+            _ => continue,
+        };
+        caller.blocks[bi].insts.push(MirInst::Const { dst, val });
+    }
 
     // (2) Append remapped callee blocks; (5) rewrite each Return.
     for cb in &body.blocks {
         let mut insts: Vec<MirInst> = cb.insts.clone();
         for inst in &mut insts {
             inst.map_locals(|l| LocalId::new(l_off + l.index() as u32));
+            if let Some(call_line) = call_line {
+                push_inline_frame(inst, body.func, call_line);
+            }
         }
         let rb = |b: BlockId| BlockId::new(b_off + b.index() as u32);
         let term = match &cb.term {
@@ -474,6 +526,26 @@ fn call_graph_sccs(funcs: &[MirFunction]) -> Vec<usize> {
         }
     }
     scc_of
+}
+
+/// Re-home a spliced callee line marker into the caller: its line now sits
+/// one inline level deeper, under `callee` called from the caller's
+/// `call_line` (tracebacks print the whole chain — inlining keeps frames).
+fn push_inline_frame(inst: &mut MirInst, callee: FuncId, call_line: u32) {
+    let outer = InlineFrame {
+        func: callee,
+        call_line,
+    };
+    match inst {
+        MirInst::LineMarker(line) => {
+            *inst = MirInst::InlinedLine {
+                line: *line,
+                frames: vec![outer],
+            };
+        }
+        MirInst::InlinedLine { frames, .. } => frames.insert(0, outer),
+        _ => {}
+    }
 }
 
 fn line_of(inst: &MirInst) -> Option<u32> {
@@ -975,4 +1047,103 @@ mod tests {
         );
         assert_eq!(line_at_block_entry(&g, 3), None);
     }
+
+    #[test]
+    fn spliced_markers_carry_the_inline_chain() {
+        use super::push_inline_frame;
+        use pyaot_mir::InlineFrame;
+        // A callee's own line becomes an `InlinedLine` one level deep …
+        let mut m = MirInst::LineMarker(2);
+        push_inline_frame(&mut m, FuncId::new(5), 9);
+        let one = InlineFrame {
+            func: FuncId::new(5),
+            call_line: 9,
+        };
+        assert!(
+            matches!(&m, MirInst::InlinedLine { line: 2, frames } if *frames == [one.clone()]),
+            "{m:?}"
+        );
+        // … and inlining that again prepends the new outer frame.
+        push_inline_frame(&mut m, FuncId::new(3), 4);
+        let outer = InlineFrame {
+            func: FuncId::new(3),
+            call_line: 4,
+        };
+        assert!(
+            matches!(&m, MirInst::InlinedLine { line: 2, frames } if *frames == [outer, one]),
+            "{m:?}"
+        );
+    }
+}
+
+/// Non-parameter locals of `body` that some path may read before any write
+/// (a forward must-defined dataflow over the callee's CFG).
+fn maybe_read_before_write(body: &CalleeBody) -> Vec<usize> {
+    let n = body.locals.len();
+    let nb = body.blocks.len();
+    let mut entry: Vec<Option<Vec<bool>>> = vec![None; nb];
+    let mut init = vec![false; n];
+    for p in init.iter_mut().take(body.params.len()) {
+        *p = true;
+    }
+    entry[body.entry.index()] = Some(init);
+    let mut flagged = vec![false; n];
+    let mut work = vec![body.entry.index()];
+    while let Some(b) = work.pop() {
+        let Some(mut st) = entry[b].clone() else {
+            continue;
+        };
+        let blk = &body.blocks[b];
+        for inst in &blk.insts {
+            inst.for_each_operand(|op| {
+                let Operand::Local(l) = op;
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+            });
+            if let Some(d) = inst.dst() {
+                st[d.index()] = true;
+            }
+        }
+        let mut succ: Vec<usize> = Vec::new();
+        match &blk.term {
+            MirTerminator::Jump(t) => succ.push(t.index()),
+            MirTerminator::Branch { cond, then, else_ } => {
+                let Operand::Local(l) = cond;
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+                succ.push(then.index());
+                succ.push(else_.index());
+            }
+            MirTerminator::Return(Some(Operand::Local(l))) => {
+                if !st[l.index()] {
+                    flagged[l.index()] = true;
+                }
+            }
+            _ => {}
+        }
+        for s in succ {
+            let changed = match &mut entry[s] {
+                None => {
+                    entry[s] = Some(st.clone());
+                    true
+                }
+                Some(cur) => {
+                    let mut ch = false;
+                    for (c, v) in cur.iter_mut().zip(&st) {
+                        if *c && !*v {
+                            *c = false;
+                            ch = true;
+                        }
+                    }
+                    ch
+                }
+            };
+            if changed {
+                work.push(s);
+            }
+        }
+    }
+    (body.params.len()..n).filter(|l| flagged[*l]).collect()
 }

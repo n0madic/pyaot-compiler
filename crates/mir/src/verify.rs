@@ -10,7 +10,7 @@
 //! `Call` reprs are checked against the callee signature (ABI = f(param Repr)).
 
 use crate::{
-    classify_coercion, is_heap_str, is_legal_checked_coercion, BinOp, Const, ContainerArg,
+    classify_coercion, MirProgram, is_heap_str, is_legal_checked_coercion, BinOp, Const, ContainerArg,
     ContainerOp, ContainerResult, ExcQuery, GenOp, GenResult, MirArmCause, MirFunction, MirInst,
     MirRaise, MirTerminator, Operand, PrintKind, UnaryOp,
 };
@@ -277,6 +277,7 @@ impl std::error::Error for VerifyError {}
 
 const TAGGED: Repr = Repr::Tagged;
 const RAW_I8: Repr = Repr::Raw(RawKind::I8);
+const F64_REPR: Repr = Repr::Raw(RawKind::F64);
 const RAW_I64: Repr = Repr::Raw(RawKind::I64);
 const RAW_F64: Repr = Repr::Raw(RawKind::F64);
 
@@ -365,11 +366,65 @@ fn want_local(
     Ok(())
 }
 
+/// Verify a whole program: every function ([`verify`]) plus the program-level
+/// function references codegen dereferences blindly — the entry, the
+/// generator resume table, and each class's vtable / dunder / uniform-thunk /
+/// iternext / copy / deepcopy entries.
+pub fn verify_program(p: &MirProgram) -> Result<(), VerifyError> {
+    let count = p.funcs.len();
+    let check = |id: pyaot_utils::FuncId| {
+        if id.index() >= count {
+            Err(VerifyError::FuncOutOfRange {
+                func: id.index(),
+                count,
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check(p.entry)?;
+    for &g in &p.generators {
+        check(g)?;
+    }
+    for c in &p.classes {
+        for &f in &c.vtable {
+            check(f)?;
+        }
+        for &(_, f) in c.dunders.iter().chain(&c.method_uniforms) {
+            check(f)?;
+        }
+        for f in [c.iternext_thunk, c.copy_thunk, c.deepcopy_thunk].into_iter().flatten() {
+            check(f)?;
+        }
+    }
+    for func in &p.funcs {
+        verify(func, &p.funcs)?;
+    }
+    Ok(())
+}
+
 /// Verify a single MIR function's representation consistency. `funcs` is the
 /// whole program's function table, used to check `Call` signatures.
 pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError> {
     if f.blocks.is_empty() {
         return Err(VerifyError::EmptyFunction);
+    }
+    // The leading locals ARE the parameters (ABI = f(param Repr)): each must
+    // exist and carry exactly its parameter's repr.
+    if f.params.len() > f.locals.len() {
+        return Err(VerifyError::LocalOutOfRange {
+            local: f.params.len() - 1,
+            count: f.locals.len(),
+        });
+    }
+    for (i, p) in f.params.iter().enumerate() {
+        if f.locals[i].repr != *p {
+            return Err(VerifyError::ReprMismatch {
+                ctx: "param local",
+                expected: p.clone(),
+                actual: f.locals[i].repr.clone(),
+            });
+        }
     }
     let nblocks = f.blocks.len();
     if f.entry.index() >= nblocks {
@@ -383,7 +438,9 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
         // A handler annotation must name a real, non-entry block (the entry
         // holds parameter setup and has no frame state to land in).
         if let Some(h) = block.handler {
-            if h.index() >= nblocks || h == f.entry {
+            // A block cannot be its own handler: a raise inside the handler
+            // would re-enter it forever.
+            if h.index() >= nblocks || h == f.entry || h.index() == bi {
                 return Err(VerifyError::BadHandler { block: bi });
             }
         }
@@ -398,7 +455,10 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
             }
         }
         match &block.term {
-            MirTerminator::Return(Some(op)) => check_operand(f, op)?,
+            // A returned value must carry exactly the function's return repr
+            // (ABI = f(Repr)); `Return(None)` is the "falls off the end" form
+            // and codegen materializes a default of `f.ret` for it.
+            MirTerminator::Return(Some(op)) => want(f, op, &f.ret, "Return")?,
             MirTerminator::Return(None) => {}
             MirTerminator::Jump(target) => check_block(f, *target)?,
             MirTerminator::Branch { cond, then, else_ } => {
@@ -420,7 +480,7 @@ pub fn verify(f: &MirFunction, funcs: &[MirFunction]) -> Result<(), VerifyError>
 fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result<(), VerifyError> {
     match inst {
         // Pure compile-time metadata — nothing to check.
-        MirInst::LineMarker(_) => {}
+        MirInst::LineMarker(_) | MirInst::InlinedLine { .. } => {}
         MirInst::Const { dst, val } => {
             check_local(f, *dst)?;
             let repr = f.local_repr(*dst);
@@ -510,15 +570,19 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             // Repr-consistent: operands and dst share one representation `R`, and
             // `R` must support `op`. `Tagged` handles every op via tag dispatch
             // (`rt_obj_*`, bignum-safe). The unboxed fast paths are RawKind-aware:
-            // `Raw(F64)` carries `Add`/`Sub`/`Mul` (exception-free IEEE);
-            // `Raw(I64)` additionally carries `Mod`/`FloorDiv` (Phase 3c), all
-            // proven by typeck's interval pass (no overflow, divisor > 0).
+            // `Raw(F64)` carries `Add`/`Sub`/`Mul` (exception-free IEEE) and
+            // `Div` (inline `fdiv`, zero divisor raises `ZeroDivisionError`
+            // through the runtime); `Raw(I64)` carries `Add`/`Sub`/`Mul` plus
+            // `Mod`/`FloorDiv` (Phase 3c), all proven by typeck's interval pass
+            // (no overflow, divisor > 0).
             check_operand(f, l)?;
             let lhs = f.operand_repr(l).clone();
             want(f, r, &lhs, "BinOp.r")?;
             want_local(f, *dst, &lhs, "BinOp.dst")?;
             let raw_ok = match lhs {
-                Repr::Raw(RawKind::F64) => matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul),
+                Repr::Raw(RawKind::F64) => {
+                    matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                }
                 Repr::Raw(RawKind::I64) => matches!(
                     op,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::FloorDiv
@@ -537,25 +601,33 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
             }
         }
         MirInst::Unary { dst, op, operand } => {
-            want(f, operand, &TAGGED, "Unary.operand")?;
-            let dst_want = if *op == UnaryOp::Not {
-                &RAW_I8
+            // `Tagged` operands dispatch through the runtime. The one raw form
+            // is `Neg` on `Raw(F64)` (an IEEE sign flip into a `Raw(F64)` dst).
+            check_operand(f, operand)?;
+            let raw_neg = *op == UnaryOp::Neg && f.operand_repr(operand) == &F64_REPR;
+            if raw_neg {
+                want_local(f, *dst, &F64_REPR, "Unary.dst")?;
             } else {
-                &TAGGED
-            };
-            want_local(f, *dst, dst_want, "Unary.dst")?;
+                want(f, operand, &TAGGED, "Unary.operand")?;
+                let dst_want = if *op == UnaryOp::Not {
+                    &RAW_I8
+                } else {
+                    &TAGGED
+                };
+                want_local(f, *dst, dst_want, "Unary.dst")?;
+            }
         }
         MirInst::Compare { dst, l, r, .. } => {
             // Operands share one repr `R`; the result is the `Raw(I8)` boolean.
             // `R = Tagged` dispatches via `rt_obj_*`; `R = Raw(I64)` is a machine
-            // `icmp` on range-proven cursors. Float comparison is not specialized.
+            // `icmp` on range-proven cursors; `R = Raw(F64)` is an IEEE `fcmp`.
             check_operand(f, l)?;
             let lhs = f.operand_repr(l).clone();
             match lhs {
-                Repr::Tagged | Repr::Raw(RawKind::I64) => {}
+                Repr::Tagged | Repr::Raw(RawKind::I64) | Repr::Raw(RawKind::F64) => {}
                 other => {
                     return Err(VerifyError::ReprMismatch {
-                        ctx: "Compare operand repr (Tagged or Raw(I64))",
+                        ctx: "Compare operand repr (Tagged, Raw(I64) or Raw(F64))",
                         expected: TAGGED,
                         actual: other,
                     })
@@ -704,7 +776,9 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
                 return Err(VerifyError::ClosureSigMismatch { func: func.index() });
             };
             let env_ok = callee.params.first() == Some(&TAGGED);
-            let sig_ok = sig.params[..] == callee.params[1..] && *sig.ret == callee.ret;
+            // `get(1..)` (not `[1..]`): a zero-param callee must be reported,
+            // not panic the verifier.
+            let sig_ok = callee.params.get(1..) == Some(&sig.params[..]) && *sig.ret == callee.ret;
             if !env_ok || !sig_ok {
                 return Err(VerifyError::ClosureSigMismatch { func: func.index() });
             }
@@ -896,10 +970,6 @@ fn verify_inst(f: &MirFunction, funcs: &[MirFunction], inst: &MirInst) -> Result
     Ok(())
 }
 
-/// Verify a `CallContainer` against its op's argument/result signature. This is
-/// the structural form of PITFALLS A5: every `Val` argument position is required
-/// to be `Tagged`, so a non-tagged element can never reach container storage; only
-/// `Idx` positions (indices, counts, sizes) are `Raw(I64)`.
 /// Verify a [`MirInst::CallRuntime`] against its descriptor (Phase 8B).
 ///
 /// Per-slot rule, from the descriptor's Cranelift register class plus its
@@ -934,9 +1004,14 @@ fn verify_call_runtime(
             ParamType::I8 => *got == RAW_I8,
             ParamType::I32 => *got == Repr::Raw(RawKind::I32),
             ParamType::I64 => match def.param_semantic(i) {
-                MirSemantic::Tagged | MirSemantic::Heap(_) => {
-                    matches!(got, Repr::Tagged | Repr::Heap(_))
-                }
+                MirSemantic::Tagged => matches!(got, Repr::Tagged | Repr::Heap(_)),
+                // A typed heap slot takes that exact shape, or a gradual
+                // `Tagged` value the runtime validates itself.
+                MirSemantic::Heap(tag) => match got {
+                    Repr::Tagged => true,
+                    Repr::Heap(shape) => heap_shape_tag(shape) == Some(tag),
+                    _ => false,
+                },
                 MirSemantic::Raw => {
                     matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
                 }
@@ -969,9 +1044,22 @@ fn verify_call_runtime(
                 ReturnType::F64 => *got == RAW_F64,
                 ReturnType::I8 => *got == RAW_I8,
                 ReturnType::I32 => *got == Repr::Raw(RawKind::I32),
-                ReturnType::I64 => {
-                    matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
-                }
+                // An explicitly annotated (or GC-rooted) return pins the dst
+                // class: a raw integer must never land in a GC-traced slot,
+                // and a heap pointer must never land in an untraced raw one
+                // (PITFALLS B5). Un-annotated defs keep the wide class.
+                ReturnType::I64 => match (def.mir_return_semantic, def.gc_roots_result) {
+                    (Some(MirSemantic::Heap(tag)), _) => match got {
+                        Repr::Tagged => true,
+                        Repr::Heap(shape) => heap_shape_tag(shape) == Some(tag),
+                        _ => false,
+                    },
+                    (Some(MirSemantic::Tagged), _) | (None, true) => got.is_gc_root(),
+                    (Some(MirSemantic::Raw), _) => *got == RAW_I64,
+                    (None, false) => {
+                        matches!(got, Repr::Raw(RawKind::I64) | Repr::Tagged | Repr::Heap(_))
+                    }
+                },
             };
             if ok {
                 Ok(())
@@ -986,6 +1074,10 @@ fn verify_call_runtime(
     }
 }
 
+/// Verify a `CallContainer` against its op's argument/result signature. This is
+/// the structural form of PITFALLS A5: every `Val` argument position is required
+/// to be `Tagged`, so a non-tagged element can never reach container storage; only
+/// `Idx` positions (indices, counts, sizes) are `Raw(I64)`.
 fn verify_call_container(
     f: &MirFunction,
     op: ContainerOp,
@@ -1025,7 +1117,7 @@ fn verify_call_container(
                 ContainerResult::Value => *got == TAGGED,
                 ContainerResult::Int => *got == RAW_I64,
                 ContainerResult::Bool => *got == RAW_I8,
-                ContainerResult::Heap => matches!(got, Repr::Heap(_)),
+                ContainerResult::Heap => heap_family_ok(op, got),
                 ContainerResult::None => unreachable!(),
             };
             if !ok {
@@ -1039,6 +1131,56 @@ fn verify_call_container(
     Ok(())
 }
 
+/// The runtime type tag a typed heap shape denotes (for a descriptor's
+/// `MirSemantic::Heap(tag)` slot).
+fn heap_shape_tag(shape: &HeapShape) -> Option<pyaot_core_defs::TypeTagKind> {
+    use pyaot_core_defs::TypeTagKind as T;
+    Some(match shape {
+        HeapShape::Str => T::Str,
+        HeapShape::Bytes => T::Bytes,
+        HeapShape::List(_) => T::List,
+        HeapShape::Dict(..) => T::Dict,
+        HeapShape::Set(_) => T::Set,
+        HeapShape::Tuple(_) | HeapShape::TupleVar(_) => T::Tuple,
+        HeapShape::Class(_) => T::Instance,
+        HeapShape::BigInt => T::BigInt,
+        HeapShape::Iterator(_) => T::Iterator,
+        HeapShape::RuntimeObj(t) => *t,
+    })
+}
+
+/// A heap-producing container op's `dst` must be of the op's container
+/// family (a `ListConcat` never lands in a `dict` slot). Ops whose result
+/// family is not fixed here accept any heap shape.
+fn heap_family_ok(op: ContainerOp, got: &Repr) -> bool {
+    use ContainerOp as C;
+    let Repr::Heap(shape) = got else {
+        return false;
+    };
+    let family_ok = |pred: fn(&HeapShape) -> bool| pred(shape);
+    match op {
+        C::ListNew | C::ListConcat | C::ListRepeat | C::ListFromIter | C::ListCopy | C::Sorted => {
+            family_ok(|s| matches!(s, HeapShape::List(_)))
+        }
+        C::DictNew | C::DictFromPairs | C::DictCopy | C::DictMerge => {
+            family_ok(|s| matches!(s, HeapShape::Dict(..)))
+        }
+        C::SetNew
+        | C::SetUnion
+        | C::SetIntersection
+        | C::SetDifference
+        | C::SetSymmetricDifference
+        | C::SetCopy => family_ok(|s| matches!(s, HeapShape::Set(_))),
+        C::TupleNew | C::TupleConcat | C::TupleFromIter => {
+            family_ok(|s| matches!(s, HeapShape::Tuple(_) | HeapShape::TupleVar(_)))
+        }
+        C::BytesConcat | C::BytesRepeat | C::BytesFromList | C::BytesZero | C::BytesFromStr => {
+            family_ok(|s| matches!(s, HeapShape::Bytes))
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1046,7 +1188,9 @@ mod tests {
         pyaot_utils::StringInterner::new().intern("test.py")
     }
     use super::*;
-    use crate::{BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand};
+    use crate::{
+        BinOp, CmpOp, CoerceInst, Const, LocalDecl, MirBlock, MirFunction, Operand, UnaryOp,
+    };
     use pyaot_types::HeapShape;
     use pyaot_utils::{BlockId, InternedString, StringInterner};
 
@@ -1147,6 +1291,37 @@ mod tests {
     }
 
     #[test]
+    fn accepts_raw_f64_compare_and_neg() {
+        let f64r = Repr::Raw(RawKind::F64);
+        let cmp = single_block(
+            vec![f64r.clone(), f64r.clone(), Repr::Raw(RawKind::I8)],
+            vec![MirInst::Compare {
+                dst: LocalId::new(2),
+                op: CmpOp::NotEq,
+                l: Operand::Local(LocalId::new(0)),
+                r: Operand::Local(LocalId::new(1)),
+            }],
+            MirTerminator::Return(None),
+        );
+        assert_eq!(verify(&cmp, &[]), Ok(()));
+        let neg = |op: UnaryOp, dst: Repr| {
+            single_block(
+                vec![f64r.clone(), dst],
+                vec![MirInst::Unary {
+                    dst: LocalId::new(1),
+                    op,
+                    operand: Operand::Local(LocalId::new(0)),
+                }],
+                MirTerminator::Return(None),
+            )
+        };
+        assert_eq!(verify(&neg(UnaryOp::Neg, f64r.clone()), &[]), Ok(()));
+        // Only `Neg` has a raw form; a raw `Neg` must land in a `Raw(F64)` dst.
+        assert!(verify(&neg(UnaryOp::Neg, Repr::Tagged), &[]).is_err());
+        assert!(verify(&neg(UnaryOp::Invert, Repr::Tagged), &[]).is_err());
+    }
+
+    #[test]
     fn rejects_mismatched_binop_operands() {
         // l=Raw(F64), r/dst=Tagged: operands must share one repr.
         let f = single_block(
@@ -1208,10 +1383,15 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_raw_binops() {
-        // Raw(F64) carries only Add/Sub/Mul; Raw division/mod and all bitwise/shift
-        // and `Pow` stay tagged — never on a Raw fast path.
-        assert!(matches!(
+        // Raw(F64) carries only Add/Sub/Mul/Div; float mod/floordiv, raw int
+        // true division, and all bitwise/shift and `Pow` stay tagged — never on
+        // a Raw fast path.
+        assert_eq!(
             verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::Div), &[]),
+            Ok(())
+        );
+        assert!(matches!(
+            verify(&binop_block(Repr::Raw(RawKind::F64), BinOp::FloorDiv), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
         assert!(matches!(
@@ -1230,6 +1410,35 @@ mod tests {
             verify(&binop_block(Repr::Raw(RawKind::I64), BinOp::BitAnd), &[]),
             Err(VerifyError::BadBinOpRepr { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_container_result_of_wrong_family() {
+        // ListConcat(a, b) must land in a list slot, never a dict slot.
+        let mk = |dst: Repr| {
+            single_block(
+                vec![Repr::Tagged, Repr::Tagged, dst],
+                vec![MirInst::CallContainer {
+                    dst: Some(LocalId::new(2)),
+                    op: ContainerOp::ListConcat,
+                    args: vec![
+                        Operand::Local(LocalId::new(0)),
+                        Operand::Local(LocalId::new(1)),
+                    ],
+                }],
+                MirTerminator::Return(None),
+            )
+        };
+        let bad = mk(Repr::Heap(HeapShape::Dict(
+            Box::new(Repr::Tagged),
+            Box::new(Repr::Tagged),
+        )));
+        let good = mk(Repr::Heap(HeapShape::List(Box::new(Repr::Tagged))));
+        assert!(matches!(
+            verify(&bad, &[]),
+            Err(VerifyError::ContainerResultRepr { .. })
+        ));
+        assert_eq!(verify(&good, &[]), Ok(()));
     }
 
     #[test]
@@ -1860,5 +2069,84 @@ mod tests {
             verify(&funcs[1], &funcs),
             Err(VerifyError::ReprMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_return_repr_mismatch() {
+        // A Heap(Str) local returned from a function declared Raw(F64).
+        let mut f = single_block(
+            vec![Repr::Heap(HeapShape::Str)],
+            vec![],
+            MirTerminator::Return(Some(Operand::Local(LocalId::new(0)))),
+        );
+        f.ret = Repr::Raw(RawKind::F64);
+        assert!(matches!(
+            verify(&f, &[]),
+            Err(VerifyError::ReprMismatch { ctx: "Return", .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_param_local_mismatch() {
+        let mut f = single_block(vec![Repr::Tagged], vec![], MirTerminator::Return(None));
+        f.params = vec![Repr::Raw(RawKind::F64)];
+        assert!(matches!(
+            verify(&f, &[]),
+            Err(VerifyError::ReprMismatch {
+                ctx: "param local",
+                ..
+            })
+        ));
+        // More params than locals.
+        f.params = vec![Repr::Tagged, Repr::Tagged];
+        assert!(matches!(
+            verify(&f, &[]),
+            Err(VerifyError::LocalOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn make_closure_of_zero_param_callee_is_an_error_not_a_panic() {
+        use pyaot_types::SigRepr;
+        let sig = SigRepr {
+            params: vec![],
+            ret: Box::new(Repr::Tagged),
+        };
+        let target = single_block(vec![], vec![], MirTerminator::Return(None));
+        let caller = single_block(
+            vec![Repr::Closure(Box::new(sig))],
+            vec![MirInst::MakeClosure {
+                dst: LocalId::new(0),
+                func: pyaot_utils::FuncId::new(0),
+                captures: vec![],
+            }],
+            MirTerminator::Return(None),
+        );
+        assert!(matches!(
+            verify(&caller, &[target]),
+            Err(VerifyError::ClosureSigMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_raw_runtime_result_in_gc_slot() {
+        // `rt_hash_str` returns a raw i64 hash: a Tagged dst would make the
+        // GC trace hash bits as a pointer.
+        let call = |dst_repr: Repr| {
+            single_block(
+                vec![Repr::Tagged, dst_repr],
+                vec![MirInst::CallRuntime {
+                    dst: Some(LocalId::new(1)),
+                    def: &pyaot_core_defs::runtime_func_def::RT_HASH_STR,
+                    args: vec![Operand::Local(LocalId::new(0))],
+                }],
+                MirTerminator::Return(None),
+            )
+        };
+        assert!(matches!(
+            verify(&call(Repr::Tagged), &[]),
+            Err(VerifyError::RuntimeShape { .. })
+        ));
+        assert_eq!(verify(&call(Repr::Raw(RawKind::I64)), &[]), Ok(()));
     }
 }

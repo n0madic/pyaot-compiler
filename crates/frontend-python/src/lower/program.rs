@@ -18,6 +18,7 @@ impl<'a> ProgramLowerer<'a> {
             loaded: HashMap::new(),
             loading: Vec::new(),
             init_emitted: HashSet::new(),
+            next_base: 0,
         }
     }
 
@@ -35,6 +36,8 @@ impl<'a> ProgramLowerer<'a> {
         self.shared.current_ns = 0;
         self.shared.cur_file = Some(self.interner.intern(entry_file));
         self.shared.line_map = LineMap::new(entry_src);
+        // The entry occupies offsets `0..len`; imports follow (SourceMap layout).
+        self.next_base = entry_src.len() as u32 + 1;
         let main_id = self.shared.reserve();
         self.lower_module_into(&[], false, body, true, 0, main_id)?;
 
@@ -45,7 +48,10 @@ impl<'a> ProgramLowerer<'a> {
         let method_uniform_thunks = self.shared.method_uniform_thunks.clone();
         let iternext_thunks = self.shared.iternext_thunks.clone();
         let copy_thunks = self.shared.copy_thunks.clone();
-        let functions = self.shared.finish();
+        let mut functions = self.shared.finish();
+        for f in &mut functions {
+            super::definite::guard_unassigned_reads(f, self.interner);
+        }
         let module = HirModule {
             functions,
             classes: self.classes,
@@ -96,7 +102,13 @@ impl<'a> ProgramLowerer<'a> {
         if path.len() > 1 {
             self.ensure_loaded(&path[..path.len() - 1], true, span)?;
         }
-        let body = crate::parse_module_body(&src)?;
+        // Parse at a fresh global base so this module's spans never alias the
+        // entry's (diagnostics map a span back to its file by offset).
+        let base = self.next_base;
+        self.next_base = base + src.len() as u32 + 1;
+        let display = self.loader.display_path(path, is_package);
+        self.loader.module_loaded(&display, base, &src);
+        let body = crate::parse_module_body(&src, base)?;
         let ns = self.namespace_imports.len() as u32;
         self.namespace_imports.push(NamespaceImports::default());
         let saved_ns = self.shared.current_ns;
@@ -104,8 +116,8 @@ impl<'a> ProgramLowerer<'a> {
         // Traceback attribution: this module's file/line map, restored after
         // (imports lower recursively inside the importer's own lowering).
         let saved_file = self.shared.cur_file;
-        let saved_map = std::mem::replace(&mut self.shared.line_map, LineMap::new(&src));
-        let display = self.loader.display_path(path, is_package);
+        let saved_map =
+            std::mem::replace(&mut self.shared.line_map, LineMap::with_base(&src, base));
         self.shared.cur_file = Some(self.interner.intern(&display));
         let init_fid = self.shared.reserve();
         self.loading.push(dotted.clone());
@@ -428,6 +440,30 @@ impl<'a> ProgramLowerer<'a> {
                 Stmt::FunctionDef(f) => decorated.push(f),
                 Stmt::ClassDef(c) => classdefs.push(c),
                 other => top.push(other),
+            }
+        }
+        // A module-level `def` / `class` name is bound statically to ONE
+        // definition, so a second definition of the same name would silently
+        // re-bind every call site — including the calls that run before it.
+        // Reject it loudly instead of miscompiling.
+        {
+            let mut seen: HashMap<&str, ()> = HashMap::new();
+            for stmt in &body {
+                let (name, range) = match stmt {
+                    Stmt::FunctionDef(f) => (f.name.as_str(), f.range()),
+                    Stmt::ClassDef(c) => (c.name.as_str(), c.range()),
+                    _ => continue,
+                };
+                if seen.insert(name, ()).is_some() {
+                    return Err(CompilerError::semantic_error(
+                        format!(
+                            "`{name}` is defined more than once at module level; \
+                             redefining a module-level function or class is not \
+                             supported (rename one of the definitions)"
+                        ),
+                        to_span(range),
+                    ));
+                }
             }
         }
 
@@ -774,6 +810,54 @@ impl<'a> ProgramLowerer<'a> {
         }
         for (key, info) in &col.imported_funcs {
             top_defs.insert(key.clone(), info.clone());
+        }
+        // Constructor signatures (`#init:Cls`): each class's `__init__` minus
+        // `self` — its own, else the nearest same-module base's — so a keyword
+        // construction `Cls(a, y=1)` is adapted to positional slots at compile
+        // time exactly like a call to a module-level function.
+        let class_defs_by_name: HashMap<&str, &StmtClassDef> =
+            classdefs.iter().map(|c| (c.name.as_str(), *c)).collect();
+        for cdef in &classdefs {
+            let mut cur: Option<&StmtClassDef> = Some(cdef);
+            let mut init: Option<&StmtFunctionDef> = None;
+            for _ in 0..32 {
+                let Some(c) = cur else { break };
+                init = c.body.iter().find_map(|s| match s {
+                    Stmt::FunctionDef(f) if f.name.as_str() == "__init__" => Some(f),
+                    _ => None,
+                });
+                if init.is_some() {
+                    break;
+                }
+                cur = c.bases.first().and_then(|b| match b {
+                    Expr::Name(n) => class_defs_by_name.get(n.id.as_str()).copied(),
+                    _ => None,
+                });
+            }
+            let Some(init) = init else { continue };
+            let fname = self.interner.intern("__init__");
+            // A signature this pre-context cannot express (a mutable method
+            // default lives in a per-method slot) keeps the positional-only
+            // construction path.
+            let Ok(parsed) = parse_params(
+                &mut *self.interner,
+                &pre_ctx,
+                init.args.as_ref(),
+                &FirstParam::SkipCls,
+                fname,
+            ) else {
+                continue;
+            };
+            top_defs.insert(
+                format!("#init:{}", cdef.name.as_str()),
+                TopDefInfo {
+                    fixed: parsed.fixed,
+                    kwonly: parsed.kwonly,
+                    varargs: parsed.varargs,
+                    kwargs: parsed.kwargs,
+                    ret: SemTy::Dyn,
+                },
+            );
         }
         // The general module context carries NO `default_slots`: decorated defs,
         // the module-init body, and classes/methods all reject non-literal

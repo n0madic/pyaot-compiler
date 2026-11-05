@@ -958,6 +958,21 @@ pub enum BinOp {
     /// new-object numeric path (`BitAnd`/`Sub`/`BitXor`). Always Tagged.
     IAnd,
     ISub,
+    /// In-place `+=` / `*=` (the `IOr` pattern): a `list` (or an instance with
+    /// `__iadd__`/`__imul__`) is mutated in place and the same object returned,
+    /// so an alias observes it; immutable operands take the `Add`/`Mul` path.
+    IAdd,
+    IMul,
+    /// The remaining augmented assignments (`/=`, `//=`, `%=`, `**=`, `@=`,
+    /// `<<=`, `>>=`): an instance's `__i<op>__` runs first, else the binary
+    /// operator — always Tagged (`rt_obj_inplace`).
+    IDiv,
+    IFloorDiv,
+    IMod,
+    IPow,
+    IMatMul,
+    IShl,
+    IShr,
     IXor,
     Shl,
     Shr,
@@ -1111,6 +1126,9 @@ pub enum ContainerOp {
     TupleCount,
     // dict
     DictGetDefault,
+    /// `dict.keys()` / `.values()` / `.items()` → a LIVE view object
+    /// (`rt_dict_{keys,values,items}_view`, a `DictViewObj` over the dict),
+    /// not a list snapshot.
     DictKeys,
     DictValues,
     DictItems,
@@ -1860,8 +1878,13 @@ pub struct PropertyInfo {
 pub struct ClassAttrInfo {
     pub name: InternedString,
     pub ty: SemTy,
+    /// The slot index inside `owner`'s class-attribute storage.
     pub attr_idx: u32,
     pub init: ClassAttrInit,
+    /// The class whose body defines the attribute (the storage owner). An
+    /// inherited entry points at the defining base; `owner == class_id` marks
+    /// the class's own attributes (the ones it initializes).
+    pub owner: ClassId,
 }
 
 impl ClassInfo {
